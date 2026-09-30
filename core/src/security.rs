@@ -159,11 +159,13 @@ impl ShieldReplayGuard {
                 return true;
             }
 
-            let delta = state.highest - sequence;
+            let highest = self.states.get(&key).expect("replay state exists").highest;
+            let delta = highest - sequence;
             if delta >= SHIELD_REPLAY_WINDOW as u64 {
                 return false;
             }
             let bit = 1u64 << delta;
+            let state = self.states.get_mut(&key).expect("replay state exists");
             if state.bitmap & bit != 0 {
                 return false;
             }
