@@ -123,18 +123,63 @@ impl ShieldPacket {
 /// session/request tuple, so a packet captured on one request cannot be replayed
 /// into another request.
 #[derive(Clone, Debug, Default)]
-pub struct ShieldReplayGuard {
-    highest: BTreeMap<([u8; 16], [u8; 16]), u64>,
+pub const SHIELD_REPLAY_WINDOW: u8 = 64;
+pub const SHIELD_MAX_TRACKED_REQUESTS: usize = 65_536;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct ReplayState {
+    highest: u64,
+    bitmap: u64,
 }
+
+pub struct ShieldReplayGuard {
+    states: BTreeMap<([u8; 16], [u8; 16]), ReplayState>,
+}
+impl Default for ShieldReplayGuard {
+    fn default() -> Self {
+        Self { states: BTreeMap::new() }
+    }
+}
+
 impl ShieldReplayGuard {
     pub fn accept(&mut self, session_id: [u8; 16], request_id: [u8; 16], sequence: u64) -> bool {
         let key = (session_id, request_id);
-        match self.highest.get(&key) {
-            Some(current) if sequence <= *current => false,
-            _ => { self.highest.insert(key, sequence); true }
+        if let Some(state) = self.states.get_mut(&key) {
+            if sequence > state.highest {
+                let shift = sequence - state.highest;
+                state.bitmap = if shift >= SHIELD_REPLAY_WINDOW as u64 {
+                    1
+                } else {
+                    (state.bitmap << shift) | 1
+                };
+                state.highest = sequence;
+                return true;
+            }
+
+            let delta = state.highest - sequence;
+            if delta >= SHIELD_REPLAY_WINDOW as u64 {
+                return false;
+            }
+            let bit = 1u64 << delta;
+            if state.bitmap & bit != 0 {
+                return false;
+            }
+            state.bitmap |= bit;
+            return true;
         }
+
+        if self.states.len() >= SHIELD_MAX_TRACKED_REQUESTS {
+            // Bound attacker-controlled memory. Removing the lexicographically
+            // oldest request is deterministic and keeps the table finite.
+            if let Some(oldest) = self.states.keys().next().copied() {
+                self.states.remove(&oldest);
+            }
+        }
+        self.states.insert(key, ReplayState { highest: sequence, bitmap: 1 });
+        true
     }
-    pub fn tracked_requests(&self) -> usize { self.highest.len() }
+
+    pub fn tracked_requests(&self) -> usize { self.states.len() }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -149,6 +194,30 @@ pub struct SecurityCounters {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replay_window_allows_reordering_but_blocks_duplicates() {
+        let mut g = ShieldReplayGuard::default();
+        let s = [1u8; 16];
+        let r = [2u8; 16];
+        assert!(g.accept(s, r, 10));
+        assert!(g.accept(s, r, 8));
+        assert!(g.accept(s, r, 9));
+        assert!(!g.accept(s, r, 8));
+        assert!(!g.accept(s, r, 10));
+        assert!(!g.accept(s, r, 10 - SHIELD_REPLAY_WINDOW as u64));
+    }
+
+    #[test]
+    fn replay_state_is_memory_bounded() {
+        let mut g = ShieldReplayGuard::default();
+        for i in 0..(SHIELD_MAX_TRACKED_REQUESTS + 32) {
+            let mut s = [0u8; 16];
+            s[..8].copy_from_slice(&(i as u64).to_be_bytes());
+            assert!(g.accept(s, [3u8; 16], 1));
+        }
+        assert!(g.tracked_requests() <= SHIELD_MAX_TRACKED_REQUESTS);
+    }
 
     #[test]
     fn shield_roundtrip_and_tamper_detection() {
