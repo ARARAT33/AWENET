@@ -27,6 +27,8 @@ const VERSION: u16 = 1;
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 const MAX_CONCURRENT_CONNECTIONS: usize = 1024;
 const MAX_PEERS_PER_RESPONSE: usize = 64;
+const MAX_ADDRESSES_PER_PEER: usize = 16;
+const MAX_NODE_RECORDS: usize = 64;
 const PEER_RATE_CAPACITY: u64 = 256;
 const PEER_RATE_REFILL_PER_SECOND: u64 = 128;
 const PREAUTH_MAX_IPS: usize = 1024;
@@ -259,7 +261,30 @@ fn decode(v: &[u8]) -> Result<Control, NetworkError> {
     if v.len() > MAX_FRAME {
         return Err(NetworkError::FrameTooLarge);
     }
-    serde_json::from_slice(v).map_err(|e| NetworkError::Protocol(e.to_string()))
+    let message: Control =
+        serde_json::from_slice(v).map_err(|e| NetworkError::Protocol(e.to_string()))?;
+    match &message {
+        Control::Hello { signature, .. } if signature.len() != 64 => {
+            return Err(NetworkError::Authentication);
+        }
+        Control::Data { payload, .. } if payload.len() > MAX_FRAME / 2 => {
+            return Err(NetworkError::FrameTooLarge);
+        }
+        Control::Nodes { records } if records.len() > MAX_NODE_RECORDS => {
+            return Err(NetworkError::Protocol("too many peer records".into()));
+        }
+        Control::Nodes { records } => {
+            for record in records {
+                if record.protocol_version != VERSION
+                    || record.addresses.len() > MAX_ADDRESSES_PER_PEER
+                {
+                    return Err(NetworkError::Protocol("invalid peer record".into()));
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(message)
 }
 async fn write_frame(s: &mut TcpStream, b: &[u8]) -> Result<(), NetworkError> {
     if b.is_empty() || b.len() > MAX_FRAME {
