@@ -190,6 +190,49 @@ pub struct SecurityCounters {
     pub bad_tag: u64,
 }
 
+/// Lock-free security telemetry suitable for hot packet paths.
+/// Counters are intentionally monotonic and never gate packet processing.
+#[derive(Debug, Default)]
+pub struct SecurityMetrics {
+    accepted: std::sync::atomic::AtomicU64,
+    rejected: std::sync::atomic::AtomicU64,
+    expired: std::sync::atomic::AtomicU64,
+    replayed: std::sync::atomic::AtomicU64,
+    bad_tag: std::sync::atomic::AtomicU64,
+}
+
+impl SecurityMetrics {
+    pub fn record_accepted(&self) {
+        self.accepted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn record_rejected(&self) {
+        self.rejected.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn record_expired(&self) {
+        self.expired.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn record_replayed(&self) {
+        self.replayed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn record_bad_tag(&self) {
+        self.bad_tag.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn snapshot(&self) -> SecurityCounters {
+        SecurityCounters {
+            accepted: self.accepted.load(std::sync::atomic::Ordering::Relaxed),
+            rejected: self.rejected.load(std::sync::atomic::Ordering::Relaxed),
+            expired: self.expired.load(std::sync::atomic::Ordering::Relaxed),
+            replayed: self.replayed.load(std::sync::atomic::Ordering::Relaxed),
+            bad_tag: self.bad_tag.load(std::sync::atomic::Ordering::Relaxed),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
