@@ -129,14 +129,16 @@ pub const SHIELD_MAX_TRACKED_REQUESTS: usize = 65_536;
 struct ReplayState {
     highest: u64,
     bitmap: u64,
+    generation: u64,
 }
 
 pub struct ShieldReplayGuard {
     states: BTreeMap<([u8; 16], [u8; 16]), ReplayState>,
+    generation: u64,
 }
 impl Default for ShieldReplayGuard {
     fn default() -> Self {
-        Self { states: BTreeMap::new() }
+        Self { states: BTreeMap::new(), generation: 0 }
     }
 }
 
@@ -152,6 +154,8 @@ impl ShieldReplayGuard {
                     (state.bitmap << shift) | 1
                 };
                 state.highest = sequence;
+                self.generation = self.generation.wrapping_add(1);
+                state.generation = self.generation;
                 return true;
             }
 
@@ -164,13 +168,15 @@ impl ShieldReplayGuard {
                 return false;
             }
             state.bitmap |= bit;
+            self.generation = self.generation.wrapping_add(1);
+            state.generation = self.generation;
             return true;
         }
 
         if self.states.len() >= SHIELD_MAX_TRACKED_REQUESTS {
-            // Bound attacker-controlled memory. Removing the lexicographically
-            // oldest request is deterministic and keeps the table finite.
-            if let Some(oldest) = self.states.keys().next().copied() {
+            // Bound attacker-controlled memory while preferring inactive request state.
+            if let Some((oldest, _)) = self.states.iter().min_by_key(|(_, state)| state.generation) {
+                let oldest = *oldest;
                 self.states.remove(&oldest);
             }
         }
