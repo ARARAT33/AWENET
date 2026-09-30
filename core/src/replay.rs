@@ -27,6 +27,8 @@ impl ReplayGuard {
         if self.states.contains_key(&peer) {
             if sequence > self.states.get(&peer).expect("replay state exists").highest {
                 let shift = sequence - self.states.get(&peer).expect("replay state exists").highest;
+                self.generation = self.generation.wrapping_add(1);
+                let generation = self.generation;
                 let state = self.states.get_mut(&peer).expect("replay state exists");
                 state.bitmap = if shift >= REPLAY_WINDOW as u64 {
                     1
@@ -34,8 +36,7 @@ impl ReplayGuard {
                     (state.bitmap << shift) | 1
                 };
                 state.highest = sequence;
-                self.generation = self.generation.wrapping_add(1);
-                state.generation = self.generation;
+                state.generation = generation;
                 return true;
             }
 
@@ -46,13 +47,14 @@ impl ReplayGuard {
             }
 
             let bit = 1u64 << delta;
+            self.generation = self.generation.wrapping_add(1);
+            let generation = self.generation;
             let state = self.states.get_mut(&peer).expect("replay state exists");
             if state.bitmap & bit != 0 {
                 return false;
             }
             state.bitmap |= bit;
-            self.generation = self.generation.wrapping_add(1);
-            state.generation = self.generation;
+            state.generation = generation;
             return true;
         }
 
