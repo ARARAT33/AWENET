@@ -1,3 +1,6 @@
+use std::collections::BTreeMap;
+use std::net::IpAddr;
+
 //! Lightweight in-memory admission controls for hostile P2P traffic.
 
 #[derive(Debug, Clone, Copy)]
@@ -35,7 +38,7 @@ impl TokenBucket {
 
 #[derive(Debug)]
 pub struct PeerAdmission {
-    buckets: std::collections::BTreeMap<[u8; 32], TokenBucket>,
+    buckets: BTreeMap<[u8; 32], TokenBucket>,
     max_peers: usize,
     capacity: u64,
     refill_per_second: u64,
