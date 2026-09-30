@@ -534,6 +534,7 @@ pub struct Node {
     pub listen_addr: SocketAddr,
     routing: Arc<RwLock<RoutingTable>>,
     peers: Arc<RwLock<HashMap<[u8; 32], PeerRecord>>>,
+    admission: Arc<Mutex<PeerAdmission>>,
 }
 impl Node {
     pub fn new(identity: Identity, listen_addr: SocketAddr) -> Self {
