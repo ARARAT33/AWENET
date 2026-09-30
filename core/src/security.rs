@@ -169,13 +169,14 @@ impl ShieldReplayGuard {
             }
 
             let bit = 1u64 << delta;
+            self.generation = self.generation.wrapping_add(1);
+            let generation = self.generation;
             let state = self.states.get_mut(&key).expect("replay state exists");
             if state.bitmap & bit != 0 {
                 return false;
             }
             state.bitmap |= bit;
-            self.generation = self.generation.wrapping_add(1);
-            state.generation = self.generation;
+            state.generation = generation;
             return true;
         }
 
