@@ -12,12 +12,14 @@ pub const REPLAY_WINDOW: u8 = 64;
 struct ReplayState {
     highest: u64,
     bitmap: u64,
+    generation: u64,
 }
 
 /// Bounded replay protection keyed by authenticated peer identifier.
 #[derive(Debug, Default)]
 pub struct ReplayGuard {
     states: BTreeMap<[u8; 32], ReplayState>,
+    generation: u64,
 }
 
 impl ReplayGuard {
@@ -50,12 +52,14 @@ impl ReplayGuard {
         if self.states.len() >= MAX_PEERS {
             // Deterministic bounded eviction. The table stays finite even when
             // an attacker presents an unbounded number of peer identifiers.
-            if let Some(oldest) = self.states.keys().next().copied() {
+            if let Some((oldest, _)) = self.states.iter().min_by_key(|(_, state)| state.generation) {
+                let oldest = *oldest;
                 self.states.remove(&oldest);
             }
         }
 
-        self.states.insert(peer, ReplayState { highest: sequence, bitmap: 1 });
+        self.generation = self.generation.wrapping_add(1);
+        self.states.insert(peer, ReplayState { highest: sequence, bitmap: 1, generation: self.generation });
         true
     }
 
