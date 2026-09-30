@@ -238,6 +238,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn security_metrics_snapshot_is_consistent() {
+        let metrics = SecurityMetrics::default();
+        metrics.record_accepted();
+        metrics.record_accepted();
+        metrics.record_rejected();
+        metrics.record_expired();
+        metrics.record_replayed();
+        metrics.record_bad_tag();
+
+        assert_eq!(metrics.snapshot(), SecurityCounters {
+            accepted: 2,
+            rejected: 1,
+            expired: 1,
+            replayed: 1,
+            bad_tag: 1,
+        });
+    }
+
+    #[test]
     fn replay_window_allows_reordering_but_blocks_duplicates() {
         let mut g = ShieldReplayGuard::default();
         let s = [1u8; 16];
