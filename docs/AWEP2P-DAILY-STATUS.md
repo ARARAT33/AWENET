@@ -12,6 +12,8 @@
 - Added a capacity-constrained placement mode with a hard 100 shard-placement budget per node; 1000×3 placement therefore requires at least 30 nodes.
 - Hardened routing to use the full 256-bit XOR distance and fixed the previous sort-before-recompute ordering bug.
 - Added `AWE/SHIELD/v1`, a defense-in-depth packet envelope with domain separation, payload commitments, keyed integrity, TTL limits, expiry/skew checks, session/request binding, and a request-scoped replay guard.
+- Hardened SHIELD hop handling so a TTL mutation re-authenticates the packet with the relay's hop key instead of changing authenticated state silently.
+- Added an authenticated fixed-size A2P2 wire packet: payload length is encrypted inside a 1280-byte AEAD record, reducing application-size leakage to passive wire observers while preserving constant record size.
 
 ## Current implementation estimate
 
@@ -20,10 +22,10 @@ These are engineering estimates, not GitHub-provided percentages:
 | Area | Estimate |
 |---|---:|
 | Identity / cryptography / vault | 75–80% |
-| Authenticated transport / replay protection | 65–70% |
+| Authenticated transport / replay protection | 70% |
 | Peer routing primitives | 60% |
 | Production persistent DHT | 20% |
-| NAT traversal / relay | 5–10% |
+| NAT traversal / relay | 10–15% |
 | 1000-shard storage model | 70% |
 | Three-replica placement model | 65% |
 | Automatic replica repair | 20% |
@@ -36,7 +38,7 @@ These are engineering estimates, not GitHub-provided percentages:
 | Store / WASM runtime | 20% |
 | Browser | 15% |
 | Cross-platform node integration | 30–40% |
-| End-to-end distributed network | 10–15% |
+| End-to-end distributed network | 15% |
 
 Overall AWEP2P remains a foundation-stage distributed network. The percentages above measure implementation maturity, not project importance.
 
@@ -46,7 +48,7 @@ The next high-impact work is to connect the landed primitives into a real distri
 
 1. persistent peer routing and iterative lookup over live connections;
 2. authenticated content/shard lookup;
-3. encrypted shard transfer;
+3. encrypted shard transfer over A2P2 fixed-size records;
 4. 1000-shard / 3-replica placement against real node capacity;
 5. automatic replica repair and health-driven re-placement;
 6. NAT traversal and relay fallback;
@@ -60,3 +62,7 @@ Features are not marked complete until executable implementations and tests demo
 ## Security architecture direction
 
 AWEP2P is being developed as layered defense-in-depth: AWE identity, authenticated encrypted transport, A2P2 fixed-size padding, optional onion forwarding, SHIELD application-layer binding, per-shard integrity and capacity-aware replication. These layers improve resistance to tampering, replay, routing abuse and some metadata leakage; they do **not** claim absolute anonymity or invisibility on physical Internet links.
+
+## Wire-security note
+
+A2P2 now has a true fixed-size AEAD record path: a 1280-byte packet contains a random nonce plus an authenticated, padded plaintext. The application payload length is inside the encrypted record. This improves resistance to passive traffic analysis based on packet size, but it does not make traffic invisible to a global observer; timing, endpoints, and traffic volume can still leak metadata. Onion/relay routing and additional traffic shaping remain separate layers.
