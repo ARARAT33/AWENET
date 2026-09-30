@@ -873,6 +873,74 @@ mod tests {
     }
 
     #[test]
+    fn decoder_rejects_invalid_hello_signature() {
+        let hello = Control::Hello {
+            version: VERSION,
+            awe_id: [1; 32],
+            public_key: [2; 32],
+            ephemeral: [3; 32],
+            nonce: [4; 32],
+            signature: vec![0; 63],
+        };
+        let encoded = encode(&hello).unwrap();
+        assert!(matches!(decode(&encoded), Err(NetworkError::Authentication)));
+    }
+
+    #[test]
+    fn decoder_rejects_excess_peer_records() {
+        let record = PeerRecord {
+            awe_id: [1; 32],
+            public_key: [2; 32],
+            addresses: vec![],
+            protocol_version: VERSION,
+            last_seen_unix: 0,
+        };
+        let message = Control::Nodes {
+            records: vec![record; MAX_NODE_RECORDS + 1],
+        };
+        let encoded = encode(&message).unwrap();
+        assert!(matches!(decode(&encoded), Err(NetworkError::Protocol(_))));
+    }
+
+    #[test]
+    fn decoder_rejects_excess_peer_addresses() {
+        let record = PeerRecord {
+            awe_id: [1; 32],
+            public_key: [2; 32],
+            addresses: (0..=MAX_ADDRESSES_PER_PEER)
+                .map(|_| "127.0.0.1:4000".parse().unwrap())
+                .collect(),
+            protocol_version: VERSION,
+            last_seen_unix: 0,
+        };
+        let encoded = encode(&Control::Nodes { records: vec![record] }).unwrap();
+        assert!(matches!(decode(&encoded), Err(NetworkError::Protocol(_))));
+    }
+
+    #[test]
+    fn decoder_rejects_wrong_peer_protocol_version() {
+        let record = PeerRecord {
+            awe_id: [1; 32],
+            public_key: [2; 32],
+            addresses: vec![],
+            protocol_version: VERSION + 1,
+            last_seen_unix: 0,
+        };
+        let encoded = encode(&Control::Nodes { records: vec![record] }).unwrap();
+        assert!(matches!(decode(&encoded), Err(NetworkError::Protocol(_))));
+    }
+
+    #[test]
+    fn decoder_rejects_oversized_data_payload() {
+        let message = Control::Data {
+            stream: 1,
+            payload: vec![0; MAX_FRAME / 2 + 1],
+        };
+        let encoded = encode(&message).unwrap();
+        assert!(matches!(decode(&encoded), Err(NetworkError::FrameTooLarge)));
+    }
+
+    #[test]
     fn a2p2_encrypted_wire_packet_hides_payload_and_roundtrips() {
         let key = [9u8; 32];
         let payload = b"secret over the wire";
