@@ -14,6 +14,9 @@
 - Added `AWE/SHIELD/v1`, a defense-in-depth packet envelope with domain separation, payload commitments, keyed integrity, TTL limits, expiry/skew checks, session/request binding, and a request-scoped replay guard.
 - Hardened SHIELD hop handling so a TTL mutation re-authenticates the packet with the relay's hop key instead of changing authenticated state silently.
 - Added an authenticated fixed-size A2P2 wire packet: payload length is encrypted inside a 1280-byte AEAD record, reducing application-size leakage to passive wire observers while preserving constant record size.
+- Hardened the live TCP transport with **AWE/WIRE-v1 bucketed padding**: encrypted frames now hide exact application payload length behind power-of-two size classes.
+- Removed per-frame TCP flushes and enabled TCP_NODELAY on accepted/outgoing sockets to reduce interactive latency and syscall overhead.
+- Hardened SHIELD replay defense with a bounded 64-packet sliding window, duplicate suppression, out-of-order tolerance, and a hard 65,536-request memory ceiling to reduce replay/DoS pressure.
 
 ## Current implementation estimate
 
@@ -38,7 +41,9 @@ These are engineering estimates, not GitHub-provided percentages:
 | Store / WASM runtime | 20% |
 | Browser | 15% |
 | Cross-platform node integration | 30–40% |
-| End-to-end distributed network | 15% |
+| End-to-end distributed network | 18% |
+
+**Overall AWEP2P engineering maturity: ~33%** (rough weighted engineering estimate across the current feature surface; not a GitHub metric and not a claim of production readiness).
 
 Overall AWEP2P remains a foundation-stage distributed network. The percentages above measure implementation maturity, not project importance.
 
@@ -48,7 +53,7 @@ The next high-impact work is to connect the landed primitives into a real distri
 
 1. persistent peer routing and iterative lookup over live connections;
 2. authenticated content/shard lookup;
-3. encrypted shard transfer over A2P2 fixed-size records;
+3. encrypted shard transfer over A2P2 fixed-size/bucketed records;
 4. 1000-shard / 3-replica placement against real node capacity;
 5. automatic replica repair and health-driven re-placement;
 6. NAT traversal and relay fallback;
