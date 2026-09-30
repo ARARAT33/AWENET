@@ -39,7 +39,6 @@ pub struct PeerAdmission {
     max_peers: usize,
     capacity: u64,
     refill_per_second: u64,
-    generation: u64,
 }
 
 impl PeerAdmission {
@@ -49,7 +48,6 @@ impl PeerAdmission {
             max_peers: max_peers.max(1),
             capacity: capacity.max(1),
             refill_per_second: refill_per_second.max(1),
-            generation: 0,
         }
     }
 
@@ -66,7 +64,6 @@ impl PeerAdmission {
                 TokenBucket::new(self.capacity, self.refill_per_second, now_second),
             );
         }
-        self.generation = self.generation.wrapping_add(1);
         let allowed = self.buckets.get_mut(&peer).expect("peer bucket inserted").allow(cost, now_second);
         allowed
     }
