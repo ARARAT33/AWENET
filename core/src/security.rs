@@ -145,25 +145,29 @@ impl Default for ShieldReplayGuard {
 impl ShieldReplayGuard {
     pub fn accept(&mut self, session_id: [u8; 16], request_id: [u8; 16], sequence: u64) -> bool {
         let key = (session_id, request_id);
-        if let Some(state) = self.states.get_mut(&key) {
-            if sequence > state.highest {
-                let shift = sequence - state.highest;
+
+        if self.states.contains_key(&key) {
+            let highest = self.states.get(&key).expect("replay state exists").highest;
+            if sequence > highest {
+                let shift = sequence - highest;
+                self.generation = self.generation.wrapping_add(1);
+                let generation = self.generation;
+                let state = self.states.get_mut(&key).expect("replay state exists");
                 state.bitmap = if shift >= SHIELD_REPLAY_WINDOW as u64 {
                     1
                 } else {
                     (state.bitmap << shift) | 1
                 };
                 state.highest = sequence;
-                self.generation = self.generation.wrapping_add(1);
-                state.generation = self.generation;
+                state.generation = generation;
                 return true;
             }
 
-            let highest = self.states.get(&key).expect("replay state exists").highest;
             let delta = highest - sequence;
             if delta >= SHIELD_REPLAY_WINDOW as u64 {
                 return false;
             }
+
             let bit = 1u64 << delta;
             let state = self.states.get_mut(&key).expect("replay state exists");
             if state.bitmap & bit != 0 {
@@ -176,17 +180,31 @@ impl ShieldReplayGuard {
         }
 
         if self.states.len() >= SHIELD_MAX_TRACKED_REQUESTS {
-            // Bound attacker-controlled memory while preferring inactive request state.
-            if let Some((oldest, _)) = self.states.iter().min_by_key(|(_, state)| state.generation) {
+            if let Some((oldest, _)) = self
+                .states
+                .iter()
+                .min_by_key(|(_, state)| state.generation)
+            {
                 let oldest = *oldest;
                 self.states.remove(&oldest);
             }
         }
-        self.states.insert(key, ReplayState { highest: sequence, bitmap: 1 });
+
+        self.generation = self.generation.wrapping_add(1);
+        self.states.insert(
+            key,
+            ReplayState {
+                highest: sequence,
+                bitmap: 1,
+                generation: self.generation,
+            },
+        );
         true
     }
 
-    pub fn tracked_requests(&self) -> usize { self.states.len() }
+    pub fn tracked_requests(&self) -> usize {
+        self.states.len()
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
