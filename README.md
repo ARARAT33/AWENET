@@ -277,3 +277,22 @@ AWEP2P currently has a real Rust foundation for identity, authenticated peer han
 Some higher-level replacement layers are still under active implementation. A fully distributed storage network, production DHT persistence, NAT traversal, a real WASM execution runtime, native site publication over the live mesh, and complete end-user collaboration applications are not treated as finished until they are backed by executable implementations and integration tests.
 
 The project follows the engineering charter in docs/AWEP2P-ENGINEERING-CHARTER.md: no fabricated topology, no fake success responses, explicit threat modeling, minimized user data, and CI-gated changes to main.
+
+
+## Current distributed data-plane model
+
+AWEP2P's storage model is now represented explicitly in executable Rust primitives:
+
+- each file is represented by **1000 erasure shards**;
+- each shard has a target of **3 distinct replica nodes**;
+- placement uses only real node IDs supplied by discovery/transport layers;
+- manifests contain per-shard content hashes;
+- shard responses are independently integrity-checked;
+- replica health can report missing copies without falsely claiming repair;
+- routing primitives select iterative next hops without requiring geographic proximity.
+
+The repository does **not** claim that these primitives alone constitute a live global network. Persistent DHT routing, authenticated shard transfer over live peers, automatic repair, NAT traversal, real-time media, and production browser/site retrieval still require integration and end-to-end tests.
+
+## Implementation maturity
+
+The current engineering estimate is approximately **30–35% overall foundation maturity**. This is not a feature-completion percentage and is not a GitHub metric. Detailed area estimates are maintained in docs/AWEP2P-DAILY-STATUS.md.
