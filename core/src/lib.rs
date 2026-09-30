@@ -12,6 +12,7 @@ pub mod host;
 pub mod host_directory;
 pub mod identity;
 pub mod lan_mesh;
+pub mod limits;
 pub mod messenger;
 pub mod namespace;
 pub mod network;
