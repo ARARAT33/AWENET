@@ -106,11 +106,15 @@ impl ShieldPacket {
         crate::crypto::constant_time_eq(&self.tag, &expected)
     }
 
-    pub fn decrement_ttl(&mut self) -> bool {
+    /// Decrement the hop TTL and immediately re-authenticate the mutable hop envelope.
+    /// The relay must possess the hop key; this prevents an intermediary from silently
+    /// rewriting TTL without proving possession of the per-hop authorization key.
+    pub fn decrement_ttl(&mut self, key: &[u8; 32]) -> bool {
         if self.ttl <= 1 {
             return false;
         }
         self.ttl -= 1;
+        self.tag = self.compute_tag(key);
         true
     }
 }
@@ -169,6 +173,7 @@ mod tests {
         let key = [1u8; 32];
         let mut p = ShieldPacket::seal(&key, PacketClass::Control, [0;16], [0;16], 1, 10, 2, vec![]).unwrap();
         assert!(p.decrement_ttl(&key));
+        assert!(p.verify(&key, 10, 60));
         assert!(!p.decrement_ttl(&key));
     }
 
