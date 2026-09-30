@@ -24,6 +24,8 @@ use x25519_dalek::{PublicKey as XPublic, StaticSecret};
 
 const VERSION: u16 = 1;
 const MAX_FRAME: usize = 16 * 1024 * 1024;
+const MAX_CONCURRENT_CONNECTIONS: usize = 1024;
+const MAX_PEERS_PER_RESPONSE: usize = 64;
 const FRAME_PAD_MIN: usize = 256;
 const FRAME_LENGTH_PREFIX: usize = 4;
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
@@ -248,6 +250,9 @@ fn encode(v: &Control) -> Result<Vec<u8>, NetworkError> {
     serde_json::to_vec(v).map_err(|e| NetworkError::Protocol(e.to_string()))
 }
 fn decode(v: &[u8]) -> Result<Control, NetworkError> {
+    if v.len() > MAX_FRAME {
+        return Err(NetworkError::FrameTooLarge);
+    }
     serde_json::from_slice(v).map_err(|e| NetworkError::Protocol(e.to_string()))
 }
 async fn write_frame(s: &mut TcpStream, b: &[u8]) -> Result<(), NetworkError> {
@@ -569,7 +574,7 @@ impl Node {
                 }
                 Ok(Ok(Control::Pong { .. })) => {}
                 Ok(Ok(Control::FindNode { target })) => {
-                    let records = routing.read().await.closest(&target, 20);
+                    let records = routing.read().await.closest(&target, MAX_PEERS_PER_RESPONSE);
                     if c.send(&Control::Nodes { records }).await.is_err() {
                         break;
                     }
@@ -590,16 +595,22 @@ impl Node {
     }
     pub async fn listen(&self) -> Result<(), NetworkError> {
         let l = TcpListener::bind(self.listen_addr).await?;
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
         loop {
             let (s, a) = l.accept().await?;
             let _ = s.set_nodelay(true);
-            tokio::spawn(Self::handle(
-                s,
-                a,
-                Arc::clone(&self.identity),
-                Arc::clone(&self.routing),
-                Arc::clone(&self.peers),
-            ));
+            let Ok(permit) = Arc::clone(&semaphore).try_acquire_owned() else {
+                // Bounded admission: do not spawn unlimited tasks under connection floods.
+                drop(s);
+                continue;
+            };
+            let identity = Arc::clone(&self.identity);
+            let routing = Arc::clone(&self.routing);
+            let peers = Arc::clone(&self.peers);
+            tokio::spawn(async move {
+                Self::handle(s, a, identity, routing, peers).await;
+                drop(permit);
+            });
         }
     }
     pub async fn connect(&self, address: SocketAddr) -> Result<SecureConnection, NetworkError> {
