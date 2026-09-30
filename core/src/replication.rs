@@ -8,6 +8,8 @@ use std::collections::BTreeSet;
 
 pub const REQUIRED_SHARDS: usize = 1000;
 pub const REQUIRED_REPLICAS: usize = 3;
+pub const MAX_SHARDS_PER_NODE: usize = 100;
+pub const MIN_NODES_FOR_CAPACITY_LIMIT: usize = (REQUIRED_SHARDS * REQUIRED_REPLICAS + MAX_SHARDS_PER_NODE - 1) / MAX_SHARDS_PER_NODE;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ReplicaPlacement {
@@ -120,5 +122,66 @@ mod tests {
         assert_eq!(h[0].available_nodes.len(), 1);
         assert_eq!(h[0].missing_replicas, 2);
         assert!(!h[0].healthy);
+    }
+}
+
+pub fn build_capacity_limited_plan(
+    file_id: [u8; 32],
+    nodes: &[String],
+) -> Result<PlacementPlan, String> {
+    let mut unique: Vec<String> = nodes.iter().filter(|n| !n.is_empty()).cloned().collect();
+    unique.sort();
+    unique.dedup();
+    if unique.len() < MIN_NODES_FOR_CAPACITY_LIMIT {
+        return Err(format!("at least {MIN_NODES_FOR_CAPACITY_LIMIT} distinct storage nodes are required"));
+    }
+    let mut loads = vec![0usize; unique.len()];
+    let mut placements = Vec::with_capacity(REQUIRED_SHARDS);
+    for shard_index in 0..REQUIRED_SHARDS {
+        let mut ranked: Vec<(usize, [u8; 32])> = unique.iter().enumerate()
+            .map(|(i, node)| {
+                let mut seed = Vec::with_capacity(64 + node.len());
+                seed.extend_from_slice(b"AWE/PLACEMENT/v1");
+                seed.extend_from_slice(&file_id);
+                seed.extend_from_slice(&(shard_index as u64).to_be_bytes());
+                seed.extend_from_slice(node.as_bytes());
+                (i, *blake3::hash(&seed).as_bytes())
+            })
+            .filter(|(i, _)| loads[*i] < MAX_SHARDS_PER_NODE)
+            .collect();
+        ranked.sort_by_key(|(i, score)| (*score, unique[*i].clone()));
+        if ranked.len() < REQUIRED_REPLICAS {
+            return Err(format!("capacity exhausted while placing shard {shard_index}"));
+        }
+        let selected = ranked.iter().take(REQUIRED_REPLICAS).map(|(i, _)| {
+            loads[*i] += 1;
+            unique[*i].clone()
+        }).collect();
+        placements.push(ReplicaPlacement { shard_index: shard_index as u16, nodes: selected });
+    }
+    Ok(PlacementPlan { file_id, shards: REQUIRED_SHARDS, replicas_per_shard: REQUIRED_REPLICAS, placements })
+}
+
+#[cfg(test)]
+mod capacity_tests {
+    use super::*;
+    #[test]
+    fn capacity_limit_is_100_per_node() {
+        let nodes: Vec<_> = (0..30).map(|i| format!("node-{i:02}")).collect();
+        let plan = build_capacity_limited_plan([11; 32], &nodes).unwrap();
+        let mut loads = std::collections::BTreeMap::<String, usize>::new();
+        for p in &plan.placements {
+            assert_eq!(p.nodes.len(), 3);
+            assert_eq!(p.nodes.iter().collect::<std::collections::BTreeSet<_>>().len(), 3);
+            for n in &p.nodes { *loads.entry(n.clone()).or_default() += 1; }
+        }
+        assert_eq!(loads.len(), 30);
+        assert!(loads.values().all(|v| *v <= MAX_SHARDS_PER_NODE));
+        assert_eq!(loads.values().sum::<usize>(), 3000);
+    }
+    #[test]
+    fn rejects_29_nodes() {
+        let nodes: Vec<_> = (0..29).map(|i| format!("node-{i:02}")).collect();
+        assert!(build_capacity_limited_plan([12; 32], &nodes).is_err());
     }
 }
