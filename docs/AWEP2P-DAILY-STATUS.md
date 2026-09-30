@@ -9,6 +9,9 @@
 - Added direct/group call-session primitives for higher communication layers. Media codecs, NAT traversal, and actual real-time media transport remain explicitly unimplemented.
 - Kept storage placement honest: the code never fabricates node IDs; placement only uses supplied node identities.
 - Added regression tests for deterministic placement, replica counts, missing replicas, routing, and call-session state.
+- Added a capacity-constrained placement mode with a hard 100 shard-placement budget per node; 1000×3 placement therefore requires at least 30 nodes.
+- Hardened routing to use the full 256-bit XOR distance and fixed the previous sort-before-recompute ordering bug.
+- Added `AWE/SHIELD/v1`, a defense-in-depth packet envelope with domain separation, payload commitments, keyed integrity, TTL limits, expiry/skew checks, session/request binding, and a request-scoped replay guard.
 
 ## Current implementation estimate
 
@@ -18,13 +21,13 @@ These are engineering estimates, not GitHub-provided percentages:
 |---|---:|
 | Identity / cryptography / vault | 75–80% |
 | Authenticated transport / replay protection | 65–70% |
-| Peer routing primitives | 50% |
+| Peer routing primitives | 60% |
 | Production persistent DHT | 20% |
 | NAT traversal / relay | 5–10% |
-| 1000-shard storage model | 65% |
-| Three-replica placement model | 55% |
-| Automatic replica repair | 15% |
-| Distributed content transfer | 20% |
+| 1000-shard storage model | 70% |
+| Three-replica placement model | 65% |
+| Automatic replica repair | 20% |
+| Distributed content transfer | 25% |
 | AWE Sites | 10–15% |
 | Messenger core | 40% |
 | Direct voice/video media | 5% |
@@ -33,7 +36,7 @@ These are engineering estimates, not GitHub-provided percentages:
 | Store / WASM runtime | 20% |
 | Browser | 15% |
 | Cross-platform node integration | 30–40% |
-| End-to-end distributed network | 5–10% |
+| End-to-end distributed network | 10–15% |
 
 Overall AWEP2P remains a foundation-stage distributed network. The percentages above measure implementation maturity, not project importance.
 
@@ -52,3 +55,8 @@ The next high-impact work is to connect the landed primitives into a real distri
 9. application clients and AWEOS integration.
 
 Features are not marked complete until executable implementations and tests demonstrate them.
+
+
+## Security architecture direction
+
+AWEP2P is being developed as layered defense-in-depth: AWE identity, authenticated encrypted transport, A2P2 fixed-size padding, optional onion forwarding, SHIELD application-layer binding, per-shard integrity and capacity-aware replication. These layers improve resistance to tampering, replay, routing abuse and some metadata leakage; they do **not** claim absolute anonymity or invisibility on physical Internet links.
