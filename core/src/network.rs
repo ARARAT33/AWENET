@@ -47,10 +47,10 @@ pub enum NetworkError {
 pub const A2P2_PROTOCOL_SCHEME: &str = "a2p2://";
 pub const A2P2_FIXED_PACKET_SIZE: usize = 1280;
 pub const A2P2_NONCE_SIZE: usize = 12;
-pub const A2P2_TAG_SIZE: usize = 16;
-pub const A2P2_HEADER_SIZE: usize = 2 + A2P2_NONCE_SIZE;
-pub const A2P2_MAX_CIPHERTEXT: usize =
-    A2P2_FIXED_PACKET_SIZE - A2P2_HEADER_SIZE;
+pub const A2P2_HEADER_SIZE: usize = A2P2_NONCE_SIZE;
+pub const A2P2_CIPHERTEXT_SIZE: usize = A2P2_FIXED_PACKET_SIZE - A2P2_HEADER_SIZE;
+pub const A2P2_PLAINTEXT_SIZE: usize = A2P2_CIPHERTEXT_SIZE - 16;
+pub const A2P2_MAX_PAYLOAD: usize = A2P2_PLAINTEXT_SIZE - 2;
 
 /// A2P2 encrypted fixed-size wire packet.
 ///
@@ -58,7 +58,7 @@ pub const A2P2_MAX_CIPHERTEXT: usize =
 /// and contents inside ChaCha20-Poly1305. A passive observer therefore sees a
 /// constant 1280-byte record rather than a cleartext length field.
 pub fn a2p2_seal(payload: &[u8], key: &[u8; 32]) -> Result<[u8; A2P2_FIXED_PACKET_SIZE], NetworkError> {
-    if payload.len() + A2P2_TAG_SIZE > A2P2_MAX_CIPHERTEXT {
+    if payload.len() > A2P2_MAX_PAYLOAD {
         return Err(NetworkError::FrameTooLarge);
     }
     let cipher = ChaCha20Poly1305::new_from_slice(key)
@@ -66,20 +66,21 @@ pub fn a2p2_seal(payload: &[u8], key: &[u8; 32]) -> Result<[u8; A2P2_FIXED_PACKE
     let mut nonce = [0u8; A2P2_NONCE_SIZE];
     OsRng.fill_bytes(&mut nonce);
 
-    let mut inner = Vec::with_capacity(2 + payload.len());
-    inner.extend_from_slice(&(payload.len() as u16).to_be_bytes());
-    inner.extend_from_slice(payload);
+    // The entire plaintext is padded BEFORE AEAD, so the wire length never
+    // reveals the application payload length.
+    let mut inner = vec![0u8; A2P2_PLAINTEXT_SIZE];
+    inner[..2].copy_from_slice(&(payload.len() as u16).to_be_bytes());
+    inner[2..2 + payload.len()].copy_from_slice(payload);
+    OsRng.fill_bytes(&mut inner[2 + payload.len()..]);
+
     let ciphertext = cipher
         .encrypt(Nonce::from_slice(&nonce), inner.as_ref())
         .map_err(|_| NetworkError::Encryption)?;
+    debug_assert_eq!(ciphertext.len(), A2P2_CIPHERTEXT_SIZE);
 
     let mut out = [0u8; A2P2_FIXED_PACKET_SIZE];
-    out[..2].copy_from_slice(&(payload.len() as u16).to_be_bytes());
-    out[2..2 + A2P2_NONCE_SIZE].copy_from_slice(&nonce);
-    // The outer length is intentionally not authenticated metadata: it is fixed
-    // by the protocol. The inner length is authenticated by AEAD.
-    out[A2P2_HEADER_SIZE..A2P2_HEADER_SIZE + ciphertext.len()].copy_from_slice(&ciphertext);
-    OsRng.fill_bytes(&mut out[A2P2_HEADER_SIZE + ciphertext.len()..]);
+    out[..A2P2_HEADER_SIZE].copy_from_slice(&nonce);
+    out[A2P2_HEADER_SIZE..].copy_from_slice(&ciphertext);
     Ok(out)
 }
 
@@ -90,126 +91,18 @@ pub fn a2p2_open(packet: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, NetworkError>
     let cipher = ChaCha20Poly1305::new_from_slice(key)
         .map_err(|_| NetworkError::Encryption)?;
     let mut nonce = [0u8; A2P2_NONCE_SIZE];
-    nonce.copy_from_slice(&packet[2..A2P2_HEADER_SIZE]);
-    // Because the packet is padded, determine the authenticated ciphertext size
-    // from the encrypted inner length. Try the only valid ciphertext size encoded
-    // by the fixed packet capacity; trailing bytes are padding and are not trusted.
-    // The first two bytes are a public size hint and are checked against the
-    // authenticated inner length after decryption.
-    let hinted = u16::from_be_bytes([packet[0], packet[1]]) as usize;
-    if hinted + 2 + A2P2_TAG_SIZE > A2P2_MAX_CIPHERTEXT {
-        return Err(NetworkError::Protocol("invalid a2p2 length hint".into()));
-    }
-    let ct_len = hinted + 2 + A2P2_TAG_SIZE;
-    let ciphertext = &packet[A2P2_HEADER_SIZE..A2P2_HEADER_SIZE + ct_len];
+    nonce.copy_from_slice(&packet[..A2P2_HEADER_SIZE]);
     let plaintext = cipher
-        .decrypt(Nonce::from_slice(&nonce), ciphertext)
+        .decrypt(Nonce::from_slice(&nonce), &packet[A2P2_HEADER_SIZE..])
         .map_err(|_| NetworkError::Authentication)?;
-    if plaintext.len() < 2 {
+    if plaintext.len() != A2P2_PLAINTEXT_SIZE || plaintext.len() < 2 {
         return Err(NetworkError::Protocol("invalid a2p2 plaintext".into()));
     }
-    let inner_len = u16::from_be_bytes([plaintext[0], plaintext[1]]) as usize;
-    if inner_len != hinted || inner_len + 2 != plaintext.len() {
-        return Err(NetworkError::Protocol("a2p2 length mismatch".into()));
+    let payload_len = u16::from_be_bytes([plaintext[0], plaintext[1]]) as usize;
+    if payload_len > A2P2_MAX_PAYLOAD {
+        return Err(NetworkError::Protocol("invalid a2p2 payload length".into()));
     }
-    Ok(plaintext[2..].to_vec())
-}
-
-/// A2P2 Obfuscated Datagram with DPI Evasion padding.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct A2P2Datagram {
-    pub payload: Vec<u8>,
-}
-
-impl A2P2Datagram {
-    pub fn pack(payload: &[u8]) -> Result<Vec<u8>, NetworkError> {
-        if payload.len() + 4 > A2P2_FIXED_PACKET_SIZE {
-            return Err(NetworkError::FrameTooLarge);
-        }
-        let mut out = vec![0u8; A2P2_FIXED_PACKET_SIZE];
-        let len = payload.len() as u32;
-        out[..4].copy_from_slice(&len.to_be_bytes());
-        out[4..4 + payload.len()].copy_from_slice(payload);
-        // Fill remaining bytes with random padding for DPI evasion
-        OsRng.fill_bytes(&mut out[4 + payload.len()..]);
-        Ok(out)
-    }
-
-    pub fn unpack(data: &[u8]) -> Result<Vec<u8>, NetworkError> {
-        if data.len() != A2P2_FIXED_PACKET_SIZE {
-            return Err(NetworkError::Protocol("invalid a2p2 packet size".into()));
-        }
-        let len = u32::from_be_bytes(
-            data[..4]
-                .try_into()
-                .map_err(|_| NetworkError::Protocol("invalid packet header".into()))?,
-        ) as usize;
-        if len + 4 > A2P2_FIXED_PACKET_SIZE {
-            return Err(NetworkError::Protocol("corrupted packet length".into()));
-        }
-        Ok(data[4..4 + len].to_vec())
-    }
-}
-
-/// Helper function to perform single-layer asymmetric DH encryption for onion routing.
-pub fn encrypt_layer(payload: &[u8], recipient_pk: &[u8; 32]) -> Result<Vec<u8>, NetworkError> {
-    let secret = StaticSecret::random_from_rng(OsRng);
-    let ephemeral_pk = XPublic::from(&secret).to_bytes();
-    let shared = secret.diffie_hellman(&XPublic::from(*recipient_pk));
-
-    let hk = Hkdf::<Sha256>::new(Some(b"AWE/A2P2/ONION-SALT/v1"), shared.as_bytes());
-    let mut key = [0u8; 32];
-    hk.expand(b"AWE/A2P2/ONION-KEY/v1", &mut key)
-        .map_err(|_| NetworkError::Encryption)?;
-
-    let cipher = ChaCha20Poly1305::new_from_slice(&key).map_err(|_| NetworkError::Encryption)?;
-    let mut nonce = [0u8; 12];
-    OsRng.fill_bytes(&mut nonce);
-
-    let ct = cipher
-        .encrypt(Nonce::from_slice(&nonce), payload)
-        .map_err(|_| NetworkError::Encryption)?;
-
-    let mut out = Vec::with_capacity(32 + 12 + ct.len());
-    out.extend_from_slice(&ephemeral_pk);
-    out.extend_from_slice(&nonce);
-    out.extend_from_slice(&ct);
-    Ok(out)
-}
-
-/// Helper function to decrypt a single onion layer using node secret.
-pub fn decrypt_layer(
-    layer_bytes: &[u8],
-    node_secret: &StaticSecret,
-) -> Result<Vec<u8>, NetworkError> {
-    if layer_bytes.len() < 44 {
-        return Err(NetworkError::Protocol("onion layer too short".into()));
-    }
-    let mut ephemeral_pk = [0u8; 32];
-    ephemeral_pk.copy_from_slice(&layer_bytes[..32]);
-
-    let mut nonce = [0u8; 12];
-    nonce.copy_from_slice(&layer_bytes[32..44]);
-
-    let ct = &layer_bytes[44..];
-
-    let shared = node_secret.diffie_hellman(&XPublic::from(ephemeral_pk));
-    let hk = Hkdf::<Sha256>::new(Some(b"AWE/A2P2/ONION-SALT/v1"), shared.as_bytes());
-    let mut key = [0u8; 32];
-    hk.expand(b"AWE/A2P2/ONION-KEY/v1", &mut key)
-        .map_err(|_| NetworkError::Encryption)?;
-
-    let cipher = ChaCha20Poly1305::new_from_slice(&key).map_err(|_| NetworkError::Encryption)?;
-    cipher
-        .decrypt(Nonce::from_slice(&nonce), ct)
-        .map_err(|_| NetworkError::Authentication)
-}
-
-/// 3-Layer Triple-Blind Onion Routing Structure.
-/// User X -> Node A (Ingress) -> Node B (Relay/Mixnet) -> Node C (Egress) -> Service Y.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct TripleBlindOnionPacket {
-    pub ingress_layer: Vec<u8>,
+    Ok(plaintext[2..2 + payload_len].to_vec())
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
