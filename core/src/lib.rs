@@ -5,6 +5,7 @@
 pub mod calls;
 pub mod canonical;
 pub mod crypto;
+pub mod data_plane;
 pub mod diagnostics;
 pub mod governance;
 pub mod host;
