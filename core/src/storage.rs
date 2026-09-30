@@ -72,6 +72,46 @@ pub struct AsMap {
 }
 
 impl AsMap {
+    /// Assign all 1000 shards to deterministic, distinct three-node replica sets.
+    /// The node list must come from real discovered peers; this method never invents IDs.
+    pub fn assign_all_replicas(&mut self, node_ids: &[String]) -> Result<(), String> {
+        if self.total_shards != crate::replication::REQUIRED_SHARDS {
+            return Err("AWEP2P storage policy must contain exactly 1000 shards".into());
+        }
+        if node_ids.len() < crate::replication::REQUIRED_REPLICAS {
+            return Err("at least three distinct nodes are required".into());
+        }
+        for index in 0..self.total_shards {
+            let replicas = crate::replication::select_replicas(&self.file_id, index, node_ids);
+            if replicas.len() != crate::replication::REQUIRED_REPLICAS {
+                return Err(format!("unable to place shard {index} on three nodes"));
+            }
+            self.assign_replicas(index, replicas)?;
+        }
+        Ok(())
+    }
+
+    pub fn validate_complete_placement(&self) -> Result<(), String> {
+        if self.total_shards != crate::replication::REQUIRED_SHARDS
+            || self.shard_nodes.len() != crate::replication::REQUIRED_SHARDS
+        {
+            return Err("manifest does not contain exactly 1000 shard entries".into());
+        }
+        for (index, replicas) in self.shard_nodes.iter().enumerate() {
+            if replicas.len() != crate::replication::REQUIRED_REPLICAS {
+                return Err(format!("shard {index} does not have exactly three replicas"));
+            }
+            let mut unique = replicas.clone();
+            unique.sort();
+            unique.dedup();
+            if unique.len() != crate::replication::REQUIRED_REPLICAS
+                || unique.iter().any(|id| id.is_empty())
+            {
+                return Err(format!("shard {index} has invalid replica IDs"));
+            }
+        }
+        Ok(())
+    }
     pub fn new(file_id: [u8; 32], filename: String, site_id: Option<String>) -> Self {
         let policy = StoragePolicy::hyper_sovereign();
         Self {
@@ -445,6 +485,10 @@ mod tests {
         let bytes = map.to_bytes().unwrap();
         let loaded = AsMap::from_bytes(&bytes).unwrap();
         assert_eq!(loaded.filename, "test.txt");
+        let nodes = (0..8).map(|i| format!("node-{i}")).collect::<Vec<_>>();
+        let mut placed = loaded;
+        placed.assign_all_replicas(&nodes).unwrap();
+        assert!(placed.validate_complete_placement().is_ok());
     }
     #[test]
     fn daily_quota_tracker_limits() {
