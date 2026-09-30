@@ -25,7 +25,7 @@ pub struct ReplayGuard {
 impl ReplayGuard {
     pub fn accept(&mut self, peer: [u8; 32], sequence: u64) -> bool {
         if self.states.contains_key(&peer) {
-            if sequence > state.highest {
+            if sequence > self.states.get(&peer).expect("replay state exists").highest {
                 let shift = sequence - self.states.get(&peer).expect("replay state exists").highest;
                 let state = self.states.get_mut(&peer).expect("replay state exists");
                 state.bitmap = if shift >= REPLAY_WINDOW as u64 {
