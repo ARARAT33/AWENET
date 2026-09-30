@@ -1,0 +1,131 @@
+//! Distributed data-plane message types.
+//! These are protocol-level objects for authenticated transports. They do not
+//! claim that a live network transfer exists until a transport consumes them.
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ShardRequest {
+    pub request_id: [u8; 16],
+    pub file_id: [u8; 32],
+    pub shard_index: u16,
+    pub expected_hash: [u8; 32],
+    pub max_bytes: u32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ShardResponse {
+    pub request_id: [u8; 16],
+    pub file_id: [u8; 32],
+    pub shard_index: u16,
+    pub payload: Vec<u8>,
+    pub payload_hash: [u8; 32],
+}
+
+impl ShardResponse {
+    pub fn new(request_id: [u8; 16], file_id: [u8; 32], shard_index: u16, payload: Vec<u8>) -> Self {
+        let payload_hash = *blake3::hash(&payload).as_bytes();
+        Self { request_id, file_id, shard_index, payload, payload_hash }
+    }
+
+    pub fn verify(&self, expected_hash: &[u8; 32]) -> bool {
+        self.payload_hash == *blake3::hash(&self.payload).as_bytes()
+            && self.payload_hash == *expected_hash
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FileManifest {
+    pub file_id: [u8; 32],
+    pub filename: String,
+    pub original_size: u64,
+    pub shard_count: u16,
+    pub replica_count: u8,
+    pub shard_hashes: Vec<[u8; 32]>,
+}
+
+impl FileManifest {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.shard_count != 1000 {
+            return Err("AWEP2P file manifests require exactly 1000 shards".into());
+        }
+        if self.replica_count != 3 {
+            return Err("AWEP2P file manifests require exactly 3 replicas per shard".into());
+        }
+        if self.shard_hashes.len() != 1000 {
+            return Err("manifest must contain 1000 shard hashes".into());
+        }
+        if self.filename.is_empty() {
+            return Err("filename must not be empty".into());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SiteManifest {
+    pub site_id: [u8; 32],
+    pub hostname: String,
+    pub files: Vec<FileManifest>,
+    pub version: u64,
+}
+
+impl SiteManifest {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.hostname.is_empty() || self.hostname.len() > 253 {
+            return Err("invalid site hostname".into());
+        }
+        if self.files.is_empty() {
+            return Err("site must contain at least one file".into());
+        }
+        for file in &self.files {
+            file.validate()?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RepairTask {
+    pub file_id: [u8; 32],
+    pub shard_index: u16,
+    pub missing_replicas: u8,
+    pub preferred_nodes: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shard_response_integrity_is_verified() {
+        let response = ShardResponse::new([1; 16], [2; 32], 4, b"hello".to_vec());
+        let hash = *blake3::hash(b"hello").as_bytes();
+        assert!(response.verify(&hash));
+        assert!(!response.verify(&[0; 32]));
+    }
+
+    #[test]
+    fn file_manifest_requires_1000_and_three() {
+        let m = FileManifest {
+            file_id: [3; 32],
+            filename: "index.html".into(),
+            original_size: 5,
+            shard_count: 1000,
+            replica_count: 3,
+            shard_hashes: vec![[0; 32]; 1000],
+        };
+        assert!(m.validate().is_ok());
+    }
+
+    #[test]
+    fn site_manifest_rejects_empty_sites() {
+        let s = SiteManifest {
+            site_id: [4; 32],
+            hostname: "example.awe".into(),
+            files: vec![],
+            version: 1,
+        };
+        assert!(s.validate().is_err());
+    }
+}
