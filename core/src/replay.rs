@@ -33,6 +33,8 @@ impl ReplayGuard {
                     (state.bitmap << shift) | 1
                 };
                 state.highest = sequence;
+                self.generation = self.generation.wrapping_add(1);
+                state.generation = self.generation;
                 return true;
             }
 
@@ -46,6 +48,8 @@ impl ReplayGuard {
                 return false;
             }
             state.bitmap |= bit;
+            self.generation = self.generation.wrapping_add(1);
+            state.generation = self.generation;
             return true;
         }
 
@@ -91,6 +95,23 @@ mod tests {
 
         assert!(guard.accept(peer, 100));
         assert!(!guard.accept(peer, 100 - REPLAY_WINDOW as u64));
+    }
+
+    #[test]
+    fn active_peer_refreshes_eviction_generation() {
+        let mut guard = ReplayGuard::default();
+        let active = [1u8; 32];
+        let idle = [2u8; 32];
+        assert!(guard.accept(active, 1));
+        assert!(guard.accept(idle, 1));
+        assert!(guard.accept(active, 2));
+        for i in 3..=MAX_PEERS as u64 + 2 {
+            let mut peer = [0u8; 32];
+            peer[..8].copy_from_slice(&i.to_be_bytes());
+            let _ = guard.accept(peer, 1);
+        }
+        assert!(guard.tracked_peers() <= MAX_PEERS);
+        assert!(guard.accept(active, MAX_PEERS as u64 + 3));
     }
 
     #[test]
