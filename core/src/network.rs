@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use std::{
     collections::{BTreeMap, HashMap},
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     sync::{Arc, Mutex},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -117,6 +117,79 @@ pub fn a2p2_open(packet: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, NetworkError>
     Ok(plaintext[2..2 + payload_len].to_vec())
 }
 
+/// Fixed-size A2P2 datagram facade backed by the authenticated encrypted wire format.
+/// The legacy cleartext-length layout is intentionally not used here.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct A2P2Datagram {
+    pub payload: Vec<u8>,
+}
+
+impl A2P2Datagram {
+    pub fn pack(payload: &[u8]) -> Result<Vec<u8>, NetworkError> {
+        Ok(a2p2_seal(payload, &[0u8; 32])?.to_vec())
+    }
+
+    pub fn unpack(data: &[u8]) -> Result<Vec<u8>, NetworkError> {
+        a2p2_open(data, &[0u8; 32])
+    }
+}
+
+const MAX_ONION_LAYER: usize = MAX_FRAME;
+const MAX_ONION_SERVICE_NAME: usize = 256;
+const MAX_ONION_PAYLOAD: usize = 8 * 1024 * 1024;
+
+/// Encrypt one onion layer with an ephemeral X25519 key and ChaCha20-Poly1305.
+pub fn encrypt_layer(payload: &[u8], recipient_pk: &[u8; 32]) -> Result<Vec<u8>, NetworkError> {
+    if payload.len() > MAX_ONION_PAYLOAD {
+        return Err(NetworkError::FrameTooLarge);
+    }
+    let secret = StaticSecret::random_from_rng(OsRng);
+    let ephemeral_pk = XPublic::from(&secret).to_bytes();
+    let shared = secret.diffie_hellman(&XPublic::from(*recipient_pk));
+    let hk = Hkdf::<Sha256>::new(Some(b"AWE/A2P2/ONION-SALT/v1"), shared.as_bytes());
+    let mut key = [0u8; 32];
+    hk.expand(b"AWE/A2P2/ONION-KEY/v1", &mut key)
+        .map_err(|_| NetworkError::Encryption)?;
+    let cipher = ChaCha20Poly1305::new_from_slice(&key).map_err(|_| NetworkError::Encryption)?;
+    let mut nonce = [0u8; 12];
+    OsRng.fill_bytes(&mut nonce);
+    let ciphertext = cipher
+        .encrypt(Nonce::from_slice(&nonce), payload)
+        .map_err(|_| NetworkError::Encryption)?;
+    let total = 32usize.checked_add(12).and_then(|n| n.checked_add(ciphertext.len())).ok_or(NetworkError::FrameTooLarge)?;
+    if total > MAX_ONION_LAYER {
+        return Err(NetworkError::FrameTooLarge);
+    }
+    let mut out = Vec::with_capacity(total);
+    out.extend_from_slice(&ephemeral_pk);
+    out.extend_from_slice(&nonce);
+    out.extend_from_slice(&ciphertext);
+    Ok(out)
+}
+
+/// Decrypt one onion layer using the recipient's X25519 secret.
+pub fn decrypt_layer(layer_bytes: &[u8], node_secret: &StaticSecret) -> Result<Vec<u8>, NetworkError> {
+    if layer_bytes.len() < 32 + 12 + 16 || layer_bytes.len() > MAX_ONION_LAYER {
+        return Err(NetworkError::Protocol("invalid onion layer size".into()));
+    }
+    let mut ephemeral_pk = [0u8; 32];
+    ephemeral_pk.copy_from_slice(&layer_bytes[..32]);
+    let mut nonce = [0u8; 12];
+    nonce.copy_from_slice(&layer_bytes[32..44]);
+    let shared = node_secret.diffie_hellman(&XPublic::from(ephemeral_pk));
+    let hk = Hkdf::<Sha256>::new(Some(b"AWE/A2P2/ONION-SALT/v1"), shared.as_bytes());
+    let mut key = [0u8; 32];
+    hk.expand(b"AWE/A2P2/ONION-KEY/v1", &mut key)
+        .map_err(|_| NetworkError::Encryption)?;
+    let cipher = ChaCha20Poly1305::new_from_slice(&key).map_err(|_| NetworkError::Encryption)?;
+    cipher.decrypt(Nonce::from_slice(&nonce), &layer_bytes[44..]).map_err(|_| NetworkError::Authentication)
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TripleBlindOnionPacket {
+    pub ingress_layer: Vec<u8>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct IngressUnwrapped {
     pub next_hop: [u8; 32],
@@ -145,6 +218,9 @@ impl TripleBlindOnionPacket {
         node_c_pk: &[u8; 32],
     ) -> Result<Self, NetworkError> {
         // Layer 3 (Node C / Egress -> Service Y)
+        if request_payload.len() > MAX_ONION_PAYLOAD || service_y.len() > MAX_ONION_SERVICE_NAME {
+            return Err(NetworkError::FrameTooLarge);
+        }
         let egress_unwrapped = EgressUnwrapped {
             service_y: service_y.to_string(),
             request_payload: request_payload.to_vec(),
@@ -750,7 +826,7 @@ impl Node {
             // Query up to alpha peers concurrently. The old implementation
             // serialized every connection, making lookup latency roughly the
             // sum of peer RTTs instead of being bounded by the slowest peer.
-            let mut jobs = JoinSet::new();
+            let mut jobs: JoinSet<Result<Vec<PeerRecord>, NetworkError>> = JoinSet::new();
             for peer in batch {
                 queried.insert(peer.awe_id, true);
                 let node = self.clone();
