@@ -511,9 +511,17 @@ impl RoutingTable {
         self.peers.remove(id);
     }
     pub fn closest(&self, target: &[u8; 32], limit: usize) -> Vec<PeerRecord> {
+        if limit == 0 || self.peers.is_empty() {
+            return Vec::new();
+        }
         let mut v: Vec<_> = self.peers.values().cloned().collect();
-        v.sort_by_key(|p| xor_distance(&p.awe_id, target));
-        v.truncate(limit);
+        let take = limit.min(v.len());
+        if take < v.len() {
+            let nth = take - 1;
+            v.select_nth_unstable_by_key(nth, |p| xor_distance(&p.awe_id, target));
+            v.truncate(take);
+        }
+        v.sort_unstable_by_key(|p| xor_distance(&p.awe_id, target));
         v
     }
     pub fn all(&self) -> Vec<PeerRecord> {
