@@ -1,4 +1,4 @@
-use crate::{crypto::hash, identity::Identity, limits::PeerAdmission, replay::ReplayGuard};
+use crate::{crypto::hash, identity::Identity, limits::{IpAdmission, PeerAdmission}, replay::ReplayGuard};
 use chacha20poly1305::{
     aead::{Aead, KeyInit, Payload},
     ChaCha20Poly1305, Nonce,
@@ -28,6 +28,9 @@ const MAX_CONCURRENT_CONNECTIONS: usize = 1024;
 const MAX_PEERS_PER_RESPONSE: usize = 64;
 const PEER_RATE_CAPACITY: u64 = 256;
 const PEER_RATE_REFILL_PER_SECOND: u64 = 128;
+const PREAUTH_MAX_IPS: usize = 1024;
+const PREAUTH_RATE_CAPACITY: u64 = 16;
+const PREAUTH_RATE_REFILL_PER_SECOND: u64 = 8;
 const FRAME_PAD_MIN: usize = 256;
 const FRAME_LENGTH_PREFIX: usize = 4;
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
@@ -543,6 +546,7 @@ pub struct Node {
     routing: Arc<RwLock<RoutingTable>>,
     peers: Arc<RwLock<HashMap<[u8; 32], PeerRecord>>>,
     admission: Arc<Mutex<PeerAdmission>>,
+    preauth: Arc<Mutex<IpAdmission>>,
 }
 impl Node {
     pub fn new(identity: Identity, listen_addr: SocketAddr) -> Self {
@@ -552,6 +556,7 @@ impl Node {
             routing: Arc::new(RwLock::new(RoutingTable::default())),
             peers: Arc::new(RwLock::new(HashMap::new())),
             admission: Arc::new(Mutex::new(PeerAdmission::new(MAX_CONCURRENT_CONNECTIONS, PEER_RATE_CAPACITY, PEER_RATE_REFILL_PER_SECOND))),
+            preauth: Arc::new(Mutex::new(IpAdmission::new(PREAUTH_MAX_IPS, PREAUTH_RATE_CAPACITY, PREAUTH_RATE_REFILL_PER_SECOND))),
         }
     }
     pub fn node_descriptor(&self) -> String {
@@ -634,6 +639,12 @@ impl Node {
                 drop(s);
                 continue;
             };
+            let ip_allowed = self.preauth.lock().expect("preauth lock poisoned").allow(a.ip(), now());
+            if !ip_allowed {
+                drop(s);
+                drop(permit);
+                continue;
+            }
             let identity = Arc::clone(&self.identity);
             let routing = Arc::clone(&self.routing);
             let peers = Arc::clone(&self.peers);
