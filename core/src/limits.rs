@@ -104,3 +104,69 @@ mod tests {
         assert!(a.tracked_peers() <= 4);
     }
 }
+
+
+/// Pre-authentication connection limiter. Unlike PeerAdmission, this is keyed
+/// by source IP because a peer identity does not exist until the handshake is
+/// authenticated. The table is strictly bounded to keep handshake floods from
+/// turning into unbounded state growth.
+#[derive(Debug)]
+pub struct IpAdmission {
+    buckets: BTreeMap<IpAddr, TokenBucket>,
+    max_sources: usize,
+    capacity: u64,
+    refill_per_second: u64,
+}
+
+impl IpAdmission {
+    pub fn new(max_sources: usize, capacity: u64, refill_per_second: u64) -> Self {
+        Self {
+            buckets: BTreeMap::new(),
+            max_sources: max_sources.max(1),
+            capacity: capacity.max(1),
+            refill_per_second: refill_per_second.max(1),
+        }
+    }
+
+    pub fn allow(&mut self, source: IpAddr, now_second: u64) -> bool {
+        if !self.buckets.contains_key(&source) {
+            if self.buckets.len() >= self.max_sources {
+                if let Some((evict, _)) = self.buckets.iter()
+                    .min_by_key(|(_, bucket)| bucket.remaining())
+                {
+                    let evict = *evict;
+                    self.buckets.remove(&evict);
+                }
+            }
+            self.buckets.insert(
+                source,
+                TokenBucket::new(self.capacity, self.refill_per_second, now_second),
+            );
+        }
+        self.buckets
+            .get_mut(&source)
+            .expect("source bucket inserted")
+            .allow(1, now_second)
+    }
+
+    pub fn tracked_sources(&self) -> usize {
+        self.buckets.len()
+    }
+}
+
+#[cfg(test)]
+mod ip_tests {
+    use super::*;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    #[test]
+    fn ip_admission_is_bounded_and_rate_limited() {
+        let mut admission = IpAdmission::new(2, 2, 1);
+        let a = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
+        assert!(admission.allow(a, 10));
+        assert!(admission.allow(a, 10));
+        assert!(!admission.allow(a, 10));
+        assert!(admission.allow(a, 11));
+        assert!(admission.tracked_sources() <= 2);
+    }
+}
