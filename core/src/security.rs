@@ -122,7 +122,6 @@ impl ShieldPacket {
 /// Replay defense for SHIELD requests. Sequence numbers are scoped to the
 /// session/request tuple, so a packet captured on one request cannot be replayed
 /// into another request.
-#[derive(Clone, Debug, Default)]
 pub const SHIELD_REPLAY_WINDOW: u8 = 64;
 pub const SHIELD_MAX_TRACKED_REQUESTS: usize = 65_536;
 
