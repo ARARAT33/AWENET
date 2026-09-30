@@ -18,6 +18,7 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     sync::RwLock,
+    task::JoinSet,
     time::timeout,
 };
 use x25519_dalek::{PublicKey as XPublic, StaticSecret};
@@ -721,34 +722,43 @@ impl Node {
                 break;
             }
 
-            let mut discovered = false;
+            // Query up to alpha peers concurrently. The old implementation
+            // serialized every connection, making lookup latency roughly the
+            // sum of peer RTTs instead of being bounded by the slowest peer.
+            let mut jobs = JoinSet::new();
             for peer in batch {
                 queried.insert(peer.awe_id, true);
-
-                for address in peer.addresses.iter().copied() {
-                    let Ok(mut connection) = self.connect(address).await else {
-                        continue;
-                    };
-
-                    connection
-                        .send(&Control::FindNode { target: *target })
-                        .await?;
-
-                    let Ok(Control::Nodes { records }) = connection.recv().await else {
-                        continue;
-                    };
-
-                    for record in records {
-                        if record.awe_id == *self.identity.public.awe_id.as_bytes() {
+                let node = self.clone();
+                let target = *target;
+                jobs.spawn(async move {
+                    for address in peer.addresses.iter().copied() {
+                        let Ok(mut connection) = node.connect(address).await else {
+                            continue;
+                        };
+                        if connection.send(&Control::FindNode { target }).await.is_err() {
                             continue;
                         }
-                        if !self.peers.read().await.contains_key(&record.awe_id) {
-                            discovered = true;
+                        if let Ok(Control::Nodes { records }) = connection.recv().await {
+                            return Ok(records);
                         }
-                        self.routing.write().await.insert(record.clone());
-                        self.peers.write().await.insert(record.awe_id, record);
                     }
-                    break;
+                    Ok(Vec::new())
+                });
+            }
+
+            let mut discovered = false;
+            while let Some(result) = jobs.join_next().await {
+                let records = result
+                    .map_err(|e| NetworkError::Protocol(format!("lookup task failed: {e}")))??;
+                for record in records {
+                    if record.awe_id == *self.identity.public.awe_id.as_bytes() {
+                        continue;
+                    }
+                    if !self.peers.read().await.contains_key(&record.awe_id) {
+                        discovered = true;
+                    }
+                    self.routing.write().await.insert(record.clone());
+                    self.peers.write().await.insert(record.awe_id, record);
                 }
             }
 
