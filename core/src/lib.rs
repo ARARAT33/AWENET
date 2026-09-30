@@ -21,6 +21,7 @@ pub mod protocol;
 pub mod recovery;
 pub mod registry;
 pub mod replay;
+pub mod security;
 pub mod replication;
 pub mod reputation;
 pub mod routing;
