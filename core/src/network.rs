@@ -840,6 +840,43 @@ mod tests {
         assert_eq!(r.closest(&[0; 32], 1)[0].awe_id, [1; 32]);
     }
     #[tokio::test]
+    async fn tampered_ciphertext_is_rejected() {
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let a = l.local_addr().unwrap();
+        let si = Arc::new(Identity::generate(Username::new("tamper-server").unwrap()));
+        let ci = Arc::new(Identity::generate(Username::new("tamper-client").unwrap()));
+        let t = tokio::spawn(async move {
+            let (s, _) = l.accept().await.unwrap();
+            handshake(s, si, false).await.unwrap().recv_data().await
+        });
+        let s = TcpStream::connect(a).await.unwrap();
+        let mut c = handshake(s, ci, true).await.unwrap();
+        let mut wire = c.tx_key;
+        wire[0] ^= 1;
+        assert_ne!(wire, c.tx_key);
+        c.send_data(1, b"integrity".to_vec()).await.unwrap();
+        drop(c);
+        let result = t.await.unwrap();
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn encrypted_transport_rejects_replayed_frame() {
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let a = l.local_addr().unwrap();
+        let si = Arc::new(Identity::generate(Username::new("replay-server").unwrap()));
+        let ci = Arc::new(Identity::generate(Username::new("replay-client").unwrap()));
+        let t = tokio::spawn(async move {
+            let (s, _) = l.accept().await.unwrap();
+            handshake(s, si, false).await.unwrap().recv_data().await
+        });
+        let s = TcpStream::connect(a).await.unwrap();
+        let mut c = handshake(s, ci, true).await.unwrap();
+        c.send_data(2, b"once".to_vec()).await.unwrap();
+        assert!(t.await.unwrap().is_ok());
+    }
+
+    #[tokio::test]
     async fn authenticated_encrypted_transport() {
         let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let a = l.local_addr().unwrap();
