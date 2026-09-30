@@ -2,6 +2,7 @@
 //! Platform clients share identity, security, networking, namespace, storage,
 //! hosting, privacy-first messaging, diagnostics, governance, and application store primitives.
 
+pub mod calls;
 pub mod canonical;
 pub mod crypto;
 pub mod diagnostics;
@@ -19,7 +20,9 @@ pub mod protocol;
 pub mod recovery;
 pub mod registry;
 pub mod replay;
+pub mod replication;
 pub mod reputation;
+pub mod routing;
 pub mod sandbox;
 pub mod storage;
 pub mod store;
