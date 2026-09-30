@@ -1,4 +1,4 @@
-use crate::{crypto::hash, identity::Identity, replay::ReplayGuard};
+use crate::{crypto::hash, identity::Identity, limits::PeerAdmission, replay::ReplayGuard};
 use chacha20poly1305::{
     aead::{Aead, KeyInit, Payload},
     ChaCha20Poly1305, Nonce,
@@ -10,7 +10,7 @@ use sha2::Sha256;
 use std::{
     collections::{BTreeMap, HashMap},
     net::SocketAddr,
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use thiserror::Error;
@@ -26,6 +26,8 @@ const VERSION: u16 = 1;
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 const MAX_CONCURRENT_CONNECTIONS: usize = 1024;
 const MAX_PEERS_PER_RESPONSE: usize = 64;
+const PEER_RATE_CAPACITY: u64 = 256;
+const PEER_RATE_REFILL_PER_SECOND: u64 = 128;
 const FRAME_PAD_MIN: usize = 256;
 const FRAME_LENGTH_PREFIX: usize = 4;
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
@@ -540,6 +542,7 @@ impl Node {
             listen_addr,
             routing: Arc::new(RwLock::new(RoutingTable::default())),
             peers: Arc::new(RwLock::new(HashMap::new())),
+            admission: Arc::new(Mutex::new(PeerAdmission::new(MAX_CONCURRENT_CONNECTIONS, PEER_RATE_CAPACITY, PEER_RATE_REFILL_PER_SECOND))),
         }
     }
     pub fn node_descriptor(&self) -> String {
@@ -551,10 +554,14 @@ impl Node {
         identity: Arc<Identity>,
         routing: Arc<RwLock<RoutingTable>>,
         peers: Arc<RwLock<HashMap<[u8; 32], PeerRecord>>>,
+        admission: Arc<Mutex<PeerAdmission>>,
     ) {
         let Ok(mut c) = handshake(stream, identity, false).await else {
             return;
         };
+        if !admission.lock().expect("admission lock poisoned").allow(c.remote_id, 1, now()) {
+            return;
+        }
         let r = PeerRecord {
             awe_id: c.remote_id,
             public_key: c.remote_public_key,
@@ -567,20 +574,27 @@ impl Node {
         let mut seq = 0u64;
         loop {
             match timeout(HEARTBEAT, c.recv()).await {
-                Ok(Ok(Control::Ping { sequence })) => {
+                Ok(Ok(message)) => {
+                    if !admission.lock().expect("admission lock poisoned").allow(c.remote_id, 1, now()) {
+                        break;
+                    }
+                    match message {
+                    Control::Ping { sequence } => {
                     if c.send(&Control::Pong { sequence }).await.is_err() {
                         break;
                     }
                 }
-                Ok(Ok(Control::Pong { .. })) => {}
-                Ok(Ok(Control::FindNode { target })) => {
+                Control::Pong { .. } => {}
+                Control::FindNode { target } => {
                     let records = routing.read().await.closest(&target, MAX_PEERS_PER_RESPONSE);
                     if c.send(&Control::Nodes { records }).await.is_err() {
                         break;
                     }
                 }
-                Ok(Ok(Control::Data { .. })) => {}
-                Ok(Ok(Control::Nodes { .. } | Control::Hello { .. })) => break,
+                Control::Data { .. } => {}
+                Control::Nodes { .. } | Control::Hello { .. } => break,
+                    }
+                }
                 Ok(Err(_)) => break,
                 Err(_) => {
                     if c.is_idle() || c.ping(seq).await.is_err() {
@@ -607,8 +621,9 @@ impl Node {
             let identity = Arc::clone(&self.identity);
             let routing = Arc::clone(&self.routing);
             let peers = Arc::clone(&self.peers);
+            let admission = Arc::clone(&self.admission);
             tokio::spawn(async move {
-                Self::handle(s, a, identity, routing, peers).await;
+                Self::handle(s, a, identity, routing, peers, admission).await;
                 drop(permit);
             });
         }
@@ -808,7 +823,7 @@ mod tests {
     #[test]
     fn a2p2_rejects_oversized_payloads() {
         let key = [3u8; 32];
-        let payload = vec![0u8; A2P2_MAX_CIPHERTEXT];
+        let payload = vec![0u8; A2P2_MAX_PAYLOAD + 1];
         assert!(a2p2_seal(&payload, &key).is_err());
     }
 
