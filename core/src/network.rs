@@ -584,7 +584,14 @@ impl Node {
         loop {
             match timeout(HEARTBEAT, c.recv()).await {
                 Ok(Ok(message)) => {
-                    if !admission.lock().expect("admission lock poisoned").allow(c.remote_id, 1, now()) {
+                    let cost = match &message {
+                        Control::Ping { .. } | Control::Pong { .. } => 1,
+                        Control::FindNode { .. } => 4,
+                        Control::Nodes { records } => 4 + records.len() as u64,
+                        Control::Data { payload, .. } => 1 + (payload.len() as u64 / 4096),
+                        Control::Hello { .. } => PEER_RATE_CAPACITY + 1,
+                    };
+                    if !admission.lock().expect("admission lock poisoned").allow(c.remote_id, cost, now()) {
                         break;
                     }
                     match message {
