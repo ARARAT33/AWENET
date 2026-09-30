@@ -24,6 +24,8 @@ use x25519_dalek::{PublicKey as XPublic, StaticSecret};
 
 const VERSION: u16 = 1;
 const MAX_FRAME: usize = 16 * 1024 * 1024;
+const FRAME_PAD_MIN: usize = 256;
+const FRAME_LENGTH_PREFIX: usize = 4;
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 const HEARTBEAT: Duration = Duration::from_secs(20);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(90);
@@ -254,7 +256,8 @@ async fn write_frame(s: &mut TcpStream, b: &[u8]) -> Result<(), NetworkError> {
     }
     s.write_u32(b.len() as u32).await?;
     s.write_all(b).await?;
-    s.flush().await?;
+    // TcpStream writes are buffered by the OS; flushing every frame adds latency
+    // and system-call overhead without improving TCP delivery semantics.
     Ok(())
 }
 async fn read_frame(s: &mut TcpStream) -> Result<Vec<u8>, NetworkError> {
@@ -390,6 +393,25 @@ impl SecureConnection {
     }
     async fn send(&mut self, c: &Control) -> Result<(), NetworkError> {
         let p = encode(c)?;
+        if p.len() > MAX_FRAME.saturating_sub(FRAME_LENGTH_PREFIX + 16) {
+            return Err(NetworkError::FrameTooLarge);
+        }
+
+        // AWE/WIRE-v1: put the real plaintext length inside an encrypted,
+        // power-of-two-sized bucket. The TCP frame therefore reveals only a
+        // coarse size class, not the exact application payload length.
+        let needed = p.len().saturating_add(FRAME_LENGTH_PREFIX);
+        let bucket = needed
+            .max(FRAME_PAD_MIN)
+            .checked_next_power_of_two()
+            .ok_or(NetworkError::FrameTooLarge)?;
+        if bucket.saturating_add(16) > MAX_FRAME {
+            return Err(NetworkError::FrameTooLarge);
+        }
+        let mut padded = vec![0u8; bucket];
+        padded[..FRAME_LENGTH_PREFIX].copy_from_slice(&(p.len() as u32).to_be_bytes());
+        padded[FRAME_LENGTH_PREFIX..FRAME_LENGTH_PREFIX + p.len()].copy_from_slice(&p);
+
         let s = self.tx_seq;
         self.tx_seq = s
             .checked_add(1)
@@ -399,7 +421,7 @@ impl SecureConnection {
             .tx
             .encrypt(
                 Nonce::from_slice(&Self::nonce(s)),
-                Payload { msg: &p, aad: &aad },
+                Payload { msg: &padded, aad: &aad },
             )
             .map_err(|_| NetworkError::Encryption)?;
         let mut f = Vec::with_capacity(8 + e.len());
@@ -430,8 +452,18 @@ impl SecureConnection {
                 },
             )
             .map_err(|_| NetworkError::Authentication)?;
+
+        if p.len() < FRAME_LENGTH_PREFIX {
+            return Err(NetworkError::Protocol("short padded frame".into()));
+        }
+        let mut len = [0u8; FRAME_LENGTH_PREFIX];
+        len.copy_from_slice(&p[..FRAME_LENGTH_PREFIX]);
+        let payload_len = u32::from_be_bytes(len) as usize;
+        if payload_len > p.len().saturating_sub(FRAME_LENGTH_PREFIX) {
+            return Err(NetworkError::Protocol("invalid padded frame length".into()));
+        }
         self.last_activity = Instant::now();
-        decode(&p)
+        decode(&p[FRAME_LENGTH_PREFIX..FRAME_LENGTH_PREFIX + payload_len])
     }
     pub async fn send_data(&mut self, stream: u32, payload: Vec<u8>) -> Result<(), NetworkError> {
         if payload.len() > MAX_FRAME / 2 {
@@ -560,6 +592,7 @@ impl Node {
         let l = TcpListener::bind(self.listen_addr).await?;
         loop {
             let (s, a) = l.accept().await?;
+            let _ = s.set_nodelay(true);
             tokio::spawn(Self::handle(
                 s,
                 a,
@@ -573,6 +606,7 @@ impl Node {
         let s = timeout(HELLO_TIMEOUT, TcpStream::connect(address))
             .await
             .map_err(|_| NetworkError::Timeout)??;
+        let _ = s.set_nodelay(true);
         handshake(s, Arc::clone(&self.identity), true).await
     }
     pub async fn bootstrap(&self, addresses: &[SocketAddr]) -> Result<usize, NetworkError> {
@@ -691,6 +725,13 @@ fn now() -> u64 {
 mod tests {
     use super::*;
     use crate::identity::Username;
+    #[test]
+    fn transport_bucket_hides_exact_payload_length() {
+        // These constants define the AWE/WIRE-v1 framing contract.
+        assert_eq!(FRAME_PAD_MIN, 256);
+        assert_eq!(FRAME_LENGTH_PREFIX, 4);
+    }
+
     #[test]
     fn routing_uses_xor_distance() {
         let mut r = RoutingTable::default();
