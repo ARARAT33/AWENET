@@ -7,6 +7,7 @@
 
 use blake3::Hasher;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 pub const SHIELD_VERSION: u16 = 1;
 pub const MAX_TTL: u8 = 32;
@@ -114,6 +115,24 @@ impl ShieldPacket {
     }
 }
 
+/// Replay defense for SHIELD requests. Sequence numbers are scoped to the
+/// session/request tuple, so a packet captured on one request cannot be replayed
+/// into another request.
+#[derive(Clone, Debug, Default)]
+pub struct ShieldReplayGuard {
+    highest: BTreeMap<([u8; 16], [u8; 16]), u64>,
+}
+impl ShieldReplayGuard {
+    pub fn accept(&mut self, session_id: [u8; 16], request_id: [u8; 16], sequence: u64) -> bool {
+        let key = (session_id, request_id);
+        match self.highest.get(&key) {
+            Some(current) if sequence <= *current => false,
+            _ => { self.highest.insert(key, sequence); true }
+        }
+    }
+    pub fn tracked_requests(&self) -> usize { self.highest.len() }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SecurityCounters {
     pub accepted: u64,
@@ -149,8 +168,8 @@ mod tests {
     fn ttl_is_bounded_and_cannot_reach_zero() {
         let key = [1u8; 32];
         let mut p = ShieldPacket::seal(&key, PacketClass::Control, [0;16], [0;16], 1, 10, 2, vec![]).unwrap();
-        assert!(p.decrement_ttl());
-        assert!(!p.decrement_ttl());
+        assert!(p.decrement_ttl(&key));
+        assert!(!p.decrement_ttl(&key));
     }
 
     #[test]
