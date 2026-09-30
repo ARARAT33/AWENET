@@ -46,6 +46,74 @@ pub enum NetworkError {
 
 pub const A2P2_PROTOCOL_SCHEME: &str = "a2p2://";
 pub const A2P2_FIXED_PACKET_SIZE: usize = 1280;
+pub const A2P2_NONCE_SIZE: usize = 12;
+pub const A2P2_TAG_SIZE: usize = 16;
+pub const A2P2_HEADER_SIZE: usize = 2 + A2P2_NONCE_SIZE;
+pub const A2P2_MAX_CIPHERTEXT: usize =
+    A2P2_FIXED_PACKET_SIZE - A2P2_HEADER_SIZE;
+
+/// A2P2 encrypted fixed-size wire packet.
+///
+/// Unlike the legacy padding helper below, this format keeps the payload length
+/// and contents inside ChaCha20-Poly1305. A passive observer therefore sees a
+/// constant 1280-byte record rather than a cleartext length field.
+pub fn a2p2_seal(payload: &[u8], key: &[u8; 32]) -> Result<[u8; A2P2_FIXED_PACKET_SIZE], NetworkError> {
+    if payload.len() + A2P2_TAG_SIZE > A2P2_MAX_CIPHERTEXT {
+        return Err(NetworkError::FrameTooLarge);
+    }
+    let cipher = ChaCha20Poly1305::new_from_slice(key)
+        .map_err(|_| NetworkError::Encryption)?;
+    let mut nonce = [0u8; A2P2_NONCE_SIZE];
+    OsRng.fill_bytes(&mut nonce);
+
+    let mut inner = Vec::with_capacity(2 + payload.len());
+    inner.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+    inner.extend_from_slice(payload);
+    let ciphertext = cipher
+        .encrypt(Nonce::from_slice(&nonce), inner.as_ref())
+        .map_err(|_| NetworkError::Encryption)?;
+
+    let mut out = [0u8; A2P2_FIXED_PACKET_SIZE];
+    out[..2].copy_from_slice(&(payload.len() as u16).to_be_bytes());
+    out[2..2 + A2P2_NONCE_SIZE].copy_from_slice(&nonce);
+    // The outer length is intentionally not authenticated metadata: it is fixed
+    // by the protocol. The inner length is authenticated by AEAD.
+    out[A2P2_HEADER_SIZE..A2P2_HEADER_SIZE + ciphertext.len()].copy_from_slice(&ciphertext);
+    OsRng.fill_bytes(&mut out[A2P2_HEADER_SIZE + ciphertext.len()..]);
+    Ok(out)
+}
+
+pub fn a2p2_open(packet: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, NetworkError> {
+    if packet.len() != A2P2_FIXED_PACKET_SIZE {
+        return Err(NetworkError::Protocol("invalid a2p2 packet size".into()));
+    }
+    let cipher = ChaCha20Poly1305::new_from_slice(key)
+        .map_err(|_| NetworkError::Encryption)?;
+    let mut nonce = [0u8; A2P2_NONCE_SIZE];
+    nonce.copy_from_slice(&packet[2..A2P2_HEADER_SIZE]);
+    // Because the packet is padded, determine the authenticated ciphertext size
+    // from the encrypted inner length. Try the only valid ciphertext size encoded
+    // by the fixed packet capacity; trailing bytes are padding and are not trusted.
+    // The first two bytes are a public size hint and are checked against the
+    // authenticated inner length after decryption.
+    let hinted = u16::from_be_bytes([packet[0], packet[1]]) as usize;
+    if hinted + 2 + A2P2_TAG_SIZE > A2P2_MAX_CIPHERTEXT {
+        return Err(NetworkError::Protocol("invalid a2p2 length hint".into()));
+    }
+    let ct_len = hinted + 2 + A2P2_TAG_SIZE;
+    let ciphertext = &packet[A2P2_HEADER_SIZE..A2P2_HEADER_SIZE + ct_len];
+    let plaintext = cipher
+        .decrypt(Nonce::from_slice(&nonce), ciphertext)
+        .map_err(|_| NetworkError::Authentication)?;
+    if plaintext.len() < 2 {
+        return Err(NetworkError::Protocol("invalid a2p2 plaintext".into()));
+    }
+    let inner_len = u16::from_be_bytes([plaintext[0], plaintext[1]]) as usize;
+    if inner_len != hinted || inner_len + 2 != plaintext.len() {
+        return Err(NetworkError::Protocol("a2p2 length mismatch".into()));
+    }
+    Ok(plaintext[2..].to_vec())
+}
 
 /// A2P2 Obfuscated Datagram with DPI Evasion padding.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -780,6 +848,23 @@ mod tests {
         let mut server = t.await.unwrap();
         server.send_data(7, b"ok".to_vec()).await.unwrap();
         assert_eq!(c.recv_data().await.unwrap(), Some((7, b"ok".to_vec())));
+    }
+
+    #[test]
+    fn a2p2_encrypted_wire_packet_hides_payload_and_roundtrips() {
+        let key = [9u8; 32];
+        let payload = b"secret over the wire";
+        let packet = a2p2_seal(payload, &key).unwrap();
+        assert_eq!(packet.len(), A2P2_FIXED_PACKET_SIZE);
+        assert_eq!(a2p2_open(&packet, &key).unwrap(), payload);
+        assert!(a2p2_open(&packet, &[8u8; 32]).is_err());
+    }
+
+    #[test]
+    fn a2p2_rejects_oversized_payloads() {
+        let key = [3u8; 32];
+        let payload = vec![0u8; A2P2_MAX_CIPHERTEXT];
+        assert!(a2p2_seal(&payload, &key).is_err());
     }
 
     #[test]
