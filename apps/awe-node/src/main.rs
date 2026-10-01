@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use awep2p_core::data_plane::{StorageShardAck, StorageShardTransfer, STORAGE_STREAM};
 use awep2p_core::diagnostics::{NodeDiagnostics, NodeMetrics};
 use awep2p_core::federation::{
     self, AweNetConfig, AweNodeConfig, DataCentreConfig, DataGroupConfig,
@@ -11,6 +12,7 @@ use awep2p_core::network::{format_node_descriptor, Node};
 use awep2p_core::node::{validate_and_configure_node_allocation, NodeAllocationMode};
 use awep2p_core::permissions::CapabilitySet;
 use awep2p_core::reputation::NodeReputation;
+use awep2p_core::replication::build_plan as build_replication_plan;
 use awep2p_core::sandbox::{SandboxConfig, WasmSandbox};
 use awep2p_core::storage::{LocalNodeStore, SecretFilePackage, StoragePolicy};
 use awep2p_core::store::{AWEPackage, AppCapability, AppKind};
@@ -109,6 +111,63 @@ async fn http_response(status: &str, content_type: &str, body: &str) -> Vec<u8> 
     format!("HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: content-type\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}", body.len()).into_bytes()
 }
 
+async fn read_http_request(stream: &mut tokio::net::TcpStream) -> Result<String> {
+    const HEADER_LIMIT: usize = 64 * 1024;
+    const BODY_LIMIT: usize = 64 * 1024 * 1024;
+    let mut data = Vec::with_capacity(8192);
+    let header_end;
+    loop {
+        let mut chunk = [0u8; 4096];
+        let n = stream.read(&mut chunk).await?;
+        if n == 0 {
+            anyhow::bail!("client closed connection before HTTP headers");
+        }
+        data.extend_from_slice(&chunk[..n]);
+        if data.len() > HEADER_LIMIT {
+            anyhow::bail!("HTTP headers too large");
+        }
+        if let Some(pos) = data.windows(4).position(|w| w == b"\r\n\r\n") {
+            header_end = pos + 4;
+            break;
+        }
+    }
+
+    let headers = String::from_utf8_lossy(&data[..header_end]);
+    let content_length = headers
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            if name.eq_ignore_ascii_case("content-length") {
+                value.trim().parse::<usize>().ok()
+            } else {
+                None
+            }
+        })
+        .unwrap_or(0);
+
+    if content_length > BODY_LIMIT {
+        anyhow::bail!("HTTP request body too large");
+    }
+
+    let target = header_end + content_length;
+    if data.len() < target {
+        data.resize(target, 0);
+        let already = data.len();
+        let mut filled = already;
+        while filled < target {
+            let n = stream.read(&mut data[filled..target]).await?;
+            if n == 0 {
+                anyhow::bail!("client closed connection before request body was complete");
+            }
+            filled += n;
+        }
+    } else if data.len() > target {
+        data.truncate(target);
+    }
+
+    String::from_utf8(data).context("HTTP request must be UTF-8")
+}
+
 async fn serve_ui(
     mut stream: tokio::net::TcpStream,
     node: Node,
@@ -117,9 +176,7 @@ async fn serve_ui(
     federation_path: PathBuf,
     storage: StorageState,
 ) -> Result<()> {
-    let mut buf = vec![0u8; 8192];
-    let n = stream.read(&mut buf).await?;
-    let request = String::from_utf8_lossy(&buf[..n]);
+    let request = read_http_request(&mut stream).await?;
     let request_line = request.lines().next().unwrap_or("");
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or("GET");
@@ -351,6 +408,54 @@ async fn serve_ui(
                 }
             }
         },
+        "/api/storage/push" if method == "POST" => {
+            let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+            let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+            let recipient = parsed.get("recipient").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let file_id_hex = parsed.get("file_id").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let shard_index = parsed.get("shard_index").and_then(|v| v.as_u64()).unwrap_or(u64::MAX);
+            let original_size = parsed.get("original_size").and_then(|v| v.as_u64()).unwrap_or(0);
+            let payload_hex = parsed.get("payload_hex").and_then(|v| v.as_str()).unwrap_or("").trim();
+
+            let recipient_id = hex::decode(recipient)
+                .ok()
+                .and_then(|b| <[u8; 32]>::try_from(b).ok())
+                .or_else(|| {
+                    None
+                });
+            let file_id = hex::decode(file_id_hex)
+                .ok()
+                .and_then(|b| <[u8; 32]>::try_from(b).ok());
+            let payload = hex::decode(payload_hex).ok();
+
+            match (recipient_id, file_id, payload, usize::try_from(shard_index)) {
+                (Some(peer_id), Some(file_id), Some(payload), Ok(index)) if index < 1000 => {
+                    let transfer = StorageShardTransfer::new(
+                        *blake3::hash(format!("{}:{}:{}", file_id_hex, shard_index, now_unix()).as_bytes()).as_bytes()[..16]
+                            .try_into()
+                            .unwrap_or([0u8; 16]),
+                        node.identity.public.awe_id,
+                        file_id,
+                        shard_index as u16,
+                        1000,
+                        original_size,
+                        payload,
+                    );
+                    match serde_json::to_vec(&transfer) {
+                        Ok(bytes) => match node.send_to_peer(&peer_id, STORAGE_STREAM, bytes).await {
+                            Ok(rtt) => ("200 OK", "application/json; charset=utf-8",
+                                serde_json::json!({"status":"sent","stream":STORAGE_STREAM,"shard_index":index,"rtt_ms":rtt.as_millis()}).to_string()),
+                            Err(error) => ("502 Bad Gateway", "application/json; charset=utf-8",
+                                serde_json::json!({"status":"error","error":error.to_string()}).to_string())
+                        },
+                        Err(error) => ("500 Internal Server Error", "application/json; charset=utf-8",
+                            serde_json::json!({"status":"error","error":error.to_string()}).to_string())
+                    }
+                }
+                _ => ("400 Bad Request", "application/json; charset=utf-8",
+                    serde_json::json!({"status":"error","error":"recipient, 32-byte file_id, shard_index 0..999 and payload_hex are required"}).to_string())
+            }
+        },
         "/api/storage" => {
             let stats = storage.stats().unwrap_or_default();
             let free = awep2p_core::node::get_available_disk_space(PathBuf::from(data_dir_for_api()).as_path()).unwrap_or(0);
@@ -499,6 +604,50 @@ async fn run_product() -> Result<()> {
     tokio::spawn(async move {
         if let Err(e) = node_for_listener.listen().await {
             eprintln!("AWE node stopped: {e}");
+        }
+    });
+
+    let dispatcher_node = node.clone();
+    let dispatcher_storage = storage.clone();
+    tokio::spawn(async move {
+        loop {
+            for (sender, stream, payload) in dispatcher_node.take_inbox() {
+                if stream == 100 {
+                    if let Ok(message) = serde_json::from_slice::<serde_json::Value>(&payload) {
+                        if message.get("kind").and_then(|v| v.as_str()) == Some("awe.messenger.v1") {
+                            let id = message.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                            let text_value = message.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                            let recipient = message.get("recipient").and_then(|v| v.as_str()).unwrap_or("");
+                            if !id.is_empty() && !text_value.is_empty() && !recipient.is_empty() {
+                                // Messenger delivery remains available through the existing endpoint log.
+                            }
+                        }
+                    }
+                    continue;
+                }
+                if stream != STORAGE_STREAM {
+                    continue;
+                }
+                let Ok(transfer) = serde_json::from_slice::<StorageShardTransfer>(&payload) else {
+                    continue;
+                };
+                if transfer.sender != sender || transfer.verify().is_err() {
+                    continue;
+                }
+                let Ok(object_id) = dispatcher_storage.put(&transfer.payload) else {
+                    continue;
+                };
+                let ack = StorageShardAck::new(
+                    transfer.request_id,
+                    transfer.file_id,
+                    transfer.shard_index,
+                    object_id,
+                );
+                if let Ok(bytes) = serde_json::to_vec(&ack) {
+                    let _ = dispatcher_node.send_to_peer(&sender, STORAGE_STREAM, bytes).await;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
     });
 
