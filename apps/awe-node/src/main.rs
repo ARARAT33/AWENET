@@ -11,9 +11,9 @@ use awep2p_core::namespace::AweBrowserResolver;
 use awep2p_core::network::{format_node_descriptor, Node};
 use awep2p_core::node::{validate_and_configure_node_allocation, NodeAllocationMode};
 use awep2p_core::permissions::CapabilitySet;
+use awep2p_core::replication::build_plan;
 use awep2p_core::reputation::NodeReputation;
 use awep2p_core::sandbox::{SandboxConfig, WasmSandbox};
-use awep2p_core::replication::build_plan;
 use awep2p_core::storage::{encode_shards, recover_shards, LocalNodeStore, StoragePolicy};
 use awep2p_core::store::{AWEPackage, AppCapability, AppKind};
 use std::{
@@ -799,10 +799,15 @@ async fn run_product() -> Result<()> {
             for (sender, stream, payload) in dispatcher_node.take_inbox() {
                 if stream == 100 {
                     if let Ok(message) = serde_json::from_slice::<serde_json::Value>(&payload) {
-                        if message.get("kind").and_then(|v| v.as_str()) == Some("awe.messenger.v1") {
+                        if message.get("kind").and_then(|v| v.as_str()) == Some("awe.messenger.v1")
+                        {
                             let id = message.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                            let text_value = message.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                            let recipient = message.get("recipient").and_then(|v| v.as_str()).unwrap_or("");
+                            let text_value =
+                                message.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                            let recipient = message
+                                .get("recipient")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
                             if !id.is_empty() && !text_value.is_empty() && !recipient.is_empty() {
                                 let item = serde_json::json!({
                                     "id": id,
@@ -813,7 +818,9 @@ async fn run_product() -> Result<()> {
                                     "timestamp": message.get("timestamp").and_then(|v| v.as_u64()).unwrap_or_else(now_unix)
                                 });
                                 if let Ok(mut log) = dispatcher_messenger.lock() {
-                                    if !log.iter().any(|existing| existing.get("id").and_then(|v| v.as_str()) == Some(id)) {
+                                    if !log.iter().any(|existing| {
+                                        existing.get("id").and_then(|v| v.as_str()) == Some(id)
+                                    }) {
                                         log.push(item);
                                     }
                                 }
@@ -841,7 +848,9 @@ async fn run_product() -> Result<()> {
                     object_id,
                 );
                 if let Ok(bytes) = serde_json::to_vec(&ack) {
-                    let _ = dispatcher_node.send_to_peer(&sender, STORAGE_STREAM, bytes).await;
+                    let _ = dispatcher_node
+                        .send_to_peer(&sender, STORAGE_STREAM, bytes)
+                        .await;
                 }
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
