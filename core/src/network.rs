@@ -835,7 +835,9 @@ impl Node {
                             }
                         }
                         Control::Data { stream, payload } => {
-                            if let Ok(mut queue) = inbox.lock() { queue.push((c.remote_id, stream, payload.clone())); }
+                            if let Ok(mut queue) = inbox.lock() {
+                                queue.push((c.remote_id, stream, payload.clone()));
+                            }
                             if c.send(&Control::DataAck {
                                 stream,
                                 bytes: payload.len() as u32,
@@ -940,7 +942,9 @@ impl Node {
             tokio::spawn(async move {
                 loop {
                     tokio::time::sleep(HEARTBEAT).await;
-                    let Ok(mut connection) = shared.try_lock() else { continue; };
+                    let Ok(mut connection) = shared.try_lock() else {
+                        continue;
+                    };
                     if connection.ping_roundtrip(0).await.is_err() {
                         drop(connection);
                         active.write().await.remove(&remote_id);
@@ -952,14 +956,28 @@ impl Node {
         Ok(found)
     }
 
-    pub async fn send_to_peer(&self, peer_id: &[u8; 32], stream: u32, payload: Vec<u8>) -> Result<std::time::Duration, NetworkError> {
-        let connection = self.active.read().await.get(peer_id).cloned().ok_or_else(|| NetworkError::Protocol("peer is not actively connected".into()))?;
+    pub async fn send_to_peer(
+        &self,
+        peer_id: &[u8; 32],
+        stream: u32,
+        payload: Vec<u8>,
+    ) -> Result<std::time::Duration, NetworkError> {
+        let connection = self
+            .active
+            .read()
+            .await
+            .get(peer_id)
+            .cloned()
+            .ok_or_else(|| NetworkError::Protocol("peer is not actively connected".into()))?;
         let mut connection = connection.lock().await;
         connection.send_data_roundtrip(stream, payload).await
     }
 
     pub fn take_inbox(&self) -> Vec<([u8; 32], u32, Vec<u8>)> {
-        self.inbox.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default()
+        self.inbox
+            .lock()
+            .map(|mut q| std::mem::take(&mut *q))
+            .unwrap_or_default()
     }
 
     pub async fn active_peers(&self) -> Vec<[u8; 32]> {
@@ -971,7 +989,13 @@ impl Node {
     }
 
     pub async fn ping_peer(&self, peer_id: &[u8; 32]) -> Result<std::time::Duration, NetworkError> {
-        let connection = self.active.read().await.get(peer_id).cloned().ok_or_else(|| NetworkError::Protocol("peer is not actively connected".into()))?;
+        let connection = self
+            .active
+            .read()
+            .await
+            .get(peer_id)
+            .cloned()
+            .ok_or_else(|| NetworkError::Protocol("peer is not actively connected".into()))?;
         let mut connection = connection.lock().await;
         connection.ping_roundtrip(now()).await
     }

@@ -1,18 +1,26 @@
 use anyhow::{Context, Result};
+use awep2p_core::diagnostics::{NodeDiagnostics, NodeMetrics};
+use awep2p_core::federation::{
+    self, AweNetConfig, AweNodeConfig, DataCentreConfig, DataGroupConfig,
+};
 use awep2p_core::identity::{AweSecret, Identity, LocalVault, Username};
 use awep2p_core::lan_mesh::LanPeerBeacon;
 use awep2p_core::messenger::format_uid;
 use awep2p_core::namespace::AweBrowserResolver;
 use awep2p_core::network::{format_node_descriptor, Node};
 use awep2p_core::node::{validate_and_configure_node_allocation, NodeAllocationMode};
-use awep2p_core::diagnostics::{NodeDiagnostics, NodeMetrics};
-use awep2p_core::federation::{self, AweNetConfig, DataCentreConfig, DataGroupConfig, AweNodeConfig};
+use awep2p_core::permissions::CapabilitySet;
 use awep2p_core::reputation::NodeReputation;
+use awep2p_core::sandbox::{SandboxConfig, WasmSandbox};
 use awep2p_core::storage::{SecretFilePackage, StoragePolicy};
 use awep2p_core::store::{AWEPackage, AppCapability, AppKind};
-use awep2p_core::permissions::CapabilitySet;
-use awep2p_core::sandbox::{SandboxConfig, WasmSandbox};
-use std::{collections::BTreeMap, env, fs, net::SocketAddr, path::PathBuf, sync::{Arc, Mutex}};
+use std::{
+    collections::BTreeMap,
+    env, fs,
+    net::SocketAddr,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const UI_HTML: &str = include_str!("../../awe-desktop/ui/index.html");
@@ -24,8 +32,14 @@ type MessengerLog = Arc<Mutex<Vec<serde_json::Value>>>;
 type FederationState = Arc<Mutex<AweNetConfig>>;
 
 fn default_vault() -> PathBuf {
-    if let Some(home) = env::var_os("HOME") { return PathBuf::from(home).join(".awep2p").join("identity.vault"); }
-    if let Some(profile) = env::var_os("USERPROFILE") { return PathBuf::from(profile).join(".awep2p").join("identity.vault"); }
+    if let Some(home) = env::var_os("HOME") {
+        return PathBuf::from(home).join(".awep2p").join("identity.vault");
+    }
+    if let Some(profile) = env::var_os("USERPROFILE") {
+        return PathBuf::from(profile)
+            .join(".awep2p")
+            .join("identity.vault");
+    }
     PathBuf::from("identity.vault")
 }
 
@@ -38,25 +52,42 @@ fn generate_secret_file(username_str: &str, out_path: Option<PathBuf>) -> Result
     let username = Username::new(username_str).map_err(anyhow::Error::msg)?;
     let identity = Identity::generate(username);
     let secret = AweSecret::generate(&identity);
-    let bytes = secret.to_bytes().context("failed to serialize .awesecret")?;
+    let bytes = secret
+        .to_bytes()
+        .context("failed to serialize .awesecret")?;
     let path = out_path.unwrap_or_else(|| {
-        if let Some(home) = env::var_os("HOME") { PathBuf::from(home).join(".awep2p").join(format!("{username_str}.awesecret")) }
-        else { PathBuf::from(format!("{username_str}.awesecret")) }
+        if let Some(home) = env::var_os("HOME") {
+            PathBuf::from(home)
+                .join(".awep2p")
+                .join(format!("{username_str}.awesecret"))
+        } else {
+            PathBuf::from(format!("{username_str}.awesecret"))
+        }
     });
-    if let Some(parent) = path.parent() { fs::create_dir_all(parent)?; }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
     fs::write(&path, bytes)?;
     println!("AWE-ID: {}", secret.awe_id);
-    println!("Node Descriptor: {}", format_node_descriptor(identity.public.awe_id.as_bytes()));
+    println!(
+        "Node Descriptor: {}",
+        format_node_descriptor(identity.public.awe_id.as_bytes())
+    );
     println!("Saved: {}", path.display());
     Ok(())
 }
 
 fn init(username: &str, path: PathBuf) -> Result<()> {
-    let identity = Identity::generate(Username::new(username.to_owned()).map_err(anyhow::Error::msg)?);
+    let identity =
+        Identity::generate(Username::new(username.to_owned()).map_err(anyhow::Error::msg)?);
     let password = rpassword::prompt_password("Vault password: ")?;
-    if password.is_empty() { anyhow::bail!("vault password must not be empty"); }
+    if password.is_empty() {
+        anyhow::bail!("vault password must not be empty");
+    }
     let vault = LocalVault::seal(&identity, &password).map_err(anyhow::Error::msg)?;
-    if let Some(parent) = path.parent() { fs::create_dir_all(parent)?; }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
     fs::write(&path, vault)?;
     println!("AWE-ID: {}", identity.public.awe_id.to_hex());
     println!("Identity vault: {}", path.display());
@@ -65,15 +96,25 @@ fn init(username: &str, path: PathBuf) -> Result<()> {
 
 fn load_identity(path: &PathBuf, password: &str, username: &str) -> Result<Identity> {
     let data = fs::read(path)?;
-    LocalVault::open(&data, Username::new(username.to_owned()).map_err(anyhow::Error::msg)?, password)
-        .map_err(anyhow::Error::msg)
+    LocalVault::open(
+        &data,
+        Username::new(username.to_owned()).map_err(anyhow::Error::msg)?,
+        password,
+    )
+    .map_err(anyhow::Error::msg)
 }
 
 async fn http_response(status: &str, content_type: &str, body: &str) -> Vec<u8> {
     format!("HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: content-type\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}", body.len()).into_bytes()
 }
 
-async fn serve_ui(mut stream: tokio::net::TcpStream, node: Node, messenger: MessengerLog, federation_state: FederationState, federation_path: PathBuf) -> Result<()> {
+async fn serve_ui(
+    mut stream: tokio::net::TcpStream,
+    node: Node,
+    messenger: MessengerLog,
+    federation_state: FederationState,
+    federation_path: PathBuf,
+) -> Result<()> {
     let mut buf = vec![0u8; 8192];
     let n = stream.read(&mut buf).await?;
     let request = String::from_utf8_lossy(&buf[..n]);
@@ -256,17 +297,26 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, node: Node, messenger: Mess
         },
         _ => ("404 Not Found", "text/plain; charset=utf-8", "Not Found".to_string()),
     };
-    stream.write_all(&http_response(status, mime, &body).await).await?;
+    stream
+        .write_all(&http_response(status, mime, &body).await)
+        .await?;
     Ok(())
 }
 
 fn data_dir_for_api() -> String {
     if let Some(home) = env::var_os("USERPROFILE").or_else(|| env::var_os("HOME")) {
         PathBuf::from(home).join(".awep2p").display().to_string()
-    } else { PathBuf::from(".awep2p").display().to_string() }
+    } else {
+        PathBuf::from(".awep2p").display().to_string()
+    }
 }
 
-fn now_unix() -> u64 { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) }
+fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
 
 async fn run_product() -> Result<()> {
     let data_dir = if let Some(home) = env::var_os("USERPROFILE").or_else(|| env::var_os("HOME")) {
@@ -282,24 +332,57 @@ async fn run_product() -> Result<()> {
             .authenticate()
             .map_err(anyhow::Error::msg)?
     } else {
-        let identity = Identity::generate(Username::new("awe-node".to_string()).map_err(anyhow::Error::msg)?);
+        let identity =
+            Identity::generate(Username::new("awe-node".to_string()).map_err(anyhow::Error::msg)?);
         let secret = AweSecret::generate(&identity);
         fs::write(&secret_path, secret.to_bytes()?)?;
         identity
     };
     let node_id = format_uid(identity.public.awe_id.as_bytes());
-    let listen: SocketAddr = env::var("AWE_LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:41000".into()).parse().context("invalid AWE_LISTEN_ADDR")?;
+    let listen: SocketAddr = env::var("AWE_LISTEN_ADDR")
+        .unwrap_or_else(|_| "0.0.0.0:41000".into())
+        .parse()
+        .context("invalid AWE_LISTEN_ADDR")?;
     let node = Node::new(identity, listen);
     let messenger: MessengerLog = Arc::new(Mutex::new(Vec::new()));
     let federation_path = data_dir.join("awenet.json");
     let federation_state: FederationState = if federation_path.exists() {
-        fs::read(&federation_path).ok().and_then(|b| serde_json::from_slice::<AweNetConfig>(&b).ok()).map(|mut s| { s.local_node_id = node_id.clone(); Arc::new(Mutex::new(s)) }).unwrap_or_else(|| Arc::new(Mutex::new(AweNetConfig { format: "awenet".into(), version: federation::FORMAT_VERSION, local_node_id: node_id.clone(), ..Default::default() })))
+        fs::read(&federation_path)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<AweNetConfig>(&b).ok())
+            .map(|mut s| {
+                s.local_node_id = node_id.clone();
+                Arc::new(Mutex::new(s))
+            })
+            .unwrap_or_else(|| {
+                Arc::new(Mutex::new(AweNetConfig {
+                    format: "awenet".into(),
+                    version: federation::FORMAT_VERSION,
+                    local_node_id: node_id.clone(),
+                    ..Default::default()
+                }))
+            })
     } else {
-        Arc::new(Mutex::new(AweNetConfig { format: "awenet".into(), version: federation::FORMAT_VERSION, local_node_id: node_id.clone(), ..Default::default() }))
+        Arc::new(Mutex::new(AweNetConfig {
+            format: "awenet".into(),
+            version: federation::FORMAT_VERSION,
+            local_node_id: node_id.clone(),
+            ..Default::default()
+        }))
     };
-    if let Ok(state) = federation_state.lock() { let _ = federation::save_json(&*state, &federation_path); }
-    let startup_bootstrap = federation_state.lock().map(|s| s.bootstrap_endpoints.clone()).unwrap_or_default().iter().filter_map(|x| x.parse::<SocketAddr>().ok()).collect::<Vec<_>>();
-    if !startup_bootstrap.is_empty() { let _ = node.bootstrap(&startup_bootstrap).await; }
+    if let Ok(state) = federation_state.lock() {
+        let _ = federation::save_json(&*state, &federation_path);
+    }
+    let startup_bootstrap = federation_state
+        .lock()
+        .map(|s| s.bootstrap_endpoints.clone())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|x| x.parse::<SocketAddr>().ok())
+        .collect::<Vec<_>>();
+    if !startup_bootstrap.is_empty() {
+        let _ = node.bootstrap(&startup_bootstrap).await;
+    }
     let node_for_listener = node.clone();
     tokio::spawn(async move {
         if let Err(e) = node_for_listener.listen().await {
@@ -307,7 +390,8 @@ async fn run_product() -> Result<()> {
         }
     });
 
-    let listener = tokio::net::TcpListener::bind(UI_ADDR).await
+    let listener = tokio::net::TcpListener::bind(UI_ADDR)
+        .await
         .with_context(|| format!("cannot bind AWEp2P UI to {UI_ADDR}"))?;
     println!("AWEp2P is running.");
     println!("Node: {node_id}");
@@ -316,11 +400,19 @@ async fn run_product() -> Result<()> {
 
     let url = format!("http://{UI_ADDR}/");
     #[cfg(target_os = "windows")]
-    { let _ = std::process::Command::new("cmd").args(["/C", "start", "", &url]).spawn(); }
+    {
+        let _ = std::process::Command::new("cmd")
+            .args(["/C", "start", "", &url])
+            .spawn();
+    }
     #[cfg(target_os = "macos")]
-    { let _ = std::process::Command::new("open").arg(&url).spawn(); }
+    {
+        let _ = std::process::Command::new("open").arg(&url).spawn();
+    }
     #[cfg(all(unix, not(target_os = "macos")))]
-    { let _ = std::process::Command::new("xdg-open").arg(&url).spawn(); }
+    {
+        let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
+    }
 
     loop {
         let (stream, _) = listener.accept().await?;
@@ -328,48 +420,104 @@ async fn run_product() -> Result<()> {
         let api_messenger = messenger.clone();
         let api_federation = federation_state.clone();
         tokio::spawn(async move {
-            if let Err(e) = serve_ui(stream, api_node, api_messenger, api_federation, federation_path.clone()).await { eprintln!("UI request error: {e}"); }
+            if let Err(e) = serve_ui(
+                stream,
+                api_node,
+                api_messenger,
+                api_federation,
+                federation_path.clone(),
+            )
+            .await
+            {
+                eprintln!("UI request error: {e}");
+            }
         });
     }
 }
 
-async fn run_node(path: PathBuf, password: String, username: String, listen: SocketAddr, bootstrap: Vec<SocketAddr>) -> Result<()> {
+async fn run_node(
+    path: PathBuf,
+    password: String,
+    username: String,
+    listen: SocketAddr,
+    bootstrap: Vec<SocketAddr>,
+) -> Result<()> {
     let identity = load_identity(&path, &password, &username)?;
     let node = Node::new(identity, listen);
-    if !bootstrap.is_empty() { node.bootstrap(&bootstrap).await.context("bootstrap failed")?; }
+    if !bootstrap.is_empty() {
+        node.bootstrap(&bootstrap)
+            .await
+            .context("bootstrap failed")?;
+    }
     node.listen().await.map_err(anyhow::Error::msg)
 }
 
 fn print_id(path: PathBuf, password: String, username: String) -> Result<()> {
-    println!("{}", load_identity(&path, &password, &username)?.public.awe_id.to_hex());
+    println!(
+        "{}",
+        load_identity(&path, &password, &username)?
+            .public
+            .awe_id
+            .to_hex()
+    );
     Ok(())
 }
 fn print_status(path: PathBuf) -> Result<()> {
-    println!("{}", if path.exists() { format!("Vault exists at {}", path.display()) } else { format!("Vault not found at {}", path.display()) });
+    println!(
+        "{}",
+        if path.exists() {
+            format!("Vault exists at {}", path.display())
+        } else {
+            format!("Vault not found at {}", path.display())
+        }
+    );
     Ok(())
 }
 fn print_diagnostics() -> Result<()> {
-    let mut d = NodeDiagnostics::new(); d.update_metrics(NodeMetrics::default());
-    println!("Status: {:?}", d.status()); println!("Metrics: {:?}", d.metrics()); Ok(())
+    let mut d = NodeDiagnostics::new();
+    d.update_metrics(NodeMetrics::default());
+    println!("Status: {:?}", d.status());
+    println!("Metrics: {:?}", d.metrics());
+    Ok(())
 }
 fn run_mesh(port: u16) -> Result<()> {
     let addr: SocketAddr = format!("0.0.0.0:{port}").parse()?;
-    let beacon = LanPeerBeacon::new([1u8;32], addr, false);
+    let beacon = LanPeerBeacon::new([1u8; 32], addr, false);
     let bytes = beacon.encode().map_err(anyhow::Error::msg)?;
     println!("Broadcast beacon bytes: {}", bytes.len());
-    println!("Decoded: {:?}", LanPeerBeacon::decode(&bytes).map_err(anyhow::Error::msg)?.node_id);
+    println!(
+        "Decoded: {:?}",
+        LanPeerBeacon::decode(&bytes)
+            .map_err(anyhow::Error::msg)?
+            .node_id
+    );
     Ok(())
 }
 fn print_health() -> Result<()> {
-    println!("Initial reputation score: {}", NodeReputation::new([1u8;32]).score());
-    println!("Health: ONLINE"); Ok(())
+    println!(
+        "Initial reputation score: {}",
+        NodeReputation::new([1u8; 32]).score()
+    );
+    println!("Health: ONLINE");
+    Ok(())
 }
 async fn probe(address: SocketAddr) -> Result<()> {
-    let node = Node::new(Identity::generate(Username::new("probe-node").map_err(anyhow::Error::msg)?), "127.0.0.1:0".parse()?);
+    let node = Node::new(
+        Identity::generate(Username::new("probe-node").map_err(anyhow::Error::msg)?),
+        "127.0.0.1:0".parse()?,
+    );
     let mut c = node.connect(address).await.map_err(anyhow::Error::msg)?;
     println!("Authenticated peer: {:?}", c.remote_id);
-    println!("Heartbeat: {:?}", c.ping_roundtrip(1).await.map_err(anyhow::Error::msg)?);
-    println!("Encrypted data-plane: {:?}", c.send_data_roundtrip(7, b"AWEP2P-REAL-DATA-PROBE-v1".to_vec()).await.map_err(anyhow::Error::msg)?);
+    println!(
+        "Heartbeat: {:?}",
+        c.ping_roundtrip(1).await.map_err(anyhow::Error::msg)?
+    );
+    println!(
+        "Encrypted data-plane: {:?}",
+        c.send_data_roundtrip(7, b"AWEP2P-REAL-DATA-PROBE-v1".to_vec())
+            .await
+            .map_err(anyhow::Error::msg)?
+    );
     Ok(())
 }
 
@@ -378,22 +526,51 @@ async fn main() -> Result<()> {
     let mut args = env::args().skip(1);
     match args.next().as_deref() {
         None | Some("app") | Some("gui") => run_product().await,
-        Some("secret") => { let username = args.next().unwrap_or_else(|| usage()); generate_secret_file(&username, args.next().map(PathBuf::from)) },
-        Some("init") => { let username = args.next().unwrap_or_else(|| usage()); init(&username, args.next().map(PathBuf::from).unwrap_or_else(default_vault)) },
+        Some("secret") => {
+            let username = args.next().unwrap_or_else(|| usage());
+            generate_secret_file(&username, args.next().map(PathBuf::from))
+        }
+        Some("init") => {
+            let username = args.next().unwrap_or_else(|| usage());
+            init(
+                &username,
+                args.next().map(PathBuf::from).unwrap_or_else(default_vault),
+            )
+        }
         Some("run") => {
             let path = args.next().map(PathBuf::from).unwrap_or_else(|| usage());
             let password = args.next().unwrap_or_else(|| usage());
-            let listen = args.next().unwrap_or_else(|| usage()).parse().context("invalid listen address")?;
+            let listen = args
+                .next()
+                .unwrap_or_else(|| usage())
+                .parse()
+                .context("invalid listen address")?;
             let username = env::var("AWE_USERNAME").unwrap_or_else(|_| "node".to_string());
-            let bootstrap = args.map(|x| x.parse().context("invalid bootstrap address")).collect::<Result<Vec<SocketAddr>>>()?;
+            let bootstrap = args
+                .map(|x| x.parse().context("invalid bootstrap address"))
+                .collect::<Result<Vec<SocketAddr>>>()?;
             run_node(path, password, username, listen, bootstrap).await
-        },
-        Some("id") => print_id(args.next().map(PathBuf::from).unwrap_or_else(|| usage()), args.next().unwrap_or_else(|| usage()), args.next().unwrap_or_else(|| usage())),
-        Some("status") => print_status(args.next().map(PathBuf::from).unwrap_or_else(default_vault)),
+        }
+        Some("id") => print_id(
+            args.next().map(PathBuf::from).unwrap_or_else(|| usage()),
+            args.next().unwrap_or_else(|| usage()),
+            args.next().unwrap_or_else(|| usage()),
+        ),
+        Some("status") => {
+            print_status(args.next().map(PathBuf::from).unwrap_or_else(default_vault))
+        }
         Some("diagnostics") => print_diagnostics(),
         Some("mesh") => run_mesh(args.next().unwrap_or_else(|| "41000".into()).parse()?),
         Some("health") => print_health(),
-        Some("probe") => probe(args.next().unwrap_or_else(|| usage()).parse().context("invalid peer address")?).await,
+        Some("probe") => {
+            probe(
+                args.next()
+                    .unwrap_or_else(|| usage())
+                    .parse()
+                    .context("invalid peer address")?,
+            )
+            .await
+        }
         _ => usage(),
     }
 }
