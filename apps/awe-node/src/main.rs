@@ -933,6 +933,45 @@ async fn run_product() -> Result<()> {
                 if stream != STORAGE_STREAM {
                     continue;
                 }
+                if let Ok(ack) = serde_json::from_slice::<StorageShardAck>(&payload) {
+                    if ack.version == awep2p_core::data_plane::STORAGE_PROTOCOL_VERSION {
+                        if let Ok(mut pending) = dispatcher_acks.lock() {
+                            pending.insert(ack.request_id, ack);
+                        }
+                    }
+                    continue;
+                }
+
+                if let Ok(request) = serde_json::from_slice::<StorageShardRequest>(&payload) {
+                    if request.requester != sender || request.verify().is_err() {
+                        continue;
+                    }
+                    let Ok(data) = dispatcher_storage.get(&request.expected_hash) else {
+                        continue;
+                    };
+                    if data.len() > request.max_bytes as usize {
+                        continue;
+                    }
+                    let transfer = StorageShardTransfer::new(
+                        request.request_id,
+                        dispatcher_node.identity.public.awe_id,
+                        request.file_id,
+                        request.shard_index,
+                        1000,
+                        request.original_size,
+                        data,
+                    );
+                    if transfer.payload_hash != request.expected_hash {
+                        continue;
+                    }
+                    if let Ok(bytes) = serde_json::to_vec(&transfer) {
+                        let _ = dispatcher_node
+                            .send_to_peer(&sender, STORAGE_STREAM, bytes)
+                            .await;
+                    }
+                    continue;
+                }
+
                 let Ok(transfer) = serde_json::from_slice::<StorageShardTransfer>(&payload) else {
                     continue;
                 };
