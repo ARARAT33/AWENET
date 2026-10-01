@@ -7,10 +7,13 @@ use awep2p_core::namespace::AweBrowserResolver;
 use awep2p_core::network::{format_node_descriptor, Node};
 use awep2p_core::node::{validate_and_configure_node_allocation, NodeAllocationMode};
 use awep2p_core::reputation::NodeReputation;
-use awep2p_core::storage::SecretFilePackage;
+use awep2p_core::permissions::CapabilitySet;
+use awep2p_core::sandbox::{SandboxConfig, WasmSandbox};
+use awep2p_core::storage::{SecretFilePackage, StoragePolicy};
+use awep2p_core::store::{AWEPackage, AppCapability, AppKind};
 #[cfg(not(target_os = "android"))]
 use eframe::egui;
-use std::{env, fs, net::SocketAddr, path::PathBuf};
+use std::{collections::BTreeMap, env, fs, net::SocketAddr, path::PathBuf};
 
 const USAGE: &str = r#"AWEp2P — Sovereign Native P2P Standalone App & Node (100% Rust)
 
@@ -127,6 +130,7 @@ enum AppTab {
     NodeDashboard,
     SiteDashboard,
     AweStore,
+    Mlab,
 }
 
 #[cfg(not(target_os = "android"))]
@@ -142,10 +146,21 @@ struct AweNativeGuiApp {
     sfid_data: String,
     sfid_password: String,
     created_sfid: String,
+    shard_count_input: usize,
+    configured_policy_status: String,
     selected_allocation_mode: usize,
     folder_path: String,
     non_system_disks: String,
     allocation_status: String,
+    // MLAB state
+    mlab_app_id: String,
+    mlab_app_name: String,
+    mlab_app_version: String,
+    mlab_status: String,
+    // AWEStore state
+    store_apps: Vec<(String, String, Vec<u8>)>,
+    ephemeral_run_output: String,
+    identity: Identity,
 }
 
 #[cfg(not(target_os = "android"))]
@@ -154,6 +169,19 @@ impl Default for AweNativeGuiApp {
         let username_obj = Username::new("ararat_node").unwrap();
         let identity = Identity::generate(username_obj);
         let my_uid = format_uid(identity.public.awe_id.as_bytes());
+
+        let default_wasm = b"\0asm\x01\0\0\0".to_vec();
+        let mut store_apps = Vec::new();
+        store_apps.push((
+            "org.awenet.messenger".to_string(),
+            "AWE Messenger Module".to_string(),
+            default_wasm.clone(),
+        ));
+        store_apps.push((
+            "org.awenet.browser".to_string(),
+            "Sovereign Browser Extension".to_string(),
+            default_wasm,
+        ));
 
         Self {
             active_tab: AppTab::Browser,
@@ -167,10 +195,20 @@ impl Default for AweNativeGuiApp {
             sfid_data: "Confidential Sovereign Data".to_string(),
             sfid_password: "SecretPass123".to_string(),
             created_sfid: String::new(),
+            shard_count_input: 1000,
+            configured_policy_status: "450 Data / 550 Parity Shards (3x Redundancy across nodes)"
+                .to_string(),
             selected_allocation_mode: 0,
             folder_path: "/var/awe_node_storage".to_string(),
             non_system_disks: "D:\\, E:\\".to_string(),
             allocation_status: "Light Folder Mode (2 Cores, 2GB RAM)".to_string(),
+            mlab_app_id: "org.awe.sampleapp".to_string(),
+            mlab_app_name: "Sample Sovereign Extension".to_string(),
+            mlab_app_version: "1.0.0".to_string(),
+            mlab_status: "MLAB Ready to package extensions and WASM modules.".to_string(),
+            store_apps,
+            ephemeral_run_output: "Ready to launch ephemeral sandboxed WASM app.".to_string(),
+            identity,
         }
     }
 }
@@ -195,6 +233,7 @@ impl eframe::App for AweNativeGuiApp {
                     "🌐 Site Dashboard",
                 );
                 ui.selectable_value(&mut self.active_tab, AppTab::AweStore, "🛒 AWEStore");
+                ui.selectable_value(&mut self.active_tab, AppTab::Mlab, "🧪 MLAB");
             });
         });
 
@@ -263,6 +302,20 @@ impl eframe::App for AweNativeGuiApp {
                 if !self.created_sfid.is_empty() {
                     ui.label(format!("Created Secret File ID: {}", self.created_sfid));
                 }
+                ui.separator();
+                ui.heading("⚙️ Storage Policy & Shard Distribution Config");
+                ui.horizontal(|ui| {
+                    ui.label("Total Erasure Shards (1,000 - 100,000,000):");
+                    ui.add(egui::DragValue::new(&mut self.shard_count_input).range(1000..=100_000_000));
+                    if ui.button("Apply Shard Policy").clicked() {
+                        let policy = StoragePolicy::custom_scaled(self.shard_count_input);
+                        self.configured_policy_status = format!(
+                            "Policy set: {} Data / {} Parity Shards across P2P Swarm (3x Replica Distribution)",
+                            policy.data_shards, policy.parity_shards
+                        );
+                    }
+                });
+                ui.label(&self.configured_policy_status);
             }
             AppTab::NodeDashboard => {
                 ui.heading("🖥️ Node Dashboard & Resource Allocation");
@@ -312,12 +365,86 @@ impl eframe::App for AweNativeGuiApp {
             AppTab::SiteDashboard => {
                 ui.heading("🌐 Site Dashboard (P2P Hosting)");
                 ui.label("Managed Domains: portal.awe, app.awe");
-                ui.label("Status: Published across 1000-shard P2P swarm");
+                ui.label(format!(
+                    "Swarm Storage Config: Distributed across {} Shards",
+                    self.shard_count_input
+                ));
             }
             AppTab::AweStore => {
-                ui.heading("🛒 AWEStore (WASM Application Repository)");
-                ui.label("Available P2P Apps: Messenger, SovereignBrowser, DriveSync");
-                ui.label("Runtime Sandbox: WASM Sandboxed Engine");
+                ui.heading("🛒 AWEStore (P2P App Repository & Ephemeral Runtime)");
+                ui.label("Zero-Disk Footprint Execution Engine (Runs 100% in Memory)");
+                ui.separator();
+                for (id, name, wasm_bytes) in &self.store_apps {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("📦 {} ({})", name, id));
+                        if ui.button("▶ Run Ephemerally").clicked() {
+                            let sandbox = WasmSandbox::new(SandboxConfig::default(), CapabilitySet::default());
+                            match sandbox.execute_module(wasm_bytes) {
+                                Ok(res) => {
+                                    self.ephemeral_run_output = format!(
+                                        "Executed {} ephemerally in memory! Output: {}",
+                                        name,
+                                        String::from_utf8_lossy(&res)
+                                    );
+                                }
+                                Err(e) => {
+                                    self.ephemeral_run_output = format!("Execution error: {}", e);
+                                }
+                            }
+                        }
+                    });
+                }
+                ui.separator();
+                ui.label(format!("Ephemeral Execution Log: {}", self.ephemeral_run_output));
+            }
+            AppTab::Mlab => {
+                ui.heading("🧪 MLAB (Module Lab / Extension Builder)");
+                ui.label("Draft, compile, sign and publish sovereign applications & extensions to AWEStore.");
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label("App ID:");
+                    ui.text_edit_singleline(&mut self.mlab_app_id);
+                });
+                ui.horizontal(|ui| {
+                    ui.label("App Name:");
+                    ui.text_edit_singleline(&mut self.mlab_app_name);
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Version:");
+                    ui.text_edit_singleline(&mut self.mlab_app_version);
+                });
+                if ui.button("🛠️ Package, Sign & Publish to AWEStore").clicked() {
+                    let mut files = BTreeMap::new();
+                    files.insert("/app.wasm".to_string(), b"\0asm\x01\0\0\0".to_vec());
+                    match AWEPackage::new(
+                        &self.identity,
+                        &self.mlab_app_id,
+                        &self.mlab_app_name,
+                        &self.mlab_app_version,
+                        AppKind::Wasm,
+                        "/app.wasm",
+                        files.clone(),
+                        vec![AppCapability::Network, AppCapability::Storage],
+                        vec![],
+                    ) {
+                        Ok(pkg) => {
+                            self.store_apps.push((
+                                pkg.manifest.manifest.id.clone(),
+                                pkg.manifest.manifest.name.clone(),
+                                files.get("/app.wasm").cloned().unwrap_or_default(),
+                            ));
+                            self.mlab_status = format!(
+                                "Successfully created & signed AWEPackage '{}' v{}! Published to AWEStore.",
+                                self.mlab_app_name, self.mlab_app_version
+                            );
+                        }
+                        Err(e) => {
+                            self.mlab_status = format!("MLAB Package build failed: {}", e);
+                        }
+                    }
+                }
+                ui.separator();
+                ui.label(&self.mlab_status);
             }
         });
     }
