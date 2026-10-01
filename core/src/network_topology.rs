@@ -82,8 +82,12 @@ impl DataCentre {
     }
 
     pub fn add_node(&mut self, n: Node) {
-        if let Some(peer) = self.nearest(&n.id) {
-            if let Some(existing) = self.nodes.get_mut(&peer) { existing.peers.insert(n.id.clone()); }
+        if n.alive {
+            if let Some(peer) = self.nearest(&n.id) {
+                if let Some(existing) = self.nodes.get_mut(&peer) {
+                    existing.peers.insert(n.id.clone());
+                }
+            }
         }
         self.nodes.insert(n.id.clone(), n);
     }
