@@ -38,6 +38,63 @@ jobs:
       - run: cargo test --workspace --all-targets
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
+  package-desktop:
+    name: Native desktop UI (${{ matrix.name }})
+    needs: validate
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: desktop-windows-x86_64
+          - os: ubuntu-24.04
+            name: desktop-linux-x86_64
+          - os: macos-13
+            name: desktop-macos-x86_64
+          - os: macos-14
+            name: desktop-macos-aarch64
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build native desktop UI
+        run: cargo build --release -p awe-desktop
+      - name: Validate native desktop executable
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            BIN="target/release/awep2p-desktop.exe"
+            test -x "$BIN"
+            file "$BIN" | grep -E 'PE32\\+.*executable|MS Windows'
+          elif [ "${{ runner.os }}" = "macOS" ]; then
+            BIN="target/release/awep2p-desktop"
+            test -x "$BIN"
+            file "$BIN" | grep -E 'Mach-O.*executable'
+          else
+            BIN="target/release/awep2p-desktop"
+            test -x "$BIN"
+            file "$BIN" | grep -E 'ELF 64-bit.*x86-64'
+          fi
+      - name: Prepare release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp target/release/awep2p-desktop.exe dist/${{ matrix.name }}.exe
+            sha256sum dist/${{ matrix.name }}.exe > dist/${{ matrix.name }}.exe.sha256
+          else
+            cp target/release/awep2p-desktop dist/${{ matrix.name }}
+            chmod +x dist/${{ matrix.name }}
+            shasum -a 256 dist/${{ matrix.name }} > dist/${{ matrix.name }}.sha256
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: dist/${{ matrix.name }}*
+          if-no-files-found: error
   package-windows:
     name: Windows x86_64 executable
     needs: validate
@@ -359,7 +416,7 @@ jobs:
           if-no-files-found: error
   release:
     name: Publish GitHub Release
-    needs: [package-windows, package-linux, package-linux-arm64, package-macos, package-android]
+    needs: [package-windows, package-linux, package-linux-arm64, package-macos, package-android, package-desktop]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     steps:
@@ -372,6 +429,10 @@ jobs:
         run: |
           set -euo pipefail
           test -s release-assets/awep2p-windows-x86_64.exe
+          test -s release-assets/desktop-windows-x86_64.exe
+          test -s release-assets/desktop-linux-x86_64
+          test -s release-assets/desktop-macos-x86_64
+          test -s release-assets/desktop-macos-aarch64
           test -s release-assets/awep2p-linux-x86_64
           test -s release-assets/awep2p-linux-aarch64
           test -s release-assets/awep2p-macos-x86_64
