@@ -77,23 +77,68 @@ jobs:
             test -x "$BIN"
             file "$BIN" | grep -E 'ELF 64-bit.*x86-64'
           fi
-      - name: Prepare release files
+      - name: Package clickable native desktop application
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p dist
+          rm -rf dist bundle
+          mkdir -p dist bundle
           if [ "${{ runner.os }}" = "Windows" ]; then
-            cp target/release/awep2p-desktop.exe dist/${{ matrix.name }}.exe
-            sha256sum dist/${{ matrix.name }}.exe > dist/${{ matrix.name }}.exe.sha256
+            cp target/release/awep2p-desktop.exe "dist/AWEp2P.exe"
+            sha256sum "dist/AWEp2P.exe" > "dist/AWEp2P.exe.sha256"
+          elif [ "${{ runner.os }}" = "macOS" ]; then
+            APP="bundle/AWEp2P.app"
+            mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+            cp target/release/awep2p-desktop "$APP/Contents/MacOS/AWEp2P"
+            chmod +x "$APP/Contents/MacOS/AWEp2P"
+            cat > "$APP/Contents/Info.plist" <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>CFBundleName</key><string>AWEp2P</string>
+            <key>CFBundleDisplayName</key><string>AWEp2P</string>
+            <key>CFBundleIdentifier</key><string>org.awe.awep2p.desktop</string>
+            <key>CFBundleExecutable</key><string>AWEp2P</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleVersion</key><string>1.0.0</string>
+            <key>CFBundleShortVersionString</key><string>1.0.0</string>
+          </dict></plist>
+          PLIST
+            ditto -c -k --sequesterRsrc --keepParent "$APP" "dist/AWEp2P-${{ matrix.name }}.app.zip"
+            shasum -a 256 "dist/AWEp2P-${{ matrix.name }}.app.zip" > "dist/AWEp2P-${{ matrix.name }}.app.zip.sha256"
           else
-            cp target/release/awep2p-desktop dist/${{ matrix.name }}
-            chmod +x dist/${{ matrix.name }}
-            shasum -a 256 dist/${{ matrix.name }} > dist/${{ matrix.name }}.sha256
+            mkdir -p "bundle/AWEp2P"
+            cp target/release/awep2p-desktop "bundle/AWEp2P/AWEp2P"
+            chmod +x "bundle/AWEp2P/AWEp2P"
+            cat > "bundle/AWEp2P/AWEp2P.desktop" <<'DESKTOP'
+          [Desktop Entry]
+          Type=Application
+          Name=AWEp2P
+          Comment=AWEp2P native P2P desktop application
+          Exec=AWEp2P
+          Terminal=false
+          Categories=Network;
+          DESKTOP
+            tar -C bundle -czf "dist/AWEp2P-${{ matrix.name }}.tar.gz" AWEp2P
+            sha256sum "dist/AWEp2P-${{ matrix.name }}.tar.gz" > "dist/AWEp2P-${{ matrix.name }}.tar.gz.sha256"
+          fi
+      - name: Validate clickable package
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            test -s dist/AWEp2P.exe
+          elif [ "${{ runner.os }}" = "macOS" ]; then
+            test -s "dist/AWEp2P-${{ matrix.name }}.app.zip"
+            unzip -t "dist/AWEp2P-${{ matrix.name }}.app.zip" >/dev/null
+          else
+            test -s "dist/AWEp2P-${{ matrix.name }}.tar.gz"
+            tar -tzf "dist/AWEp2P-${{ matrix.name }}.tar.gz" | grep -F 'AWEp2P/AWEp2P.desktop'
           fi
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
-          path: dist/${{ matrix.name }}*
+          path: dist/AWEp2P*
           if-no-files-found: error
   package-windows:
     name: Windows x86_64 executable
@@ -429,10 +474,10 @@ jobs:
         run: |
           set -euo pipefail
           test -s release-assets/awep2p-windows-x86_64.exe
-          test -s release-assets/desktop-windows-x86_64.exe
-          test -s release-assets/desktop-linux-x86_64
-          test -s release-assets/desktop-macos-x86_64
-          test -s release-assets/desktop-macos-aarch64
+          test -s release-assets/AWEp2P.exe
+          test -s release-assets/AWEp2P-desktop-linux-x86_64.tar.gz
+          test -s release-assets/AWEp2P-desktop-macos-x86_64.app.zip
+          test -s release-assets/AWEp2P-desktop-macos-aarch64.app.zip
           test -s release-assets/awep2p-linux-x86_64
           test -s release-assets/awep2p-linux-aarch64
           test -s release-assets/awep2p-macos-x86_64
@@ -440,7 +485,7 @@ jobs:
           test -s release-assets/android-arm64.apk
           test -s release-assets/android-armv7.apk
           test -s release-assets/android-x86_64.apk
-          file release-assets/awep2p-windows-x86_64.exe release-assets/awep2p-linux-x86_64 release-assets/*.apk
+          file release-assets/awep2p-windows-x86_64.exe release-assets/AWEp2P.exe release-assets/awep2p-linux-x86_64 release-assets/*.apk
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
