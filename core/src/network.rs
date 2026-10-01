@@ -586,6 +586,33 @@ impl SecureConnection {
     pub async fn ping(&mut self, sequence: u64) -> Result<(), NetworkError> {
         self.send(&Control::Ping { sequence }).await
     }
+
+    /// Send a heartbeat and wait for the matching authenticated Pong.
+    /// This is useful for operational probes and real node-to-node tests.
+    pub async fn ping_roundtrip(&mut self, sequence: u64) -> Result<Duration, NetworkError> {
+        let started = Instant::now();
+        self.ping(sequence).await?;
+        loop {
+            match timeout(HELLO_TIMEOUT, self.recv()).await {
+                Ok(Ok(Control::Pong { sequence: echoed })) if echoed == sequence => {
+                    return Ok(started.elapsed());
+                }
+                Ok(Ok(Control::Ping { sequence: incoming })) => {
+                    self.send(&Control::Pong { sequence: incoming }).await?;
+                }
+                Ok(Ok(Control::Data { .. } | Control::Nodes { .. })) => {}
+                Ok(Ok(Control::Pong { .. })) => {}
+                Ok(Ok(Control::FindNode { .. } | Control::Hello { .. })) => {
+                    return Err(NetworkError::Protocol(
+                        "unexpected control message during ping".into(),
+                    ));
+                }
+                Ok(Err(error)) => return Err(error),
+                Err(_) => return Err(NetworkError::Timeout),
+            }
+        }
+    }
+
     pub async fn recv_data(&mut self) -> Result<Option<(u32, Vec<u8>)>, NetworkError> {
         match self.recv().await? {
             Control::Data { stream, payload } => Ok(Some((stream, payload))),
