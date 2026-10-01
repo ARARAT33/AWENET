@@ -649,6 +649,36 @@ async fn serve_ui(
                     serde_json::json!({"status":"not_found","file_id":file_id_hex}).to_string())
             }
         },
+        "/api/storage/health" => {
+            let online: std::collections::BTreeSet<String> = node.closest_peers(4096)
+                .into_iter().map(|p| hex::encode(p.id)).collect();
+            online.insert(hex::encode(node.identity.public.awe_id));
+            let manifest_dir = PathBuf::from(data_dir_for_api()).join("storage").join("manifests");
+            let mut files = 0usize;
+            let mut healthy = 0usize;
+            let mut degraded = 0usize;
+            if let Ok(entries) = fs::read_dir(&manifest_dir) {
+                for entry in entries.flatten() {
+                    if let Ok(bytes) = fs::read(entry.path()) {
+                        if let Ok(m) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                            files += 1;
+                            let mut ok = true;
+                            if let Some(placements) = m.get("placements").and_then(|v| v.as_array()) {
+                                for p in placements {
+                                    let count = p.get("nodes").and_then(|v| v.as_array()).map(|ns|
+                                        ns.iter().filter(|n| n.as_str().map(|s| online.contains(s)).unwrap_or(false)).count()
+                                    ).unwrap_or(0);
+                                    if count < 3 { ok = false; break; }
+                                }
+                            } else { ok = false; }
+                            if ok { healthy += 1; } else { degraded += 1; }
+                        }
+                    }
+                }
+            }
+            ("200 OK","application/json; charset=utf-8",
+                serde_json::json!({"files":files,"healthy_files":healthy,"degraded_files":degraded,"online_nodes":online.len()}).to_string())
+        },
         "/api/storage" => {
             let stats = storage.stats().unwrap_or_default();
             let free = awep2p_core::node::get_available_disk_space(PathBuf::from(data_dir_for_api()).as_path()).unwrap_or(0);
