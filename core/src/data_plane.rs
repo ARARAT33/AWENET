@@ -108,6 +108,54 @@ pub const STORAGE_STREAM: u32 = 200;
 pub const STORAGE_PROTOCOL_VERSION: u16 = 1;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StorageShardRequest {
+    pub version: u16,
+    pub request_id: [u8; 16],
+    pub requester: [u8; 32],
+    pub file_id: [u8; 32],
+    pub shard_index: u16,
+    pub expected_hash: [u8; 32],
+    pub original_size: u64,
+    pub max_bytes: u32,
+}
+
+impl StorageShardRequest {
+    pub fn new(
+        request_id: [u8; 16],
+        requester: [u8; 32],
+        file_id: [u8; 32],
+        shard_index: u16,
+        expected_hash: [u8; 32],
+        original_size: u64,
+        max_bytes: u32,
+    ) -> Self {
+        Self {
+            version: STORAGE_PROTOCOL_VERSION,
+            request_id,
+            requester,
+            file_id,
+            shard_index,
+            expected_hash,
+            original_size,
+            max_bytes,
+        }
+    }
+
+    pub fn verify(&self) -> Result<(), String> {
+        if self.version != STORAGE_PROTOCOL_VERSION {
+            return Err("unsupported storage request version".into());
+        }
+        if self.shard_index >= 1000 {
+            return Err("storage shard index out of range".into());
+        }
+        if self.max_bytes == 0 {
+            return Err("storage request max_bytes must be non-zero".into());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StorageShardTransfer {
     pub version: u16,
     pub request_id: [u8; 16],
