@@ -12,7 +12,7 @@ use awep2p_core::node::{validate_and_configure_node_allocation, NodeAllocationMo
 use awep2p_core::permissions::CapabilitySet;
 use awep2p_core::reputation::NodeReputation;
 use awep2p_core::sandbox::{SandboxConfig, WasmSandbox};
-use awep2p_core::storage::{SecretFilePackage, StoragePolicy};
+use awep2p_core::storage::{LocalNodeStore, SecretFilePackage, StoragePolicy};
 use awep2p_core::store::{AWEPackage, AppCapability, AppKind};
 use std::{
     collections::BTreeMap,
@@ -30,6 +30,7 @@ const UI_ADDR: &str = "127.0.0.1:41800";
 
 type MessengerLog = Arc<Mutex<Vec<serde_json::Value>>>;
 type FederationState = Arc<Mutex<AweNetConfig>>;
+type StorageState = Arc<LocalNodeStore>;
 
 fn default_vault() -> PathBuf {
     if let Some(home) = env::var_os("HOME") {
@@ -114,6 +115,7 @@ async fn serve_ui(
     messenger: MessengerLog,
     federation_state: FederationState,
     federation_path: PathBuf,
+    storage: StorageState,
 ) -> Result<()> {
     let mut buf = vec![0u8; 8192];
     let n = stream.read(&mut buf).await?;
@@ -350,10 +352,17 @@ async fn serve_ui(
             }
         },
         "/api/storage" => {
-            let storage_root = PathBuf::from(data_dir_for_api());
-            let free = awep2p_core::node::get_available_disk_space(&storage_root).unwrap_or(0);
+            let stats = storage.stats().unwrap_or_default();
+            let free = awep2p_core::node::get_available_disk_space(PathBuf::from(data_dir_for_api()).as_path()).unwrap_or(0);
             ("200 OK", "application/json; charset=utf-8", serde_json::json!({
-                "root": data_dir_for_api(), "free_bytes": free, "replication_policy":"1000 shards / 3 replicas"
+                "root": data_dir_for_api(),
+                "free_bytes": free,
+                "capacity_bytes": stats.capacity,
+                "used_bytes": stats.used,
+                "objects": stats.objects,
+                "healthy_replicas": stats.healthy_replicas,
+                "repaired_chunks": stats.repaired_chunks,
+                "replication_policy": {"shards": 1000, "replicas": 3}
             }).to_string())
         },
         _ => ("404 Not Found", "text/plain; charset=utf-8", "Not Found".to_string()),
@@ -444,6 +453,9 @@ async fn run_product() -> Result<()> {
         .parse()
         .context("invalid AWE_LISTEN_ADDR")?;
     let node = Node::new(identity, listen);
+    let storage_root = data_dir.join("storage");
+    let storage_quota = awep2p_core::node::get_available_disk_space(&storage_root).unwrap_or(0);
+    let storage: StorageState = Arc::new(LocalNodeStore::open(&storage_root, storage_quota)?);
     let messenger: MessengerLog = Arc::new(Mutex::new(Vec::new()));
     let federation_path = data_dir.join("awenet.json");
     let federation_state: FederationState = if federation_path.exists() {
@@ -519,6 +531,7 @@ async fn run_product() -> Result<()> {
         let api_node = node.clone();
         let api_messenger = messenger.clone();
         let api_federation = federation_state.clone();
+        let api_storage = storage.clone();
         tokio::spawn(async move {
             if let Err(e) = serve_ui(
                 stream,
@@ -526,6 +539,7 @@ async fn run_product() -> Result<()> {
                 api_messenger,
                 api_federation,
                 federation_path.clone(),
+                api_storage,
             )
             .await
             {
