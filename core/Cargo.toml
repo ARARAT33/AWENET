@@ -33,3 +33,9 @@ winapi = { workspace = true }
 
 [dev-dependencies]
 serde_json.workspace = true
+
+[lints.clippy]
+len_without_is_empty = "allow"
+derivable_impls = "allow"
+manual_div_ceil = "allow"
+too_many_arguments = "allow"
