@@ -9,7 +9,7 @@ pub struct PeerAnnouncement {
     pub public_key: [u8; 32],
     pub expires_at_unix: u64,
     pub sequence: u64,
-    pub signature: [u8; 64],
+    pub signature: Vec<u8>,
 }
 
 impl PeerAnnouncement {
@@ -32,13 +32,16 @@ impl PeerAnnouncement {
         Identity::verify(
             &self.public_key,
             &self.signing_bytes(),
-            &self.signature,
+            self.signature.as_slice().try_into().unwrap(),
         )
     }
 
     pub fn validate(&self, now_unix: u64, max_lifetime: u64) -> Result<(), String> {
         if self.node_id.is_empty() || self.node_id.len() > 256 {
             return Err("invalid node id".into());
+        }
+        if self.signature.len() != 64 {
+            return Err("invalid peer announcement signature length".into());
         }
         if !self.verify_signature() {
             return Err("invalid peer announcement signature".into());
@@ -142,14 +145,14 @@ mod tests {
             public_key: id.public.public_key,
             expires_at_unix: 100,
             sequence: 2,
-            signature: [0; 64],
+            signature: vec![0; 64],
         };
-        base.signature = id.sign(&base.signing_bytes());
+        base.signature = id.sign(&base.signing_bytes()).to_vec();
         assert!(d.upsert(base.clone(), 10, 1000).unwrap());
 
         let mut old = base;
         old.sequence = 1;
-        old.signature = id.sign(&old.signing_bytes());
+        old.signature = id.sign(&old.signing_bytes()).to_vec();
         assert!(!d.upsert(old, 10, 1000).unwrap());
     }
 }
