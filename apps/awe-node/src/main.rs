@@ -577,6 +577,66 @@ async fn serve_ui(
                     serde_json::json!({"status":"error","error":"recipient, 32-byte file_id, shard_index 0..999 and payload_hex are required"}).to_string())
             }
         },
+        "/api/storage/get" => {
+            let query = request.lines().next().unwrap_or("");
+            let file_id_hex = query.split_whitespace().nth(1)
+                .and_then(|path| path.split('?').nth(1))
+                .and_then(|q| q.split('&').find_map(|p| p.strip_prefix("file_id=")))
+                .unwrap_or("");
+            let manifest_path = PathBuf::from(data_dir_for_api())
+                .join("storage").join("manifests")
+                .join(format!("{file_id_hex}.json"));
+            match fs::read(&manifest_path) {
+                Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes) {
+                    Ok(manifest) => {
+                        let policy = StoragePolicy::hyper_sovereign();
+                        let mut shards = vec![None; 1000];
+                        let mut present = 0usize;
+                        let mut missing = Vec::new();
+                        if let Some(placements) = manifest.get("placements").and_then(|v| v.as_array()) {
+                            for (index, placement) in placements.iter().enumerate().take(1000) {
+                                let local = format_uid(node.identity.public.awe_id.as_bytes());
+                                let owns = placement.get("nodes").and_then(|v| v.as_array())
+                                    .map(|nodes| nodes.iter().any(|n| n.as_str() == Some(&local))).unwrap_or(false);
+                                if owns {
+                                    if let Ok(hash_bytes) = hex::decode(
+                                        manifest.get("shard_hashes").and_then(|v| v.get(index))
+                                            .and_then(|v| v.as_str()).unwrap_or("")
+                                    ) {
+                                        if let Ok(hash) = <[u8;32]>::try_from(hash_bytes) {
+                                            if let Ok(data) = storage.get(&hash) {
+                                                shards[index] = Some(data);
+                                                present += 1;
+                                                continue;
+                                            }
+                                        }
+                                    }
+                                }
+                                missing.push(index);
+                            }
+                        }
+                        if present < policy.data_shards {
+                            return ("409 Conflict","application/json; charset=utf-8",
+                                serde_json::json!({"status":"insufficient_local_shards","present":present,"required":policy.data_shards,"missing":missing}).to_string());
+                        }
+                        match recover_shards(&mut shards, &policy) {
+                            Ok(mut data) => {
+                                let original_size = manifest.get("original_size").and_then(|v| v.as_u64()).unwrap_or(data.len() as u64) as usize;
+                                data.truncate(original_size);
+                                ("200 OK","application/octet-stream",
+                                    String::from_utf8_lossy(&data).to_string())
+                            },
+                            Err(error) => ("500 Internal Server Error","application/json; charset=utf-8",
+                                serde_json::json!({"status":"error","error":error.to_string()}).to_string())
+                        }
+                    },
+                    Err(error) => ("500 Internal Server Error","application/json; charset=utf-8",
+                        serde_json::json!({"status":"error","error":error.to_string()}).to_string())
+                },
+                Err(_) => ("404 Not Found","application/json; charset=utf-8",
+                    serde_json::json!({"status":"not_found","file_id":file_id_hex}).to_string())
+            }
+        },
         "/api/storage" => {
             let stats = storage.stats().unwrap_or_default();
             let free = awep2p_core::node::get_available_disk_space(PathBuf::from(data_dir_for_api()).as_path()).unwrap_or(0);
