@@ -13,7 +13,8 @@ use awep2p_core::node::{validate_and_configure_node_allocation, NodeAllocationMo
 use awep2p_core::permissions::CapabilitySet;
 use awep2p_core::reputation::NodeReputation;
 use awep2p_core::sandbox::{SandboxConfig, WasmSandbox};
-use awep2p_core::storage::LocalNodeStore;
+use awep2p_core::replication::build_plan;
+use awep2p_core::storage::{encode_shards, LocalNodeStore, StoragePolicy};
 use awep2p_core::store::{AWEPackage, AppCapability, AppKind};
 use std::{
     collections::BTreeMap,
@@ -401,6 +402,128 @@ async fn serve_ui(
                     },
                     Err(error) => ("500 Internal Server Error", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":error.to_string()}).to_string())
                 }
+                    }
+                }
+            }
+        },
+        "/api/storage/put" if method == "POST" => {
+            let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+            let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+            let filename = parsed.get("filename").and_then(|v| v.as_str()).unwrap_or("object.bin").trim();
+            let data_hex = parsed.get("data_hex").and_then(|v| v.as_str()).unwrap_or("").trim();
+
+            if filename.is_empty() || data_hex.is_empty() {
+                ("400 Bad Request", "application/json; charset=utf-8",
+                    serde_json::json!({"status":"error","error":"filename and data_hex are required"}).to_string())
+            } else {
+                match hex::decode(data_hex) {
+                    Err(_) => ("400 Bad Request", "application/json; charset=utf-8",
+                        serde_json::json!({"status":"error","error":"data_hex is not valid hexadecimal"}).to_string()),
+                    Ok(data) => {
+                        let policy = StoragePolicy::hyper_sovereign();
+                        let file_id = *blake3::hash(&data).as_bytes();
+                        let peers = node.closest_peers(node.identity.public.awe_id.as_bytes(), 64).await;
+                        let local_id = format_uid(node.identity.public.awe_id.as_bytes());
+                        let mut node_ids = vec![local_id.clone()];
+                        for peer in &peers {
+                            let id = format_uid(&peer.awe_id);
+                            if id != local_id && !node_ids.contains(&id) {
+                                node_ids.push(id);
+                            }
+                        }
+
+                        match build_plan(file_id, &node_ids) {
+                            Err(error) => ("409 Conflict", "application/json; charset=utf-8",
+                                serde_json::json!({"status":"error","error":error,"discovered_nodes":node_ids.len()}).to_string()),
+                            Ok(plan) => match encode_shards(&data, &policy) {
+                                Err(error) => ("500 Internal Server Error", "application/json; charset=utf-8",
+                                    serde_json::json!({"status":"error","error":error.to_string()}).to_string()),
+                                Ok(shards) => {
+                                    let mut peer_ids = std::collections::BTreeMap::<String, [u8; 32]>::new();
+                                    for peer in peers {
+                                        peer_ids.insert(format_uid(&peer.awe_id), peer.awe_id);
+                                    }
+                                    let mut stored_local = 0usize;
+                                    let mut sent_remote = 0usize;
+                                    let mut failed = Vec::new();
+
+                                    for (index, shard) in shards.into_iter().enumerate() {
+                                        let placement = &plan.placements[index];
+                                        let shard_hash = *blake3::hash(&shard).as_bytes();
+                                        for target in &placement.nodes {
+                                            if target == &local_id {
+                                                match storage.put(&shard) {
+                                                    Ok(_) => stored_local += 1,
+                                                    Err(error) => failed.push(serde_json::json!({
+                                                        "shard": index, "node": target, "error": error.to_string()
+                                                    }))
+                                                }
+                                            } else if let Some(peer_id) = peer_ids.get(target) {
+                                                let request_id = shard_hash[..16].try_into().unwrap_or([0u8; 16]);
+                                                let transfer = StorageShardTransfer::new(
+                                                    request_id,
+                                                    node.identity.public.awe_id,
+                                                    file_id,
+                                                    index as u16,
+                                                    1000,
+                                                    data.len() as u64,
+                                                    shard,
+                                                );
+                                                match serde_json::to_vec(&transfer) {
+                                                    Ok(bytes) => match node.send_to_peer(peer_id, STORAGE_STREAM, bytes).await {
+                                                        Ok(_) => sent_remote += 1,
+                                                        Err(error) => failed.push(serde_json::json!({
+                                                            "shard": index, "node": target, "error": error.to_string()
+                                                        }))
+                                                    },
+                                                    Err(error) => failed.push(serde_json::json!({
+                                                        "shard": index, "node": target, "error": error.to_string()
+                                                    }))
+                                                }
+                                            } else {
+                                                failed.push(serde_json::json!({
+                                                    "shard": index, "node": target, "error": "peer is no longer known"
+                                                }));
+                                            }
+                                        }
+                                    }
+
+                                    let manifest_path = PathBuf::from(data_dir_for_api())
+                                        .join("storage")
+                                        .join("manifests");
+                                    let _ = fs::create_dir_all(&manifest_path);
+                                    let manifest = serde_json::json!({
+                                        "version": 1,
+                                        "file_id": hex::encode(file_id),
+                                        "filename": filename,
+                                        "original_size": data.len(),
+                                        "shards": 1000,
+                                        "replicas": 3,
+                                        "placements": plan.placements,
+                                        "stored_local": stored_local,
+                                        "sent_remote": sent_remote
+                                    });
+                                    let _ = fs::write(
+                                        manifest_path.join(format!("{}.json", hex::encode(file_id))),
+                                        serde_json::to_vec_pretty(&manifest).unwrap_or_default(),
+                                    );
+
+                                    let status = if failed.is_empty() { "stored" } else { "partial" };
+                                    ("200 OK", "application/json; charset=utf-8",
+                                        serde_json::json!({
+                                            "status": status,
+                                            "file_id": hex::encode(file_id),
+                                            "filename": filename,
+                                            "original_size": data.len(),
+                                            "shards": 1000,
+                                            "replicas": 3,
+                                            "stored_local": stored_local,
+                                            "sent_remote": sent_remote,
+                                            "failures": failed
+                                        }).to_string())
+                                }
+                            }
+                        }
                     }
                 }
             }
