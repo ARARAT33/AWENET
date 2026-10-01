@@ -8,6 +8,40 @@ use awep2p_core::storage::StoragePolicy;
 use awep2p_core::store::{AWEPackage, AppCapability, AppKind};
 use eframe::egui;
 use std::collections::BTreeMap;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::path::PathBuf;
+
+fn startup_log(message: &str) {
+    let path = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir())
+        .join("AWEp2P")
+        .join("startup.log");
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(file, "[{}] {message}", chrono_like_timestamp());
+    }
+}
+
+fn chrono_like_timestamp() -> String {
+    format!("{:?}", std::time::SystemTime::now())
+}
+
+#[cfg(windows)]
+fn show_windows_error(title: &str, message: &str) {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+    let title: Vec<u16> = OsStr::new(title).encode_wide().chain(std::iter::once(0)).collect();
+    let message: Vec<u16> = OsStr::new(message).encode_wide().chain(std::iter::once(0)).collect();
+    unsafe { MessageBoxW(0, message.as_ptr(), title.as_ptr(), MB_OK | MB_ICONERROR); }
+}
+
+#[cfg(not(windows))]
+fn show_windows_error(_title: &str, _message: &str) {}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum View {
