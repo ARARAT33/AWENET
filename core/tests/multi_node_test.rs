@@ -57,6 +57,8 @@ async fn test_multi_node_cluster_bootstrap_and_routing() {
         },
     ];
 
-    let route = planner.plan_route(node3.identity.public.awe_id.as_bytes(), &peers).unwrap();
+    let route = planner
+        .plan_route(node3.identity.public.awe_id.as_bytes(), &peers)
+        .unwrap();
     assert!(!route.is_empty());
 }
