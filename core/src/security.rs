@@ -184,9 +184,7 @@ impl ShieldReplayGuard {
         }
 
         if self.states.len() >= SHIELD_MAX_TRACKED_REQUESTS {
-            if let Some((oldest, _)) =
-                self.states.iter().min_by_key(|(_, state)| state.generation)
-            {
+            if let Some((oldest, _)) = self.states.iter().min_by_key(|(_, state)| state.generation) {
                 let oldest = *oldest;
                 self.states.remove(&oldest);
             }
