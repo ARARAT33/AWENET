@@ -827,24 +827,22 @@ impl Node {
                                 .closest(&target, MAX_PEERS_PER_RESPONSE);
                             if c.send(&Control::Nodes { records }).await.is_err() {
                                 break;
+                            }
+                        }
+                        Control::Data { stream, payload } => {
+                            if c.send(&Control::DataAck {
+                                stream,
+                                bytes: payload.len() as u32,
+                            })
+                            .await
+                            .is_err()
+                            {
+                                break;
+                            }
+                        }
+                        Control::DataAck { .. } => {}
+                        Control::Nodes { .. } | Control::Hello { .. } => break,
                     }
-                }
-                Control::Data { stream, payload } => {
-                    if c
-                        .send(&Control::DataAck {
-                            stream,
-                            bytes: payload.len() as u32,
-                        })
-                        .await
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-                Control::DataAck { .. } => {}
-                Control::Nodes { .. } | Control::Hello { .. } => break,
-                    }
-                }
                 Ok(Err(_)) => break,
                 Err(_) => {
                     if c.is_idle() || c.ping(seq).await.is_err() {
