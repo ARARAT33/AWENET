@@ -73,7 +73,7 @@ async fn http_response(status: &str, content_type: &str, body: &str) -> Vec<u8> 
     format!("HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: content-type\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}", body.len()).into_bytes()
 }
 
-async fn serve_ui(mut stream: tokio::net::TcpStream, node: Node, messenger: MessengerLog, federation_state: FederationState) -> Result<()> {
+async fn serve_ui(mut stream: tokio::net::TcpStream, node: Node, messenger: MessengerLog, federation_state: FederationState, federation_path: PathBuf) -> Result<()> {
     let mut buf = vec![0u8; 8192];
     let n = stream.read(&mut buf).await?;
     let request = String::from_utf8_lossy(&buf[..n]);
@@ -136,7 +136,8 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, node: Node, messenger: Mess
                 "awenode" => {
                     let endpoint = parsed.get("endpoint").and_then(|v| v.as_str()).map(str::to_owned).unwrap_or_else(|| node.listen_addr.to_string());
                     let bootstrap = parsed.get("bootstrap").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect()).unwrap_or_default();
-                    let cfg = federation::generate_awenode(&format_uid(node.identity.public.awe_id.as_bytes()), name, &endpoint, bootstrap, now);
+                    let dc_id = parsed.get("data_centre_id").and_then(|v| v.as_str()).map(str::to_owned).or_else(|| federation_state.lock().ok().and_then(|s| s.local_data_centre_id.clone())).unwrap_or_else(|| format!("dc-{}", &hex::encode(blake3::hash(format!("AWE/DC/{}", format_uid(node.identity.public.awe_id.as_bytes())).as_bytes()).as_bytes())[..24]));
+                    let cfg = federation::generate_awenode_for_dc(&format_uid(node.identity.public.awe_id.as_bytes()), &dc_id, name, &endpoint, bootstrap, now);
                     serde_json::to_string_pretty(&cfg).map(|s| ("awenode.awenode".into(), s)).map_err(|e| e.to_string())
                 },
                 "awedc" => {
@@ -206,7 +207,13 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, node: Node, messenger: Mess
                 _ => Err("kind must be awenode, awedc or dgc".into())
             };
             match result {
-                Ok(()) => ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"imported"}).to_string()),
+                Ok(()) => {
+                    let endpoints = federation_state.lock().map(|s| s.bootstrap_endpoints.clone()).unwrap_or_default();
+                    let addresses = endpoints.iter().filter_map(|x| x.parse::<SocketAddr>().ok()).collect::<Vec<_>>();
+                    let discovered = if addresses.is_empty() { 0 } else { node.bootstrap(&addresses).await.unwrap_or(0) };
+                    if let Ok(state) = federation_state.lock() { let _ = federation::save_json(&*state, &federation_path); }
+                    ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"imported","connected_bootstrap_peers":discovered}).to_string())
+                },
                 Err(error) => ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":error}).to_string())
             }
         },
@@ -275,7 +282,13 @@ async fn run_product() -> Result<()> {
     let listen: SocketAddr = "127.0.0.1:41000".parse()?;
     let node = Node::new(identity, listen);
     let messenger: MessengerLog = Arc::new(Mutex::new(Vec::new()));
-    let federation_state: FederationState = Arc::new(Mutex::new(AweNetConfig { format: "awenet".into(), version: federation::FORMAT_VERSION, local_node_id: node_id.clone(), ..Default::default() }));
+    let federation_path = data_dir.join("awenet.json");
+    let federation_state: FederationState = if federation_path.exists() {
+        fs::read(&federation_path).ok().and_then(|b| serde_json::from_slice::<AweNetConfig>(&b).ok()).map(|mut s| { s.local_node_id = node_id.clone(); Arc::new(Mutex::new(s)) }).unwrap_or_else(|| Arc::new(Mutex::new(AweNetConfig { format: "awenet".into(), version: federation::FORMAT_VERSION, local_node_id: node_id.clone(), ..Default::default() })))
+    } else {
+        Arc::new(Mutex::new(AweNetConfig { format: "awenet".into(), version: federation::FORMAT_VERSION, local_node_id: node_id.clone(), ..Default::default() }))
+    };
+    if let Ok(state) = federation_state.lock() { let _ = federation::save_json(&*state, &federation_path); }
     let node_for_listener = node.clone();
     tokio::spawn(async move {
         if let Err(e) = node_for_listener.listen().await {
@@ -304,7 +317,7 @@ async fn run_product() -> Result<()> {
         let api_messenger = messenger.clone();
         let api_federation = federation_state.clone();
         tokio::spawn(async move {
-            if let Err(e) = serve_ui(stream, api_node, api_messenger, api_federation).await { eprintln!("UI request error: {e}"); }
+            if let Err(e) = serve_ui(stream, api_node, api_messenger, api_federation, federation_path.clone()).await { eprintln!("UI request error: {e}"); }
         });
     }
 }
