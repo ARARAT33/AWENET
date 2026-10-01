@@ -1,11 +1,11 @@
 const view=document.getElementById("view"),title=document.getElementById("pageTitle"),navs=[...document.querySelectorAll(".nav")];
 const pages={dashboard:["Overview","Network-wide status at a glance"],node:["My Node","Your identity, runtime and listening endpoint"],network:["Peers & Connections","Discover and connect to AWEp2P nodes"],storage:["Storage","Local and distributed data plane"],messenger:["Messenger","Peer-to-peer messaging"],store:["AWEStore","AWE modules and services"],security:["Security","Identity, transport and trust"],diagnostics:["Diagnostics","Health checks and runtime inspection"],settings:["Settings","Application configuration"]};
-let live={status:"starting",node_id:"loading",node_address:"loading",transport:"loading",ui:"connecting",peers:[]};
+let live={status:"starting",node_id:"loading",node_address:"loading",transport:"loading",ui:"connecting",peers:[],node:{},storage:{},security:{}};
 
 function apiBase(){return localStorage.getItem("aweApiBase")||""}
 async function api(path,options={}){const r=await fetch(apiBase()+path,options);if(!r.ok)throw new Error(await r.text());return r.json()}
 async function refresh(){
- try{live=await api("/api/status");setConnection(true)}
+ try{const [status,node,storage,security]=await Promise.all([api("/api/status"),api("/api/node"),api("/api/storage"),api("/api/security")]);live={...status,node,storage,security};setConnection(true)}
  catch(e){live={...live,status:"offline",ui:"disconnected",peers:[]};setConnection(false)}
 }
 function setConnection(on){document.getElementById("sideDot").classList.toggle("online",on);document.getElementById("sideState").textContent=on?"Node online":"Disconnected";document.getElementById("sideTransport").textContent=on?live.transport:"API unavailable";document.getElementById("apiBadge").textContent="API · "+(on?live.ui:"offline")}
@@ -30,7 +30,7 @@ function render(k){
   panel("Topology",'<div class="network-map"><div class="node-point main" style="left:49%;top:47%"></div>'+live.peers.map((_,i)=>{const a=i*(360/Math.max(live.peers.length,1));return '<div class="line" style="left:51%;top:51%;width:100px;transform:rotate('+a+'deg)"></div><div class="node-point" style="left:'+(50+35*Math.cos(a*Math.PI/180))+'%;top:'+(50+35*Math.sin(a*Math.PI/180))+'%"></div>'}).join("")+'</div>');
  } else if(k==="storage"){
   const used=localStorage.getItem("aweStoragePath")||"Node-managed storage";
-  body='<div class="grid">'+card("Data plane","Active","Storage subsystem")+card("Storage path",used,"Local configuration")+card("Replication","Core-managed","No invented counters")+card("Encryption","Core-managed","Node security layer")+'</div>'+
+  body='<div class="grid">'+card("Data plane","Active","Storage subsystem")+card("Storage path",live.storage.root||used,"Real node storage")+card("Replication","Core-managed","No invented counters")+card("Encryption",live.security.transport||"Core","Real transport")+'</div>'+
   panel("Storage status",'<div class="notice">Storage operations are owned by the Rust core. This UI does not fabricate capacity or replication statistics that the API does not expose.</div>')+
   panel("Configured location",'<div class="peer-form"><input id="storagePath" value="'+esc(localStorage.getItem("aweStoragePath")||"")+'" placeholder="Optional local storage path"><button class="primary" id="saveStorage">Save</button></div>');
  } else if(k==="messenger"){
