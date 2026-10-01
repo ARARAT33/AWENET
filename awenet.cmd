@@ -2,23 +2,21 @@
 setlocal
 cd /d "%~dp0"
 
-if not exist "target\release\awe-node.exe" (
-  echo [AWEp2P] First run: building the product...
-  where cargo >nul 2>nul
+set "EXE=%~dp0bin\windows-x86_64\awe-node.exe"
+set "URL=https://raw.githubusercontent.com/ARARAT33/AWEP2P/main/bin/windows-x86_64/awe-node.exe"
+
+if not exist "%EXE%" (
+  echo [AWEp2P] Downloading ready-to-run Windows product...
+  if not exist "%~dp0bin\windows-x86_64" mkdir "%~dp0bin\windows-x86_64"
+  powershell -NoProfile -ExecutionPolicy Bypass -Command "try { Invoke-WebRequest -Uri '%URL%' -OutFile '%EXE%' -UseBasicParsing -ErrorAction Stop } catch { exit 1 }"
   if errorlevel 1 (
-    echo.
-    echo [AWEp2P] Rust/Cargo is not installed.
-    echo Install Rust from https://rustup.rs/ and run awenet again.
-    exit /b 1
-  )
-  cargo build --release -p awe-node
-  if errorlevel 1 (
-    echo.
-    echo [AWEp2P] Build failed.
+    del /q "%EXE%" >nul 2>nul
+    echo [AWEp2P] Ready binary is not published yet.
+    echo [AWEp2P] Please run awenet again after GitHub Actions finishes.
     exit /b 1
   )
 )
 
 echo [AWEp2P] Starting...
-target\release\awe-node.exe %*
+"%EXE%" %*
 endlocal
