@@ -1,0 +1,116 @@
+name: AWEp2P Cross-Platform Product
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  desktop:
+    name: Desktop ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x64
+            runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary: awe-node.exe
+          - name: Linux x64
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            binary: awe-node
+          - name: Linux arm64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            binary: awe-node
+          - name: macOS Intel
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+            binary: awe-node
+          - name: macOS Apple Silicon
+            runner: macos-latest
+            target: aarch64-apple-darwin
+            binary: awe-node
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux build dependencies
+        if: startsWith(${{ matrix.runner }}, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils build-essential
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Build AWEp2P node
+        run: cargo build --release -p awe-node --target ${{ matrix.target }}
+      - name: Prepare bundled node
+        shell: bash
+        run: |
+          mkdir -p apps/awe-app/src-tauri/binaries
+          cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" "apps/awe-app/src-tauri/binaries/awe-node-${{ matrix.target }}${{ startsWith(matrix.runner, 'windows') && '.exe' || '' }}"
+      - name: Install app dependencies
+        working-directory: apps/awe-app
+        run: npm install
+      - name: Build native app
+        working-directory: apps/awe-app
+        run: npx tauri build --ci
+      - name: Upload desktop packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: AWEp2P-${{ matrix.target }}
+          path: apps/awe-app/src-tauri/target/release/bundle/**
+          if-no-files-found: error
+
+  android:
+    name: Android APK/AAB
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+      - name: Install Android SDK/NDK
+        run: |
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018"
+          echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
+          echo "NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android
+      - name: Install app dependencies
+        working-directory: apps/awe-app
+        run: npm install
+      - name: Initialize Android project
+        working-directory: apps/awe-app
+        run: npx tauri android init --ci
+      - name: Build Android APK/AAB
+        working-directory: apps/awe-app
+        run: npx tauri android build --ci
+      - name: Upload Android packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: AWEp2P-Android
+          path: |
+            apps/awe-app/src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+            apps/awe-app/src-tauri/gen/android/app/build/outputs/bundle/**/*.aab
+          if-no-files-found: error
