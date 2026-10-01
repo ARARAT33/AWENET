@@ -94,8 +94,7 @@ impl PeerDirectory {
             .unwrap_or(true);
 
         if accept {
-            if !self.records.contains_key(&record.node_id)
-                && self.records.len() >= self.max_records
+            if !self.records.contains_key(&record.node_id) && self.records.len() >= self.max_records
             {
                 if let Some(oldest) = self
                     .records

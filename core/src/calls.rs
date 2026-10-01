@@ -88,7 +88,9 @@ mod tests {
             from: [2; 32],
             participants: vec![[3; 32], [4; 32]],
             kind: CallKind::Video,
-            mode: CallMode::Group { coordinator: "node-x".into() },
+            mode: CallMode::Group {
+                coordinator: "node-x".into(),
+            },
         };
         assert_eq!(CallSession::accept(invite).unwrap().participants.len(), 3);
     }

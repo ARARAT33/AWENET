@@ -99,7 +99,9 @@ impl AsMap {
         }
         for (index, replicas) in self.shard_nodes.iter().enumerate() {
             if replicas.len() != crate::replication::REQUIRED_REPLICAS {
-                return Err(format!("shard {index} does not have exactly three replicas"));
+                return Err(format!(
+                    "shard {index} does not have exactly three replicas"
+                ));
             }
             let mut unique = replicas.clone();
             unique.sort();

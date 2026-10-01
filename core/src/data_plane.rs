@@ -23,9 +23,20 @@ pub struct ShardResponse {
 }
 
 impl ShardResponse {
-    pub fn new(request_id: [u8; 16], file_id: [u8; 32], shard_index: u16, payload: Vec<u8>) -> Self {
+    pub fn new(
+        request_id: [u8; 16],
+        file_id: [u8; 32],
+        shard_index: u16,
+        payload: Vec<u8>,
+    ) -> Self {
         let payload_hash = *blake3::hash(&payload).as_bytes();
-        Self { request_id, file_id, shard_index, payload, payload_hash }
+        Self {
+            request_id,
+            file_id,
+            shard_index,
+            payload,
+            payload_hash,
+        }
     }
 
     pub fn verify(&self, expected_hash: &[u8; 32]) -> bool {

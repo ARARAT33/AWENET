@@ -9,7 +9,8 @@ use std::collections::BTreeSet;
 pub const REQUIRED_SHARDS: usize = 1000;
 pub const REQUIRED_REPLICAS: usize = 3;
 pub const MAX_SHARDS_PER_NODE: usize = 100;
-pub const MIN_NODES_FOR_CAPACITY_LIMIT: usize = (REQUIRED_SHARDS * REQUIRED_REPLICAS + MAX_SHARDS_PER_NODE - 1) / MAX_SHARDS_PER_NODE;
+pub const MIN_NODES_FOR_CAPACITY_LIMIT: usize =
+    (REQUIRED_SHARDS * REQUIRED_REPLICAS + MAX_SHARDS_PER_NODE - 1) / MAX_SHARDS_PER_NODE;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ReplicaPlacement {
@@ -80,7 +81,12 @@ pub fn assess(plan: &PlacementPlan, online_nodes: &BTreeSet<String>) -> Vec<Repl
     plan.placements
         .iter()
         .map(|p| {
-            let available_nodes: Vec<_> = p.nodes.iter().filter(|n| online_nodes.contains(*n)).cloned().collect();
+            let available_nodes: Vec<_> = p
+                .nodes
+                .iter()
+                .filter(|n| online_nodes.contains(*n))
+                .cloned()
+                .collect();
             let missing_replicas = REQUIRED_REPLICAS.saturating_sub(available_nodes.len());
             ReplicaHealth {
                 shard_index: p.shard_index,
@@ -133,12 +139,16 @@ pub fn build_capacity_limited_plan(
     unique.sort();
     unique.dedup();
     if unique.len() < MIN_NODES_FOR_CAPACITY_LIMIT {
-        return Err(format!("at least {MIN_NODES_FOR_CAPACITY_LIMIT} distinct storage nodes are required"));
+        return Err(format!(
+            "at least {MIN_NODES_FOR_CAPACITY_LIMIT} distinct storage nodes are required"
+        ));
     }
     let mut loads = vec![0usize; unique.len()];
     let mut placements = Vec::with_capacity(REQUIRED_SHARDS);
     for shard_index in 0..REQUIRED_SHARDS {
-        let mut ranked: Vec<(usize, [u8; 32])> = unique.iter().enumerate()
+        let mut ranked: Vec<(usize, [u8; 32])> = unique
+            .iter()
+            .enumerate()
             .map(|(i, node)| {
                 let mut seed = Vec::with_capacity(64 + node.len());
                 seed.extend_from_slice(b"AWE/PLACEMENT/v1");
@@ -151,15 +161,29 @@ pub fn build_capacity_limited_plan(
             .collect();
         ranked.sort_by_key(|(i, score)| (loads[*i], *score, unique[*i].clone()));
         if ranked.len() < REQUIRED_REPLICAS {
-            return Err(format!("capacity exhausted while placing shard {shard_index}"));
+            return Err(format!(
+                "capacity exhausted while placing shard {shard_index}"
+            ));
         }
-        let selected = ranked.iter().take(REQUIRED_REPLICAS).map(|(i, _)| {
-            loads[*i] += 1;
-            unique[*i].clone()
-        }).collect();
-        placements.push(ReplicaPlacement { shard_index: shard_index as u16, nodes: selected });
+        let selected = ranked
+            .iter()
+            .take(REQUIRED_REPLICAS)
+            .map(|(i, _)| {
+                loads[*i] += 1;
+                unique[*i].clone()
+            })
+            .collect();
+        placements.push(ReplicaPlacement {
+            shard_index: shard_index as u16,
+            nodes: selected,
+        });
     }
-    Ok(PlacementPlan { file_id, shards: REQUIRED_SHARDS, replicas_per_shard: REQUIRED_REPLICAS, placements })
+    Ok(PlacementPlan {
+        file_id,
+        shards: REQUIRED_SHARDS,
+        replicas_per_shard: REQUIRED_REPLICAS,
+        placements,
+    })
 }
 
 #[cfg(test)]
@@ -172,8 +196,16 @@ mod capacity_tests {
         let mut loads = std::collections::BTreeMap::<String, usize>::new();
         for p in &plan.placements {
             assert_eq!(p.nodes.len(), 3);
-            assert_eq!(p.nodes.iter().collect::<std::collections::BTreeSet<_>>().len(), 3);
-            for n in &p.nodes { *loads.entry(n.clone()).or_default() += 1; }
+            assert_eq!(
+                p.nodes
+                    .iter()
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len(),
+                3
+            );
+            for n in &p.nodes {
+                *loads.entry(n.clone()).or_default() += 1;
+            }
         }
         assert_eq!(loads.len(), 30);
         assert!(loads.values().all(|v| *v <= MAX_SHARDS_PER_NODE));

@@ -61,14 +61,22 @@ impl ReplayGuard {
         if self.states.len() >= MAX_PEERS {
             // Deterministic bounded eviction. The table stays finite even when
             // an attacker presents an unbounded number of peer identifiers.
-            if let Some((oldest, _)) = self.states.iter().min_by_key(|(_, state)| state.generation) {
+            if let Some((oldest, _)) = self.states.iter().min_by_key(|(_, state)| state.generation)
+            {
                 let oldest = *oldest;
                 self.states.remove(&oldest);
             }
         }
 
         self.generation = self.generation.wrapping_add(1);
-        self.states.insert(peer, ReplayState { highest: sequence, bitmap: 1, generation: self.generation });
+        self.states.insert(
+            peer,
+            ReplayState {
+                highest: sequence,
+                bitmap: 1,
+                generation: self.generation,
+            },
+        );
         true
     }
 

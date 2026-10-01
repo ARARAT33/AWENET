@@ -14,12 +14,21 @@ pub struct TokenBucket {
 impl TokenBucket {
     pub fn new(capacity: u64, refill_per_second: u64, now_second: u64) -> Self {
         let capacity = capacity.max(1);
-        Self { capacity, tokens: capacity, refill_per_second: refill_per_second.max(1), last_second: now_second }
+        Self {
+            capacity,
+            tokens: capacity,
+            refill_per_second: refill_per_second.max(1),
+            last_second: now_second,
+        }
     }
 
     pub fn allow(&mut self, cost: u64, now_second: u64) -> bool {
-        if cost == 0 { return true; }
-        if cost > self.capacity { return false; }
+        if cost == 0 {
+            return true;
+        }
+        if cost > self.capacity {
+            return false;
+        }
 
         let elapsed = now_second.saturating_sub(self.last_second);
         if elapsed > 0 {
@@ -28,12 +37,16 @@ impl TokenBucket {
             self.last_second = now_second;
         }
 
-        if self.tokens < cost { return false; }
+        if self.tokens < cost {
+            return false;
+        }
         self.tokens -= cost;
         true
     }
 
-    pub fn remaining(&self) -> u64 { self.tokens }
+    pub fn remaining(&self) -> u64 {
+        self.tokens
+    }
 }
 
 #[derive(Debug)]
@@ -57,7 +70,11 @@ impl PeerAdmission {
     pub fn allow(&mut self, peer: [u8; 32], cost: u64, now_second: u64) -> bool {
         if !self.buckets.contains_key(&peer) {
             if self.buckets.len() >= self.max_peers {
-                if let Some((oldest, _)) = self.buckets.iter().min_by_key(|(_, bucket)| bucket.remaining()) {
+                if let Some((oldest, _)) = self
+                    .buckets
+                    .iter()
+                    .min_by_key(|(_, bucket)| bucket.remaining())
+                {
                     let oldest = *oldest;
                     self.buckets.remove(&oldest);
                 }
@@ -67,11 +84,17 @@ impl PeerAdmission {
                 TokenBucket::new(self.capacity, self.refill_per_second, now_second),
             );
         }
-        let allowed = self.buckets.get_mut(&peer).expect("peer bucket inserted").allow(cost, now_second);
+        let allowed = self
+            .buckets
+            .get_mut(&peer)
+            .expect("peer bucket inserted")
+            .allow(cost, now_second);
         allowed
     }
 
-    pub fn tracked_peers(&self) -> usize { self.buckets.len() }
+    pub fn tracked_peers(&self) -> usize {
+        self.buckets.len()
+    }
 }
 
 #[cfg(test)]
@@ -108,7 +131,6 @@ mod tests {
     }
 }
 
-
 /// Pre-authentication connection limiter. Unlike PeerAdmission, this is keyed
 /// by source IP because a peer identity does not exist until the handshake is
 /// authenticated. The table is strictly bounded to keep handshake floods from
@@ -134,7 +156,9 @@ impl IpAdmission {
     pub fn allow(&mut self, source: IpAddr, now_second: u64) -> bool {
         if !self.buckets.contains_key(&source) {
             if self.buckets.len() >= self.max_sources {
-                if let Some((evict, _)) = self.buckets.iter()
+                if let Some((evict, _)) = self
+                    .buckets
+                    .iter()
                     .min_by_key(|(_, bucket)| bucket.remaining())
                 {
                     let evict = *evict;

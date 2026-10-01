@@ -60,7 +60,13 @@ pub fn rank_peers(target: &[u8; 32], peers: &[PeerRoute]) -> Vec<PeerRoute> {
             p
         })
         .collect();
-    ranked.sort_by_key(|p| (p.distance, p.latency_ms.unwrap_or(u32::MAX), p.node_id.clone()));
+    ranked.sort_by_key(|p| {
+        (
+            p.distance,
+            p.latency_ms.unwrap_or(u32::MAX),
+            p.node_id.clone(),
+        )
+    });
     ranked
 }
 
@@ -100,7 +106,10 @@ mod tests {
         let peers = vec![peer(2, 20), peer(3, 10)];
         let mut visited = BTreeSet::new();
         visited.insert(hex::encode([2u8; 32]));
-        assert_eq!(next_hop(&target, &peers, &visited).unwrap().node_id, hex::encode([3u8; 32]));
+        assert_eq!(
+            next_hop(&target, &peers, &visited).unwrap().node_id,
+            hex::encode([3u8; 32])
+        );
     }
 
     #[test]
@@ -117,11 +126,25 @@ mod routing_distance_regression {
     #[test]
     fn uses_full_256_bit_distance() {
         let target = [0u8; 32];
-        let mut low = [0u8; 32]; low[31] = 1;
-        let mut high = [0u8; 32]; high[0] = 1;
+        let mut low = [0u8; 32];
+        low[31] = 1;
+        let mut high = [0u8; 32];
+        high[0] = 1;
         let peers = vec![
-            PeerRoute { node_id: hex::encode(low), address: "127.0.0.1:1".into(), distance: [0;32], latency_ms: Some(1), healthy: true },
-            PeerRoute { node_id: hex::encode(high), address: "127.0.0.1:2".into(), distance: [0;32], latency_ms: Some(1), healthy: true },
+            PeerRoute {
+                node_id: hex::encode(low),
+                address: "127.0.0.1:1".into(),
+                distance: [0; 32],
+                latency_ms: Some(1),
+                healthy: true,
+            },
+            PeerRoute {
+                node_id: hex::encode(high),
+                address: "127.0.0.1:2".into(),
+                distance: [0; 32],
+                latency_ms: Some(1),
+                healthy: true,
+            },
         ];
         assert_eq!(rank_peers(&target, &peers)[0].node_id, hex::encode(low));
     }
