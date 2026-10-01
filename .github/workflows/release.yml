@@ -56,6 +56,13 @@ jobs:
             name: desktop-macos-aarch64
     steps:
       - uses: actions/checkout@v5
+      - name: Install Linux native GUI dependencies
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxcursor-dev libxrandr-dev libxi-dev libxkbcommon-dev libwayland-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build native desktop UI
