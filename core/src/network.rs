@@ -605,7 +605,7 @@ impl SecureConnection {
                     self.send(&Control::Pong { sequence: incoming }).await?;
                 }
                 Ok(Ok(Control::Data { .. } | Control::Nodes { .. })) => {}
-                Ok(Ok(Control::Pong { .. })) => {}
+                Ok(Ok(Control::Pong { .. } | Control::DataAck { .. })) => {}
                 Ok(Ok(Control::FindNode { .. } | Control::Hello { .. })) => {
                     return Err(NetworkError::Protocol(
                         "unexpected control message during ping".into(),
