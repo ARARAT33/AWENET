@@ -4,6 +4,7 @@ pub mod crypto;
 pub mod data_plane;
 pub mod discovery;
 pub mod repair;
+pub mod readiness;
 pub mod diagnostics;
 pub mod governance;
 pub mod host;
