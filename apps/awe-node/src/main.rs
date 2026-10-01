@@ -438,7 +438,7 @@ async fn probe(address: SocketAddr) -> Result<()> {
     let node = Node::new(identity, "127.0.0.1:0".parse()?);
     println!("Connecting to {address}...");
     let mut connection = node.connect(address).await.map_err(anyhow::Error::msg)?;
-    println!("Authenticated peer: {}", hex::encode(connection.remote_id));
+    println!("Authenticated peer: {:?}", connection.remote_id);
     let rtt = connection
         .ping_roundtrip(1)
         .await
