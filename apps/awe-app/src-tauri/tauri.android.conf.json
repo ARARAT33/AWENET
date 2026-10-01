@@ -1,0 +1,4 @@
+{
+  "bundle":{"active":true,"targets":["aab","apk"]},
+  "app":{"windows":[{"title":"AWEp2P","width":420,"height":820,"resizable":true}]}
+}
