@@ -45,7 +45,8 @@ impl AweDesktop {
 
 impl eframe::App for AweDesktop {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.diagnostics.update_metrics(self.diagnostics.metrics().clone());
+        self.diagnostics
+            .update_metrics(self.diagnostics.metrics().clone());
 
         egui::TopBottomPanel::top("header").show(ctx, |ui| {
             ui.horizontal(|ui| {
@@ -71,7 +72,11 @@ impl eframe::App for AweDesktop {
                 ui.selectable_value(&mut self.view, View::Security, "Security");
                 ui.add_space(16.0);
                 if ui
-                    .button(if self.running { "Stop Node" } else { "Start Node" })
+                    .button(if self.running {
+                        "Stop Node"
+                    } else {
+                        "Start Node"
+                    })
                     .clicked()
                 {
                     self.running = !self.running;
