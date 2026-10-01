@@ -177,7 +177,9 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, node: Node, messenger: Mess
                     s.local_node_id = format_uid(node.identity.public.awe_id.as_bytes());
                     s.local_data_centre_id = Some(cfg.data_centre_id.clone());
                     s.bootstrap_endpoints = cfg.bootstrap_endpoints.clone();
-                    if !s.bootstrap_endpoints.contains(&cfg.endpoint) { s.bootstrap_endpoints.push(cfg.endpoint.clone()); }
+                    if !s.bootstrap_endpoints.contains(&cfg.endpoint) {
+                        s.bootstrap_endpoints.push(cfg.endpoint.clone());
+                    }
                     if !s.joined_data_centres.contains(&cfg.data_centre_id) { s.joined_data_centres.push(cfg.data_centre_id); }
                     s.format = "awenet".into(); s.version = federation::FORMAT_VERSION;
                     Ok(())
