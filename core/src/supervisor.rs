@@ -48,7 +48,9 @@ impl SupervisorConfig {
     fn backoff(&self, failures: u32) -> Duration {
         let initial = self.initial_backoff_secs.max(1);
         let max = self.max_backoff_secs.max(initial);
-        let shift = failures.min(self.max_attempts_before_cap.max(1));
+        let shift = failures
+            .saturating_sub(1)
+            .min(self.max_attempts_before_cap.max(1));
         let seconds = initial.saturating_mul(1u64 << shift.min(20));
         Duration::from_secs(seconds.min(max))
     }
@@ -180,9 +182,10 @@ mod tests {
             max_backoff_secs: 8,
             ..Default::default()
         };
-        assert_eq!(c.backoff(0), Duration::from_secs(2));
-        assert_eq!(c.backoff(1), Duration::from_secs(4));
-        assert_eq!(c.backoff(2), Duration::from_secs(8));
+        assert_eq!(c.backoff(0), Duration::from_secs(1));
+        assert_eq!(c.backoff(1), Duration::from_secs(1));
+        assert_eq!(c.backoff(2), Duration::from_secs(2));
+        assert_eq!(c.backoff(3), Duration::from_secs(4));
         assert_eq!(c.backoff(10), Duration::from_secs(8));
     }
 
