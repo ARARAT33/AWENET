@@ -301,7 +301,8 @@ mod tests {
         assert!(g.accept(s, r, 9));
         assert!(!g.accept(s, r, 8));
         assert!(!g.accept(s, r, 10));
-        assert!(!g.accept(s, r, 10u64.saturating_sub(SHIELD_REPLAY_WINDOW as u64),));
+        assert!(g.accept(s, r, 100));
+        assert!(!g.accept(s, r, 10));
     }
 
     #[test]
