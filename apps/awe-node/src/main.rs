@@ -81,6 +81,13 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, node: Node) -> Result<()> {
         "/" | "/index.html" => ("200 OK", "text/html; charset=utf-8", UI_HTML.to_string()),
         "/style.css" => ("200 OK", "text/css; charset=utf-8", UI_CSS.to_string()),
         "/app.js" => ("200 OK", "application/javascript; charset=utf-8", UI_JS.to_string()),
+        "/api/node" => ("200 OK", "application/json; charset=utf-8", serde_json::json!({
+            "id": format_uid(node.identity.public.awe_id.as_bytes()),
+            "descriptor": node.node_descriptor(),
+            "username": node.identity.public.username.as_str(),
+            "address": node.listen_addr.to_string(),
+            "protocol": 1
+        }).to_string()),
         "/api/status" => {
             let peers = node.closest_peers(node.identity.public.awe_id.as_bytes(), 64).await;
             let peer_json = peers.iter().map(|p| serde_json::json!({
@@ -107,16 +114,48 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, node: Node) -> Result<()> {
             }
         },
         "/api/health" => ("200 OK", "application/json; charset=utf-8", serde_json::json!({
-            "status":"healthy","core":"ready","ui":"ready","api":"ready"
+            "status":"healthy","core":"ready","network":"listening","ui":"ready","api":"ready"
         }).to_string()),
+        "/api/security" => ("200 OK", "application/json; charset=utf-8", serde_json::json!({
+            "identity":"ed25519","transport":"x25519 + chacha20-poly1305","replay_protection":"enabled","a2p2_fixed_packet":1280
+        }).to_string()),
+        "/api/storage" => {
+            let free = awep2p_core::node::get_available_disk_space(&std::env::current_dir()?).unwrap_or(0);
+            ("200 OK", "application/json; charset=utf-8", serde_json::json!({
+                "root": data_dir_for_api(), "free_bytes": free, "replication_policy":"1000 shards / 3 replicas"
+            }).to_string())
+        },
         _ => ("404 Not Found", "text/plain; charset=utf-8", "Not Found".to_string()),
     };
     stream.write_all(&http_response(status, mime, &body).await).await?;
     Ok(())
 }
 
+fn data_dir_for_api() -> String {
+    if let Some(home) = env::var_os("USERPROFILE").or_else(|| env::var_os("HOME")) {
+        PathBuf::from(home).join(".awep2p").display().to_string()
+    } else { PathBuf::from(".awep2p").display().to_string() }
+}
+
 async fn run_product() -> Result<()> {
-    let identity = Identity::generate(Username::new("awe-node".to_string()).map_err(anyhow::Error::msg)?);
+    let data_dir = if let Some(home) = env::var_os("USERPROFILE").or_else(|| env::var_os("HOME")) {
+        PathBuf::from(home).join(".awep2p")
+    } else {
+        PathBuf::from(".awep2p")
+    };
+    fs::create_dir_all(&data_dir)?;
+    let secret_path = data_dir.join("node.awesecret");
+    let identity = if secret_path.exists() {
+        AweSecret::from_bytes(&fs::read(&secret_path)?)
+            .map_err(anyhow::Error::msg)?
+            .authenticate()
+            .map_err(anyhow::Error::msg)?
+    } else {
+        let identity = Identity::generate(Username::new("awe-node".to_string()).map_err(anyhow::Error::msg)?);
+        let secret = AweSecret::generate(&identity);
+        fs::write(&secret_path, secret.to_bytes()?)?;
+        identity
+    };
     let node_id = format_uid(identity.public.awe_id.as_bytes());
     let listen: SocketAddr = "127.0.0.1:41000".parse()?;
     let node = Node::new(identity, listen);
