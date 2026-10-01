@@ -972,10 +972,11 @@ impl Node {
                 .get(peer_id)
                 .and_then(|peer| peer.addresses.first().copied())
                 .ok_or_else(|| NetworkError::Protocol("peer address is unknown".into()))?;
-            let connection = Arc::new(tokio::sync::Mutex::new(
-                self.connect(address).await?,
-            ));
-            self.active.write().await.insert(*peer_id, connection.clone());
+            let connection = Arc::new(tokio::sync::Mutex::new(self.connect(address).await?));
+            self.active
+                .write()
+                .await
+                .insert(*peer_id, connection.clone());
             connection
         };
         let mut connection = connection.lock().await;
