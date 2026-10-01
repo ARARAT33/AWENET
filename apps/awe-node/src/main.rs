@@ -752,7 +752,7 @@ async fn serve_ui(
         },
         "/api/storage/health" => {
             let online: std::collections::BTreeSet<String> = node.closest_peers(4096)
-                .into_iter().map(|p| hex::encode(p.id)).collect();
+                .into_iter().map(|p| format_uid(&p.awe_id)).collect();
             online.insert(hex::encode(node.identity.public.awe_id));
             let manifest_dir = PathBuf::from(data_dir_for_api()).join("storage").join("manifests");
             let mut files = 0usize;
