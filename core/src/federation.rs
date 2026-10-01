@@ -71,7 +71,10 @@ fn id(prefix: &str, seed: &str) -> String {
 }
 
 pub fn generate_awenode(node_id: &str, name: &str, endpoint: &str, bootstrap: Vec<String>, now: u64) -> AweNodeConfig {
-    let data_centre_id = id("dc", &format!("{node_id}:{name}"));
+    generate_awenode_for_dc(node_id, &id("dc", &format!("{node_id}:{name}")), name, endpoint, bootstrap, now)
+}
+
+pub fn generate_awenode_for_dc(node_id: &str, data_centre_id: &str, name: &str, endpoint: &str, bootstrap: Vec<String>, now: u64) -> AweNodeConfig {
     AweNodeConfig {
         format: "awenode".into(),
         version: FORMAT_VERSION,
