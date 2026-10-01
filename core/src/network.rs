@@ -1,4 +1,9 @@
-use crate::{crypto::hash, identity::Identity, limits::{IpAdmission, PeerAdmission}, replay::ReplayGuard};
+use crate::{
+    crypto::hash,
+    identity::Identity,
+    limits::{IpAdmission, PeerAdmission},
+    replay::ReplayGuard,
+};
 use chacha20poly1305::{
     aead::{Aead, KeyInit, Payload},
     ChaCha20Poly1305, Nonce,
@@ -69,12 +74,14 @@ pub const A2P2_MAX_PAYLOAD: usize = A2P2_PLAINTEXT_SIZE - 2;
 /// Unlike the legacy padding helper below, this format keeps the payload length
 /// and contents inside ChaCha20-Poly1305. A passive observer therefore sees a
 /// constant 1280-byte record rather than a cleartext length field.
-pub fn a2p2_seal(payload: &[u8], key: &[u8; 32]) -> Result<[u8; A2P2_FIXED_PACKET_SIZE], NetworkError> {
+pub fn a2p2_seal(
+    payload: &[u8],
+    key: &[u8; 32],
+) -> Result<[u8; A2P2_FIXED_PACKET_SIZE], NetworkError> {
     if payload.len() > A2P2_MAX_PAYLOAD {
         return Err(NetworkError::FrameTooLarge);
     }
-    let cipher = ChaCha20Poly1305::new_from_slice(key)
-        .map_err(|_| NetworkError::Encryption)?;
+    let cipher = ChaCha20Poly1305::new_from_slice(key).map_err(|_| NetworkError::Encryption)?;
     let mut nonce = [0u8; A2P2_NONCE_SIZE];
     OsRng.fill_bytes(&mut nonce);
 
@@ -156,7 +163,10 @@ pub fn encrypt_layer(payload: &[u8], recipient_pk: &[u8; 32]) -> Result<Vec<u8>,
     let ciphertext = cipher
         .encrypt(Nonce::from_slice(&nonce), payload)
         .map_err(|_| NetworkError::Encryption)?;
-    let total = 32usize.checked_add(12).and_then(|n| n.checked_add(ciphertext.len())).ok_or(NetworkError::FrameTooLarge)?;
+    let total = 32usize
+        .checked_add(12)
+        .and_then(|n| n.checked_add(ciphertext.len()))
+        .ok_or(NetworkError::FrameTooLarge)?;
     if total > MAX_ONION_LAYER {
         return Err(NetworkError::FrameTooLarge);
     }
@@ -168,7 +178,10 @@ pub fn encrypt_layer(payload: &[u8], recipient_pk: &[u8; 32]) -> Result<Vec<u8>,
 }
 
 /// Decrypt one onion layer using the recipient's X25519 secret.
-pub fn decrypt_layer(layer_bytes: &[u8], node_secret: &StaticSecret) -> Result<Vec<u8>, NetworkError> {
+pub fn decrypt_layer(
+    layer_bytes: &[u8],
+    node_secret: &StaticSecret,
+) -> Result<Vec<u8>, NetworkError> {
     if layer_bytes.len() < 32 + 12 + 16 || layer_bytes.len() > MAX_ONION_LAYER {
         return Err(NetworkError::Protocol("invalid onion layer size".into()));
     }
@@ -182,7 +195,9 @@ pub fn decrypt_layer(layer_bytes: &[u8], node_secret: &StaticSecret) -> Result<V
     hk.expand(b"AWE/A2P2/ONION-KEY/v1", &mut key)
         .map_err(|_| NetworkError::Encryption)?;
     let cipher = ChaCha20Poly1305::new_from_slice(&key).map_err(|_| NetworkError::Encryption)?;
-    cipher.decrypt(Nonce::from_slice(&nonce), &layer_bytes[44..]).map_err(|_| NetworkError::Authentication)
+    cipher
+        .decrypt(Nonce::from_slice(&nonce), &layer_bytes[44..])
+        .map_err(|_| NetworkError::Authentication)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -537,7 +552,10 @@ impl SecureConnection {
             .tx
             .encrypt(
                 Nonce::from_slice(&Self::nonce(s)),
-                Payload { msg: &padded, aad: &aad },
+                Payload {
+                    msg: &padded,
+                    aad: &aad,
+                },
             )
             .map_err(|_| NetworkError::Encryption)?;
         let mut f = Vec::with_capacity(8 + e.len());
@@ -731,8 +749,16 @@ impl Node {
             listen_addr,
             routing: Arc::new(RwLock::new(RoutingTable::default())),
             peers: Arc::new(RwLock::new(HashMap::new())),
-            admission: Arc::new(Mutex::new(PeerAdmission::new(MAX_CONCURRENT_CONNECTIONS, PEER_RATE_CAPACITY, PEER_RATE_REFILL_PER_SECOND))),
-            preauth: Arc::new(Mutex::new(IpAdmission::new(PREAUTH_MAX_IPS, PREAUTH_RATE_CAPACITY, PREAUTH_RATE_REFILL_PER_SECOND))),
+            admission: Arc::new(Mutex::new(PeerAdmission::new(
+                MAX_CONCURRENT_CONNECTIONS,
+                PEER_RATE_CAPACITY,
+                PEER_RATE_REFILL_PER_SECOND,
+            ))),
+            preauth: Arc::new(Mutex::new(IpAdmission::new(
+                PREAUTH_MAX_IPS,
+                PREAUTH_RATE_CAPACITY,
+                PREAUTH_RATE_REFILL_PER_SECOND,
+            ))),
         }
     }
     pub fn node_descriptor(&self) -> String {
@@ -749,7 +775,11 @@ impl Node {
         let Ok(mut c) = handshake(stream, identity, false).await else {
             return;
         };
-        if !admission.lock().expect("admission lock poisoned").allow(c.remote_id, 1, now()) {
+        if !admission
+            .lock()
+            .expect("admission lock poisoned")
+            .allow(c.remote_id, 1, now())
+        {
             return;
         }
         let r = PeerRecord {
@@ -773,17 +803,21 @@ impl Node {
                         Control::DataAck { .. } => 1,
                         Control::Hello { .. } => PEER_RATE_CAPACITY + 1,
                     };
-                    if !admission.lock().expect("admission lock poisoned").allow(c.remote_id, cost, now()) {
+                    if !admission.lock().expect("admission lock poisoned").allow(
+                        c.remote_id,
+                        cost,
+                        now(),
+                    ) {
                         break;
                     }
                     match message {
-                    Control::Ping { sequence } => {
-                    if c.send(&Control::Pong { sequence }).await.is_err() {
-                        break;
-                    }
-                }
-                Control::Pong { .. } => {}
-                Control::FindNode { target } => {
+                        Control::Ping { sequence } => {
+                            if c.send(&Control::Pong { sequence }).await.is_err() {
+                                break;
+                            }
+                        }
+                        Control::Pong { .. } => {}
+                        Control::FindNode { target } => {
                     let records = routing.read().await.closest(&target, MAX_PEERS_PER_RESPONSE);
                     if c.send(&Control::Nodes { records }).await.is_err() {
                         break;
@@ -828,7 +862,11 @@ impl Node {
                 drop(s);
                 continue;
             };
-            let ip_allowed = self.preauth.lock().expect("preauth lock poisoned").allow(a.ip(), now());
+            let ip_allowed = self
+                .preauth
+                .lock()
+                .expect("preauth lock poisoned")
+                .allow(a.ip(), now());
             if !ip_allowed {
                 drop(s);
                 drop(permit);
@@ -923,7 +961,11 @@ impl Node {
                         let Ok(mut connection) = node.connect(address).await else {
                             continue;
                         };
-                        if connection.send(&Control::FindNode { target }).await.is_err() {
+                        if connection
+                            .send(&Control::FindNode { target })
+                            .await
+                            .is_err()
+                        {
                             continue;
                         }
                         if let Ok(Control::Nodes { records }) = connection.recv().await {
@@ -1046,7 +1088,10 @@ mod tests {
             signature: vec![0; 63],
         };
         let encoded = encode(&hello).unwrap();
-        assert!(matches!(decode(&encoded), Err(NetworkError::Authentication)));
+        assert!(matches!(
+            decode(&encoded),
+            Err(NetworkError::Authentication)
+        ));
     }
 
     #[test]
@@ -1076,7 +1121,10 @@ mod tests {
             protocol_version: VERSION,
             last_seen_unix: 0,
         };
-        let encoded = encode(&Control::Nodes { records: vec![record] }).unwrap();
+        let encoded = encode(&Control::Nodes {
+            records: vec![record],
+        })
+        .unwrap();
         assert!(matches!(decode(&encoded), Err(NetworkError::Protocol(_))));
     }
 
