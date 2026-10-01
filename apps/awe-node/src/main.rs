@@ -439,6 +439,9 @@ async fn serve_ui(
                                 Err(error) => ("500 Internal Server Error", "application/json; charset=utf-8",
                                     serde_json::json!({"status":"error","error":error.to_string()}).to_string()),
                                 Ok(shards) => {
+                                    let shard_hashes: Vec<String> = shards.iter()
+                                        .map(|shard| hex::encode(blake3::hash(shard).as_bytes()))
+                                        .collect();
                                     let mut peer_ids = std::collections::BTreeMap::<String, [u8; 32]>::new();
                                     for peer in peers {
                                         peer_ids.insert(format_uid(&peer.awe_id), peer.awe_id);
@@ -492,9 +495,6 @@ async fn serve_ui(
                                         .join("storage")
                                         .join("manifests");
                                     let _ = fs::create_dir_all(&manifest_path);
-                                    let shard_hashes: Vec<String> = shards.iter()
-                                        .map(|shard| hex::encode(blake3::hash(shard).as_bytes()))
-                                        .collect();
                                     let manifest = serde_json::json!({
                                         "version": 1,
                                         "file_id": hex::encode(file_id),
