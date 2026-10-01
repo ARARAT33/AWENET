@@ -644,9 +644,87 @@ async fn serve_ui(
                                 missing.push(index);
                             }
                         }
+                        if present < policy.data_shards && !missing.is_empty() {
+                            let peers = node.peers().await;
+                            let peer_ids = peers.into_iter()
+                                .map(|p| (format_uid(&p.awe_id), p.awe_id))
+                                .collect::<std::collections::BTreeMap<_, _>>();
+                            let local_id = format_uid(node.identity.public.awe_id.as_bytes());
+
+                            for index in missing.clone() {
+                                if present >= policy.data_shards {
+                                    break;
+                                }
+                                let Some(placement) = placements.get(index).and_then(|v| v.get("nodes")).and_then(|v| v.as_array()) else {
+                                    continue;
+                                };
+                                let Some(expected_hex) = manifest.get("shard_hashes").and_then(|v| v.get(index)).and_then(|v| v.as_str()) else {
+                                    continue;
+                                };
+                                let Ok(expected_bytes) = hex::decode(expected_hex) else {
+                                    continue;
+                                };
+                                let Ok(expected_hash) = <[u8; 32]>::try_from(expected_bytes) else {
+                                    continue;
+                                };
+                                let original_size = manifest.get("original_size").and_then(|v| v.as_u64()).unwrap_or(0);
+
+                                for target in placement.iter().filter_map(|v| v.as_str()) {
+                                    if target == local_id {
+                                        continue;
+                                    }
+                                    let Some(peer_id) = peer_ids.get(target) else {
+                                        continue;
+                                    };
+                                    let request_id = *blake3::hash(
+                                        format!("download:{}:{}:{}:{}", file_id_hex, index, target, now_unix()).as_bytes()
+                                    ).as_bytes()[..16].try_into().unwrap_or([0u8; 16]);
+                                    let request = StorageShardRequest::new(
+                                        request_id,
+                                        node.identity.public.awe_id,
+                                        <[u8;32]>::try_from(hex::decode(file_id_hex).unwrap_or_default()).unwrap_or([0;32]),
+                                        index as u16,
+                                        expected_hash,
+                                        original_size,
+                                        4 * 1024 * 1024,
+                                    );
+                                    let Ok(bytes) = serde_json::to_vec(&request) else {
+                                        continue;
+                                    };
+                                    if node.send_to_peer(peer_id, STORAGE_STREAM, bytes).await.is_err() {
+                                        continue;
+                                    }
+                                    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+                                    while tokio::time::Instant::now() < deadline {
+                                        if let Ok(mut responses) = pending_shards.lock() {
+                                            if let Some(response) = responses.remove(&request_id) {
+                                                if response.file_id == request.file_id
+                                                    && response.shard_index == index as u16
+                                                    && response.verify().is_ok()
+                                                    && response.payload_hash == expected_hash
+                                                {
+                                                    if let Ok(object_id) = storage.put(&response.payload) {
+                                                        if object_id == expected_hash {
+                                                            shards[index] = Some(response.payload);
+                                                            present += 1;
+                                                        }
+                                                    }
+                                                }
+                                                break;
+                                            }
+                                        }
+                                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                                    }
+                                    if shards[index].is_some() {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
                         if present < policy.data_shards {
                             return ("409 Conflict","application/json; charset=utf-8",
-                                serde_json::json!({"status":"insufficient_local_shards","present":present,"required":policy.data_shards,"missing":missing}).to_string());
+                                serde_json::json!({"status":"insufficient_shards","present":present,"required":policy.data_shards,"missing":missing}).to_string());
                         }
                         match recover_shards(&mut shards, &policy) {
                             Ok(mut data) => {
