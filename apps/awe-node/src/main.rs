@@ -69,23 +69,43 @@ async fn http_response(status: &str, content_type: &str, body: &str) -> Vec<u8> 
     format!("HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}", body.len()).into_bytes()
 }
 
-async fn serve_ui(mut stream: tokio::net::TcpStream, node_id: String, node_addr: String) -> Result<()> {
+async fn serve_ui(mut stream: tokio::net::TcpStream, node: Node) -> Result<()> {
     let mut buf = vec![0u8; 8192];
     let n = stream.read(&mut buf).await?;
     let request = String::from_utf8_lossy(&buf[..n]);
-    let path = request.lines().next().and_then(|l| l.split_whitespace().nth(1)).unwrap_or("/");
+    let request_line = request.lines().next().unwrap_or("");
+    let mut parts = request_line.split_whitespace();
+    let method = parts.next().unwrap_or("GET");
+    let path = parts.next().unwrap_or("/");
     let (status, mime, body) = match path {
         "/" | "/index.html" => ("200 OK", "text/html; charset=utf-8", UI_HTML.to_string()),
         "/style.css" => ("200 OK", "text/css; charset=utf-8", UI_CSS.to_string()),
         "/app.js" => ("200 OK", "application/javascript; charset=utf-8", UI_JS.to_string()),
-        "/api/status" => ("200 OK", "application/json; charset=utf-8", serde_json::json!({
-            "product": "AWEp2P",
-            "status": "online",
-            "node_id": node_id,
-            "node_address": node_addr,
-            "transport": "local AWEp2P node",
-            "ui": "connected"
-        }).to_string()),
+        "/api/status" => {
+            let peers = node.closest_peers(node.identity.public.awe_id.as_bytes(), 64).await;
+            let peer_json = peers.iter().map(|p| serde_json::json!({
+                "id": format_uid(&p.awe_id),
+                "address": p.addresses.first().map(ToString::to_string).unwrap_or_else(|| "unknown".into()),
+                "last_seen": p.last_seen_unix
+            })).collect::<Vec<_>>();
+            ("200 OK", "application/json; charset=utf-8", serde_json::json!({
+                "product": "AWEp2P", "status": "online",
+                "node_id": format_uid(node.identity.public.awe_id.as_bytes()),
+                "node_address": node.listen_addr.to_string(),
+                "transport": "AWE encrypted TCP", "ui": "connected", "peers": peer_json
+            }).to_string())
+        },
+        "/api/connect" if method == "POST" => {
+            let address = request.split("address=").nth(1).and_then(|x| x.split_whitespace().next()).unwrap_or("");
+            let address = address.replace("%3A", ":").replace("%3a", ":");
+            match address.parse::<SocketAddr>() {
+                Ok(addr) => match node.bootstrap(&[addr]).await {
+                    Ok(found) => ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"connected","address":addr.to_string(),"discovered":found,"peer_id":format_uid(&node.closest_peers(node.identity.public.awe_id.as_bytes(),1).await.first().map(|p| p.awe_id).unwrap_or([0;32]))}).to_string()),
+                    Err(e) => ("502 Bad Gateway", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":e.to_string()}).to_string())
+                },
+                Err(_) => ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":"invalid socket address"}).to_string())
+            }
+        },
         "/api/health" => ("200 OK", "application/json; charset=utf-8", serde_json::json!({
             "status":"healthy","core":"ready","ui":"ready","api":"ready"
         }).to_string()),
@@ -100,9 +120,9 @@ async fn run_product() -> Result<()> {
     let node_id = format_uid(identity.public.awe_id.as_bytes());
     let listen: SocketAddr = "127.0.0.1:41000".parse()?;
     let node = Node::new(identity, listen);
-    let node_id_for_ui = node_id.clone();
+    let node_for_listener = node.clone();
     tokio::spawn(async move {
-        if let Err(e) = node.listen().await {
+        if let Err(e) = node_for_listener.listen().await {
             eprintln!("AWE node stopped: {e}");
         }
     });
@@ -124,9 +144,9 @@ async fn run_product() -> Result<()> {
 
     loop {
         let (stream, _) = listener.accept().await?;
-        let id = node_id_for_ui.clone();
+        let api_node = node.clone();
         tokio::spawn(async move {
-            if let Err(e) = serve_ui(stream, id, listen.to_string()).await { eprintln!("UI request error: {e}"); }
+            if let Err(e) = serve_ui(stream, api_node).await { eprintln!("UI request error: {e}"); }
         });
     }
 }
