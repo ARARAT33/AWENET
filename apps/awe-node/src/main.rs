@@ -745,7 +745,7 @@ async fn run_product() -> Result<()> {
     let storage_root = data_dir.join("storage");
     let storage_quota = awep2p_core::node::get_available_disk_space(&storage_root).unwrap_or(0);
     let storage: StorageState = Arc::new(LocalNodeStore::open(&storage_root, storage_quota)?);
-    let messenger: MessengerLog = Arc::new(Mutex::new(Vec::new()));
+    let messenger: MessengerLog = Arc::new(Mutex::new(Vec::new()));\n    let pending_acks: PendingAcks = Arc::new(Mutex::new(BTreeMap::new()));\n    let pending_shards: PendingShards = Arc::new(Mutex::new(BTreeMap::new()));
     let federation_path = data_dir.join("awenet.json");
     let federation_state: FederationState = if federation_path.exists() {
         fs::read(&federation_path)
@@ -793,7 +793,7 @@ async fn run_product() -> Result<()> {
 
     let dispatcher_node = node.clone();
     let dispatcher_storage = storage.clone();
-    let dispatcher_messenger = messenger.clone();
+    let dispatcher_messenger = messenger.clone();\n    let dispatcher_acks = pending_acks.clone();\n    let dispatcher_shards = pending_shards.clone();
     tokio::spawn(async move {
         loop {
             for (sender, stream, payload) in dispatcher_node.take_inbox() {
