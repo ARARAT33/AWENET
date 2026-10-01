@@ -1,0 +1,16 @@
+[package]
+name = "awep2p-app"
+version = "0.1.0"
+description = "AWEp2P native desktop and mobile application"
+authors = ["AWE"]
+edition = "2021"
+
+[lib]
+name = "awep2p_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
