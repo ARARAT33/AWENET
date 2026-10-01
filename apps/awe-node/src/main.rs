@@ -14,7 +14,7 @@ use awep2p_core::permissions::CapabilitySet;
 use awep2p_core::reputation::NodeReputation;
 use awep2p_core::sandbox::{SandboxConfig, WasmSandbox};
 use awep2p_core::replication::build_plan;
-use awep2p_core::storage::{encode_shards, LocalNodeStore, StoragePolicy};
+use awep2p_core::storage::{encode_shards, recover_shards, LocalNodeStore, StoragePolicy};
 use awep2p_core::store::{AWEPackage, AppCapability, AppKind};
 use std::{
     collections::BTreeMap,
@@ -492,13 +492,19 @@ async fn serve_ui(
                                         .join("storage")
                                         .join("manifests");
                                     let _ = fs::create_dir_all(&manifest_path);
+                                    let shard_hashes: Vec<String> = shards.iter()
+                                        .map(|shard| hex::encode(blake3::hash(shard).as_bytes()))
+                                        .collect();
                                     let manifest = serde_json::json!({
                                         "version": 1,
                                         "file_id": hex::encode(file_id),
                                         "filename": filename,
                                         "original_size": data.len(),
                                         "shards": 1000,
+                                        "data_shards": policy.data_shards,
+                                        "parity_shards": policy.parity_shards,
                                         "replicas": 3,
+                                        "shard_hashes": shard_hashes,
                                         "placements": plan.placements,
                                         "stored_local": stored_local,
                                         "sent_remote": sent_remote
@@ -623,8 +629,14 @@ async fn serve_ui(
                             Ok(mut data) => {
                                 let original_size = manifest.get("original_size").and_then(|v| v.as_u64()).unwrap_or(data.len() as u64) as usize;
                                 data.truncate(original_size);
-                                ("200 OK","application/octet-stream",
-                                    String::from_utf8_lossy(&data).to_string())
+                                ("200 OK","application/json; charset=utf-8",
+                                    serde_json::json!({
+                                        "status":"reconstructed",
+                                        "file_id":file_id_hex,
+                                        "filename":manifest.get("filename").and_then(|v| v.as_str()).unwrap_or("object.bin"),
+                                        "size":data.len(),
+                                        "data_hex":hex::encode(data)
+                                    }).to_string())
                             },
                             Err(error) => ("500 Internal Server Error","application/json; charset=utf-8",
                                 serde_json::json!({"status":"error","error":error.to_string()}).to_string())
