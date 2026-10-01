@@ -107,8 +107,7 @@ pub fn a2p2_open(packet: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, NetworkError>
     if packet.len() != A2P2_FIXED_PACKET_SIZE {
         return Err(NetworkError::Protocol("invalid a2p2 packet size".into()));
     }
-    let cipher = ChaCha20Poly1305::new_from_slice(key)
-        .map_err(|_| NetworkError::Encryption)?;
+    let cipher = ChaCha20Poly1305::new_from_slice(key).map_err(|_| NetworkError::Encryption)?;
     let mut nonce = [0u8; A2P2_NONCE_SIZE];
     nonce.copy_from_slice(&packet[..A2P2_HEADER_SIZE]);
     let plaintext = cipher
@@ -650,16 +649,20 @@ impl SecureConnection {
         self.send(&Control::Data { stream, payload }).await?;
         loop {
             match timeout(HELLO_TIMEOUT, self.recv()).await {
-                Ok(Ok(Control::DataAck { stream: echoed, bytes }))
-                    if echoed == stream && bytes == expected =>
-                {
+                Ok(Ok(Control::DataAck {
+                    stream: echoed,
+                    bytes,
+                })) if echoed == stream && bytes == expected => {
                     return Ok(started.elapsed());
                 }
                 Ok(Ok(Control::Ping { sequence })) => {
                     self.send(&Control::Pong { sequence }).await?;
                 }
                 Ok(Ok(Control::Pong { .. } | Control::Nodes { .. })) => {}
-                Ok(Ok(Control::Data { stream: incoming, payload })) => {
+                Ok(Ok(Control::Data {
+                    stream: incoming,
+                    payload,
+                })) => {
                     self.send(&Control::DataAck {
                         stream: incoming,
                         bytes: payload.len() as u32,
@@ -818,9 +821,12 @@ impl Node {
                         }
                         Control::Pong { .. } => {}
                         Control::FindNode { target } => {
-                    let records = routing.read().await.closest(&target, MAX_PEERS_PER_RESPONSE);
-                    if c.send(&Control::Nodes { records }).await.is_err() {
-                        break;
+                            let records = routing
+                                .read()
+                                .await
+                                .closest(&target, MAX_PEERS_PER_RESPONSE);
+                            if c.send(&Control::Nodes { records }).await.is_err() {
+                                break;
                     }
                 }
                 Control::Data { stream, payload } => {
@@ -1137,7 +1143,10 @@ mod tests {
             protocol_version: VERSION + 1,
             last_seen_unix: 0,
         };
-        let encoded = encode(&Control::Nodes { records: vec![record] }).unwrap();
+        let encoded = encode(&Control::Nodes {
+            records: vec![record],
+        })
+        .unwrap();
         assert!(matches!(decode(&encoded), Err(NetworkError::Protocol(_))));
     }
 
