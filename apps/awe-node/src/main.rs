@@ -269,23 +269,82 @@ async fn serve_ui(
         "/api/health" => ("200 OK", "application/json; charset=utf-8", serde_json::json!({
             "status":"healthy","core":"ready","network":"listening","ui":"ready","api":"ready"
         }).to_string()),
-        "/api/messenger" => ("200 OK", "application/json; charset=utf-8", serde_json::json!({
-            "transport":"AWE encrypted TCP","messages": messenger.lock().map(|x| x.clone()).unwrap_or_default()
-        }).to_string()),
+        "/api/messenger" => {
+            drain_messenger_inbox(&node, &messenger);
+            ("200 OK", "application/json; charset=utf-8", serde_json::json!({
+                "transport":"AWE encrypted TCP",
+                "application_transport":"authenticated peer data stream",
+                "messages": messenger.lock().map(|x| x.clone()).unwrap_or_default()
+            }).to_string())
+        },
         "/api/security" => ("200 OK", "application/json; charset=utf-8", serde_json::json!({
             "identity":"ed25519","transport":"x25519 + chacha20-poly1305","replay_protection":"enabled","a2p2_fixed_packet":1280
         }).to_string()),
         "/api/messenger/send" if method == "POST" => {
             let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
             let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
-            let recipient = parsed.get("recipient").and_then(|v| v.as_str()).unwrap_or("");
-            let text = parsed.get("text").and_then(|v| v.as_str()).unwrap_or("");
+            let recipient = parsed.get("recipient").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let text = parsed.get("text").and_then(|v| v.as_str()).unwrap_or("").trim();
             if recipient.is_empty() || text.is_empty() {
-                ("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"recipient and text are required"}).to_string())
+                ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":"recipient and text are required"}).to_string())
             } else {
-                let item=serde_json::json!({"id":format!("{:x}",blake3::hash(format!("{}:{}:{}",recipient,text,now_unix()).as_bytes())),"recipient":recipient,"text":text,"state":"queued","timestamp":now_unix()});
-                if let Ok(mut log)=messenger.lock(){log.push(item.clone());}
-                ("202 Accepted","application/json; charset=utf-8",serde_json::json!({"status":"queued","message":item}).to_string())
+                let peers = node.closest_peers(node.identity.public.awe_id.as_bytes(), 64).await;
+                let recipient_id = if let Some(hex_id) = recipient.strip_prefix("0x").or_else(|| recipient.strip_prefix("0X")) {
+                    hex::decode(hex_id).ok().and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+                } else {
+                    hex::decode(recipient).ok().and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+                }.or_else(|| {
+                    peers.iter().find(|peer| format_uid(&peer.awe_id) == recipient).map(|peer| peer.awe_id)
+                });
+                let Some(recipient_id) = recipient_id else {
+                    ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":"recipient must be a 64-hex AWE ID or a discovered UID"}).to_string())
+                };
+                let timestamp = now_unix();
+                let digest = blake3::hash(format!("{}:{}:{}:{}", format_uid(node.identity.public.awe_id.as_bytes()), recipient, text, timestamp).as_bytes());
+                let message_id = hex::encode(&digest.as_bytes()[..16]);
+                let envelope = serde_json::json!({
+                    "kind": "awe.messenger.v1",
+                    "id": message_id,
+                    "sender": format_uid(node.identity.public.awe_id.as_bytes()),
+                    "recipient": format_uid(&recipient_id),
+                    "text": text,
+                    "timestamp": timestamp
+                });
+                match serde_json::to_vec(&envelope) {
+                    Ok(payload) => match node.send_to_peer(&recipient_id, 100, payload).await {
+                        Ok(rtt) => {
+                            let item = serde_json::json!({
+                                "id": message_id,
+                                "sender": format_uid(node.identity.public.awe_id.as_bytes()),
+                                "recipient": format_uid(&recipient_id),
+                                "text": text,
+                                "state": "sent",
+                                "timestamp": timestamp,
+                                "rtt_ms": rtt.as_millis()
+                            });
+                            if let Ok(mut log) = messenger.lock() {
+                                log.push(item.clone());
+                            }
+                            ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"sent","message":item}).to_string())
+                        }
+                        Err(error) => {
+                            let item = serde_json::json!({
+                                "id": message_id,
+                                "sender": format_uid(node.identity.public.awe_id.as_bytes()),
+                                "recipient": format_uid(&recipient_id),
+                                "text": text,
+                                "state": "failed",
+                                "timestamp": timestamp,
+                                "error": error.to_string()
+                            });
+                            if let Ok(mut log) = messenger.lock() {
+                                log.push(item.clone());
+                            }
+                            ("502 Bad Gateway", "application/json; charset=utf-8", serde_json::json!({"status":"failed","message":item}).to_string())
+                        }
+                    },
+                    Err(error) => ("500 Internal Server Error", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":error.to_string()}).to_string())
+                }
             }
         },
         "/api/storage" => {
@@ -308,6 +367,39 @@ fn data_dir_for_api() -> String {
         PathBuf::from(home).join(".awep2p").display().to_string()
     } else {
         PathBuf::from(".awep2p").display().to_string()
+    }
+}
+
+fn drain_messenger_inbox(node: &Node, messenger: &MessengerLog) {
+    for (sender, stream, payload) in node.take_inbox() {
+        if stream != 100 {
+            continue;
+        }
+        let Ok(message) = serde_json::from_slice::<serde_json::Value>(&payload) else {
+            continue;
+        };
+        if message.get("kind").and_then(|v| v.as_str()) != Some("awe.messenger.v1") {
+            continue;
+        }
+        let id = message.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        let text = message.get("text").and_then(|v| v.as_str()).unwrap_or("");
+        let recipient = message.get("recipient").and_then(|v| v.as_str()).unwrap_or("");
+        if id.is_empty() || text.is_empty() || recipient.is_empty() {
+            continue;
+        }
+        let item = serde_json::json!({
+            "id": id,
+            "sender": format_uid(&sender),
+            "recipient": recipient,
+            "text": text,
+            "state": "delivered",
+            "timestamp": message.get("timestamp").and_then(|v| v.as_u64()).unwrap_or_else(now_unix)
+        });
+        if let Ok(mut log) = messenger.lock() {
+            if !log.iter().any(|existing| existing.get("id").and_then(|v| v.as_str()) == Some(id)) {
+                log.push(item);
+            }
+        }
     }
 }
 
