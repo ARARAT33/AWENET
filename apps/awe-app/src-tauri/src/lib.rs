@@ -5,7 +5,8 @@ use tauri::Manager;
 #[cfg(not(target_os = "android"))]
 fn start_node(app: &tauri::AppHandle) {
     if let Ok(dir) = app.path().resource_dir() {
-        if let Ok(entries) = fs::read_dir(&dir) {
+        let bin_dir = dir.join("binaries");
+        if let Ok(entries) = fs::read_dir(&bin_dir) {
             for entry in entries.flatten() {
                 let p = entry.path();
                 let name = p.file_name().and_then(|x| x.to_str()).unwrap_or("");
