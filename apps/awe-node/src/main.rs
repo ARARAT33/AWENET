@@ -186,10 +186,15 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, node: Node, messenger: Mess
                     federation::validate_awedc(&cfg)?;
                     let mut s = federation_state.lock().map_err(|_| "state lock poisoned".to_string())?;
                     s.local_node_id = format_uid(node.identity.public.awe_id.as_bytes());
-                    s.local_data_centre_id = Some(cfg.data_centre_id.clone());
+                    // .awedc is a data-centre federation invitation: it adds the
+                    // remote DC as a peer, rather than silently changing this node's
+                    // own DC identity.
+                    if s.local_data_centre_id.is_none() {
+                        s.local_data_centre_id = Some(format!("dc-{}", &hex::encode(blake3::hash(format!("AWE/DC/{}", s.local_node_id).as_bytes()).as_bytes())[..24]));
+                    }
                     s.bootstrap_endpoints.extend(cfg.endpoints.clone());
                     s.bootstrap_endpoints.sort(); s.bootstrap_endpoints.dedup();
-                    if !s.joined_data_centres.contains(&cfg.data_centre_id) { s.joined_data_centres.push(cfg.data_centre_id); }
+                    if !s.joined_data_centres.contains(&cfg.data_centre_id) { s.joined_data_centres.push(cfg.data_centre_id.clone()); }
                     s.format = "awenet".into(); s.version = federation::FORMAT_VERSION;
                     Ok(())
                 },
