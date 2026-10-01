@@ -326,7 +326,8 @@ mod tests {
             1_000,
             8,
             b"secret shard".to_vec(),
-        ).unwrap();
+        )
+        .unwrap();
         assert!(p.verify(&key, 1_010, 60));
         p.payload[0] ^= 1;
         assert!(!p.verify(&key, 1_010, 60));
