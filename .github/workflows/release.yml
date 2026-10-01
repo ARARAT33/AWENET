@@ -3,7 +3,89 @@ name: AWEp2P Release Packages
 on:
   workflow_dispatch:
     inputs:
-      release:
+      package-macos:
+    name: macOS executable (${{ matrix.target }})
+    needs: validate
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-13
+            target: x86_64-apple-darwin
+            name: macos-x86_64
+          - os: macos-14
+            target: aarch64-apple-darwin
+            name: macos-aarch64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Build macOS x86_64 / Apple Silicon
+        run: cargo build --release -p awe-node --target ${{ matrix.target }}
+      - name: Validate Mach-O executable
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN="target/${{ matrix.target }}/release/awe-node"
+          test -x "$BIN"
+          file "$BIN" | grep -E 'Mach-O.*executable'
+      - name: Prepare release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/awe-node" "dist/awep2p-${{ matrix.name }}"
+          chmod +x "dist/awep2p-${{ matrix.name }}"
+          shasum -a 256 "dist/awep2p-${{ matrix.name }}" > "dist/awep2p-${{ matrix.name }}.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: dist/awep2p-${{ matrix.name }}*
+          if-no-files-found: error
+
+  package-linux-arm64:
+    name: Linux ARM64 executable
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ARM64 linker
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+      - uses: Swatinem/rust-cache@v2
+      - name: Build Linux ARM64
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+        run: cargo build --release -p awe-node --target aarch64-unknown-linux-gnu
+      - name: Validate ARM64 ELF executable
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN=target/aarch64-unknown-linux-gnu/release/awe-node
+          test -x "$BIN"
+          file "$BIN" | grep -E 'ELF 64-bit.*ARM aarch64'
+      - name: Prepare release files
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp target/aarch64-unknown-linux-gnu/release/awe-node dist/awep2p-linux-aarch64
+          chmod +x dist/awep2p-linux-aarch64
+          sha256sum dist/awep2p-linux-aarch64 > dist/awep2p-linux-aarch64.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-aarch64
+          path: dist/awep2p-linux-aarch64*
+          if-no-files-found: error
+  release:
         description: Create a GitHub Release from the selected tag
         required: false
         default: false
@@ -277,7 +359,7 @@ jobs:
 
   release:
     name: Publish GitHub Release
-    needs: [package-windows, package-linux, package-android]
+    needs: [package-windows, package-linux, package-linux-arm64, package-macos, package-android]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
@@ -291,6 +373,9 @@ jobs:
           set -euo pipefail
           test -s release-assets/awep2p-windows-x86_64.exe
           test -s release-assets/awep2p-linux-x86_64
+          test -s release-assets/awep2p-linux-aarch64
+          test -s release-assets/awep2p-macos-x86_64
+          test -s release-assets/awep2p-macos-aarch64
           test -s release-assets/android-arm64.apk
           test -s release-assets/android-armv7.apk
           test -s release-assets/android-x86_64.apk
