@@ -104,7 +104,6 @@ pub struct RepairTask {
     pub preferred_nodes: Vec<String>,
 }
 
-
 pub const STORAGE_STREAM: u32 = 200;
 pub const STORAGE_PROTOCOL_VERSION: u16 = 1;
 
