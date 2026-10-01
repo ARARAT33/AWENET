@@ -745,6 +745,7 @@ pub struct Node {
     admission: Arc<Mutex<PeerAdmission>>,
     preauth: Arc<Mutex<IpAdmission>>,
     active: Arc<RwLock<HashMap<[u8; 32], Arc<tokio::sync::Mutex<SecureConnection>>>>>,
+    inbox: Arc<Mutex<Vec<([u8; 32], u32, Vec<u8>)>>>,
 }
 impl Node {
     pub fn new(identity: Identity, listen_addr: SocketAddr) -> Self {
@@ -764,6 +765,7 @@ impl Node {
                 PREAUTH_RATE_REFILL_PER_SECOND,
             ))),
             active: Arc::new(RwLock::new(HashMap::new())),
+            inbox: Arc::new(Mutex::new(Vec::new())),
         }
     }
     pub fn node_descriptor(&self) -> String {
@@ -776,6 +778,7 @@ impl Node {
         routing: Arc<RwLock<RoutingTable>>,
         peers: Arc<RwLock<HashMap<[u8; 32], PeerRecord>>>,
         admission: Arc<Mutex<PeerAdmission>>,
+        inbox: Arc<Mutex<Vec<([u8; 32], u32, Vec<u8>)>>>,
     ) {
         let Ok(mut c) = handshake(stream, identity, false).await else {
             return;
@@ -832,6 +835,7 @@ impl Node {
                             }
                         }
                         Control::Data { stream, payload } => {
+                            if let Ok(mut queue) = inbox.lock() { queue.push((c.remote_id, stream, payload.clone())); }
                             if c.send(&Control::DataAck {
                                 stream,
                                 bytes: payload.len() as u32,
@@ -883,8 +887,9 @@ impl Node {
             let routing = Arc::clone(&self.routing);
             let peers = Arc::clone(&self.peers);
             let admission = Arc::clone(&self.admission);
+            let inbox = Arc::clone(&self.inbox);
             tokio::spawn(async move {
-                Self::handle(s, a, identity, routing, peers, admission).await;
+                Self::handle(s, a, identity, routing, peers, admission, inbox).await;
                 drop(permit);
             });
         }
@@ -945,6 +950,16 @@ impl Node {
             });
         }
         Ok(found)
+    }
+
+    pub async fn send_to_peer(&self, peer_id: &[u8; 32], stream: u32, payload: Vec<u8>) -> Result<std::time::Duration, NetworkError> {
+        let connection = self.active.read().await.get(peer_id).cloned().ok_or_else(|| NetworkError::Protocol("peer is not actively connected".into()))?;
+        let mut connection = connection.lock().await;
+        connection.send_data_roundtrip(stream, payload).await
+    }
+
+    pub fn take_inbox(&self) -> Vec<([u8; 32], u32, Vec<u8>)> {
+        self.inbox.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default()
     }
 
     pub async fn active_peers(&self) -> Vec<[u8; 32]> {
