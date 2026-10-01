@@ -322,6 +322,10 @@ enum Control {
         stream: u32,
         payload: Vec<u8>,
     },
+    DataAck {
+        stream: u32,
+        bytes: u32,
+    },
     FindNode {
         target: [u8; 32],
     },
@@ -613,6 +617,49 @@ impl SecureConnection {
         }
     }
 
+    /// Send application data and wait for the authenticated peer acknowledgement.
+    /// This proves the encrypted data plane is carrying bytes end-to-end, not just heartbeats.
+    pub async fn send_data_roundtrip(
+        &mut self,
+        stream: u32,
+        payload: Vec<u8>,
+    ) -> Result<Duration, NetworkError> {
+        if payload.len() > MAX_FRAME / 2 {
+            return Err(NetworkError::FrameTooLarge);
+        }
+        let expected = payload.len() as u32;
+        let started = Instant::now();
+        self.send(&Control::Data { stream, payload }).await?;
+        loop {
+            match timeout(HELLO_TIMEOUT, self.recv()).await {
+                Ok(Ok(Control::DataAck { stream: echoed, bytes }))
+                    if echoed == stream && bytes == expected =>
+                {
+                    return Ok(started.elapsed());
+                }
+                Ok(Ok(Control::Ping { sequence })) => {
+                    self.send(&Control::Pong { sequence }).await?;
+                }
+                Ok(Ok(Control::Pong { .. } | Control::Nodes { .. })) => {}
+                Ok(Ok(Control::Data { stream: incoming, payload })) => {
+                    self.send(&Control::DataAck {
+                        stream: incoming,
+                        bytes: payload.len() as u32,
+                    })
+                    .await?;
+                }
+                Ok(Ok(Control::DataAck { .. })) => {}
+                Ok(Ok(Control::FindNode { .. } | Control::Hello { .. })) => {
+                    return Err(NetworkError::Protocol(
+                        "unexpected control message during data probe".into(),
+                    ));
+                }
+                Ok(Err(error)) => return Err(error),
+                Err(_) => return Err(NetworkError::Timeout),
+            }
+        }
+    }
+
     pub async fn recv_data(&mut self) -> Result<Option<(u32, Vec<u8>)>, NetworkError> {
         match self.recv().await? {
             Control::Data { stream, payload } => Ok(Some((stream, payload))),
@@ -620,7 +667,7 @@ impl SecureConnection {
                 self.send(&Control::Pong { sequence }).await?;
                 Ok(None)
             }
-            Control::Pong { .. } | Control::Nodes { .. } => Ok(None),
+            Control::Pong { .. } | Control::DataAck { .. } | Control::Nodes { .. } => Ok(None),
             Control::FindNode { .. } | Control::Hello { .. } => {
                 Err(NetworkError::Protocol("unexpected control message".into()))
             }
@@ -723,6 +770,7 @@ impl Node {
                         Control::FindNode { .. } => 4,
                         Control::Nodes { records } => 4 + records.len() as u64,
                         Control::Data { payload, .. } => 1 + (payload.len() as u64 / 4096),
+                        Control::DataAck { .. } => 1,
                         Control::Hello { .. } => PEER_RATE_CAPACITY + 1,
                     };
                     if !admission.lock().expect("admission lock poisoned").allow(c.remote_id, cost, now()) {
@@ -741,7 +789,19 @@ impl Node {
                         break;
                     }
                 }
-                Control::Data { .. } => {}
+                Control::Data { stream, payload } => {
+                    if c
+                        .send(&Control::DataAck {
+                            stream,
+                            bytes: payload.len() as u32,
+                        })
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                Control::DataAck { .. } => {}
                 Control::Nodes { .. } | Control::Hello { .. } => break,
                     }
                 }
