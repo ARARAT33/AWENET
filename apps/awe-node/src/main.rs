@@ -66,7 +66,7 @@ fn load_identity(path: &PathBuf, password: &str, username: &str) -> Result<Ident
 }
 
 async fn http_response(status: &str, content_type: &str, body: &str) -> Vec<u8> {
-    format!("HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}", body.len()).into_bytes()
+    format!("HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: content-type\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}", body.len()).into_bytes()
 }
 
 async fn serve_ui(mut stream: tokio::net::TcpStream, node: Node) -> Result<()> {
