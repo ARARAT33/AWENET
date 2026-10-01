@@ -171,17 +171,18 @@ impl Default for AweNativeGuiApp {
         let my_uid = format_uid(identity.public.awe_id.as_bytes());
 
         let default_wasm = b"\0asm\x01\0\0\0".to_vec();
-        let mut store_apps = Vec::new();
-        store_apps.push((
-            "org.awenet.messenger".to_string(),
-            "AWE Messenger Module".to_string(),
-            default_wasm.clone(),
-        ));
-        store_apps.push((
-            "org.awenet.browser".to_string(),
-            "Sovereign Browser Extension".to_string(),
-            default_wasm,
-        ));
+        let store_apps = vec![
+            (
+                "org.awenet.messenger".to_string(),
+                "AWE Messenger Module".to_string(),
+                default_wasm.clone(),
+            ),
+            (
+                "org.awenet.browser".to_string(),
+                "Sovereign Browser Extension".to_string(),
+                default_wasm,
+            ),
+        ];
 
         Self {
             active_tab: AppTab::Browser,
