@@ -296,3 +296,8 @@ The repository does **not** claim that these primitives alone constitute a live 
 ## Implementation maturity
 
 The current engineering estimate is approximately **30–35% overall foundation maturity**. This is not a feature-completion percentage and is not a GitHub metric. Detailed area estimates are maintained in docs/AWEP2P-DAILY-STATUS.md.
+
+
+## Real peer transport
+
+The product runtime now sends messenger envelopes over the authenticated AWE encrypted peer data stream (stream 100). Known peers can be addressed by their discovered UID or by a full 64-character AWE ID; application delivery is no longer an in-memory-only queue.
