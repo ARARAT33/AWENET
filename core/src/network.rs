@@ -843,6 +843,7 @@ impl Node {
                         Control::DataAck { .. } => {}
                         Control::Nodes { .. } | Control::Hello { .. } => break,
                     }
+                }
                 Ok(Err(_)) => break,
                 Err(_) => {
                     if c.is_idle() || c.ping(seq).await.is_err() {
