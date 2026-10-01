@@ -962,15 +962,28 @@ impl Node {
         stream: u32,
         payload: Vec<u8>,
     ) -> Result<std::time::Duration, NetworkError> {
-        let connection = self
-            .active
-            .read()
-            .await
-            .get(peer_id)
-            .cloned()
-            .ok_or_else(|| NetworkError::Protocol("peer is not actively connected".into()))?;
+        let connection = if let Some(connection) = self.active.read().await.get(peer_id).cloned() {
+            connection
+        } else {
+            let address = self
+                .peers
+                .read()
+                .await
+                .get(peer_id)
+                .and_then(|peer| peer.addresses.first().copied())
+                .ok_or_else(|| NetworkError::Protocol("peer address is unknown".into()))?;
+            let connection = Arc::new(tokio::sync::Mutex::new(
+                self.connect(address).await?,
+            ));
+            self.active.write().await.insert(*peer_id, connection.clone());
+            connection
+        };
         let mut connection = connection.lock().await;
-        connection.send_data_roundtrip(stream, payload).await
+        let result = connection.send_data_roundtrip(stream, payload).await;
+        if result.is_err() {
+            self.active.write().await.remove(peer_id);
+        }
+        result
     }
 
     pub fn take_inbox(&self) -> Vec<([u8; 32], u32, Vec<u8>)> {
