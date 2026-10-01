@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use awep2p_core::data_plane::{StorageShardAck, StorageShardTransfer, STORAGE_STREAM};
+use awep2p_core::data_plane::{StorageShardAck, StorageShardRequest, StorageShardTransfer, STORAGE_STREAM};
 use awep2p_core::diagnostics::{NodeDiagnostics, NodeMetrics};
 use awep2p_core::federation::{
     self, AweNetConfig, AweNodeConfig, DataCentreConfig, DataGroupConfig,
@@ -32,7 +32,7 @@ const UI_ADDR: &str = "127.0.0.1:41800";
 
 type MessengerLog = Arc<Mutex<Vec<serde_json::Value>>>;
 type FederationState = Arc<Mutex<AweNetConfig>>;
-type StorageState = Arc<LocalNodeStore>;
+type StorageState = Arc<LocalNodeStore>;\ntype PendingAcks = Arc<Mutex<BTreeMap<[u8; 16], StorageShardAck>>>;\ntype PendingShards = Arc<Mutex<BTreeMap<[u8; 16], StorageShardTransfer>>>;
 
 fn default_vault() -> PathBuf {
     if let Some(home) = env::var_os("HOME") {
