@@ -104,6 +104,89 @@ pub struct RepairTask {
     pub preferred_nodes: Vec<String>,
 }
 
+
+pub const STORAGE_STREAM: u32 = 200;
+pub const STORAGE_PROTOCOL_VERSION: u16 = 1;
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StorageShardTransfer {
+    pub version: u16,
+    pub request_id: [u8; 16],
+    pub sender: [u8; 32],
+    pub file_id: [u8; 32],
+    pub shard_index: u16,
+    pub total_shards: u16,
+    pub original_size: u64,
+    pub payload: Vec<u8>,
+    pub payload_hash: [u8; 32],
+}
+
+impl StorageShardTransfer {
+    pub fn new(
+        request_id: [u8; 16],
+        sender: [u8; 32],
+        file_id: [u8; 32],
+        shard_index: u16,
+        total_shards: u16,
+        original_size: u64,
+        payload: Vec<u8>,
+    ) -> Self {
+        Self {
+            version: STORAGE_PROTOCOL_VERSION,
+            request_id,
+            sender,
+            file_id,
+            shard_index,
+            total_shards,
+            original_size,
+            payload_hash: *blake3::hash(&payload).as_bytes(),
+            payload,
+        }
+    }
+
+    pub fn verify(&self) -> Result<(), String> {
+        if self.version != STORAGE_PROTOCOL_VERSION {
+            return Err("unsupported storage transfer version".into());
+        }
+        if self.total_shards != 1000 {
+            return Err("storage transfers require exactly 1000 shards".into());
+        }
+        if self.shard_index as usize >= self.total_shards as usize {
+            return Err("storage shard index out of range".into());
+        }
+        if self.payload_hash != *blake3::hash(&self.payload).as_bytes() {
+            return Err("storage shard integrity check failed".into());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StorageShardAck {
+    pub version: u16,
+    pub request_id: [u8; 16],
+    pub file_id: [u8; 32],
+    pub shard_index: u16,
+    pub stored_object_id: [u8; 32],
+}
+
+impl StorageShardAck {
+    pub fn new(
+        request_id: [u8; 16],
+        file_id: [u8; 32],
+        shard_index: u16,
+        stored_object_id: [u8; 32],
+    ) -> Self {
+        Self {
+            version: STORAGE_PROTOCOL_VERSION,
+            request_id,
+            file_id,
+            shard_index,
+            stored_object_id,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
