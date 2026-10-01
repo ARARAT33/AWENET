@@ -655,7 +655,7 @@ async fn serve_ui(
                                 if present >= policy.data_shards {
                                     break;
                                 }
-                                let Some(placement) = placements.get(index).and_then(|v| v.get("nodes")).and_then(|v| v.as_array()) else {
+                                let Some(placement) = manifest.get("placements").and_then(|v| v.get(index)).and_then(|v| v.get("nodes")).and_then(|v| v.as_array()) else {
                                     continue;
                                 };
                                 let Some(expected_hex) = manifest.get("shard_hashes").and_then(|v| v.get(index)).and_then(|v| v.as_str()) else {
