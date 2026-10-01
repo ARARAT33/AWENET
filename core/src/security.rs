@@ -138,7 +138,10 @@ pub struct ShieldReplayGuard {
 }
 impl Default for ShieldReplayGuard {
     fn default() -> Self {
-        Self { states: BTreeMap::new(), generation: 0 }
+        Self {
+            states: BTreeMap::new(),
+            generation: 0,
+        }
     }
 }
 
@@ -181,10 +184,8 @@ impl ShieldReplayGuard {
         }
 
         if self.states.len() >= SHIELD_MAX_TRACKED_REQUESTS {
-            if let Some((oldest, _)) = self
-                .states
-                .iter()
-                .min_by_key(|(_, state)| state.generation)
+            if let Some((oldest, _)) =
+                self.states.iter().min_by_key(|(_, state)| state.generation)
             {
                 let oldest = *oldest;
                 self.states.remove(&oldest);
@@ -230,23 +231,28 @@ pub struct SecurityMetrics {
 
 impl SecurityMetrics {
     pub fn record_accepted(&self) {
-        self.accepted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.accepted
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn record_rejected(&self) {
-        self.rejected.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.rejected
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn record_expired(&self) {
-        self.expired.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.expired
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn record_replayed(&self) {
-        self.replayed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.replayed
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn record_bad_tag(&self) {
-        self.bad_tag.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.bad_tag
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn snapshot(&self) -> SecurityCounters {
@@ -274,13 +280,16 @@ mod tests {
         metrics.record_replayed();
         metrics.record_bad_tag();
 
-        assert_eq!(metrics.snapshot(), SecurityCounters {
-            accepted: 2,
-            rejected: 1,
-            expired: 1,
-            replayed: 1,
-            bad_tag: 1,
-        });
+        assert_eq!(
+            metrics.snapshot(),
+            SecurityCounters {
+                accepted: 2,
+                rejected: 1,
+                expired: 1,
+                replayed: 1,
+                bad_tag: 1,
+            }
+        );
     }
 
     #[test]
@@ -293,11 +302,7 @@ mod tests {
         assert!(g.accept(s, r, 9));
         assert!(!g.accept(s, r, 8));
         assert!(!g.accept(s, r, 10));
-        assert!(!g.accept(
-            s,
-            r,
-            10u64.saturating_sub(SHIELD_REPLAY_WINDOW as u64),
-        ));
+        assert!(!g.accept(s, r, 10u64.saturating_sub(SHIELD_REPLAY_WINDOW as u64),));
     }
 
     #[test]
@@ -332,7 +337,17 @@ mod tests {
     #[test]
     fn ttl_is_bounded_and_cannot_reach_zero() {
         let key = [1u8; 32];
-        let mut p = ShieldPacket::seal(&key, PacketClass::Control, [0;16], [0;16], 1, 10, 2, vec![]).unwrap();
+        let mut p = ShieldPacket::seal(
+            &key,
+            PacketClass::Control,
+            [0; 16],
+            [0; 16],
+            1,
+            10,
+            2,
+            vec![],
+        )
+        .unwrap();
         assert!(p.decrement_ttl(&key));
         assert!(p.verify(&key, 10, 60));
         assert!(!p.decrement_ttl(&key));
@@ -341,7 +356,17 @@ mod tests {
     #[test]
     fn future_packets_have_clock_skew_guard() {
         let key = [2u8; 32];
-        let p = ShieldPacket::seal(&key, PacketClass::Message, [0;16], [0;16], 1, 2_000, 2, vec![]).unwrap();
+        let p = ShieldPacket::seal(
+            &key,
+            PacketClass::Message,
+            [0; 16],
+            [0; 16],
+            1,
+            2_000,
+            2,
+            vec![],
+        )
+        .unwrap();
         assert!(!p.verify(&key, 1_900, 300));
     }
 }
