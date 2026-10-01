@@ -149,7 +149,7 @@ pub fn build_capacity_limited_plan(
             })
             .filter(|(i, _)| loads[*i] < MAX_SHARDS_PER_NODE)
             .collect();
-        ranked.sort_by_key(|(i, score)| (*score, unique[*i].clone()));
+        ranked.sort_by_key(|(i, score)| (loads[*i], *score, unique[*i].clone()));
         if ranked.len() < REQUIRED_REPLICAS {
             return Err(format!("capacity exhausted while placing shard {shard_index}"));
         }
