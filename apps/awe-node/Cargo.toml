@@ -4,10 +4,6 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-[lib]
-name = "awe_node"
-crate-type = ["rlib", "cdylib"]
-
 [[bin]]
 name = "awe-node"
 path = "src/main.rs"
