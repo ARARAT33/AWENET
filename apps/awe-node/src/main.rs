@@ -284,7 +284,7 @@ async fn run_product() -> Result<()> {
         identity
     };
     let node_id = format_uid(identity.public.awe_id.as_bytes());
-    let listen: SocketAddr = "127.0.0.1:41000".parse()?;
+    let listen: SocketAddr = env::var("AWE_LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:41000".into()).parse().context("invalid AWE_LISTEN_ADDR")?;
     let node = Node::new(identity, listen);
     let messenger: MessengerLog = Arc::new(Mutex::new(Vec::new()));
     let federation_path = data_dir.join("awenet.json");
