@@ -744,6 +744,7 @@ pub struct Node {
     peers: Arc<RwLock<HashMap<[u8; 32], PeerRecord>>>,
     admission: Arc<Mutex<PeerAdmission>>,
     preauth: Arc<Mutex<IpAdmission>>,
+    active: Arc<RwLock<HashMap<[u8; 32], Arc<tokio::sync::Mutex<SecureConnection>>>>>,
 }
 impl Node {
     pub fn new(identity: Identity, listen_addr: SocketAddr) -> Self {
@@ -762,6 +763,7 @@ impl Node {
                 PREAUTH_RATE_CAPACITY,
                 PREAUTH_RATE_REFILL_PER_SECOND,
             ))),
+            active: Arc::new(RwLock::new(HashMap::new())),
         }
     }
     pub fn node_descriptor(&self) -> String {
@@ -900,6 +902,7 @@ impl Node {
             let Ok(mut c) = self.connect(a).await else {
                 continue;
             };
+            let remote_id = c.remote_id;
             let remote = PeerRecord {
                 awe_id: c.remote_id,
                 public_key: c.remote_public_key,
@@ -926,9 +929,38 @@ impl Node {
                     found += 1
                 }
             }
+            let shared = Arc::new(tokio::sync::Mutex::new(c));
+            self.active.write().await.insert(remote_id, shared.clone());
+            let active = Arc::clone(&self.active);
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(HEARTBEAT).await;
+                    let Ok(mut connection) = shared.try_lock() else { continue; };
+                    if connection.ping_roundtrip(0).await.is_err() {
+                        drop(connection);
+                        active.write().await.remove(&remote_id);
+                        break;
+                    }
+                }
+            });
         }
         Ok(found)
     }
+
+    pub async fn active_peers(&self) -> Vec<[u8; 32]> {
+        self.active.read().await.keys().copied().collect()
+    }
+
+    pub async fn active_peer_count(&self) -> usize {
+        self.active.read().await.len()
+    }
+
+    pub async fn ping_peer(&self, peer_id: &[u8; 32]) -> Result<std::time::Duration, NetworkError> {
+        let connection = self.active.read().await.get(peer_id).cloned().ok_or_else(|| NetworkError::Protocol("peer is not actively connected".into()))?;
+        let mut connection = connection.lock().await;
+        connection.ping_roundtrip(now()).await
+    }
+
     /// Iteratively query discovered peers for closer peers instead of relying on
     /// a single bootstrap response. This is the lookup phase of a Kademlia-style DHT.
     pub async fn find_nodes_iterative(
