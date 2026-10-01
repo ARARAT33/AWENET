@@ -1066,6 +1066,44 @@ mod tests {
         assert_eq!(t.await.unwrap(), Some((1, b"awep2p".to_vec())));
     }
     #[tokio::test]
+    async fn encrypted_data_plane_roundtrip_is_acknowledged() {
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let a = l.local_addr().unwrap();
+        let si = Arc::new(Identity::generate(Username::new("roundtrip-server").unwrap()));
+        let ci = Arc::new(Identity::generate(Username::new("roundtrip-client").unwrap()));
+        let t = tokio::spawn(async move {
+            let (s, _) = l.accept().await.unwrap();
+            let mut server = handshake(s, si, false).await.unwrap();
+            loop {
+                match server.recv().await.unwrap() {
+                    Control::Data { stream, payload } => {
+                        server
+                            .send(&Control::DataAck {
+                                stream,
+                                bytes: payload.len() as u32,
+                            })
+                            .await
+                            .unwrap();
+                        break;
+                    }
+                    Control::Ping { sequence } => {
+                        server.send(&Control::Pong { sequence }).await.unwrap();
+                    }
+                    _ => {}
+                }
+            }
+        });
+        let s = TcpStream::connect(a).await.unwrap();
+        let mut client = handshake(s, ci, true).await.unwrap();
+        let elapsed = client
+            .send_data_roundtrip(42, b"AWE-NET-END-TO-END-DATA".to_vec())
+            .await
+            .unwrap();
+        assert!(elapsed < HELLO_TIMEOUT);
+        t.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn distinct_sessions_have_working_key_agreement() {
         let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let a = l.local_addr().unwrap();
