@@ -29,11 +29,10 @@ impl PeerAnnouncement {
     }
 
     pub fn verify_signature(&self) -> bool {
-        Identity::verify(
-            &self.public_key,
-            &self.signing_bytes(),
-            self.signature.as_slice().try_into().unwrap(),
-        )
+        let Ok(signature) = self.signature.as_slice().try_into() else {
+            return false;
+        };
+        Identity::verify(&self.public_key, &self.signing_bytes(), &signature)
     }
 
     pub fn validate(&self, now_unix: u64, max_lifetime: u64) -> Result<(), String> {
