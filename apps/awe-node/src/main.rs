@@ -296,10 +296,10 @@ async fn serve_ui(
                 }.or_else(|| {
                     peers.iter().find(|peer| format_uid(&peer.awe_id) == recipient).map(|peer| peer.awe_id)
                 });
-                let Some(recipient_id) = recipient_id else {
-                    ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":"recipient must be a 64-hex AWE ID or a discovered UID"}).to_string())
-                };
-                let timestamp = now_unix();
+                match recipient_id {
+                    None => ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":"recipient must be a 64-hex AWE ID or a discovered UID"}).to_string()),
+                    Some(recipient_id) => {
+                        let timestamp = now_unix();
                 let digest = blake3::hash(format!("{}:{}:{}:{}", format_uid(node.identity.public.awe_id.as_bytes()), recipient, text, timestamp).as_bytes());
                 let message_id = hex::encode(&digest.as_bytes()[..16]);
                 let envelope = serde_json::json!({
@@ -344,6 +344,8 @@ async fn serve_ui(
                         }
                     },
                     Err(error) => ("500 Internal Server Error", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":error.to_string()}).to_string())
+                }
+                    }
                 }
             }
         },
