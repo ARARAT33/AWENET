@@ -76,7 +76,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, node: Node) -> Result<()> {
     let request_line = request.lines().next().unwrap_or("");
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or("GET");
-    let path = parts.next().unwrap_or("/");
+    let path = parts.next().unwrap_or("/").split('?').next().unwrap_or("/");
     let (status, mime, body) = match path {
         "/" | "/index.html" => ("200 OK", "text/html; charset=utf-8", UI_HTML.to_string()),
         "/style.css" => ("200 OK", "text/css; charset=utf-8", UI_CSS.to_string()),
