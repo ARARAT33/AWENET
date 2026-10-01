@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["core", "apps/awe-node"]
+members = ["core", "apps/awe-node", "apps/awe-desktop"]
 
 [workspace.package]
 edition = "2021"
