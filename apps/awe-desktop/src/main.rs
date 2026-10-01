@@ -1,3 +1,5 @@
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 use awep2p_core::diagnostics::{HealthStatus, NodeDiagnostics};
 use eframe::egui;
 
@@ -45,8 +47,8 @@ impl AweDesktop {
 
 impl eframe::App for AweDesktop {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.diagnostics
-            .update_metrics(self.diagnostics.metrics().clone());
+        let metrics = self.diagnostics.metrics().clone();
+        self.diagnostics.update_metrics(metrics);
 
         egui::TopBottomPanel::top("header").show(ctx, |ui| {
             ui.horizontal(|ui| {
