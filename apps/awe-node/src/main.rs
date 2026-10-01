@@ -134,7 +134,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, node: Node, messenger: Mess
             let now = now_unix();
             let result: Result<(String, String), String> = match kind {
                 "awenode" => {
-                    let endpoint = parsed.get("endpoint").and_then(|v| v.as_str()).unwrap_or(&node.listen_addr.to_string()).to_string();
+                    let endpoint = parsed.get("endpoint").and_then(|v| v.as_str()).map(str::to_owned).unwrap_or_else(|| node.listen_addr.to_string());
                     let bootstrap = parsed.get("bootstrap").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect()).unwrap_or_default();
                     let cfg = federation::generate_awenode(&format_uid(node.identity.public.awe_id.as_bytes()), name, &endpoint, bootstrap, now);
                     serde_json::to_string_pretty(&cfg).map(|s| ("awenode.awenode".into(), s)).map_err(|e| e.to_string())
