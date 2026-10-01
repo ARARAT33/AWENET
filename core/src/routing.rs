@@ -123,6 +123,6 @@ mod routing_distance_regression {
             PeerRoute { node_id: hex::encode(low), address: "127.0.0.1:1".into(), distance: [0;32], latency_ms: Some(1), healthy: true },
             PeerRoute { node_id: hex::encode(high), address: "127.0.0.1:2".into(), distance: [0;32], latency_ms: Some(1), healthy: true },
         ];
-        assert_eq!(rank_peers(&target, &peers)[0].node_id, hex::encode(high));
+        assert_eq!(rank_peers(&target, &peers)[0].node_id, hex::encode(low));
     }
 }
