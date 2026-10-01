@@ -4,6 +4,7 @@ pub mod crypto;
 pub mod data_plane;
 pub mod diagnostics;
 pub mod discovery;
+pub mod federation;
 pub mod governance;
 pub mod host;
 pub mod host_directory;
