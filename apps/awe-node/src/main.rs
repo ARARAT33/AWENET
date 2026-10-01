@@ -14,9 +14,9 @@ use awep2p_core::sandbox::{SandboxConfig, WasmSandbox};
 use std::{collections::BTreeMap, env, fs, net::SocketAddr, path::PathBuf};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-const UI_HTML: &str = include_str!("../ui/index.html");
-const UI_CSS: &str = include_str!("../ui/style.css");
-const UI_JS: &str = include_str!("../ui/app.js");
+const UI_HTML: &str = include_str!("../../awe-desktop/ui/index.html");
+const UI_CSS: &str = include_str!("../../awe-desktop/ui/style.css");
+const UI_JS: &str = include_str!("../../awe-desktop/ui/app.js");
 const UI_ADDR: &str = "127.0.0.1:41800";
 
 fn default_vault() -> PathBuf {
