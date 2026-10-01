@@ -177,6 +177,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, node: Node, messenger: Mess
                     s.local_node_id = format_uid(node.identity.public.awe_id.as_bytes());
                     s.local_data_centre_id = Some(cfg.data_centre_id.clone());
                     s.bootstrap_endpoints = cfg.bootstrap_endpoints.clone();
+                    if !s.bootstrap_endpoints.contains(&cfg.endpoint) { s.bootstrap_endpoints.push(cfg.endpoint.clone()); }
                     if !s.joined_data_centres.contains(&cfg.data_centre_id) { s.joined_data_centres.push(cfg.data_centre_id); }
                     s.format = "awenet".into(); s.version = federation::FORMAT_VERSION;
                     Ok(())
@@ -245,7 +246,8 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, node: Node, messenger: Mess
             }
         },
         "/api/storage" => {
-            let free = awep2p_core::node::get_available_disk_space(&std::env::current_dir()?).unwrap_or(0);
+            let storage_root = PathBuf::from(data_dir_for_api());
+            let free = awep2p_core::node::get_available_disk_space(&storage_root).unwrap_or(0);
             ("200 OK", "application/json; charset=utf-8", serde_json::json!({
                 "root": data_dir_for_api(), "free_bytes": free, "replication_policy":"1000 shards / 3 replicas"
             }).to_string())
