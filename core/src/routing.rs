@@ -80,6 +80,62 @@ pub fn next_hop(
         .find(|p| !visited.contains(&p.node_id))
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RouteHop {
+    pub hop_index: u16,
+    pub node_id: String,
+    pub address: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MultiHopRoutePlanner {
+    pub max_hops: u16,
+}
+
+impl MultiHopRoutePlanner {
+    pub fn new(max_hops: u16) -> Self {
+        Self { max_hops }
+    }
+
+    pub fn plan_route(
+        &self,
+        target: &[u8; 32],
+        available_peers: &[PeerRoute],
+    ) -> Result<Vec<RouteHop>, String> {
+        if available_peers.is_empty() {
+            return Err("no candidate peers for multi-hop route".into());
+        }
+        let ranked = rank_peers(target, available_peers);
+        if ranked.is_empty() {
+            return Err("no healthy candidate peers for multi-hop route".into());
+        }
+        let mut visited = BTreeSet::new();
+        let mut route = Vec::new();
+
+        for hop_index in 0..self.max_hops {
+            if let Some(candidate) = next_hop(target, &ranked, &visited) {
+                visited.insert(candidate.node_id.clone());
+                route.push(RouteHop {
+                    hop_index,
+                    node_id: candidate.node_id.clone(),
+                    address: candidate.address,
+                });
+                if candidate.distance == [0u8; 32] {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+
+        if route.is_empty() {
+            Err("failed to establish valid multi-hop path".into())
+        } else {
+            Ok(route)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -117,6 +173,16 @@ mod tests {
         let mut p = peer(9, 1);
         p.healthy = false;
         assert!(next_hop(&[9u8; 32], &[p], &BTreeSet::new()).is_none());
+    }
+
+    #[test]
+    fn multi_hop_route_planner_calculates_hops() {
+        let planner = MultiHopRoutePlanner::new(3);
+        let target = [5u8; 32];
+        let peers = vec![peer(1, 10), peer(2, 20), peer(5, 5)];
+        let route = planner.plan_route(&target, &peers).unwrap();
+        assert!(!route.is_empty());
+        assert!(route.len() <= 3);
     }
 }
 

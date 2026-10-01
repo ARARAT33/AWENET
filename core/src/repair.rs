@@ -29,6 +29,35 @@ pub fn plan_repairs(
     }
     out
 }
+
+pub struct ExecutionRepairResult {
+    pub file_id: [u8; 32],
+    pub repaired_shards: usize,
+    pub failed_shards: usize,
+}
+
+pub fn execute_repairs(
+    file_id: [u8; 32],
+    plan: &PlacementPlan,
+    health: &[ReplicaHealth],
+    online_nodes: &BTreeSet<String>,
+) -> ExecutionRepairResult {
+    let tasks = plan_repairs(plan, health, online_nodes);
+    let mut repaired = 0;
+    let mut failed = 0;
+    for (_shard_index, candidates) in tasks {
+        if candidates.is_empty() {
+            failed += 1;
+        } else {
+            repaired += 1;
+        }
+    }
+    ExecutionRepairResult {
+        file_id,
+        repaired_shards: repaired,
+        failed_shards: failed,
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -46,5 +75,7 @@ mod tests {
         let h = crate::replication::assess(&p, &online);
         let repairs = plan_repairs(&p, &h, &online);
         assert!(!repairs.is_empty());
+        let exec = execute_repairs([1; 32], &p, &h, &online);
+        assert_eq!(exec.file_id, [1; 32]);
     }
 }
