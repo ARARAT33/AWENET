@@ -103,7 +103,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, node: Node, messenger: Mess
                 "product": "AWEp2P", "status": "online",
                 "node_id": format_uid(node.identity.public.awe_id.as_bytes()),
                 "node_address": node.listen_addr.to_string(),
-                "transport": "AWE encrypted TCP", "ui": "connected", "peers": peer_json
+                "transport": "AWE encrypted TCP", "ui": "connected", "peers": peer_json, "discovered_peers": peer_json.len(), "active_connections": node.active_peer_count().await
             }).to_string())
         },
         "/api/connect" if method == "POST" => {
@@ -289,6 +289,8 @@ async fn run_product() -> Result<()> {
         Arc::new(Mutex::new(AweNetConfig { format: "awenet".into(), version: federation::FORMAT_VERSION, local_node_id: node_id.clone(), ..Default::default() }))
     };
     if let Ok(state) = federation_state.lock() { let _ = federation::save_json(&*state, &federation_path); }
+    let startup_bootstrap = federation_state.lock().map(|s| s.bootstrap_endpoints.clone()).unwrap_or_default().iter().filter_map(|x| x.parse::<SocketAddr>().ok()).collect::<Vec<_>>();
+    if !startup_bootstrap.is_empty() { let _ = node.bootstrap(&startup_bootstrap).await; }
     let node_for_listener = node.clone();
     tokio::spawn(async move {
         if let Err(e) = node_for_listener.listen().await {
