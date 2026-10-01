@@ -428,7 +428,8 @@ async fn serve_ui(
             match (recipient_id, file_id, payload, usize::try_from(shard_index)) {
                 (Some(peer_id), Some(file_id), Some(payload), Ok(index)) if index < 1000 => {
                     let transfer = StorageShardTransfer::new(
-                        *blake3::hash(format!("{}:{}:{}", file_id_hex, shard_index, now_unix()).as_bytes()).as_bytes()[..16]
+                        blake3::hash(format!("{}:{}:{}", file_id_hex, shard_index, now_unix()).as_bytes())
+                            .as_bytes()[..16]
                             .try_into()
                             .unwrap_or([0u8; 16]),
                         node.identity.public.awe_id,
