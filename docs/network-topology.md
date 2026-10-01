@@ -1,0 +1,3 @@
+# AWEP2P network topology
+
+Node-to-node architecture: each node keeps peer links and can route through other nodes. A Data Centre can maintain a full mesh where every healthy node connects to every other node. Data Centre interconnect supports two modes: **FullMesh** (all nodes in DC-A ↔ all nodes in DC-B) and **Relay** (a selected node bridges to a node in the other centre). **3+ Data Centres form a Data Group; 2+ Data Groups form a Centre Group; all Centre Groups form AWE Net.** Routing is a peer graph operation and does not depend on one central routing server.
