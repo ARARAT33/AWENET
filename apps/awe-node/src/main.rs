@@ -25,6 +25,7 @@ Usage:
   awe-node diagnostics
   awe-node mesh <listen-port>
   awe-node health
+  awe-node probe <address>
 
 Examples:
   awe-node
@@ -432,6 +433,20 @@ fn print_health() -> Result<()> {
     Ok(())
 }
 
+async fn probe(address: SocketAddr) -> Result<()> {
+    let identity = Identity::generate(Username::new("probe-node").map_err(anyhow::Error::msg)?);
+    let node = Node::new(identity, "127.0.0.1:0".parse()?);
+    println!("Connecting to {address}...");
+    let mut connection = node.connect(address).await.map_err(anyhow::Error::msg)?;
+    println!("Authenticated peer: {}", hex::encode(connection.remote_id));
+    let rtt = connection
+        .ping_roundtrip(1)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    println!("Authenticated heartbeat: OK (RTT: {:?})", rtt);
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let mut args = env::args().skip(1);
@@ -477,6 +492,14 @@ async fn main() -> Result<()> {
             run_mesh(port)
         }
         Some("health") => print_health(),
+        Some("probe") => {
+            let address: SocketAddr = args
+                .next()
+                .unwrap_or_else(|| usage())
+                .parse()
+                .context("invalid peer address")?;
+            probe(address).await
+        }
         _ => usage(),
     }
 }
