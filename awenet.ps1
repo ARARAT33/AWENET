@@ -1,20 +1,18 @@
 Set-Location $PSScriptRoot
 
-$exe = Join-Path $PSScriptRoot "target\release\awe-node.exe"
+$exe = Join-Path $PSScriptRoot "bin\windows-x86_64\awe-node.exe"
+$url = "https://raw.githubusercontent.com/ARARAT33/AWEP2P/main/bin/windows-x86_64/awe-node.exe"
 
 if (-not (Test-Path $exe)) {
-    Write-Host "[AWEp2P] First run: building the product..." -ForegroundColor Cyan
-    if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
-        Write-Host ""
-        Write-Host "[AWEp2P] Rust/Cargo is not installed." -ForegroundColor Red
-        Write-Host "Install Rust from https://rustup.rs/ and run awenet.ps1 again."
+    Write-Host "[AWEp2P] Downloading ready-to-run Windows product..." -ForegroundColor Cyan
+    New-Item -ItemType Directory -Force -Path (Split-Path $exe) | Out-Null
+    try {
+        Invoke-WebRequest -Uri $url -OutFile $exe -UseBasicParsing
+    } catch {
+        Remove-Item $exe -Force -ErrorAction SilentlyContinue
+        Write-Host "[AWEp2P] Ready binary is not published yet." -ForegroundColor Red
+        Write-Host "[AWEp2P] Please run this command again after GitHub Actions finishes."
         exit 1
-    }
-
-    cargo build --release -p awe-node
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "[AWEp2P] Build failed." -ForegroundColor Red
-        exit $LASTEXITCODE
     }
 }
 
