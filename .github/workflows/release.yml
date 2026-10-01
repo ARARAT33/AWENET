@@ -38,115 +38,6 @@ jobs:
       - run: cargo test --workspace --all-targets
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
-  package-desktop:
-    name: Native desktop UI (${{ matrix.name }})
-    needs: validate
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            name: desktop-windows-x86_64
-          - os: ubuntu-24.04
-            name: desktop-linux-x86_64
-          - os: macos-13
-            name: desktop-macos-x86_64
-          - os: macos-14
-            name: desktop-macos-aarch64
-    steps:
-      - uses: actions/checkout@v5
-      - name: Install Linux native GUI dependencies
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y libx11-dev libxcursor-dev libxrandr-dev libxi-dev libxkbcommon-dev libwayland-dev
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Build native desktop UI
-        run: cargo build --release -p awe-desktop
-      - name: Validate native desktop executable
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            BIN="target/release/awep2p-desktop.exe"
-            test -x "$BIN"
-            file "$BIN" | grep -E 'PE32\\+.*executable|MS Windows'
-          elif [ "${{ runner.os }}" = "macOS" ]; then
-            BIN="target/release/awep2p-desktop"
-            test -x "$BIN"
-            file "$BIN" | grep -E 'Mach-O.*executable'
-          else
-            BIN="target/release/awep2p-desktop"
-            test -x "$BIN"
-            file "$BIN" | grep -E 'ELF 64-bit.*x86-64'
-          fi
-      - name: Package clickable native desktop application
-        shell: bash
-        run: |
-          set -euo pipefail
-          rm -rf dist bundle
-          mkdir -p dist bundle
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            cp target/release/awep2p-desktop.exe "dist/AWEp2P.exe"
-            sha256sum "dist/AWEp2P.exe" > "dist/AWEp2P.exe.sha256"
-          elif [ "${{ runner.os }}" = "macOS" ]; then
-            APP="bundle/AWEp2P.app"
-            mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-            cp target/release/awep2p-desktop "$APP/Contents/MacOS/AWEp2P"
-            chmod +x "$APP/Contents/MacOS/AWEp2P"
-            cat > "$APP/Contents/Info.plist" <<'PLIST'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0"><dict>
-            <key>CFBundleName</key><string>AWEp2P</string>
-            <key>CFBundleDisplayName</key><string>AWEp2P</string>
-            <key>CFBundleIdentifier</key><string>org.awe.awep2p.desktop</string>
-            <key>CFBundleExecutable</key><string>AWEp2P</string>
-            <key>CFBundlePackageType</key><string>APPL</string>
-            <key>CFBundleVersion</key><string>1.0.0</string>
-            <key>CFBundleShortVersionString</key><string>1.0.0</string>
-          </dict></plist>
-          PLIST
-            ditto -c -k --sequesterRsrc --keepParent "$APP" "dist/AWEp2P-${{ matrix.name }}.app.zip"
-            shasum -a 256 "dist/AWEp2P-${{ matrix.name }}.app.zip" > "dist/AWEp2P-${{ matrix.name }}.app.zip.sha256"
-          else
-            mkdir -p "bundle/AWEp2P"
-            cp target/release/awep2p-desktop "bundle/AWEp2P/AWEp2P"
-            chmod +x "bundle/AWEp2P/AWEp2P"
-            cat > "bundle/AWEp2P/AWEp2P.desktop" <<'DESKTOP'
-          [Desktop Entry]
-          Type=Application
-          Name=AWEp2P
-          Comment=AWEp2P native P2P desktop application
-          Exec=AWEp2P
-          Terminal=false
-          Categories=Network;
-          DESKTOP
-            tar -C bundle -czf "dist/AWEp2P-${{ matrix.name }}.tar.gz" AWEp2P
-            sha256sum "dist/AWEp2P-${{ matrix.name }}.tar.gz" > "dist/AWEp2P-${{ matrix.name }}.tar.gz.sha256"
-          fi
-      - name: Validate clickable package
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            test -s dist/AWEp2P.exe
-          elif [ "${{ runner.os }}" = "macOS" ]; then
-            test -s "dist/AWEp2P-${{ matrix.name }}.app.zip"
-            unzip -t "dist/AWEp2P-${{ matrix.name }}.app.zip" >/dev/null
-          else
-            test -s "dist/AWEp2P-${{ matrix.name }}.tar.gz"
-            tar -tzf "dist/AWEp2P-${{ matrix.name }}.tar.gz" | grep -F 'AWEp2P/AWEp2P.desktop'
-          fi
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.name }}
-          path: dist/AWEp2P*
-          if-no-files-found: error
   package-windows:
     name: Windows x86_64 executable
     needs: validate
@@ -290,7 +181,7 @@ jobs:
           if-no-files-found: error
   release:
     name: Publish GitHub Release
-    needs: [package-windows, package-linux, package-linux-arm64, package-macos, package-desktop]
+    needs: [package-windows, package-linux, package-linux-arm64, package-macos]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     steps:
