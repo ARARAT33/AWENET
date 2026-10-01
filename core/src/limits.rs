@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::net::IpAddr;
 
-//! Lightweight in-memory admission controls for hostile P2P traffic.
+/// Lightweight in-memory admission controls for hostile P2P traffic.
 
 #[derive(Debug, Clone, Copy)]
 pub struct TokenBucket {
