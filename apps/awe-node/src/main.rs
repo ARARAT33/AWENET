@@ -12,7 +12,6 @@ use awep2p_core::network::{format_node_descriptor, Node};
 use awep2p_core::node::{validate_and_configure_node_allocation, NodeAllocationMode};
 use awep2p_core::permissions::CapabilitySet;
 use awep2p_core::reputation::NodeReputation;
-use awep2p_core::replication::build_plan as build_replication_plan;
 use awep2p_core::sandbox::{SandboxConfig, WasmSandbox};
 use awep2p_core::storage::{LocalNodeStore, SecretFilePackage, StoragePolicy};
 use awep2p_core::store::{AWEPackage, AppCapability, AppKind};
@@ -151,9 +150,8 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> Result<String>
 
     let target = header_end + content_length;
     if data.len() < target {
+        let mut filled = data.len();
         data.resize(target, 0);
-        let already = data.len();
-        let mut filled = already;
         while filled < target {
             let n = stream.read(&mut data[filled..target]).await?;
             if n == 0 {
@@ -329,7 +327,6 @@ async fn serve_ui(
             "status":"healthy","core":"ready","network":"listening","ui":"ready","api":"ready"
         }).to_string()),
         "/api/messenger" => {
-            drain_messenger_inbox(&node, &messenger);
             ("200 OK", "application/json; charset=utf-8", serde_json::json!({
                 "transport":"AWE encrypted TCP",
                 "application_transport":"authenticated peer data stream",
@@ -609,6 +606,7 @@ async fn run_product() -> Result<()> {
 
     let dispatcher_node = node.clone();
     let dispatcher_storage = storage.clone();
+    let dispatcher_messenger = messenger.clone();
     tokio::spawn(async move {
         loop {
             for (sender, stream, payload) in dispatcher_node.take_inbox() {
@@ -619,7 +617,19 @@ async fn run_product() -> Result<()> {
                             let text_value = message.get("text").and_then(|v| v.as_str()).unwrap_or("");
                             let recipient = message.get("recipient").and_then(|v| v.as_str()).unwrap_or("");
                             if !id.is_empty() && !text_value.is_empty() && !recipient.is_empty() {
-                                // Messenger delivery remains available through the existing endpoint log.
+                                let item = serde_json::json!({
+                                    "id": id,
+                                    "sender": format_uid(&sender),
+                                    "recipient": recipient,
+                                    "text": text_value,
+                                    "state": "delivered",
+                                    "timestamp": message.get("timestamp").and_then(|v| v.as_u64()).unwrap_or_else(now_unix)
+                                });
+                                if let Ok(mut log) = dispatcher_messenger.lock() {
+                                    if !log.iter().any(|existing| existing.get("id").and_then(|v| v.as_str()) == Some(id)) {
+                                        log.push(item);
+                                    }
+                                }
                             }
                         }
                     }
