@@ -39,6 +39,18 @@ impl StoragePolicy {
             replica_count: 3,
         }
     }
+
+    pub fn custom_scaled(total_shards: usize) -> Self {
+        let total = total_shards.clamp(12, 100_000_000);
+        let data = (total as f64 * 0.45) as usize;
+        let parity = total - data;
+        Self {
+            data_shards: data,
+            parity_shards: parity,
+            max_chunk_size: 4 * 1024 * 1024,
+            replica_count: 3,
+        }
+    }
 }
 
 impl Default for StoragePolicy {
@@ -460,6 +472,10 @@ mod tests {
         assert_eq!(p.parity_shards, 550);
         assert_eq!(p.data_shards + p.parity_shards, 1000);
         assert_eq!(p.replica_count, 3);
+
+        let custom = StoragePolicy::custom_scaled(100_000_000);
+        assert_eq!(custom.data_shards + custom.parity_shards, 100_000_000);
+        assert_eq!(custom.replica_count, 3);
     }
     #[test]
     fn asmap_roundtrip() {
