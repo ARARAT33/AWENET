@@ -1,0 +1,19 @@
+use std::collections::{HashMap,HashSet,VecDeque};
+pub type NodeId=String;
+#[derive(Clone,Debug,PartialEq,Eq)] pub enum CentreLinkMode{FullMesh,Relay{relay_node:NodeId}}
+#[derive(Clone,Debug)] pub struct Node{pub id:NodeId,pub peers:HashSet<NodeId>,pub alive:bool}
+#[derive(Clone,Debug)] pub struct DataCentre{pub id:String,pub nodes:HashMap<NodeId,Node>,pub links:HashSet<String>}
+#[derive(Clone,Debug)] pub struct DataGroup{pub id:String,pub centres:HashSet<String>}
+#[derive(Clone,Debug)] pub struct CentreGroup{pub id:String,pub groups:HashSet<String>}
+#[derive(Default)] pub struct AweNet{pub centres:HashMap<String,DataCentre>,pub data_groups:HashMap<String,DataGroup>,pub centre_groups:HashMap<String,CentreGroup>}
+impl Node{pub fn new(id:impl Into<String>)->Self{Self{id:id.into(),peers:HashSet::new(),alive:true}}}
+impl DataCentre{pub fn new(id:impl Into<String>)->Self{Self{id:id.into(),nodes:HashMap::new(),links:HashSet::new()}}
+pub fn add_node(&mut self,n:Node){if let Some(p)=self.nodes.values().find(|x|x.alive){self.nodes.get_mut(&p.id).unwrap().peers.insert(n.id.clone());}self.nodes.insert(n.id.clone(),n);}
+pub fn full_mesh(&mut self){let ids=self.nodes.keys().cloned().collect::<Vec<_>>();for a in &ids{for b in &ids{if a!=b{self.nodes.get_mut(a).unwrap().peers.insert(b.clone());}}}}}
+impl DataGroup{pub fn new(id:impl Into<String>,centres:impl IntoIterator<Item=String>)->Self{let centres=centres.into_iter().collect();Self{id:id.into(),centres}}}
+impl CentreGroup{pub fn new(id:impl Into<String>,groups:impl IntoIterator<Item=String>)->Self{let groups=groups.into_iter().collect();Self{id:id.into(),groups}}}
+impl AweNet{
+pub fn add_centre(&mut self,d:DataCentre){self.centres.insert(d.id.clone(),d);}
+pub fn connect_centres(&mut self,a:&str,b:&str,mode:CentreLinkMode)->Result<(),String>{if !self.centres.contains_key(a)||!self.centres.contains_key(b){return Err("unknown centre".into())}match mode{CentreLinkMode::FullMesh=>{let l=self.centres[a].nodes.keys().cloned().collect::<Vec<_>>();let r=self.centres[b].nodes.keys().cloned().collect::<Vec<_>>();for x in &l{for y in &r{self.centres.get_mut(a).unwrap().nodes.get_mut(x).unwrap().peers.insert(y.clone());self.centres.get_mut(b).unwrap().nodes.get_mut(y).unwrap().peers.insert(x.clone());}}},CentreLinkMode::Relay{relay_node}=>{let target=self.centres[b].nodes.keys().next().cloned().ok_or("empty centre")?;if !self.centres[a].nodes.contains_key(&relay_node){return Err("relay node missing".into())}self.centres.get_mut(a).unwrap().nodes.get_mut(&relay_node).unwrap().peers.insert(target.clone());self.centres.get_mut(b).unwrap().nodes.get_mut(&target).unwrap().peers.insert(relay_node);}}self.centres.get_mut(a).unwrap().links.insert(b.into());self.centres.get_mut(b).unwrap().links.insert(a.into());Ok(())}
+pub fn route(&self,src:&NodeId,dst:&NodeId)->Option<Vec<NodeId>>{let mut q=VecDeque::from([src.clone()]);let mut prev=HashMap::from([(src.clone(),None)]);while let Some(x)=q.pop_front(){if &x==dst{break}for d in self.centres.values(){if let Some(n)=d.nodes.get(&x){for p in &n.peers{if !prev.contains_key(p){prev.insert(p.clone(),Some(x.clone()));q.push_back(p.clone());}}}}}if !prev.contains_key(dst){return None}let mut out=vec![];let mut x=dst.clone();loop{out.push(x.clone());match prev[&x].clone(){Some(p)=>x=p,None=>break}}out.reverse();Some(out)}}
+#[cfg(test)]mod tests{use super::*;#[test]fn groups_and_mesh(){let mut d=DataCentre::new("dc");d.add_node(Node::new("n1"));d.add_node(Node::new("n2"));d.full_mesh();assert!(d.nodes["n1"].peers.contains("n2"));assert_eq!(DataGroup::new("dg",["a".into(),"b".into(),"c".into()]).centres.len(),3);assert_eq!(CentreGroup::new("cg",["g1".into(),"g2".into()]).groups.len(),2);}}
