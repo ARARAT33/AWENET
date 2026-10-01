@@ -444,6 +444,12 @@ async fn probe(address: SocketAddr) -> Result<()> {
         .await
         .map_err(anyhow::Error::msg)?;
     println!("Authenticated heartbeat: OK (RTT: {:?})", rtt);
+    let payload = b"AWEP2P-REAL-DATA-PROBE-v1".to_vec();
+    let data_rtt = connection
+        .send_data_roundtrip(7, payload)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    println!("Encrypted data-plane: OK (RTT: {:?})", data_rtt);
     Ok(())
 }
 
