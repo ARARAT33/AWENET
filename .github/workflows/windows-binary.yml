@@ -1,0 +1,41 @@
+name: AWEp2P Windows Binary
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "bin/**"
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    if: "!contains(github.event.head_commit.message, '[build-binary]')"
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Build AWEp2P
+        run: cargo build --release -p awe-node --target x86_64-pc-windows-msvc
+
+      - name: Publish binary into repository
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path bin/windows-x86_64 | Out-Null
+          Copy-Item target/x86_64-pc-windows-msvc/release/awe-node.exe bin/windows-x86_64/awe-node.exe -Force
+
+      - name: Commit binary
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add bin/windows-x86_64/awe-node.exe
+          git commit -m "build: update Windows binary [build-binary]" || exit 0
+          git push
