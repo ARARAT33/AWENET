@@ -49,7 +49,11 @@ impl WasmSandbox {
         let _ = &self.capabilities;
         let _instruction_limit = self.config.max_instruction_count;
         // Ephemeral in-memory execution simulation returning success for validated WASM modules
-        Ok(format!("Ephemeral execution succeeded in memory ({} bytes execution frame)", wasm_bytes.len()).into_bytes())
+        Ok(format!(
+            "Ephemeral execution succeeded in memory ({} bytes execution frame)",
+            wasm_bytes.len()
+        )
+        .into_bytes())
     }
 }
 
