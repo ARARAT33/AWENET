@@ -75,7 +75,10 @@ pub const READINESS_ITEMS: &[ReadinessItem] = &[
 ];
 
 pub fn implementation_percent() -> u8 {
-    let implemented = READINESS_ITEMS.iter().filter(|item| item.implemented).count();
+    let implemented = READINESS_ITEMS
+        .iter()
+        .filter(|item| item.implemented)
+        .count();
     ((implemented * 100) / READINESS_ITEMS.len()) as u8
 }
 
