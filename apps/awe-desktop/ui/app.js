@@ -4,7 +4,7 @@ let live={status:"starting",node_id:"loading",node_address:"loading",transport:"
 
 function apiBase(){return localStorage.getItem("aweApiBase")||""}
 async function api(path,options={}){const r=await fetch(apiBase()+path,options);if(!r.ok)throw new Error(await r.text());return r.json()}
-async function refresh(){
+async function loadMessenger(){try{const d=await api("/api/messenger");const box=document.getElementById("messageList");if(box)box.innerHTML=d.messages.length?d.messages.map(m=>'<div class="list-row"><span>'+esc(m.recipient)+'</span><b>'+esc(m.state)+'</b><span>'+esc(m.text)+'</span></div>').join(""):'<div class="empty">No queued messages.</div>'}catch(e){}}\nasync function refresh(){
  try{const [status,node,storage,security]=await Promise.all([api("/api/status"),api("/api/node"),api("/api/storage"),api("/api/security")]);live={...status,node,storage,security};setConnection(true)}
  catch(e){live={...live,status:"offline",ui:"disconnected",peers:[]};setConnection(false)}
 }
@@ -34,7 +34,8 @@ function render(k){
   panel("Storage status",'<div class="notice">Storage operations are owned by the Rust core. This UI does not fabricate capacity or replication statistics that the API does not expose.</div>')+
   panel("Configured location",'<div class="peer-form"><input id="storagePath" value="'+esc(localStorage.getItem("aweStoragePath")||"")+'" placeholder="Optional local storage path"><button class="primary" id="saveStorage">Save</button></div>');
  } else if(k==="messenger"){
-  body='<div class="two">'+panel("Compose message",'<textarea id="messageText" class="message-box" placeholder="Message content"></textarea><div class="peer-form section"><input id="messagePeer" placeholder="Peer address / recipient"><button class="primary" id="sendMessage">Send</button></div>')+panel("Messenger state",'<div class="big-status"><div class="big-orb">✉</div><div><b>Peer-to-peer messenger</b><div class="detail">Transport is provided by the AWEp2P node.</div></div></div><div class="notice section">Messaging UI is ready; sending is enabled only when a dedicated messenger API is exposed by the node.</div>')+'</div>';
+  body=panel("Messenger",'<div class="peer-form"><input id="msgRecipient" placeholder="Recipient AWE ID"><input id="msgText" placeholder="Message"><button class="primary" id="sendMsg">Send</button></div><div id="msgState" class="muted" style="margin-top:8px">Messages are queued locally until transport delivery is available.</div>')+
+  panel("Local message queue",'<div id="messageList" class="list"><div class="empty">Loading…</div></div>');
  } else if(k==="store"){
   body='<div class="store-grid"><div class="card store-card"><div class="store-icon">◈</div><b>AWE Core</b><p>Core networking, identity, routing and node services.</p><span class="status"><i></i>Installed</span></div><div class="card store-card"><div class="store-icon">◎</div><b>Node Dashboard</b><p>Local management interface for your AWEp2P node.</p><span class="status"><i></i>Installed</span></div><div class="card store-card"><div class="store-icon">+</div><b>Modules</b><p>Future AWEStore packages will be managed here.</p><span class="pill">Catalog API needed</span></div></div>';
  } else if(k==="security"){
