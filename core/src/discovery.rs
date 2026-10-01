@@ -71,7 +71,7 @@ mod tests {
         let mut base=PeerAnnouncement{node_id:"n".into(),addresses:vec!["127.0.0.1:1".into()],public_key:id.public.public_key,expires_at_unix:100,sequence:2,signature:[0;64]};
         base.signature=id.sign(&base.signing_bytes());
         assert!(d.upsert(base.clone(),10,1000).unwrap());
-        let mut old=base; old.sequence=1;
+        let mut old=base; old.sequence=1; old.signature=id.sign(&old.signing_bytes());
         assert!(!d.upsert(old,10,1000).unwrap());
     }
 }
