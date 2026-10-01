@@ -467,7 +467,7 @@ async fn serve_ui(
                                                     index as u16,
                                                     1000,
                                                     data.len() as u64,
-                                                    shard,
+                                                    shard.clone(),
                                                 );
                                                 match serde_json::to_vec(&transfer) {
                                                     Ok(bytes) => match node.send_to_peer(peer_id, STORAGE_STREAM, bytes).await {
