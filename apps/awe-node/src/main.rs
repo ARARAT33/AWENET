@@ -483,45 +483,6 @@ fn data_dir_for_api() -> String {
     }
 }
 
-fn drain_messenger_inbox(node: &Node, messenger: &MessengerLog) {
-    for (sender, stream, payload) in node.take_inbox() {
-        if stream != 100 {
-            continue;
-        }
-        let Ok(message) = serde_json::from_slice::<serde_json::Value>(&payload) else {
-            continue;
-        };
-        if message.get("kind").and_then(|v| v.as_str()) != Some("awe.messenger.v1") {
-            continue;
-        }
-        let id = message.get("id").and_then(|v| v.as_str()).unwrap_or("");
-        let text = message.get("text").and_then(|v| v.as_str()).unwrap_or("");
-        let recipient = message
-            .get("recipient")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        if id.is_empty() || text.is_empty() || recipient.is_empty() {
-            continue;
-        }
-        let item = serde_json::json!({
-            "id": id,
-            "sender": format_uid(&sender),
-            "recipient": recipient,
-            "text": text,
-            "state": "delivered",
-            "timestamp": message.get("timestamp").and_then(|v| v.as_u64()).unwrap_or_else(now_unix)
-        });
-        if let Ok(mut log) = messenger.lock() {
-            if !log
-                .iter()
-                .any(|existing| existing.get("id").and_then(|v| v.as_str()) == Some(id))
-            {
-                log.push(item);
-            }
-        }
-    }
-}
-
 fn now_unix() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
