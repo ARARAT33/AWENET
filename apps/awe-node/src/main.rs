@@ -13,7 +13,7 @@ use awep2p_core::node::{validate_and_configure_node_allocation, NodeAllocationMo
 use awep2p_core::permissions::CapabilitySet;
 use awep2p_core::reputation::NodeReputation;
 use awep2p_core::sandbox::{SandboxConfig, WasmSandbox};
-use awep2p_core::storage::{LocalNodeStore, SecretFilePackage, StoragePolicy};
+use awep2p_core::storage::LocalNodeStore;
 use awep2p_core::store::{AWEPackage, AppCapability, AppKind};
 use std::{
     collections::BTreeMap,
