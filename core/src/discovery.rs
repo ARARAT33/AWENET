@@ -53,11 +53,7 @@ impl PeerAnnouncement {
         {
             return Err("peer announcement expired or lifetime too long".into());
         }
-        if self
-            .addresses
-            .iter()
-            .any(|a| a.len() > 256 || a.is_empty())
-        {
+        if self.addresses.iter().any(|a| a.len() > 256 || a.is_empty()) {
             return Err("invalid peer address".into());
         }
         Ok(())
@@ -98,9 +94,7 @@ impl PeerDirectory {
             .unwrap_or(true);
 
         if accept {
-            if !self.records.contains_key(&record.node_id)
-                && self.records.len() >= self.max_records
-            {
+            if !self.records.contains_key(&record.node_id) && self.records.len() >= self.max_records {
                 if let Some(oldest) = self
                     .records
                     .iter()
