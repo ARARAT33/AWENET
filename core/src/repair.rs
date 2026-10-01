@@ -30,10 +30,37 @@ pub fn plan_repairs(
     out
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExecutionRepairResult {
     pub file_id: [u8; 32],
     pub repaired_shards: usize,
     pub failed_shards: usize,
+}
+
+pub struct RepairWorker {
+    pub interval_secs: u64,
+}
+
+impl Default for RepairWorker {
+    fn default() -> Self {
+        Self { interval_secs: 60 }
+    }
+}
+
+impl RepairWorker {
+    pub fn new(interval_secs: u64) -> Self {
+        Self { interval_secs }
+    }
+
+    pub fn process_manifest_repair(
+        &self,
+        file_id: [u8; 32],
+        plan: &PlacementPlan,
+        health: &[ReplicaHealth],
+        online_nodes: &BTreeSet<String>,
+    ) -> ExecutionRepairResult {
+        execute_repairs(file_id, plan, health, online_nodes)
+    }
 }
 
 pub fn execute_repairs(
@@ -77,5 +104,9 @@ mod tests {
         assert!(!repairs.is_empty());
         let exec = execute_repairs([1; 32], &p, &h, &online);
         assert_eq!(exec.file_id, [1; 32]);
+
+        let worker = RepairWorker::new(30);
+        let res = worker.process_manifest_repair([1; 32], &p, &h, &online);
+        assert_eq!(res.file_id, [1; 32]);
     }
 }

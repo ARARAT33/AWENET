@@ -316,6 +316,44 @@ pub fn format_node_descriptor(awe_id: &[u8; 32]) -> String {
     )
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum NatType {
+    Open,
+    FullCone,
+    RestrictedCone,
+    PortRestrictedCone,
+    Symmetric,
+    Unknown,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StunHolePunchPacket {
+    pub transaction_id: [u8; 16],
+    pub requester_id: [u8; 32],
+    pub target_peer_id: [u8; 32],
+    pub observed_addr: SocketAddr,
+    pub nat_type: NatType,
+}
+
+impl StunHolePunchPacket {
+    pub fn new(
+        requester_id: [u8; 32],
+        target_peer_id: [u8; 32],
+        observed_addr: SocketAddr,
+        nat_type: NatType,
+    ) -> Self {
+        let mut transaction_id = [0u8; 16];
+        OsRng.fill_bytes(&mut transaction_id);
+        Self {
+            transaction_id,
+            requester_id,
+            target_peer_id,
+            observed_addr,
+            nat_type,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 enum Control {
     Hello {
@@ -1316,6 +1354,15 @@ mod tests {
 
         let unpacked = A2P2Datagram::unpack(&packed).unwrap();
         assert_eq!(unpacked, payload);
+    }
+
+    #[test]
+    fn nat_stun_hole_punch_packet_creation() {
+        let addr: SocketAddr = "192.168.1.10:41000".parse().unwrap();
+        let pkt = StunHolePunchPacket::new([1u8; 32], [2u8; 32], addr, NatType::FullCone);
+        assert_eq!(pkt.requester_id, [1u8; 32]);
+        assert_eq!(pkt.target_peer_id, [2u8; 32]);
+        assert_eq!(pkt.nat_type, NatType::FullCone);
     }
 
     #[test]

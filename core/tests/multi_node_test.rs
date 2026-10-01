@@ -62,3 +62,40 @@ async fn test_multi_node_cluster_bootstrap_and_routing() {
         .unwrap();
     assert!(!route.is_empty());
 }
+
+#[tokio::test]
+async fn test_nat_stun_hole_punching_and_repair_worker() {
+    use std::net::SocketAddr;
+    let id_a = Identity::generate(Username::new("nat-a").unwrap());
+    let id_b = Identity::generate(Username::new("nat-b").unwrap());
+    let id_c = Identity::generate(Username::new("nat-c").unwrap());
+
+    let node_a = Node::new(id_a, "127.0.0.1:0".parse().unwrap());
+    let node_b = Node::new(id_b, "127.0.0.1:0".parse().unwrap());
+    let node_c = Node::new(id_c, "127.0.0.1:0".parse().unwrap());
+
+    let addr_a: SocketAddr = "127.0.0.1:41010".parse().unwrap();
+    let stun_pkt = awep2p_core::network::StunHolePunchPacket::new(
+        *node_a.identity.public.awe_id.as_bytes(),
+        *node_b.identity.public.awe_id.as_bytes(),
+        addr_a,
+        awep2p_core::network::NatType::FullCone,
+    );
+
+    assert_eq!(stun_pkt.observed_addr, addr_a);
+    assert_eq!(stun_pkt.nat_type, awep2p_core::network::NatType::FullCone);
+
+    let worker = awep2p_core::repair::RepairWorker::new(10);
+    let nodes_list = vec![
+        format_uid(node_a.identity.public.awe_id.as_bytes()),
+        format_uid(node_b.identity.public.awe_id.as_bytes()),
+        format_uid(node_c.identity.public.awe_id.as_bytes()),
+    ];
+    let plan = build_plan([9u8; 32], &nodes_list).unwrap();
+    let mut online = BTreeSet::new();
+    online.insert(format_uid(node_a.identity.public.awe_id.as_bytes()));
+
+    let health = assess(&plan, &online);
+    let res = worker.process_manifest_repair([9u8; 32], &plan, &health, &online);
+    assert_eq!(res.file_id, [9u8; 32]);
+}
