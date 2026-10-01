@@ -155,9 +155,3 @@ mod tests {
         assert!(!d.upsert(old, 10, 1000).unwrap());
     }
 }
-
-impl Default for PeerDirectory {
-    fn default() -> Self {
-        Self::with_capacity(1024)
-    }
-}
