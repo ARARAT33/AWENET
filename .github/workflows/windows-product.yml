@@ -94,7 +94,6 @@ jobs:
           name: AWEp2P Latest
           prerelease: true
           make_latest: false
-          overwrite_files: true
           files: |
             installer/AWEP2P-Setup-Windows-x64.exe
             AWEP2P-Windows-x64-Portable.zip
