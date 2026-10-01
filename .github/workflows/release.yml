@@ -206,184 +206,6 @@ jobs:
           path: dist/awep2p-linux-x86_64*
           if-no-files-found: error
 
-  package-android:
-    name: Android installable APK (${{ matrix.name }})
-    needs: validate
-    runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: aarch64-linux-android
-            abi: arm64-v8a
-            name: android-arm64
-            linker: aarch64-linux-android35-clang
-          - target: armv7-linux-androideabi
-            abi: armeabi-v7a
-            name: android-armv7
-            linker: armv7a-linux-androideabi35-clang
-          - target: x86_64-linux-android
-            abi: x86_64
-            name: android-x86_64
-            linker: x86_64-linux-android35-clang
-    steps:
-      - uses: actions/checkout@v5
-      - name: Set up Java 17
-        uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: '17'
-      - name: Set up Android SDK and NDK
-        uses: android-actions/setup-android@v3
-      - name: Install Android SDK/NDK
-        shell: bash
-        run: |
-          set -euo pipefail
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager --install 'platform-tools' 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.2.12479018'
-          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
-      - name: Configure the correct Android NDK linker
-        shell: bash
-        run: |
-          set -euo pipefail
-          NDK="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          mkdir -p .cargo
-          cat > .cargo/config.toml <<EOF
-          [target.aarch64-linux-android]
-          linker = "$NDK/aarch64-linux-android35-clang"
-
-          [target.armv7-linux-androideabi]
-          linker = "$NDK/armv7a-linux-androideabi35-clang"
-
-          [target.x86_64-linux-android]
-          linker = "$NDK/x86_64-linux-android35-clang"
-          EOF
-          case '${{ matrix.target }}' in
-            aarch64-linux-android) echo "CC_aarch64_linux_android=$NDK/aarch64-linux-android35-clang" >> "$GITHUB_ENV" ;;
-            armv7-linux-androideabi) echo "CC_armv7_linux_androideabi=$NDK/armv7a-linux-androideabi35-clang" >> "$GITHUB_ENV" ;;
-            x86_64-linux-android) echo "CC_x86_64_linux_android=$NDK/x86_64-linux-android35-clang" >> "$GITHUB_ENV" ;;
-          esac
-          echo "AR_${{ matrix.target }}=$NDK/llvm-ar" >> "$GITHUB_ENV"
-      - name: Build Android native executable
-        run: cargo build --release -p awe-node --target ${{ matrix.target }}
-      - name: Build and sign real Android APK
-        shell: bash
-        run: |
-          set -euo pipefail
-          ROOT="$PWD/android-build"
-          SDK="$ANDROID_SDK_ROOT"
-          BT="$SDK/build-tools/35.0.0"
-          PLATFORM="$SDK/platforms/android-35/android.jar"
-          ABI='${{ matrix.abi }}'
-          NAME='${{ matrix.name }}'
-
-          rm -rf "$ROOT"
-          mkdir -p "$ROOT/src/com/awep2p" "$ROOT/res/values" "$ROOT/lib/$ABI" "$ROOT/build/classes" "$ROOT/build/dex"
-          cp "target/${{ matrix.target }}/release/awe-node" "$ROOT/lib/$ABI/libawe_node.so"
-          chmod 755 "$ROOT/lib/$ABI/libawe_node.so"
-
-          cat > "$ROOT/AndroidManifest.xml" <<'EOF'
-          <?xml version="1.0" encoding="utf-8"?>
-          <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.awep2p">
-            <uses-sdk android:minSdkVersion="23" android:targetSdkVersion="35" />
-            <uses-permission android:name="android.permission.INTERNET" />
-            <application android:theme="@style/AppTheme" android:label="AWEp2P" android:allowBackup="false" android:supportsRtl="true" android:extractNativeLibs="true" android:usesCleartextTraffic="true">
-              <activity android:name=".MainActivity" android:exported="true">
-                <intent-filter>
-                  <action android:name="android.intent.action.MAIN" />
-                  <category android:name="android.intent.category.LAUNCHER" />
-                </intent-filter>
-              </activity>
-            </application>
-          </manifest>
-          EOF
-
-          cat > "$ROOT/res/values/styles.xml" <<'EOF'
-          <?xml version="1.0" encoding="utf-8"?>
-          <resources>
-            <style name="AppTheme" parent="android:style/Theme.Material.Light.NoActionBar">
-              <item name="android:fontFamily">sans</item>
-              <item name="android:colorAccent">#6750A4</item>
-            </style>
-          </resources>
-          EOF
-
-          cat > "$ROOT/src/com/awep2p/MainActivity.java" <<'EOF'
-          package com.awep2p;
-          import android.app.Activity;
-          import android.os.Bundle;
-          import android.webkit.WebView;
-          import android.webkit.WebViewClient;
-          import android.webkit.WebSettings;
-          import java.io.*;
-
-          public final class MainActivity extends Activity {
-            private WebView webView;
-            @Override public void onCreate(Bundle state) {
-              super.onCreate(state);
-              webView = new WebView(this);
-              WebSettings settings = webView.getSettings();
-              settings.setJavaScriptEnabled(true);
-              settings.setDomStorageEnabled(true);
-              webView.setWebViewClient(new WebViewClient());
-              setContentView(webView);
-
-              new Thread(new Runnable() { public void run() { launchNodeAndLoadGUI(); } }).start();
-            }
-            private void launchNodeAndLoadGUI() {
-              try {
-                File node = new File(getApplicationInfo().nativeLibraryDir, "libawe_node.so");
-                if (!node.exists()) throw new IOException("Native executable was not extracted: " + node);
-                Process p = new ProcessBuilder(node.getAbsolutePath(), "gui", "41000").redirectErrorStream(true).start();
-                Thread.sleep(1500);
-                runOnUiThread(new Runnable() { public void run() { webView.loadUrl("http://127.0.0.1:41000"); } });
-              } catch (Exception e) {
-                final String text = "<html><body style='background:#0b0f19;color:#fff;padding:20px;'><h2>AWEp2P GUI Failed to Start</h2><p>" + e + "</p></body></html>";
-                runOnUiThread(new Runnable() { public void run() { webView.loadData(text, "text/html", "UTF-8"); } });
-              }
-            }
-          }
-          EOF
-
-          javac -source 8 -target 8 -classpath "$PLATFORM" -d "$ROOT/build/classes" "$ROOT/src/com/awep2p/MainActivity.java"
-          "$BT/d8" --lib "$PLATFORM" --min-api 23 --output "$ROOT/build/dex" $(find "$ROOT/build/classes" -name '*.class' -print)
-          cp "$ROOT/build/dex/classes.dex" "$ROOT/build/classes.dex"
-          "$BT/aapt2" compile --dir "$ROOT/res" -o "$ROOT/build/res.zip"
-          "$BT/aapt2" link --min-sdk-version 23 --target-sdk-version 35 --version-code 1 --version-name 0.1.0 --manifest "$ROOT/AndroidManifest.xml" -I "$PLATFORM" -o "$ROOT/build/base.apk" "$ROOT/build/res.zip"
-
-          python3 - "$ROOT/build/base.apk" "$ROOT/lib" "$ROOT/build/classes.dex" "$ROOT/build/unsigned.apk" <<'PY'
-          import os, sys, zipfile
-          base, libdir, dex, out = sys.argv[1:]
-          with zipfile.ZipFile(base, 'r') as zin, zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as zout:
-              for item in zin.infolist():
-                  zout.writestr(item, zin.read(item.filename))
-              zout.write(dex, 'classes.dex')
-              for root, _, files in os.walk(libdir):
-                  for name in files:
-                      path = os.path.join(root, name)
-                      arc = os.path.relpath(path, os.path.dirname(libdir))
-                      zout.write(path, arc)
-          PY
-
-          "$BT/zipalign" -f -p 4 "$ROOT/build/unsigned.apk" "$ROOT/build/aligned.apk"
-          keytool -genkeypair -noprompt -keystore "$ROOT/build/awep2p-release.jks" -storepass android -keypass android -alias awep2p -keyalg RSA -keysize 2048 -validity 10000 -dname 'CN=AWEp2P, O=AWE, C=AM'
-          "$BT/apksigner" sign --ks "$ROOT/build/awep2p-release.jks" --ks-pass pass:android --key-pass pass:android --out "$ROOT/build/$NAME.apk" "$ROOT/build/aligned.apk"
-          "$BT/apksigner" verify --verbose "$ROOT/build/$NAME.apk"
-          "$BT/aapt2" dump badging "$ROOT/build/$NAME.apk" | grep -F "package: name='com.awep2p'"
-          unzip -t "$ROOT/build/$NAME.apk" >/dev/null
-          mkdir -p "$GITHUB_WORKSPACE/dist"
-          cp "$ROOT/build/$NAME.apk" "$GITHUB_WORKSPACE/dist/"
-          sha256sum "$GITHUB_WORKSPACE/dist/$NAME.apk" > "$GITHUB_WORKSPACE/dist/$NAME.apk.sha256"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.name }}
-          path: dist/${{ matrix.name }}.apk*
-          if-no-files-found: error
-
   package-macos:
     name: macOS executable (${{ matrix.target }})
     needs: validate
@@ -468,7 +290,7 @@ jobs:
           if-no-files-found: error
   release:
     name: Publish GitHub Release
-    needs: [package-windows, package-linux, package-linux-arm64, package-macos, package-android, package-desktop]
+    needs: [package-windows, package-linux, package-linux-arm64, package-macos, package-desktop]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     steps:
@@ -489,10 +311,7 @@ jobs:
           test -s release-assets/awep2p-linux-aarch64
           test -s release-assets/awep2p-macos-x86_64
           test -s release-assets/awep2p-macos-aarch64
-          test -s release-assets/android-arm64.apk
-          test -s release-assets/android-armv7.apk
-          test -s release-assets/android-x86_64.apk
-          file release-assets/awep2p-windows-x86_64.exe release-assets/AWEp2P.exe release-assets/awep2p-linux-x86_64 release-assets/*.apk
+          file release-assets/awep2p-windows-x86_64.exe release-assets/AWEp2P.exe release-assets/awep2p-linux-x86_64 release-assets/awep2p-linux-aarch64 release-assets/awep2p-macos-x86_64 release-assets/awep2p-macos-aarch64
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
