@@ -29,4 +29,5 @@ pub mod routing;
 pub mod sandbox;
 pub mod security;
 pub mod storage;
+pub mod supervisor;
 pub mod store;
