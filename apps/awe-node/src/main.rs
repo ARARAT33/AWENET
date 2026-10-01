@@ -462,7 +462,9 @@ async fn serve_ui(
                                                     }))
                                                 }
                                             } else if let Some(peer_id) = peer_ids.get(target) {
-                                                let request_id = shard_hash[..16].try_into().unwrap_or([0u8; 16]);
+                                                let request_id = *blake3::hash(
+                                                    format!("upload:{}:{}:{}:{}", hex::encode(file_id), index, target, now_unix()).as_bytes()
+                                                ).as_bytes()[..16].try_into().unwrap_or([0u8; 16]);
                                                 let transfer = StorageShardTransfer::new(
                                                     request_id,
                                                     node.identity.public.awe_id,
@@ -474,7 +476,28 @@ async fn serve_ui(
                                                 );
                                                 match serde_json::to_vec(&transfer) {
                                                     Ok(bytes) => match node.send_to_peer(peer_id, STORAGE_STREAM, bytes).await {
-                                                        Ok(_) => sent_remote += 1,
+                                                        Ok(_) => {
+                                                            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+                                                            let mut confirmed = false;
+                                                            while tokio::time::Instant::now() < deadline {
+                                                                if let Ok(mut acks) = pending_acks.lock() {
+                                                                    if let Some(ack) = acks.remove(&request_id) {
+                                                                        confirmed = ack.file_id == file_id
+                                                                            && ack.shard_index == index as u16
+                                                                            && ack.stored_object_id == shard_hash;
+                                                                        break;
+                                                                    }
+                                                                }
+                                                                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                                                            }
+                                                            if confirmed {
+                                                                sent_remote += 1;
+                                                            } else {
+                                                                failed.push(serde_json::json!({
+                                                                    "shard": index, "node": target, "error": "remote storage ACK not confirmed"
+                                                                }));
+                                                            }
+                                                        },
                                                         Err(error) => failed.push(serde_json::json!({
                                                             "shard": index, "node": target, "error": error.to_string()
                                                         }))
