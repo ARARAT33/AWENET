@@ -11,13 +11,15 @@ use awep2p_core::storage::{SecretFilePackage, StoragePolicy};
 use awep2p_core::store::{AWEPackage, AppCapability, AppKind};
 use awep2p_core::permissions::CapabilitySet;
 use awep2p_core::sandbox::{SandboxConfig, WasmSandbox};
-use std::{collections::BTreeMap, env, fs, net::SocketAddr, path::PathBuf};
+use std::{collections::BTreeMap, env, fs, net::SocketAddr, path::PathBuf, sync::{Arc, Mutex}};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const UI_HTML: &str = include_str!("../../awe-desktop/ui/index.html");
 const UI_CSS: &str = include_str!("../../awe-desktop/ui/style.css");
 const UI_JS: &str = include_str!("../../awe-desktop/ui/app.js");
 const UI_ADDR: &str = "127.0.0.1:41800";
+
+type MessengerLog = Arc<Mutex<Vec<serde_json::Value>>>;
 
 fn default_vault() -> PathBuf {
     if let Some(home) = env::var_os("HOME") { return PathBuf::from(home).join(".awep2p").join("identity.vault"); }
@@ -69,7 +71,7 @@ async fn http_response(status: &str, content_type: &str, body: &str) -> Vec<u8> 
     format!("HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: content-type\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}", body.len()).into_bytes()
 }
 
-async fn serve_ui(mut stream: tokio::net::TcpStream, node: Node) -> Result<()> {
+async fn serve_ui(mut stream: tokio::net::TcpStream, node: Node, messenger: MessengerLog) -> Result<()> {
     let mut buf = vec![0u8; 8192];
     let n = stream.read(&mut buf).await?;
     let request = String::from_utf8_lossy(&buf[..n]);
@@ -116,9 +118,25 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, node: Node) -> Result<()> {
         "/api/health" => ("200 OK", "application/json; charset=utf-8", serde_json::json!({
             "status":"healthy","core":"ready","network":"listening","ui":"ready","api":"ready"
         }).to_string()),
+        "/api/messenger" => ("200 OK", "application/json; charset=utf-8", serde_json::json!({
+            "transport":"AWE encrypted TCP","messages": messenger.lock().map(|x| x.clone()).unwrap_or_default()
+        }).to_string()),
         "/api/security" => ("200 OK", "application/json; charset=utf-8", serde_json::json!({
             "identity":"ed25519","transport":"x25519 + chacha20-poly1305","replay_protection":"enabled","a2p2_fixed_packet":1280
         }).to_string()),
+        "/api/messenger/send" if method == "POST" => {
+            let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+            let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+            let recipient = parsed.get("recipient").and_then(|v| v.as_str()).unwrap_or("");
+            let text = parsed.get("text").and_then(|v| v.as_str()).unwrap_or("");
+            if recipient.is_empty() || text.is_empty() {
+                ("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"recipient and text are required"}).to_string())
+            } else {
+                let item=serde_json::json!({"id":format!("{:x}",blake3::hash(format!("{}:{}:{}",recipient,text,now_unix()).as_bytes())),"recipient":recipient,"text":text,"state":"queued","timestamp":now_unix()});
+                if let Ok(mut log)=messenger.lock(){log.push(item.clone());}
+                ("202 Accepted","application/json; charset=utf-8",serde_json::json!({"status":"queued","message":item}).to_string())
+            }
+        },
         "/api/storage" => {
             let free = awep2p_core::node::get_available_disk_space(&std::env::current_dir()?).unwrap_or(0);
             ("200 OK", "application/json; charset=utf-8", serde_json::json!({
@@ -136,6 +154,8 @@ fn data_dir_for_api() -> String {
         PathBuf::from(home).join(".awep2p").display().to_string()
     } else { PathBuf::from(".awep2p").display().to_string() }
 }
+
+fn now_unix() -> u64 { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) }
 
 async fn run_product() -> Result<()> {
     let data_dir = if let Some(home) = env::var_os("USERPROFILE").or_else(|| env::var_os("HOME")) {
@@ -159,6 +179,7 @@ async fn run_product() -> Result<()> {
     let node_id = format_uid(identity.public.awe_id.as_bytes());
     let listen: SocketAddr = "127.0.0.1:41000".parse()?;
     let node = Node::new(identity, listen);
+    let messenger: MessengerLog = Arc::new(Mutex::new(Vec::new()));
     let node_for_listener = node.clone();
     tokio::spawn(async move {
         if let Err(e) = node_for_listener.listen().await {
@@ -185,7 +206,8 @@ async fn run_product() -> Result<()> {
         let (stream, _) = listener.accept().await?;
         let api_node = node.clone();
         tokio::spawn(async move {
-            if let Err(e) = serve_ui(stream, api_node).await { eprintln!("UI request error: {e}"); }
+            let api_messenger = messenger.clone();
+            if let Err(e) = serve_ui(stream, api_node, api_messenger).await { eprintln!("UI request error: {e}"); }
         });
     }
 }
