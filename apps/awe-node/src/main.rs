@@ -268,11 +268,11 @@ async fn serve_ui(
             let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
             let kind = parsed.get("kind").and_then(|v| v.as_str()).unwrap_or("");
             let content = parsed.get("content").and_then(|v| v.as_str()).unwrap_or("");
-            let result: Result<(), String> = match kind {
+            let result: Result<(), anyhow::Error> = match kind {
                 "awenode" => {
-                    let cfg: AweNodeConfig = serde_json::from_str(content).map_err(|e| e.to_string())?;
-                    federation::validate_awenode(&cfg)?;
-                    let mut s = federation_state.lock().map_err(|_| "state lock poisoned".to_string())?;
+                    let cfg: AweNodeConfig = serde_json::from_str(content)?;
+                    federation::validate_awenode(&cfg).map_err(anyhow::Error::msg)?;
+                    let mut s = federation_state.lock().map_err(|_| anyhow::anyhow!("state lock poisoned"))?;
                     s.local_node_id = format_uid(node.identity.public.awe_id.as_bytes());
                     s.local_data_centre_id = Some(cfg.data_centre_id.clone());
                     s.bootstrap_endpoints = cfg.bootstrap_endpoints.clone();
@@ -285,7 +285,7 @@ async fn serve_ui(
                 },
                 "awedc" => {
                     let cfg: DataCentreConfig = serde_json::from_str(content).map_err(|e| e.to_string())?;
-                    federation::validate_awedc(&cfg)?;
+                    federation::validate_awedc(&cfg).map_err(anyhow::Error::msg)?;
                     let mut s = federation_state.lock().map_err(|_| "state lock poisoned".to_string())?;
                     s.local_node_id = format_uid(node.identity.public.awe_id.as_bytes());
                     // .awedc is a data-centre federation invitation: it adds the
@@ -302,7 +302,7 @@ async fn serve_ui(
                 },
                 "dgc" => {
                     let cfg: DataGroupConfig = serde_json::from_str(content).map_err(|e| e.to_string())?;
-                    federation::validate_dgc(&cfg)?;
+                    federation::validate_dgc(&cfg).map_err(anyhow::Error::msg)?;
                     let mut s = federation_state.lock().map_err(|_| "state lock poisoned".to_string())?;
                     s.local_node_id = format_uid(node.identity.public.awe_id.as_bytes());
                     s.local_data_group_id = Some(cfg.data_group_id.clone());
