@@ -744,9 +744,14 @@ pub struct Node {
     peers: Arc<RwLock<HashMap<[u8; 32], PeerRecord>>>,
     admission: Arc<Mutex<PeerAdmission>>,
     preauth: Arc<Mutex<IpAdmission>>,
-    active: Arc<RwLock<HashMap<[u8; 32], Arc<tokio::sync::Mutex<SecureConnection>>>>>,
-    inbox: Arc<Mutex<Vec<([u8; 32], u32, Vec<u8>)>>>,
+    active: ActiveConnectionMap,
+    inbox: Arc<Mutex<Vec<InboxMessage>>>,
 }
+
+type InboxMessage = ([u8; 32], u32, Vec<u8>);
+type ActiveConnectionMap =
+    Arc<RwLock<HashMap<[u8; 32], Arc<tokio::sync::Mutex<SecureConnection>>>>>;
+
 impl Node {
     pub fn new(identity: Identity, listen_addr: SocketAddr) -> Self {
         Self {
@@ -778,7 +783,7 @@ impl Node {
         routing: Arc<RwLock<RoutingTable>>,
         peers: Arc<RwLock<HashMap<[u8; 32], PeerRecord>>>,
         admission: Arc<Mutex<PeerAdmission>>,
-        inbox: Arc<Mutex<Vec<([u8; 32], u32, Vec<u8>)>>>,
+        inbox: Arc<Mutex<Vec<InboxMessage>>>,
     ) {
         let Ok(mut c) = handshake(stream, identity, false).await else {
             return;

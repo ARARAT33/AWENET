@@ -69,7 +69,7 @@ fn token(prefix: &str, seed: &str) -> String {
     format!(
         "{}-{}",
         prefix,
-        hex::encode(blake3::hash(&bytes).as_bytes())[..32].to_string()
+        &hex::encode(blake3::hash(&bytes).as_bytes())[..32]
     )
 }
 
