@@ -32,7 +32,9 @@ const UI_ADDR: &str = "127.0.0.1:41800";
 
 type MessengerLog = Arc<Mutex<Vec<serde_json::Value>>>;
 type FederationState = Arc<Mutex<AweNetConfig>>;
-type StorageState = Arc<LocalNodeStore>;\ntype PendingAcks = Arc<Mutex<BTreeMap<[u8; 16], StorageShardAck>>>;\ntype PendingShards = Arc<Mutex<BTreeMap<[u8; 16], StorageShardTransfer>>>;
+type StorageState = Arc<LocalNodeStore>;
+type PendingAcks = Arc<Mutex<BTreeMap<[u8; 16], StorageShardAck>>>;
+type PendingShards = Arc<Mutex<BTreeMap<[u8; 16], StorageShardTransfer>>>;
 
 fn default_vault() -> PathBuf {
     if let Some(home) = env::var_os("HOME") {
