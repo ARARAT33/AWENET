@@ -9,15 +9,9 @@ use awep2p_core::federation::{
 use awep2p_core::identity::{AweSecret, Identity, LocalVault, Username};
 use awep2p_core::lan_mesh::LanPeerBeacon;
 use awep2p_core::messenger::format_uid;
-use awep2p_core::namespace::AweBrowserResolver;
 use awep2p_core::network::{format_node_descriptor, Node};
-use awep2p_core::node::{validate_and_configure_node_allocation, NodeAllocationMode};
-use awep2p_core::permissions::CapabilitySet;
-use awep2p_core::replication::build_plan;
 use awep2p_core::reputation::NodeReputation;
-use awep2p_core::sandbox::{SandboxConfig, WasmSandbox};
 use awep2p_core::storage::{encode_shards, recover_shards, LocalNodeStore, StoragePolicy};
-use awep2p_core::store::{AWEPackage, AppCapability, AppKind};
 use std::{
     collections::BTreeMap,
     env, fs,
@@ -215,9 +209,13 @@ async fn serve_ui(
             let address = request.split("address=").nth(1).and_then(|x| x.split_whitespace().next()).unwrap_or("");
             let address = address.replace("%3A", ":").replace("%3a", ":");
             match address.parse::<SocketAddr>() {
-                Ok(addr) => match node.bootstrap(&[addr]).await {
-                    Ok(found) => ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"connected","address":addr.to_string(),"discovered":found,"peer_id":format_uid(&node.closest_peers(node.identity.public.awe_id.as_bytes(),1).await.first().map(|p| p.awe_id).unwrap_or([0;32]))}).to_string()),
-                    Err(e) => ("502 Bad Gateway", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":e.to_string()}).to_string())
+                Ok(addr) => {
+                    let connect_node = node.clone();
+                    tokio::spawn(async move {
+                        let _ = connect_node.bootstrap(&[addr]).await;
+                    });
+                    ("202 Accepted", "application/json; charset=utf-8",
+                        serde_json::json!({"status":"connecting","address":addr.to_string()}).to_string())
                 },
                 Err(_) => ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":"invalid socket address"}).to_string())
             }
@@ -266,7 +264,7 @@ async fn serve_ui(
             };
             match result {
                 Ok((filename, content)) => ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"generated","filename":filename,"content":content}).to_string()),
-                Err(error) => ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":error}).to_string())
+                Err(error) => ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":error.to_string()}).to_string())
             }
         },
         "/api/federation/import" if method == "POST" => {
@@ -317,7 +315,7 @@ async fn serve_ui(
                     s.format = "awenet".into(); s.version = federation::FORMAT_VERSION;
                     Ok(())
                 },
-                _ => Err("kind must be awenode, awedc or dgc".into())
+                _ => Err(anyhow::anyhow!("kind must be awenode, awedc or dgc"))
             };
             match result {
                 Ok(()) => {
@@ -327,7 +325,7 @@ async fn serve_ui(
                     if let Ok(state) = federation_state.lock() { let _ = federation::save_json(&*state, &federation_path); }
                     ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"imported","connected_bootstrap_peers":discovered}).to_string())
                 },
-                Err(error) => ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":error}).to_string())
+                Err(error) => ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":error.to_string()}).to_string())
             }
         },
         "/api/health" => ("200 OK", "application/json; charset=utf-8", serde_json::json!({
@@ -590,7 +588,7 @@ async fn serve_ui(
                             .as_bytes()[..16]
                             .try_into()
                             .unwrap_or([0u8; 16]),
-                        node.identity.public.awe_id,
+                        *node.identity.public.awe_id.as_bytes(),
                         file_id,
                         shard_index as u16,
                         1000,
@@ -764,7 +762,7 @@ async fn serve_ui(
             }
         },
         "/api/storage/health" => {
-            let online: std::collections::BTreeSet<String> = node
+            let mut online: std::collections::BTreeSet<String> = node
                 .closest_peers(node.identity.public.awe_id.as_bytes(), 4096)
                 .await
                 .into_iter()
@@ -920,7 +918,6 @@ async fn run_product() -> Result<()> {
     let dispatcher_storage = storage.clone();
     let dispatcher_messenger = messenger.clone();
     let dispatcher_acks = pending_acks.clone();
-    let dispatcher_shards = pending_shards.clone();
     tokio::spawn(async move {
         loop {
             for (sender, stream, payload) in dispatcher_node.take_inbox() {
@@ -980,7 +977,7 @@ async fn run_product() -> Result<()> {
                     }
                     let transfer = StorageShardTransfer::new(
                         request.request_id,
-                        dispatcher_**node.identity.public.awe_id.as_bytes(),
+                        *dispatcher_node.identity.public.awe_id.as_bytes(),
                         request.file_id,
                         request.shard_index,
                         request.total_shards,
@@ -1059,13 +1056,14 @@ async fn run_product() -> Result<()> {
         let api_storage = storage.clone();
         let api_pending_acks = pending_acks.clone();
         let api_pending_shards = pending_shards.clone();
+        let api_federation_path = federation_path.clone();
         tokio::spawn(async move {
             if let Err(e) = serve_ui(
                 stream,
                 api_node,
                 api_messenger,
                 api_federation,
-                federation_path.clone(),
+                api_federation_path,
                 api_storage,
                 api_pending_acks,
                 api_pending_shards,

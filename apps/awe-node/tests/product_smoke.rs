@@ -11,7 +11,7 @@ use std::{
 fn request(addr: &str, request: &str) -> String {
     let mut stream = TcpStream::connect(addr).expect("connect");
     stream
-        .set_read_timeout(Some(Duration::from_secs(3)))
+        .set_read_timeout(Some(Duration::from_secs(10)))
         .expect("timeout");
     stream.write_all(request.as_bytes()).expect("write");
     let mut out = String::new();
@@ -92,7 +92,8 @@ fn three_node_product_smoke() {
             "{}",
         );
         assert!(
-            connect2.contains(r#""status":"connected""#),
+            connect2.contains(r#""status":"connecting""#)
+                || connect2.contains(r#""status":"connected""#),
             "node2: {connect2}"
         );
 
@@ -102,15 +103,23 @@ fn three_node_product_smoke() {
             "{}",
         );
         assert!(
-            connect3.contains(r#""status":"connected""#),
+            connect3.contains(r#""status":"connecting""#)
+                || connect3.contains(r#""status":"connected""#),
             "node3: {connect3}"
         );
 
-        let status = get("127.0.0.1:46201", "/api/status");
-        assert!(
-            status.contains(r#""active_connections":2"#),
-            "status: {status}"
-        );
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let status = get("127.0.0.1:46201", "/api/status");
+            if status.contains(r#""active_connections":2"#) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "peers did not become active: {status}"
+            );
+            thread::sleep(Duration::from_millis(200));
+        }
 
         let payload = "AWEP2P-REAL-PRODUCT-SMOKE";
         let hex = payload

@@ -87,6 +87,8 @@ jobs:
         uses: android-actions/setup-android@v3
         with:
           packages: 'platform-tools platforms;android-35 build-tools;35.0.0 ndk;27.2.12479018'
+      - name: Accept Android SDK licenses
+        run: yes | sdkmanager --licenses > /dev/null
       - name: Configure Android environment
         run: |
           echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
@@ -105,9 +107,12 @@ jobs:
       - name: Initialize Android project
         working-directory: apps/awe-app
         run: npx tauri android init --ci
-      - name: Build Android APK/AAB
+      - name: Build Android APK
         working-directory: apps/awe-app
-        run: npx tauri android build --ci
+        run: npx tauri android build --ci --apk
+      - name: Build Android AAB
+        working-directory: apps/awe-app
+        run: npx tauri android build --ci --aab
       - name: Upload Android packages
         uses: actions/upload-artifact@v4
         with:
