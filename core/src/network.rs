@@ -739,6 +739,7 @@ fn xor_distance(a: &[u8; 32], b: &[u8; 32]) -> [u8; 32] {
 type ActiveConnections = Arc<RwLock<HashMap<[u8; 32], Arc<tokio::sync::Mutex<SecureConnection>>>>>;
 type InboxQueue = Arc<Mutex<Vec<([u8; 32], u32, Vec<u8>)>>>;
 
+#[derive(Clone)]
 #[allow(clippy::type_complexity)]
 pub struct Node {
     pub identity: Arc<Identity>,
