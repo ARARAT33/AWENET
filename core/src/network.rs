@@ -736,7 +736,6 @@ fn xor_distance(a: &[u8; 32], b: &[u8; 32]) -> [u8; 32] {
     d
 }
 
-#[derive(Clone)]
 type ActiveConnections = Arc<RwLock<HashMap<[u8; 32], Arc<tokio::sync::Mutex<SecureConnection>>>>>;
 type InboxQueue = Arc<Mutex<Vec<([u8; 32], u32, Vec<u8>)>>>;
 
