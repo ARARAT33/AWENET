@@ -1,5 +1,7 @@
 use anyhow::{Context, Result};
-use awep2p_core::data_plane::{StorageShardAck, StorageShardRequest, StorageShardTransfer, STORAGE_STREAM};
+use awep2p_core::data_plane::{
+    StorageShardAck, StorageShardRequest, StorageShardTransfer, STORAGE_STREAM,
+};
 use awep2p_core::diagnostics::{NodeDiagnostics, NodeMetrics};
 use awep2p_core::federation::{
     self, AweNetConfig, AweNodeConfig, DataCentreConfig, DataGroupConfig,

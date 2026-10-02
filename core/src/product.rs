@@ -18,7 +18,9 @@ impl ResourceId {
     pub fn from_bytes(bytes: &[u8]) -> Self {
         Self(blake3::hash(bytes).to_hex().to_string())
     }
-    pub fn as_str(&self) -> &str { &self.0 }
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -35,8 +37,20 @@ pub struct ResourceManifest {
 impl ResourceManifest {
     pub fn from_bytes(bytes: &[u8], name: Option<String>, mime: Option<String>) -> Self {
         let chunk_size = DEFAULT_CHUNK_SIZE;
-        let chunks = if bytes.is_empty() { 0 } else { bytes.len().div_ceil(chunk_size as usize) as u32 };
-        Self { id: ResourceId::from_bytes(bytes), size: bytes.len() as u64, chunk_size, chunks, name, mime, encrypted: false }
+        let chunks = if bytes.is_empty() {
+            0
+        } else {
+            bytes.len().div_ceil(chunk_size as usize) as u32
+        };
+        Self {
+            id: ResourceId::from_bytes(bytes),
+            size: bytes.len() as u64,
+            chunk_size,
+            chunks,
+            name,
+            mime,
+            encrypted: false,
+        }
     }
 }
 
@@ -49,9 +63,13 @@ pub struct NodeCapacity {
 
 impl NodeCapacity {
     pub fn available_bytes(&self) -> u64 {
-        self.storage_bytes.saturating_sub(self.reserved_bytes).saturating_sub(self.used_bytes)
+        self.storage_bytes
+            .saturating_sub(self.reserved_bytes)
+            .saturating_sub(self.used_bytes)
     }
-    pub fn can_store(&self, bytes: u64) -> bool { self.available_bytes() >= bytes }
+    pub fn can_store(&self, bytes: u64) -> bool {
+        self.available_bytes() >= bytes
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -89,7 +107,13 @@ pub struct PlacementPolicy {
 }
 
 impl Default for PlacementPolicy {
-    fn default() -> Self { Self { replicas: DEFAULT_REPLICATION, require_distinct_nodes: true, max_retries: 5 } }
+    fn default() -> Self {
+        Self {
+            replicas: DEFAULT_REPLICATION,
+            require_distinct_nodes: true,
+            max_retries: 5,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,7 +125,14 @@ pub struct ProductConfig {
 }
 
 impl Default for ProductConfig {
-    fn default() -> Self { Self { protocol: PRODUCT_PROTOCOL.to_owned(), chunk_size: DEFAULT_CHUNK_SIZE, placement: PlacementPolicy::default(), encrypted_by_default: true } }
+    fn default() -> Self {
+        Self {
+            protocol: PRODUCT_PROTOCOL.to_owned(),
+            chunk_size: DEFAULT_CHUNK_SIZE,
+            placement: PlacementPolicy::default(),
+            encrypted_by_default: true,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -125,21 +156,50 @@ pub struct ProductState {
 }
 
 impl ProductState {
-    pub fn register_peer(&mut self, peer: Peer) { self.peers.insert(peer.id.clone(), peer); }
-    pub fn register_resource(&mut self, manifest: ResourceManifest) { self.resources.insert(manifest.id.clone(), manifest); }
+    pub fn register_peer(&mut self, peer: Peer) {
+        self.peers.insert(peer.id.clone(), peer);
+    }
+    pub fn register_resource(&mut self, manifest: ResourceManifest) {
+        self.resources.insert(manifest.id.clone(), manifest);
+    }
     pub fn record_placement(&mut self, resource: &ResourceId, node_id: impl Into<String>) {
-        self.placements.entry(resource.clone()).or_default().insert(node_id.into());
+        self.placements
+            .entry(resource.clone())
+            .or_default()
+            .insert(node_id.into());
     }
-    pub fn replica_count(&self, resource: &ResourceId) -> usize { self.placements.get(resource).map_or(0, BTreeSet::len) }
-    pub fn healthy_peers(&self) -> usize { self.peers.values().filter(|peer| peer.healthy).count() }
+    pub fn replica_count(&self, resource: &ResourceId) -> usize {
+        self.placements.get(resource).map_or(0, BTreeSet::len)
+    }
+    pub fn healthy_peers(&self) -> usize {
+        self.peers.values().filter(|peer| peer.healthy).count()
+    }
     pub fn active_transfers(&self) -> usize {
-        self.transfers.values().filter(|t| !matches!(t.state, TransferState::Complete | TransferState::Failed { .. })).count()
+        self.transfers
+            .values()
+            .filter(|t| {
+                !matches!(
+                    t.state,
+                    TransferState::Complete | TransferState::Failed { .. }
+                )
+            })
+            .count()
     }
-    pub fn snapshot(&self, node_id: impl Into<String>, online: bool, target_replicas: u8) -> ProductSnapshot {
+    pub fn snapshot(
+        &self,
+        node_id: impl Into<String>,
+        online: bool,
+        target_replicas: u8,
+    ) -> ProductSnapshot {
         ProductSnapshot {
-            protocol: PRODUCT_PROTOCOL.to_owned(), node_id: node_id.into(), online,
-            peers: self.healthy_peers(), resources: self.resources.len(), active_transfers: self.active_transfers(),
-            healthy_replicas: self.placements.values().map(BTreeSet::len).sum(), target_replicas,
+            protocol: PRODUCT_PROTOCOL.to_owned(),
+            node_id: node_id.into(),
+            online,
+            peers: self.healthy_peers(),
+            resources: self.resources.len(),
+            active_transfers: self.active_transfers(),
+            healthy_replicas: self.placements.values().map(BTreeSet::len).sum(),
+            target_replicas,
         }
     }
 }
@@ -147,24 +207,53 @@ impl ProductState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test] fn resource_ids_are_content_addressed() {
-        assert_eq!(ResourceId::from_bytes(b"hello"), ResourceId::from_bytes(b"hello"));
-        assert_ne!(ResourceId::from_bytes(b"hello"), ResourceId::from_bytes(b"world"));
+    #[test]
+    fn resource_ids_are_content_addressed() {
+        assert_eq!(
+            ResourceId::from_bytes(b"hello"),
+            ResourceId::from_bytes(b"hello")
+        );
+        assert_ne!(
+            ResourceId::from_bytes(b"hello"),
+            ResourceId::from_bytes(b"world")
+        );
     }
-    #[test] fn placement_is_distinct_and_counted_once() {
+    #[test]
+    fn placement_is_distinct_and_counted_once() {
         let mut state = ProductState::default();
         let manifest = ResourceManifest::from_bytes(b"data", None, None);
-        let id = manifest.id.clone(); state.register_resource(manifest);
-        state.record_placement(&id, "node-a"); state.record_placement(&id, "node-a"); state.record_placement(&id, "node-b");
+        let id = manifest.id.clone();
+        state.register_resource(manifest);
+        state.record_placement(&id, "node-a");
+        state.record_placement(&id, "node-a");
+        state.record_placement(&id, "node-b");
         assert_eq!(state.replica_count(&id), 2);
     }
-    #[test] fn capacity_never_underflows() {
-        let c = NodeCapacity { storage_bytes: 10, reserved_bytes: 8, used_bytes: 8 };
-        assert_eq!(c.available_bytes(), 0); assert!(!c.can_store(1));
+    #[test]
+    fn capacity_never_underflows() {
+        let c = NodeCapacity {
+            storage_bytes: 10,
+            reserved_bytes: 8,
+            used_bytes: 8,
+        };
+        assert_eq!(c.available_bytes(), 0);
+        assert!(!c.can_store(1));
     }
-    #[test] fn snapshot_reports_active_work() {
+    #[test]
+    fn snapshot_reports_active_work() {
         let mut state = ProductState::default();
-        state.transfers.insert("t1".into(), Transfer { id: "t1".into(), resource: ResourceId::from_bytes(b"x"), peer: "node-b".into(), state: TransferState::Transferring { completed: 1, total: 2 } });
+        state.transfers.insert(
+            "t1".into(),
+            Transfer {
+                id: "t1".into(),
+                resource: ResourceId::from_bytes(b"x"),
+                peer: "node-b".into(),
+                state: TransferState::Transferring {
+                    completed: 1,
+                    total: 2,
+                },
+            },
+        );
         assert_eq!(state.active_transfers(), 1);
     }
 }
