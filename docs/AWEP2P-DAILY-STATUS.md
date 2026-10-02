@@ -1,73 +1,62 @@
-# AWEP2P Daily Engineering Status — 2026-09-30
+# AWEP2P Daily Engineering Status — 2026-10-02
 
-## Landed in this pass
+## Repository and release status
 
-- Added a dedicated iterative routing module with XOR-distance ranking, health filtering, visited-peer avoidance, lookup request/result types, and unit tests.
-- Added a dedicated replication module implementing deterministic placement of **exactly 1000 shards with exactly 3 distinct replica nodes per shard** when a real node set is supplied.
-- Added replica-health assessment that reports missing copies without pretending that repair has happened.
-- Extended `AsMap` with full 1000-shard placement and complete-placement validation.
-- Added direct/group call-session primitives for higher communication layers. Media codecs, NAT traversal, and actual real-time media transport remain explicitly unimplemented.
-- Kept storage placement honest: the code never fabricates node IDs; placement only uses supplied node identities.
-- Added regression tests for deterministic placement, replica counts, missing replicas, routing, and call-session state.
-- Added a capacity-constrained placement mode with a hard 100 shard-placement budget per node; 1000×3 placement therefore requires at least 30 nodes.
-- Hardened routing to use the full 256-bit XOR distance and fixed the previous sort-before-recompute ordering bug.
-- Added `AWE/SHIELD/v1`, a defense-in-depth packet envelope with domain separation, payload commitments, keyed integrity, TTL limits, expiry/skew checks, session/request binding, and a request-scoped replay guard.
-- Hardened SHIELD hop handling so a TTL mutation re-authenticates the packet with the relay's hop key instead of changing authenticated state silently.
-- Added an authenticated fixed-size A2P2 wire packet: payload length is encrypted inside a 1280-byte AEAD record, reducing application-size leakage to passive wire observers while preserving constant record size.
-- Hardened the live TCP transport with **AWE/WIRE-v1 bucketed padding**: encrypted frames now hide exact application payload length behind power-of-two size classes.
-- Removed per-frame TCP flushes and enabled TCP_NODELAY on accepted/outgoing sockets to reduce interactive latency and syscall overhead.
-- Hardened SHIELD replay defense with a bounded 64-packet sliding window, duplicate suppression, out-of-order tolerance, and a hard 65,536-request memory ceiling to reduce replay/DoS pressure.
+- PR #33, “Define end-to-end product readiness gates,” has been merged into `main` (merge commit `e7fb9b5`).
+- This pass refreshes the project documentation to use one consistent, evidence-based maturity model.
+- No claim is made here that the full product is production-ready.
+- This documentation refresh does not itself implement missing runtime features or constitute a passing test run.
 
-## Current implementation estimate
+## Implemented foundations documented in the repository
 
-These are engineering estimates, not GitHub-provided percentages:
+The current repository includes:
+- Rust workspace and node executable.
+- Identity, encrypted local vault, signing, and protocol primitives.
+- Authenticated TCP session and encrypted data-stream functionality.
+- Replay defenses, peer state, routing/lookup primitives, and topology modeling.
+- Content-addressed local storage, shard/replication models, placement and health primitives.
+- Namespace, registry, host/site manifest, and integrity-related structures.
+- Desktop UI and Windows/Android/AWEOS integration scaffolding.
+- GitHub Actions workflows for portions of formatting, core, and platform builds.
 
-| Area | Estimate |
-|---|---:|
-| Identity / cryptography / vault | 75–80% |
-| Authenticated transport / replay protection | 70% |
-| Peer routing primitives | 60% |
-| Production persistent DHT | 20% |
-| NAT traversal / relay | 10–15% |
-| 1000-shard storage model | 70% |
-| Three-replica placement model | 65% |
-| Automatic replica repair | 20% |
-| Distributed content transfer | 25% |
-| AWE Sites | 10–15% |
-| Messenger core | 40% |
-| Direct voice/video media | 5% |
-| Group calls | 5% |
-| Drive | 25% |
-| Store / WASM runtime | 20% |
-| Browser | 15% |
-| Cross-platform node integration | 30–40% |
-| End-to-end distributed network | 18% |
+These are component-level capabilities. Their existence does not prove complete operation across independent devices or supported platforms.
 
-**Overall AWEP2P engineering maturity: ~33%** (rough weighted engineering estimate across the current feature surface; not a GitHub metric and not a claim of production readiness).
+## Maturity estimate
 
-Overall AWEP2P remains a foundation-stage distributed network. The percentages above measure implementation maturity, not project importance.
+The last detailed estimate in the repository was approximately **33% overall foundation maturity**, dated 2026-09-30. It is a rough engineering estimate, not a test metric. This documentation update does not recalculate it because a fresh, complete code-and-test audit has not been run.
 
-## Next implementation frontier
+**Current release classification: experimental foundation.** Production readiness is not established.
 
-The next high-impact work is to connect the landed primitives into a real distributed data plane:
+## Remaining work to reach a real end-user product
 
-1. persistent peer routing and iterative lookup over live connections;
-2. authenticated content/shard lookup;
-3. encrypted shard transfer over A2P2 fixed-size/bucketed records;
-4. 1000-shard / 3-replica placement against real node capacity;
-5. automatic replica repair and health-driven re-placement;
-6. NAT traversal and relay fallback;
-7. direct call signalling and real-time media transport;
-8. site manifests and distributed site retrieval;
-9. application clients and AWEOS integration.
+The work is organized into 10 product tracks. A track is complete only when its acceptance evidence is available.
 
-Features are not marked complete until executable implementations and tests demonstrate them.
+1. **Node lifecycle:** clean install, first-run identity, start/stop, restart persistence, recoverable corruption, resource limits.
+2. **Peer connectivity:** independently launched nodes, authenticated sessions, reconnect behavior, timeout and disconnect handling.
+3. **Routing and discovery:** persistent peer records, bounded lookup, verified multi-hop forwarding, stale-peer handling, redundant discovery.
+4. **Distributed storage:** remote encrypted upload, durable shard acknowledgements, remote download/reconstruction, interrupted transfer recovery.
+5. **Repair and health:** detect lost replicas, move/rebuild real bytes, verify destination persistence, update metadata safely.
+6. **Names and sites:** signed/fresh registry resolution and remote retrieval of versioned site manifests/content.
+7. **Store and app runtime:** package signature verification, dependency handling, capability enforcement, real sandbox runtime if WASM is advertised.
+8. **Messenger:** remote acknowledgement semantics, robust offline delivery; voice/video require signaling plus real encrypted media transport.
+9. **End-user applications:** terminal-free desktop launch, consistent UI/CLI behavior, onboarding, accessibility, useful errors, diagnostics without secrets.
+10. **Release operations:** reproducible platform builds, clean-machine installation, signing/checksums, upgrade/rollback, backup and identity recovery.
 
+These are 10 work tracks, not 10 individual coding tasks. Each contains multiple implementation and verification tasks; a defensible total task count requires breaking them into repository-specific issues.
 
-## Security architecture direction
+## Immediate engineering sequence
 
-AWEP2P is being developed as layered defense-in-depth: AWE identity, authenticated encrypted transport, A2P2 fixed-size padding, optional onion forwarding, SHIELD application-layer binding, per-shard integrity and capacity-aware replication. These layers improve resistance to tampering, replay, routing abuse and some metadata leakage; they do **not** claim absolute anonymity or invisibility on physical Internet links.
+1. Audit current node command and transport paths against two-process tests.
+2. Add a repeatable local integration test that starts two independent nodes and exercises an application request over the real encrypted stream.
+3. Extend that test to restart/disconnect/failure cases.
+4. Connect storage operations to the authenticated peer data plane; do not mark local placement as distributed storage.
+5. Add durable transfer and repair only after remote shard transfer is testable.
+6. Keep docs, UI labels, and release metadata aligned with observed behavior.
 
-## Wire-security note
+## Security and privacy
 
-A2P2 now has a true fixed-size AEAD record path: a 1280-byte packet contains a random nonce plus an authenticated, padded plaintext. The application payload length is inside the encrypted record. This improves resistance to passive traffic analysis based on packet size, but it does not make traffic invisible to a global observer; timing, endpoints, and traffic volume can still leak metadata. Onion/relay routing and additional traffic shaping remain separate layers.
+Use a threat-model-based description. Encryption, replay protection, padding, and relay designs address different risks and do not establish perfect anonymity. Never log passwords, private keys, plaintext private content, or unnecessary personal data.
+
+## Validation record
+
+No fresh build/test/Clippy/CI result is asserted by this documentation-only status update. For the latest authoritative result, inspect GitHub Actions for the exact commit being evaluated.
