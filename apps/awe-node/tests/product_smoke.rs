@@ -66,6 +66,7 @@ fn spawn_node(bin: &PathBuf, data: &PathBuf, listen: u16, ui: u16) -> Child {
         .env("AWE_DATA_DIR", data)
         .env("AWE_LISTEN_ADDR", format!("127.0.0.1:{listen}"))
         .env("AWE_UI_ADDR", format!("127.0.0.1:{ui}"))
+        .env("AWE_NO_BROWSER", "1")
         .spawn()
         .expect("spawn node")
 }
@@ -114,6 +115,63 @@ fn three_node_product_smoke() {
         assert!(
             storage.contains(r#""replication_policy""#),
             "replication policy: {storage}"
+        );
+
+        let connect2 = post(
+            "127.0.0.1:46201",
+            "/api/connect?address=127.0.0.1%3A46102",
+            "{}",
+        );
+        assert!(
+            connect2.contains(r#""status":"connecting""#),
+            "node2: {connect2}"
+        );
+
+        let connect3 = post(
+            "127.0.0.1:46201",
+            "/api/connect?address=127.0.0.1%3A46103",
+            "{}",
+        );
+        assert!(
+            connect3.contains(r#""status":"connecting""#),
+            "node3: {connect3}"
+        );
+
+        thread::sleep(Duration::from_secs(2));
+
+        let status = get("127.0.0.1:46201", "/api/status");
+        assert!(
+            status.contains(r#""active_connections":2"#),
+            "connections: {status}"
+        );
+
+        let payload = "AWEP2P-REAL-PRODUCT-SMOKE";
+        let hex = payload
+            .as_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        let stored = post(
+            "127.0.0.1:46201",
+            "/api/storage/put",
+            &format!(r#"{{"filename":"smoke.txt","data_hex":"{hex}"}}"#),
+        );
+        assert!(
+            stored.contains(r#""status":"stored""#),
+            "storage put: {stored}"
+        );
+        let file_id = stored
+            .split(r#""file_id":""#)
+            .nth(1)
+            .and_then(|x| x.split('"').next())
+            .expect("file id");
+        let downloaded = get(
+            "127.0.0.1:46201",
+            &format!("/api/storage/get?file_id={file_id}"),
+        );
+        assert!(
+            downloaded.contains(payload),
+            "storage get: {downloaded}"
         );
     });
 
