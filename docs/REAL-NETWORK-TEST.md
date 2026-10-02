@@ -1,91 +1,47 @@
 # AWEP2P Real Node-to-Node Test
 
-This test is intended to be run by the operator on two machines or two terminals.
+This procedure validates the direct authenticated TCP path only. It does not prove DHT, multi-hop routing, NAT traversal, or distributed storage.
 
-## 1. Build
+## Prerequisites
+- Compatible Rust toolchain and two independent node processes (two machines preferred).
+- Reachable TCP port and appropriate firewall configuration.
+- Use test identities/passwords; never publish credentials or private vaults.
 
-~~~text
+## Build
+```sh
 cargo build -p awe-node --release
-~~~
+```
 
-## 2. Create identities
+## Create identities
+Run once per node, using distinct vault paths:
+```sh
+awe-node init <path-to-node-vault>
+```
 
-Terminal A:
+## Start node A
+```sh
+AWE_USERNAME=node-a awe-node run <node-a-vault> <password-a> 0.0.0.0:41000
+```
 
-~~~text
-awe-node init ~/.awep2p/node-a.vault
-~~~
-
-Terminal B:
-
-~~~text
-awe-node init ~/.awep2p/node-b.vault
-~~~
-
-The command asks for a vault password. Keep each password available for the corresponding node.
-
-## 3. Start Node A
-
-~~~text
-AWE_USERNAME=node-a awe-node run ~/.awep2p/node-a.vault '<PASSWORD-A>' 0.0.0.0:41000
-~~~
-
-On Windows PowerShell:
-
-~~~powershell
+PowerShell:
+```powershell
 $env:AWE_USERNAME="node-a"
 awe-node run "$HOME/.awep2p/node-a.vault" "<PASSWORD-A>" "0.0.0.0:41000"
-~~~
+```
 
-## 4. Start Node B and bootstrap to Node A
+## Start node B and connect to A
+```sh
+AWE_USERNAME=node-b awe-node run <node-b-vault> <password-b> 0.0.0.0:41001 <node-a-reachable-address>:41000
+```
+Use `127.0.0.1:41000` for a same-machine test; use A's reachable address across machines.
 
-~~~text
-AWE_USERNAME=node-b awe-node run ~/.awep2p/node-b.vault '<PASSWORD-B>' 0.0.0.0:41001 127.0.0.1:41000
-~~~
+## Probe
+```sh
+awe-node probe <node-a-reachable-address>:41000
+```
+Record revision, OS, addresses, time, and output with secrets removed. Confirm the current command implementation before interpreting exactly what the probe proves.
 
-Use the real reachable IP address of Node A when the nodes are on different machines.
+## Scope and failure cases
+A successful probe demonstrates only the direct connection and handshake/heartbeat operations actually performed. It does not prove Internet-wide discovery, multi-hop forwarding, relay failover, NAT traversal, remote shard persistence/retrieval/repair, anonymity, or production release quality.
 
-## 5. Run the authenticated heartbeat probe
-
-From a third terminal on Node B:
-
-~~~text
-awe-node probe 127.0.0.1:41000
-~~~
-
-Expected result includes:
-
-- an authenticated peer AWE-ID;
-- `Authenticated heartbeat: OK`;
-- a measured round-trip time.
-
-## 6. LAN test
-
-For two machines on the same LAN, replace `127.0.0.1` with Node A's LAN address, for example `192.168.1.10:41000`.
-
-Make sure the chosen TCP port is reachable through the host firewall.
-
-## 7. What this proves
-
-A successful probe proves a real TCP connection, signed identity handshake, ephemeral X25519 key agreement, authenticated encrypted session, and authenticated Ping/Pong heartbeat.
-
-It does not by itself prove NAT traversal, Internet-wide routing, automatic relay failover, or a multi-Data-Centre deployment. Those require the corresponding multi-machine experiments.
-
-## 8. Recommended multi-node experiment
-
-Use at least three nodes:
-
-- Node A: Data Centre 1
-- Node B: Data Centre 1
-- Node C: Data Centre 2
-
-Verify:
-
-1. A ↔ B direct connectivity.
-2. B ↔ C connectivity.
-3. A can discover B/C.
-4. A heartbeat remains healthy while B is online.
-5. Stop B and verify the expected failure is detected.
-6. Repeat with C as the alternate path.
-
-Record the exact addresses, timestamps, RTT values, failures, and recovery times for reproducibility.
+Also test abrupt shutdown, restart, unreachable peers, malformed frames, duplicate connections, and timeouts. Record expected versus actual behavior and attach reproducible evidence.
