@@ -1,30 +1,21 @@
-# AWEP2P — ամբողջական Node-to-Node topology
+# AWEP2P Network Topology Model
 
-## Ցանցի կառուցվածքը
+## Conceptual hierarchy
+`Node → Data Centre → Data Group → Centre Group → AWE Net`
 
-**Node → Node → Data Centre → Data Group → Centre Group → AWE Net**
+This is a logical organization model, not a guarantee that every node is connected or that topology converges automatically.
 
-### Node → Node
-Յուրաքանչյուր node պահում է իր peer-երի ցանկը։ Նոր node-ը նախ միանում է հասանելի ամենամոտ/հարմար peer-ին։ Կապերը երկկողմ են, իսկ երթուղիները կարող են անցնել մի քանի node-ով։
+## Nodes and peers
+A node may maintain connections to multiple peers. The connected-peer set is runtime state, not an intended-peer list. Entry-peer selection must use an explicit measurable policy rather than fabricated geographic assumptions.
 
-### Data Centre
-Data Centre-ի ներսում կիրառվում է Full Mesh․ առողջ node-երը կարող են անմիջապես կապվել միմյանց հետ։
+## Data Centres and inter-centre links
+A Data Centre groups nodes for policy and administration. Full mesh is a possible configuration, not an unconditional property. Inter-centre links may be direct or relay-mediated; a modeled edge is operational only when authenticated sessions are live and forwarding works.
 
-### Data Centre → Data Centre
-Աջակցվում է երկու ձև.
-1. **Full Mesh:** առաջին DC-ի բոլոր node-երը կապվում են երկրորդ DC-ի բոլոր node-երին։
-2. **Relay:** առաջին DC-ի ընտրված relay node-ը կապ է ստեղծում երկրորդ DC-ի node-ի հետ։
+## Groups
+Data Groups and Centre Groups organize multiple Data Centres/groups. Membership constraints do not create network connections.
 
-### Data Group
-**3 կամ ավելի Data Centre = Data Group**։
+## Routing and resilience
+Routing must use current verified peer state. A route is successful only when each hop forwards a correlated request within a bounded hop count and returns its response. Failover requires a tested alternate path and recovery behavior.
 
-### Centre Group
-**2 կամ ավելի Data Group = Centre Group**։
-
-### AWE Net
-**Բոլոր Centre Group-երը միասին = AWE Net**։
-
-### Ուղղորդում և խափանումների դիմադրություն
-Routing-ը աշխատում է ընթացիկ peer graph-ի վրա՝ BFS-ով։ Կենտրոնական routing server պարտադիր չէ։ Full Mesh-ի դեպքում մի ուղու խափանումը կարող է թողնել այլ ուղիներ։
-
-> Իրական production կապի համար topology layer-ը պետք է միացվի անվտանգ transport/discovery/heartbeat շերտերին։ Այս մոդուլը այդ topology-ի state և routing հիմքն է։
+## Production evidence
+Test direct sessions, multi-hop forwarding, node loss, partition/rejoin, stale-peer removal, and relay failover with independent processes. Until then, this document describes a topology model—not a live global network.
