@@ -18,6 +18,7 @@ pub mod network;
 pub mod network_topology;
 pub mod node;
 pub mod permissions;
+pub mod product;
 pub mod protocol;
 pub mod readiness;
 pub mod recovery;
