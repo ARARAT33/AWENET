@@ -74,9 +74,9 @@ jobs:
           WizardStyle=modern
 
           [Files]
-          Source: "target\x86_64-pc-windows-msvc\release\awe-node.exe"; DestDir: "{app}"; Flags: ignoreversion
-          Source: "awenet.cmd"; DestDir: "{app}"; Flags: ignoreversion
-          Source: "awenet.ps1"; DestDir: "{app}"; Flags: ignoreversion
+          Source: "..\target\x86_64-pc-windows-msvc\release\awe-node.exe"; DestDir: "{app}"; Flags: ignoreversion
+          Source: "..\awenet.cmd"; DestDir: "{app}"; Flags: ignoreversion
+          Source: "..\awenet.ps1"; DestDir: "{app}"; Flags: ignoreversion
 
           [Icons]
           Name: "{autoprograms}\AWEp2P"; Filename: "{app}\awe-node.exe"

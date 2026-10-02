@@ -737,6 +737,11 @@ fn xor_distance(a: &[u8; 32], b: &[u8; 32]) -> [u8; 32] {
 }
 
 #[derive(Clone)]
+type ActiveConnections =
+    Arc<RwLock<HashMap<[u8; 32], Arc<tokio::sync::Mutex<SecureConnection>>>>>;
+type InboxQueue = Arc<Mutex<Vec<([u8; 32], u32, Vec<u8>)>>>;
+
+#[allow(clippy::type_complexity)]
 pub struct Node {
     pub identity: Arc<Identity>,
     pub listen_addr: SocketAddr,
@@ -744,8 +749,8 @@ pub struct Node {
     peers: Arc<RwLock<HashMap<[u8; 32], PeerRecord>>>,
     admission: Arc<Mutex<PeerAdmission>>,
     preauth: Arc<Mutex<IpAdmission>>,
-    active: Arc<RwLock<HashMap<[u8; 32], Arc<tokio::sync::Mutex<SecureConnection>>>>>,
-    inbox: Arc<Mutex<Vec<([u8; 32], u32, Vec<u8>)>>>,
+    active: ActiveConnections,
+    inbox: InboxQueue,
 }
 impl Node {
     pub fn new(identity: Identity, listen_addr: SocketAddr) -> Self {
@@ -778,7 +783,7 @@ impl Node {
         routing: Arc<RwLock<RoutingTable>>,
         peers: Arc<RwLock<HashMap<[u8; 32], PeerRecord>>>,
         admission: Arc<Mutex<PeerAdmission>>,
-        inbox: Arc<Mutex<Vec<([u8; 32], u32, Vec<u8>)>>>,
+        inbox: InboxQueue,
     ) {
         let Ok(mut c) = handshake(stream, identity, false).await else {
             return;
