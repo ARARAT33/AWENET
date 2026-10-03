@@ -12,8 +12,8 @@ use awep2p_core::messenger::format_uid;
 use awep2p_core::network::{format_node_descriptor, Node};
 use awep2p_core::policy::{self, NetworkPolicy};
 use awep2p_core::reputation::NodeReputation;
-use awep2p_core::supervisor::{PeerSupervisor, SupervisorConfig};
 use awep2p_core::storage::{encode_shards, recover_shards, LocalNodeStore, StoragePolicy};
+use awep2p_core::supervisor::{PeerSupervisor, SupervisorConfig};
 use std::{
     collections::BTreeMap,
     env, fs,
@@ -912,7 +912,10 @@ async fn autonomous_repair_cycle(
         let Ok(file_id) = <[u8; 32]>::try_from(file_id_bytes) else {
             continue;
         };
-        let original_size = manifest.get("original_size").and_then(|v| v.as_u64()).unwrap_or(0);
+        let original_size = manifest
+            .get("original_size")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
         let total_shards = manifest.get("shards").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
 
         for index in 0..total_shards.min(1000) {
