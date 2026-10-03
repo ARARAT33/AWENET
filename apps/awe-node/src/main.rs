@@ -11,8 +11,8 @@ use awep2p_core::lan_mesh::LanPeerBeacon;
 use awep2p_core::messenger::format_uid;
 use awep2p_core::network::{format_node_descriptor, Node};
 use awep2p_core::policy::{self, NetworkPolicy};
-use awep2p_core::supervisor::{PeerSupervisor, SupervisorConfig};
 use awep2p_core::reputation::NodeReputation;
+use awep2p_core::supervisor::{PeerSupervisor, SupervisorConfig};
 use awep2p_core::storage::{encode_shards, recover_shards, LocalNodeStore, StoragePolicy};
 use std::{
     collections::BTreeMap,
@@ -694,7 +694,10 @@ async fn serve_ui(
                                 let Ok(expected_hash) = <[u8; 32]>::try_from(expected_bytes) else {
                                     continue;
                                 };
-                                let original_size = manifest.get("original_size").and_then(|v| v.as_u64()).unwrap_or(0);
+                                let original_size = manifest
+            .get("original_size")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
 
                                 for target in placement.iter().filter_map(|v| v.as_str()) {
                                     if target == local_id {
@@ -880,25 +883,67 @@ async fn autonomous_repair_cycle(
 
     for entry in entries.flatten() {
         let path = entry.path();
-        let Ok(bytes) = fs::read(&path) else { continue; };
-        let Ok(mut manifest) = serde_json::from_slice::<serde_json::Value>(&bytes) else { continue; };
-        let Some(placements) = manifest.get_mut("placements").and_then(|v| v.as_array_mut()) else { continue; };
-        let Some(shard_hashes) = manifest.get("shard_hashes").and_then(|v| v.as_array()).cloned() else { continue; };
-        let file_id_hex = manifest.get("file_id").and_then(|v| v.as_str()).unwrap_or("");
-        let Ok(file_id_bytes) = hex::decode(file_id_hex) else { continue; };
-        let Ok(file_id) = <[u8; 32]>::try_from(file_id_bytes) else { continue; };
+        let Ok(bytes) = fs::read(&path) else {
+            continue;
+        };
+        let Ok(mut manifest) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            continue;
+        };
+        let Some(placements) = manifest
+            .get_mut("placements")
+            .and_then(|v| v.as_array_mut())
+        else {
+            continue;
+        };
+        let Some(shard_hashes) = manifest
+            .get("shard_hashes")
+            .and_then(|v| v.as_array())
+            .cloned()
+        else {
+            continue;
+        };
+        let file_id_hex = manifest
+            .get("file_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let Ok(file_id_bytes) = hex::decode(file_id_hex) else {
+            continue;
+        };
+        let Ok(file_id) = <[u8; 32]>::try_from(file_id_bytes) else {
+            continue;
+        };
         let original_size = manifest.get("original_size").and_then(|v| v.as_u64()).unwrap_or(0);
         let total_shards = manifest.get("shards").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
 
         for index in 0..total_shards.min(1000) {
-            let Some(nodes_value) = placements.get_mut(index).and_then(|v| v.get_mut("nodes")).and_then(|v| v.as_array_mut()) else { continue; };
-            let current_nodes = nodes_value.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect::<Vec<_>>();
-            let available = current_nodes.iter().filter(|id| *id == &local_id || peer_ids.contains_key(*id)).count();
-            if available >= 3 { continue; }
+            let Some(nodes_value) = placements
+                .get_mut(index)
+                .and_then(|v| v.get_mut("nodes"))
+                .and_then(|v| v.as_array_mut())
+            else {
+                continue;
+            };
+            let current_nodes = nodes_value
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect::<Vec<_>>();
+            let available = current_nodes
+                .iter()
+                .filter(|id| *id == &local_id || peer_ids.contains_key(*id))
+                .count();
+            if available >= 3 {
+                continue;
+            }
 
-            let Some(expected_hex) = shard_hashes.get(index).and_then(|v| v.as_str()) else { continue; };
-            let Ok(expected_bytes) = hex::decode(expected_hex) else { continue; };
-            let Ok(expected_hash) = <[u8; 32]>::try_from(expected_bytes) else { continue; };
+            let Some(expected_hex) = shard_hashes.get(index).and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let Ok(expected_bytes) = hex::decode(expected_hex) else {
+                continue;
+            };
+            let Ok(expected_hash) = <[u8; 32]>::try_from(expected_bytes) else {
+                continue;
+            };
 
             let mut source_data: Option<Vec<u8>> = None;
             for source in &current_nodes {
@@ -909,8 +954,18 @@ async fn autonomous_repair_cycle(
                     }
                 } else if let Some(source_id) = peer_ids.get(source) {
                     let request_id = blake3::hash(
-                        format!("repair-source:{}:{}:{}:{}", file_id_hex, index, source, now_unix()).as_bytes()
-                    ).as_bytes()[..16].try_into().unwrap_or([0u8; 16]);
+                        format!(
+                            "repair-source:{}:{}:{}:{}",
+                            file_id_hex,
+                            index,
+                            source,
+                            now_unix()
+                        )
+                        .as_bytes(),
+                    )
+                    .as_bytes()[..16]
+                        .try_into()
+                        .unwrap_or([0u8; 16]);
                     let request = StorageShardRequest::new(
                         request_id,
                         *node.identity.public.awe_id.as_bytes(),
@@ -921,8 +976,14 @@ async fn autonomous_repair_cycle(
                         original_size,
                         4 * 1024 * 1024,
                     );
-                    let Ok(request_bytes) = serde_json::to_vec(&request) else { continue; };
-                    if node.send_to_peer(source_id, STORAGE_STREAM, request_bytes).await.is_err() {
+                    let Ok(request_bytes) = serde_json::to_vec(&request) else {
+                        continue;
+                    };
+                    if node
+                        .send_to_peer(source_id, STORAGE_STREAM, request_bytes)
+                        .await
+                        .is_err()
+                    {
                         continue;
                     }
                     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -941,17 +1002,26 @@ async fn autonomous_repair_cycle(
                         }
                         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                     }
-                    if source_data.is_some() { break; }
+                    if source_data.is_some() {
+                        break;
+                    }
                 }
             }
 
-            let Some(data) = source_data else { continue; };
-            if !policy.allows_shard(data.len()) || *blake3::hash(&data).as_bytes() != expected_hash {
+            let Some(data) = source_data else {
+                continue;
+            };
+            if !policy.allows_shard(data.len()) || *blake3::hash(&data).as_bytes() != expected_hash
+            {
                 continue;
             }
 
             let mut repaired = false;
-            let mut candidates = peer_ids.keys().filter(|id| !current_nodes.contains(id)).cloned().collect::<Vec<_>>();
+            let mut candidates = peer_ids
+                .keys()
+                .filter(|id| !current_nodes.contains(id))
+                .cloned()
+                .collect::<Vec<_>>();
             if !current_nodes.contains(&local_id) {
                 candidates.insert(0, local_id.clone());
             }
@@ -959,7 +1029,9 @@ async fn autonomous_repair_cycle(
             candidates.dedup();
 
             for target in candidates {
-                if current_nodes.contains(&target) { continue; }
+                if current_nodes.contains(&target) {
+                    continue;
+                }
 
                 if target == local_id {
                     if storage.put(&data).is_ok() {
@@ -968,8 +1040,18 @@ async fn autonomous_repair_cycle(
                     }
                 } else if let Some(target_id) = peer_ids.get(&target) {
                     let request_id = blake3::hash(
-                        format!("repair-target:{}:{}:{}:{}", file_id_hex, index, target, now_unix()).as_bytes()
-                    ).as_bytes()[..16].try_into().unwrap_or([0u8; 16]);
+                        format!(
+                            "repair-target:{}:{}:{}:{}",
+                            file_id_hex,
+                            index,
+                            target,
+                            now_unix()
+                        )
+                        .as_bytes(),
+                    )
+                    .as_bytes()[..16]
+                        .try_into()
+                        .unwrap_or([0u8; 16]);
                     let transfer = StorageShardTransfer::new(
                         request_id,
                         *node.identity.public.awe_id.as_bytes(),
@@ -979,8 +1061,14 @@ async fn autonomous_repair_cycle(
                         original_size,
                         data.clone(),
                     );
-                    let Ok(transfer_bytes) = serde_json::to_vec(&transfer) else { continue; };
-                    if node.send_to_peer(target_id, STORAGE_STREAM, transfer_bytes).await.is_err() {
+                    let Ok(transfer_bytes) = serde_json::to_vec(&transfer) else {
+                        continue;
+                    };
+                    if node
+                        .send_to_peer(target_id, STORAGE_STREAM, transfer_bytes)
+                        .await
+                        .is_err()
+                    {
                         continue;
                     }
                     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -1001,11 +1089,16 @@ async fn autonomous_repair_cycle(
                     }
                 }
 
-                if repaired { break; }
+                if repaired {
+                    break;
+                }
             }
 
             if repaired {
-                let _ = fs::write(&path, serde_json::to_vec_pretty(&manifest).unwrap_or_default());
+                let _ = fs::write(
+                    &path,
+                    serde_json::to_vec_pretty(&manifest).unwrap_or_default(),
+                );
             }
         }
     }
@@ -1083,7 +1176,9 @@ async fn run_product() -> Result<()> {
             tokio::time::sleep(std::time::Duration::from_secs(15)).await;
             let current = policy_refresh.lock().map(|p| p.clone()).unwrap_or_default();
             if let Ok(next) = policy::load_if_changed(&policy_refresh_path, &current) {
-                if let Ok(mut p) = policy_refresh.lock() { *p = next; }
+                if let Ok(mut p) = policy_refresh.lock() {
+                    *p = next;
+                }
             }
         }
     });
@@ -1096,8 +1191,12 @@ async fn run_product() -> Result<()> {
         .collect::<Vec<_>>();
     if !startup_bootstrap.is_empty() {
         let _ = node.bootstrap(&startup_bootstrap).await;
-        let supervisor = PeerSupervisor::new(node.clone(), startup_bootstrap.clone(), SupervisorConfig::default())
-            .map_err(anyhow::Error::msg)?;
+        let supervisor = PeerSupervisor::new(
+            node.clone(),
+            startup_bootstrap.clone(),
+            SupervisorConfig::default(),
+        )
+        .map_err(anyhow::Error::msg)?;
         let _supervisor_task = supervisor.spawn();
     }
     let repair_node = node.clone();
@@ -1136,8 +1235,13 @@ async fn run_product() -> Result<()> {
     tokio::spawn(async move {
         loop {
             for (sender, stream, payload) in dispatcher_node.take_inbox() {
-                let runtime_policy = dispatcher_policy.lock().map(|p| p.clone()).unwrap_or_default();
-                if !runtime_policy.allows_stream(stream) { continue; }
+                let runtime_policy = dispatcher_policy
+                    .lock()
+                    .map(|p| p.clone())
+                    .unwrap_or_default();
+                if !runtime_policy.allows_stream(stream) {
+                    continue;
+                }
                 if stream == 100 {
                     if let Ok(message) = serde_json::from_slice::<serde_json::Value>(&payload) {
                         if message.get("kind").and_then(|v| v.as_str()) == Some("awe.messenger.v1")
@@ -1189,7 +1293,9 @@ async fn run_product() -> Result<()> {
                     let Ok(data) = dispatcher_storage.get(&request.expected_hash) else {
                         continue;
                     };
-                    if data.len() > request.max_bytes as usize || !runtime_policy.allows_shard(data.len()) {
+                    if data.len() > request.max_bytes as usize
+                        || !runtime_policy.allows_shard(data.len())
+                    {
                         continue;
                     }
                     let transfer = StorageShardTransfer::new(
