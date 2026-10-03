@@ -10,12 +10,15 @@ permissions:
 
 jobs:
   desktop:
-    name: \${{ matrix.name }}
-    runs-on: \${{ matrix.runner }}
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
+          - name: Windows x64
+            runner: windows-latest
+            target: x86_64-pc-windows-msvc
           - name: Linux x64
             runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
@@ -34,14 +37,14 @@ jobs:
           node-version: lts/*
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: \${{ matrix.target }}
+          targets: ${{ matrix.target }}
       - name: Build node
-        run: cargo build --release -p awe-node --target \${{ matrix.target }}
+        run: cargo build --release -p awe-node --target ${{ matrix.target }}
       - name: Prepare bundled node
         shell: bash
         run: |
           mkdir -p apps/awe-app/src-tauri/binaries
-          cp "target/\${{ matrix.target }}/release/awe-node" "apps/awe-app/src-tauri/binaries/awe-node-\${{ matrix.target }}"
+          cp "target/${{ matrix.target }}/release/awe-node${{ startsWith(matrix.runner, 'windows') && '.exe' || '' }}" "apps/awe-app/src-tauri/binaries/awe-node-${{ matrix.target }}${{ startsWith(matrix.runner, 'windows') && '.exe' || '' }}"
       - name: Install app dependencies
         working-directory: apps/awe-app
         run: npm install
@@ -50,7 +53,7 @@ jobs:
         run: npx tauri build --ci
       - uses: actions/upload-artifact@v4
         with:
-          name: AWEp2P-\${{ matrix.target }}
+          name: AWEp2P-${{ matrix.target }}
           path: apps/awe-app/src-tauri/target/release/bundle/**
           if-no-files-found: error
 
@@ -75,9 +78,69 @@ jobs:
           name: AWEp2P-Linux-x64-Portable
           path: AWEP2P-Linux-x64-Portable.tar.gz
 
+  windows-portable:
+    name: Windows x64 portable node and installer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - run: cargo build --release -p awe-node --target x86_64-pc-windows-msvc
+      - name: Package portable node
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path package | Out-Null
+          Copy-Item target/x86_64-pc-windows-msvc/release/awe-node.exe package/awe-node.exe
+          Copy-Item awenet.cmd package/awenet.cmd
+          Copy-Item awenet.ps1 package/awenet.ps1
+          "AWEp2P ready-to-run Windows package." | Set-Content package/README.txt -Encoding UTF8
+          Compress-Archive -Path package/* -DestinationPath AWEP2P-Windows-x64-Portable.zip -Force
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+      - name: Build installer
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path installer | Out-Null
+          @'
+          #define MyAppName "AWEp2P"
+          #define MyAppVersion "0.1.0"
+          #define MyAppPublisher "AWE"
+          [Setup]
+          AppId={{8B0B9F31-6A0B-4F3D-A6C2-8E0F6D5E9B21}
+          AppName={#MyAppName}
+          AppVersion={#MyAppVersion}
+          AppPublisher={#MyAppPublisher}
+          DefaultDirName={autopf}\AWEp2P
+          DefaultGroupName=AWEp2P
+          OutputDir=installer
+          OutputBaseFilename=AWEP2P-Setup-Windows-x64
+          Compression=lzma2
+          SolidCompression=yes
+          ArchitecturesInstallIn64BitMode=x64
+          PrivilegesRequired=admin
+          [Files]
+          Source: "..\target\x86_64-pc-windows-msvc\release\awe-node.exe"; DestDir: "{app}"; Flags: ignoreversion
+          Source: "..\awenet.cmd"; DestDir: "{app}"; Flags: ignoreversion
+          Source: "..\awenet.ps1"; DestDir: "{app}"; Flags: ignoreversion
+          [Icons]
+          Name: "{autoprograms}\AWEp2P"; Filename: "{app}\awe-node.exe"
+          Name: "{autodesktop}\AWEp2P"; Filename: "{app}\awe-node.exe"
+          [Run]
+          Filename: "{app}\awe-node.exe"; Description: "Start AWEp2P now"; Flags: nowait postinstall skipifsilent
+          '@ | Set-Content installer/AWEP2P.iss -Encoding ASCII
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer/AWEP2P.iss
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AWEp2P-Windows-x64
+          path: |
+            installer/AWEP2P-Setup-Windows-x64.exe
+            AWEP2P-Windows-x64-Portable.zip
+
   publish:
     name: Publish latest desktop release
-    needs: [desktop, linux-portable]
+    needs: [desktop, linux-portable, windows-portable]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v4
@@ -91,9 +154,9 @@ jobs:
           cat > release/RELEASE-MANIFEST.txt <<'EOF'
           AWEp2P latest desktop release
           =============================
-          Windows: AWEP2P-Setup-Windows-x64.exe and AWEP2P-Windows-x64-Portable.zip
-          Linux: AWEP2P-Linux-x64-Portable.tar.gz plus native Tauri packages
-          macOS: native Tauri desktop package
+          Windows: installer + portable node
+          Linux: native Tauri packages + portable node
+          macOS: native Tauri package
           Build source: main
           EOF
       - name: Publish latest
