@@ -473,7 +473,15 @@ async fn handshake(
             nonce,
             signature,
             advertised_addr,
-        } => (awe_id, public_key, ephemeral, nonce, signature, version, advertised_addr),
+        } => (
+            awe_id,
+            public_key,
+            ephemeral,
+            nonce,
+            signature,
+            version,
+            advertised_addr,
+        ),
         _ => return Err(NetworkError::Protocol("expected hello".into())),
     };
     if version != VERSION {
@@ -488,7 +496,11 @@ async fn handshake(
         .as_slice()
         .try_into()
         .map_err(|_| NetworkError::Authentication)?;
-    if !Identity::verify(&rpk, &hello_bytes(version, &rid, &rpk, &re, &rnonce, remote_addr), &rsig) {
+    if !Identity::verify(
+        &rpk,
+        &hello_bytes(version, &rid, &rpk, &re, &rnonce, remote_addr),
+        &rsig,
+    ) {
         return Err(NetworkError::Authentication);
     }
     let shared = secret.diffie_hellman(&XPublic::from(re));
@@ -922,7 +934,17 @@ impl Node {
             let inbox = Arc::clone(&self.inbox);
             let listen_addr = self.listen_addr;
             tokio::spawn(async move {
-                Self::handle(s, a, listen_addr, identity, routing, peers, admission, inbox).await;
+                Self::handle(
+                    s,
+                    a,
+                    listen_addr,
+                    identity,
+                    routing,
+                    peers,
+                    admission,
+                    inbox,
+                )
+                .await;
                 drop(permit);
             });
         }
