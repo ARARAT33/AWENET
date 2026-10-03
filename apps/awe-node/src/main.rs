@@ -856,7 +856,6 @@ fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
-
 async fn autonomous_repair_cycle(
     node: &Node,
     storage: &LocalNodeStore,
