@@ -498,7 +498,8 @@ async fn serve_ui(
                                                 match serde_json::to_vec(&transfer) {
                                                     Ok(bytes) => match node.send_to_peer(peer_id, STORAGE_STREAM, bytes).await {
                                                         Ok(_) => {
-                                                            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+                                                            let deadline =
+                            tokio::time::Instant::now() + std::time::Duration::from_secs(5);
                                                             let mut confirmed = false;
                                                             while tokio::time::Instant::now() < deadline {
                                                                 if let Ok(mut acks) = pending_acks.lock() {
@@ -725,7 +726,8 @@ async fn serve_ui(
                                     if node.send_to_peer(peer_id, STORAGE_STREAM, bytes).await.is_err() {
                                         continue;
                                     }
-                                    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+                                    let deadline =
+                            tokio::time::Instant::now() + std::time::Duration::from_secs(5);
                                     while tokio::time::Instant::now() < deadline {
                                         if let Ok(mut responses) = pending_shards.lock() {
                                             if let Some(response) = responses.remove(&request_id) {
@@ -1016,7 +1018,8 @@ async fn autonomous_repair_cycle(
                 let Some(data) = source_data else {
                     continue;
                 };
-                if !policy.allows_shard(data.len()) || *blake3::hash(&data).as_bytes() != expected_hash
+                if !policy.allows_shard(data.len())
+                    || *blake3::hash(&data).as_bytes() != expected_hash
                 {
                     continue;
                 }
@@ -1102,7 +1105,7 @@ async fn autonomous_repair_cycle(
                 if repaired {
                     manifest_changed = true;
                 }
-                }
+            }
         }
 
         if manifest_changed {
