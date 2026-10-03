@@ -29,6 +29,8 @@ Desktop bundle -> bundled awe-node -> local UI
 
 core/src/messenger_runtime.rs now connects bounded offline storage, duplicate suppression, explicit Queued/Sent/Delivered/Read lifecycle, remote-ACK semantics, bounded retries, exponential backoff, attachment limits, and relay-route validation.
 
+The node HTTP messenger path now waits for an application-level `awe.messenger.ack.v1` from the recipient before reporting `delivered`; a transport send alone is no longer treated as delivery.
+
 ### 2. NAT transport primitives
 
 core/src/nat.rs adds bounded endpoint candidates, deterministic candidate ordering, short-lived challenge tokens, UDP probe/response framing, bounded simultaneous probe attempts, and timeout-bounded hole-punch coordination.
