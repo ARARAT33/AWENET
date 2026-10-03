@@ -938,7 +938,7 @@ async fn run_product() -> Result<()> {
         let _ = node.bootstrap(&startup_bootstrap).await;
         let supervisor = PeerSupervisor::new(node.clone(), startup_bootstrap.clone(), SupervisorConfig::default())
             .map_err(anyhow::Error::msg)?;
-        tokio::spawn(async move { supervisor.spawn().await.abort(); });
+        let _supervisor_task = supervisor.spawn();
     }
     let node_for_listener = node.clone();
     tokio::spawn(async move {
