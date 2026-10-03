@@ -147,17 +147,24 @@ jobs:
         with:
           path: release
           merge-multiple: true
+      - name: Select distributable files only
+        shell: bash
+        run: |
+          mkdir -p publish
+          find release -type f \(             -name '*.exe' -o -name '*.msi' -o -name '*.deb' -o -name '*.rpm'             -o -name '*.AppImage' -o -name '*.dmg' -o -name '*.zip' -o -name '*.tar.gz'           \) -exec cp -f {} publish/ \;
+          test -n "$(find publish -maxdepth 1 -type f -print -quit)"
       - name: Generate checksums and manifest
         shell: bash
         run: |
-          find release -type f -print0 | sort -z | xargs -0 sha256sum > release/SHA256SUMS.txt
-          cat > release/RELEASE-MANIFEST.txt <<'EOF'
+          sort < <(cd publish && sha256sum *) > publish/SHA256SUMS.txt
+          cat > publish/RELEASE-MANIFEST.txt <<'EOF'
           AWEp2P latest desktop release
           =============================
           Windows: installer + portable node
           Linux: native Tauri packages + portable node
           macOS: native Tauri package
           Build source: main
+          Only distributable package files are published; unpacked runtime dependencies are excluded.
           EOF
       - name: Publish latest
         uses: softprops/action-gh-release@v2
@@ -169,4 +176,4 @@ jobs:
           generate_release_notes: true
           overwrite_files: true
           files: |
-            release/**
+            publish/*
