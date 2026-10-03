@@ -521,6 +521,13 @@ async fn serve_ui(
                                                                         confirmed = ack.file_id == file_id
                                                                             && ack.shard_index == index as u16
                                                                             && ack.stored_object_id == shard_hash;
+                                                                        if !confirmed {
+                                                                            eprintln!(
+                                                                                "storage ACK mismatch: request={:?} file={:?} shard={} ack_file={:?} ack_shard={} object={:?} expected={:?}",
+                                                                                request_id, file_id, index, ack.file_id, ack.shard_index,
+                                                                                ack.stored_object_id, shard_hash
+                                                                            );
+                                                                        }
                                                                         break;
                                                                     }
                                                                 }
@@ -1384,9 +1391,18 @@ async fn run_product() -> Result<()> {
                     object_id,
                 );
                 if let Ok(bytes) = serde_json::to_vec(&ack) {
-                    let _ = dispatcher_node
+                    if let Err(error) = dispatcher_node
                         .send_to_peer(&sender, STORAGE_STREAM, bytes)
-                        .await;
+                        .await
+                    {
+                        eprintln!(
+                            "storage ACK send failed: peer={} request={:?} shard={} error={}",
+                            format_uid(&sender),
+                            transfer.request_id,
+                            transfer.shard_index,
+                            error
+                        );
+                    }
                 }
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
