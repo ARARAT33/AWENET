@@ -10,8 +10,10 @@ use awep2p_core::identity::{AweSecret, Identity, LocalVault, Username};
 use awep2p_core::lan_mesh::LanPeerBeacon;
 use awep2p_core::messenger::format_uid;
 use awep2p_core::network::{format_node_descriptor, Node};
+use awep2p_core::policy::{self, NetworkPolicy};
 use awep2p_core::reputation::NodeReputation;
 use awep2p_core::storage::{encode_shards, recover_shards, LocalNodeStore, StoragePolicy};
+use awep2p_core::supervisor::{PeerSupervisor, SupervisorConfig};
 use std::{
     collections::BTreeMap,
     env, fs,
@@ -31,6 +33,7 @@ type FederationState = Arc<Mutex<AweNetConfig>>;
 type StorageState = Arc<LocalNodeStore>;
 type PendingAcks = Arc<Mutex<BTreeMap<[u8; 16], StorageShardAck>>>;
 type PendingShards = Arc<Mutex<BTreeMap<[u8; 16], StorageShardTransfer>>>;
+type PolicyState = Arc<Mutex<NetworkPolicy>>;
 
 fn default_vault() -> PathBuf {
     if let Some(home) = env::var_os("HOME") {
@@ -165,6 +168,7 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> Result<String>
     String::from_utf8(data).context("HTTP request must be UTF-8")
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn serve_ui(
     mut stream: tokio::net::TcpStream,
     node: Node,
@@ -174,6 +178,7 @@ async fn serve_ui(
     storage: StorageState,
     pending_acks: PendingAcks,
     pending_shards: PendingShards,
+    policy_state: PolicyState,
 ) -> Result<()> {
     let request = read_http_request(&mut stream).await?;
     let request_line = request.lines().next().unwrap_or("");
@@ -191,6 +196,10 @@ async fn serve_ui(
             "address": node.listen_addr.to_string(),
             "protocol": 1
         }).to_string()),
+        "/api/policy" => {
+            let policy = policy_state.lock().map(|p| p.clone()).unwrap_or_default();
+            ("200 OK", "application/json; charset=utf-8", serde_json::to_string(&policy).unwrap_or_else(|_| "{}".into()))
+        },
         "/api/status" => {
             let peers = node.closest_peers(node.identity.public.awe_id.as_bytes(), 64).await;
             let peer_json = peers.iter().map(|p| serde_json::json!({
@@ -349,6 +358,10 @@ async fn serve_ui(
             if recipient.is_empty() || text.is_empty() {
                 ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":"recipient and text are required"}).to_string())
             } else {
+                let runtime_policy = policy_state.lock().map(|p| p.clone()).unwrap_or_default();
+                if !runtime_policy.allows_message(text.len()) || !runtime_policy.allows_stream(policy::MESSENGER_STREAM) {
+                    ("413 Payload Too Large", "application/json; charset=utf-8", serde_json::json!({"status":"rejected","error":"message rejected by local AWENET policy"}).to_string())
+                } else {
                 let peers = node.closest_peers(node.identity.public.awe_id.as_bytes(), 64).await;
                 let recipient_id = if let Some(hex_id) = recipient.strip_prefix("0x").or_else(|| recipient.strip_prefix("0X")) {
                     hex::decode(hex_id).ok().and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
@@ -409,6 +422,7 @@ async fn serve_ui(
                     }
                 }
             }
+        }
         },
         "/api/storage/put" if method == "POST" => {
             let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
@@ -424,6 +438,10 @@ async fn serve_ui(
                     Err(_) => ("400 Bad Request", "application/json; charset=utf-8",
                         serde_json::json!({"status":"error","error":"data_hex is not valid hexadecimal"}).to_string()),
                     Ok(data) => {
+                        let runtime_policy = policy_state.lock().map(|p| p.clone()).unwrap_or_default();
+                        if !runtime_policy.allows_upload(data.len()) || !runtime_policy.allows_stream(STORAGE_STREAM) {
+                            ("403 Forbidden", "application/json; charset=utf-8", serde_json::json!({"status":"rejected","error":"upload rejected by local AWENET policy"}).to_string())
+                        } else {
                         let policy = StoragePolicy::for_file_size(data.len());
                         let file_id = *blake3::hash(&data).as_bytes();
                         let peers = node.closest_peers(node.identity.public.awe_id.as_bytes(), 64).await;
@@ -453,6 +471,8 @@ async fn serve_ui(
                                     let mut stored_local = 0usize;
                                     let mut sent_remote = 0usize;
                                     let mut failed = Vec::new();
+                                    let transfer_limit = Arc::new(tokio::sync::Semaphore::new(32));
+                                    let mut remote_jobs: tokio::task::JoinSet<Result<(usize, Option<serde_json::Value>), String>> = tokio::task::JoinSet::new();
 
                                     for (index, shard) in shards.into_iter().enumerate() {
                                         let placement = &plan.placements[index];
@@ -465,7 +485,7 @@ async fn serve_ui(
                                                         "shard": index, "node": target, "error": error.to_string()
                                                     }))
                                                 }
-                                            } else if let Some(peer_id) = peer_ids.get(target) {
+                                            } else if let Some(peer_id) = peer_ids.get(target).copied() {
                                                 let request_id = blake3::hash(
                                                     format!("upload:{}:{}:{}:{}", hex::encode(file_id), index, target, now_unix()).as_bytes()
                                                 ).as_bytes()[..16].try_into().unwrap_or([0u8; 16]);
@@ -478,13 +498,26 @@ async fn serve_ui(
                                                     data.len() as u64,
                                                     shard.clone(),
                                                 );
-                                                match serde_json::to_vec(&transfer) {
-                                                    Ok(bytes) => match node.send_to_peer(peer_id, STORAGE_STREAM, bytes).await {
+                                                let Ok(bytes) = serde_json::to_vec(&transfer) else {
+                                                    failed.push(serde_json::json!({
+                                                        "shard": index, "node": target, "error": "failed to serialize storage transfer"
+                                                    }));
+                                                    continue;
+                                                };
+                                                let task_node = node.clone();
+                                                let task_pending_acks = pending_acks.clone();
+                                                let task_limit = transfer_limit.clone();
+                                                let target_name = target.clone();
+                                                remote_jobs.spawn(async move {
+                                                    let _permit = task_limit.acquire_owned().await
+                                                        .map_err(|_| "storage transfer scheduler closed".to_string())?;
+                                                    match task_node.send_to_peer(&peer_id, STORAGE_STREAM, bytes).await {
                                                         Ok(_) => {
-                                                            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+                                                            let deadline = tokio::time::Instant::now()
+                                                                + std::time::Duration::from_secs(5);
                                                             let mut confirmed = false;
                                                             while tokio::time::Instant::now() < deadline {
-                                                                if let Ok(mut acks) = pending_acks.lock() {
+                                                                if let Ok(mut acks) = task_pending_acks.lock() {
                                                                     if let Some(ack) = acks.remove(&request_id) {
                                                                         confirmed = ack.file_id == file_id
                                                                             && ack.shard_index == index as u16
@@ -495,26 +528,40 @@ async fn serve_ui(
                                                                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                                                             }
                                                             if confirmed {
-                                                                sent_remote += 1;
+                                                                Ok((1usize, None))
                                                             } else {
-                                                                failed.push(serde_json::json!({
-                                                                    "shard": index, "node": target, "error": "remote storage ACK not confirmed"
-                                                                }));
+                                                                Ok((0usize, Some(serde_json::json!({
+                                                                    "shard": index, "node": target_name, "error": "remote storage ACK not confirmed"
+                                                                }))))
                                                             }
-                                                        },
-                                                        Err(error) => failed.push(serde_json::json!({
-                                                            "shard": index, "node": target, "error": error.to_string()
-                                                        }))
-                                                    },
-                                                    Err(error) => failed.push(serde_json::json!({
-                                                        "shard": index, "node": target, "error": error.to_string()
-                                                    }))
-                                                }
+                                                        }
+                                                        Err(error) => Ok((0usize, Some(serde_json::json!({
+                                                            "shard": index, "node": target_name, "error": error.to_string()
+                                                        }))))
+                                                    }
+                                                });
                                             } else {
                                                 failed.push(serde_json::json!({
                                                     "shard": index, "node": target, "error": "peer is no longer known"
                                                 }));
                                             }
+                                        }
+                                    }
+
+                                    while let Some(result) = remote_jobs.join_next().await {
+                                        match result {
+                                            Ok(Ok((count, error))) => {
+                                                sent_remote += count;
+                                                if let Some(error) = error {
+                                                    failed.push(error);
+                                                }
+                                            }
+                                            Ok(Err(error)) => failed.push(serde_json::json!({
+                                                "error": format!("storage transfer task failed: {error}")
+                                            })),
+                                            Err(error) => failed.push(serde_json::json!({
+                                                "error": format!("storage transfer task panicked: {error}")
+                                            })),
                                         }
                                     }
 
@@ -560,6 +607,7 @@ async fn serve_ui(
                     }
                 }
             }
+        }
         },
         "/api/storage/push" if method == "POST" => {
             let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
@@ -573,9 +621,7 @@ async fn serve_ui(
             let recipient_id = hex::decode(recipient)
                 .ok()
                 .and_then(|b| <[u8; 32]>::try_from(b).ok())
-                .or_else(|| {
-                    None
-                });
+                .or(None);
             let file_id = hex::decode(file_id_hex)
                 .ok()
                 .and_then(|b| <[u8; 32]>::try_from(b).ok());
@@ -676,7 +722,10 @@ async fn serve_ui(
                                 let Ok(expected_hash) = <[u8; 32]>::try_from(expected_bytes) else {
                                     continue;
                                 };
-                                let original_size = manifest.get("original_size").and_then(|v| v.as_u64()).unwrap_or(0);
+                                let original_size = manifest
+            .get("original_size")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
 
                                 for target in placement.iter().filter_map(|v| v.as_str()) {
                                     if target == local_id {
@@ -704,7 +753,8 @@ async fn serve_ui(
                                     if node.send_to_peer(peer_id, STORAGE_STREAM, bytes).await.is_err() {
                                         continue;
                                     }
-                                    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+                                    let deadline =
+                            tokio::time::Instant::now() + std::time::Duration::from_secs(5);
                                     while tokio::time::Instant::now() < deadline {
                                         if let Ok(mut responses) = pending_shards.lock() {
                                             if let Some(response) = responses.remove(&request_id) {
@@ -814,6 +864,7 @@ async fn serve_ui(
     stream
         .write_all(&http_response(status, mime, &body).await)
         .await?;
+    stream.shutdown().await?;
     Ok(())
 }
 
@@ -833,6 +884,267 @@ fn now_unix() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+async fn autonomous_repair_cycle(
+    node: &Node,
+    storage: &LocalNodeStore,
+    pending_shards: &PendingShards,
+    pending_acks: &PendingAcks,
+    data_dir: &std::path::Path,
+    policy: &NetworkPolicy,
+) {
+    if !policy.enabled || !policy.allows_stream(STORAGE_STREAM) {
+        return;
+    }
+
+    let manifest_dir = data_dir.join("storage").join("manifests");
+    let Ok(entries) = fs::read_dir(&manifest_dir) else {
+        return;
+    };
+
+    let peers = node.peers().await;
+    let local_id = format_uid(node.identity.public.awe_id.as_bytes());
+    let mut peer_ids = std::collections::BTreeMap::<String, [u8; 32]>::new();
+    for peer in peers {
+        peer_ids.insert(format_uid(&peer.awe_id), peer.awe_id);
+    }
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(bytes) = fs::read(&path) else {
+            continue;
+        };
+        let Ok(mut manifest) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            continue;
+        };
+        let Some(shard_hashes) = manifest
+            .get("shard_hashes")
+            .and_then(|v| v.as_array())
+            .cloned()
+        else {
+            continue;
+        };
+        let file_id_hex = manifest
+            .get("file_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_owned();
+        let Ok(file_id_bytes) = hex::decode(&file_id_hex) else {
+            continue;
+        };
+        let Ok(file_id) = <[u8; 32]>::try_from(file_id_bytes) else {
+            continue;
+        };
+        let original_size = manifest
+            .get("original_size")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let total_shards = manifest.get("shards").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+        let mut manifest_changed = false;
+        {
+            let Some(placements) = manifest
+                .get_mut("placements")
+                .and_then(|v| v.as_array_mut())
+            else {
+                continue;
+            };
+
+            for index in 0..total_shards.min(1000) {
+                let Some(nodes_value) = placements
+                    .get_mut(index)
+                    .and_then(|v| v.get_mut("nodes"))
+                    .and_then(|v| v.as_array_mut())
+                else {
+                    continue;
+                };
+                let current_nodes = nodes_value
+                    .iter()
+                    .filter_map(|v| v.as_str().map(str::to_owned))
+                    .collect::<Vec<_>>();
+                let available = current_nodes
+                    .iter()
+                    .filter(|id| *id == &local_id || peer_ids.contains_key(*id))
+                    .count();
+                if available >= 3 {
+                    continue;
+                }
+
+                let Some(expected_hex) = shard_hashes.get(index).and_then(|v| v.as_str()) else {
+                    continue;
+                };
+                let Ok(expected_bytes) = hex::decode(expected_hex) else {
+                    continue;
+                };
+                let Ok(expected_hash) = <[u8; 32]>::try_from(expected_bytes) else {
+                    continue;
+                };
+
+                let mut source_data: Option<Vec<u8>> = None;
+                for source in &current_nodes {
+                    if source == &local_id {
+                        if let Ok(data) = storage.get(&expected_hash) {
+                            source_data = Some(data);
+                            break;
+                        }
+                    } else if let Some(source_id) = peer_ids.get(source) {
+                        let request_id = blake3::hash(
+                            format!(
+                                "repair-source:{}:{}:{}:{}",
+                                file_id_hex,
+                                index,
+                                source,
+                                now_unix()
+                            )
+                            .as_bytes(),
+                        )
+                        .as_bytes()[..16]
+                            .try_into()
+                            .unwrap_or([0u8; 16]);
+                        let request = StorageShardRequest::new(
+                            request_id,
+                            *node.identity.public.awe_id.as_bytes(),
+                            file_id,
+                            index as u16,
+                            total_shards as u16,
+                            expected_hash,
+                            original_size,
+                            4 * 1024 * 1024,
+                        );
+                        let Ok(request_bytes) = serde_json::to_vec(&request) else {
+                            continue;
+                        };
+                        if node
+                            .send_to_peer(source_id, STORAGE_STREAM, request_bytes)
+                            .await
+                            .is_err()
+                        {
+                            continue;
+                        }
+                        let deadline =
+                            tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+                        while tokio::time::Instant::now() < deadline {
+                            if let Ok(mut pending) = pending_shards.lock() {
+                                if let Some(response) = pending.remove(&request_id) {
+                                    if response.file_id == file_id
+                                        && response.shard_index == index as u16
+                                        && response.payload_hash == expected_hash
+                                        && response.verify().is_ok()
+                                    {
+                                        source_data = Some(response.payload);
+                                    }
+                                    break;
+                                }
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                        }
+                        if source_data.is_some() {
+                            break;
+                        }
+                    }
+                }
+
+                let Some(data) = source_data else {
+                    continue;
+                };
+                if !policy.allows_shard(data.len())
+                    || *blake3::hash(&data).as_bytes() != expected_hash
+                {
+                    continue;
+                }
+
+                let mut repaired = false;
+                let mut candidates = peer_ids
+                    .keys()
+                    .filter(|id| !current_nodes.contains(id))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if !current_nodes.contains(&local_id) {
+                    candidates.insert(0, local_id.clone());
+                }
+                candidates.sort();
+                candidates.dedup();
+
+                for target in candidates {
+                    if current_nodes.contains(&target) {
+                        continue;
+                    }
+
+                    if target == local_id {
+                        if storage.put(&data).is_ok() {
+                            nodes_value.push(serde_json::Value::String(target.clone()));
+                            repaired = true;
+                        }
+                    } else if let Some(target_id) = peer_ids.get(&target) {
+                        let request_id = blake3::hash(
+                            format!(
+                                "repair-target:{}:{}:{}:{}",
+                                file_id_hex,
+                                index,
+                                target,
+                                now_unix()
+                            )
+                            .as_bytes(),
+                        )
+                        .as_bytes()[..16]
+                            .try_into()
+                            .unwrap_or([0u8; 16]);
+                        let transfer = StorageShardTransfer::new(
+                            request_id,
+                            *node.identity.public.awe_id.as_bytes(),
+                            file_id,
+                            index as u16,
+                            total_shards as u16,
+                            original_size,
+                            data.clone(),
+                        );
+                        let Ok(transfer_bytes) = serde_json::to_vec(&transfer) else {
+                            continue;
+                        };
+                        if node
+                            .send_to_peer(target_id, STORAGE_STREAM, transfer_bytes)
+                            .await
+                            .is_err()
+                        {
+                            continue;
+                        }
+                        let deadline =
+                            tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+                        while tokio::time::Instant::now() < deadline {
+                            if let Ok(mut acks) = pending_acks.lock() {
+                                if let Some(ack) = acks.remove(&request_id) {
+                                    if ack.file_id == file_id
+                                        && ack.shard_index == index as u16
+                                        && ack.stored_object_id == expected_hash
+                                    {
+                                        nodes_value.push(serde_json::Value::String(target.clone()));
+                                        repaired = true;
+                                    }
+                                    break;
+                                }
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                        }
+                    }
+
+                    if repaired {
+                        break;
+                    }
+                }
+
+                if repaired {
+                    manifest_changed = true;
+                }
+            }
+        }
+
+        if manifest_changed {
+            let _ = fs::write(
+                &path,
+                serde_json::to_vec_pretty(&manifest).unwrap_or_default(),
+            );
+        }
+    }
 }
 
 async fn run_product() -> Result<()> {
@@ -864,12 +1176,20 @@ async fn run_product() -> Result<()> {
         .context("invalid AWE_LISTEN_ADDR")?;
     let node = Node::new(identity, listen);
     let storage_root = data_dir.join("storage");
-    let storage_quota = awep2p_core::node::get_available_disk_space(&storage_root).unwrap_or(0);
+    fs::create_dir_all(&storage_root)?;
+    let storage_quota = awep2p_core::node::get_available_disk_space(&storage_root)
+        .context("failed to determine available node storage capacity")?;
+    if storage_quota == 0 {
+        anyhow::bail!("node storage has no available capacity");
+    }
     let storage: StorageState = Arc::new(LocalNodeStore::open(&storage_root, storage_quota)?);
     let messenger: MessengerLog = Arc::new(Mutex::new(Vec::new()));
     let pending_acks: PendingAcks = Arc::new(Mutex::new(BTreeMap::new()));
     let pending_shards: PendingShards = Arc::new(Mutex::new(BTreeMap::new()));
     let federation_path = data_dir.join("awenet.json");
+    let policy_path = data_dir.join("policy.json");
+    let initial_policy = policy::load_or_create(&policy_path).map_err(anyhow::Error::msg)?;
+    let policy_state: PolicyState = Arc::new(Mutex::new(initial_policy));
     let federation_state: FederationState = if federation_path.exists() {
         fs::read(&federation_path)
             .ok()
@@ -897,6 +1217,19 @@ async fn run_product() -> Result<()> {
     if let Ok(state) = federation_state.lock() {
         let _ = federation::save_json(&*state, &federation_path);
     }
+    let policy_refresh = policy_state.clone();
+    let policy_refresh_path = policy_path.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+            let current = policy_refresh.lock().map(|p| p.clone()).unwrap_or_default();
+            if let Ok(next) = policy::load_if_changed(&policy_refresh_path, &current) {
+                if let Ok(mut p) = policy_refresh.lock() {
+                    *p = next;
+                }
+            }
+        }
+    });
     let startup_bootstrap = federation_state
         .lock()
         .map(|s| s.bootstrap_endpoints.clone())
@@ -906,7 +1239,36 @@ async fn run_product() -> Result<()> {
         .collect::<Vec<_>>();
     if !startup_bootstrap.is_empty() {
         let _ = node.bootstrap(&startup_bootstrap).await;
+        let supervisor = PeerSupervisor::new(
+            node.clone(),
+            startup_bootstrap.clone(),
+            SupervisorConfig::default(),
+        )
+        .map_err(anyhow::Error::msg)?;
+        let _supervisor_task = supervisor.spawn();
     }
+    let repair_node = node.clone();
+    let repair_storage = storage.clone();
+    let repair_pending_shards = pending_shards.clone();
+    let repair_pending_acks = pending_acks.clone();
+    let repair_policy = policy_state.clone();
+    let repair_data_dir = data_dir.clone();
+    tokio::spawn(async move {
+        loop {
+            let policy = repair_policy.lock().map(|p| p.clone()).unwrap_or_default();
+            autonomous_repair_cycle(
+                &repair_node,
+                &repair_storage,
+                &repair_pending_shards,
+                &repair_pending_acks,
+                &repair_data_dir,
+                &policy,
+            )
+            .await;
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        }
+    });
+
     let node_for_listener = node.clone();
     tokio::spawn(async move {
         if let Err(e) = node_for_listener.listen().await {
@@ -918,9 +1280,17 @@ async fn run_product() -> Result<()> {
     let dispatcher_storage = storage.clone();
     let dispatcher_messenger = messenger.clone();
     let dispatcher_acks = pending_acks.clone();
+    let dispatcher_policy = policy_state.clone();
     tokio::spawn(async move {
         loop {
             for (sender, stream, payload) in dispatcher_node.take_inbox() {
+                let runtime_policy = dispatcher_policy
+                    .lock()
+                    .map(|p| p.clone())
+                    .unwrap_or_default();
+                if !runtime_policy.allows_stream(stream) {
+                    continue;
+                }
                 if stream == 100 {
                     if let Ok(message) = serde_json::from_slice::<serde_json::Value>(&payload) {
                         if message.get("kind").and_then(|v| v.as_str()) == Some("awe.messenger.v1")
@@ -972,7 +1342,9 @@ async fn run_product() -> Result<()> {
                     let Ok(data) = dispatcher_storage.get(&request.expected_hash) else {
                         continue;
                     };
-                    if data.len() > request.max_bytes as usize {
+                    if data.len() > request.max_bytes as usize
+                        || !runtime_policy.allows_shard(data.len())
+                    {
                         continue;
                     }
                     let transfer = StorageShardTransfer::new(
@@ -1012,7 +1384,7 @@ async fn run_product() -> Result<()> {
                 );
                 if let Ok(bytes) = serde_json::to_vec(&ack) {
                     let _ = dispatcher_node
-                        .send_to_peer(&sender, STORAGE_STREAM, bytes)
+                        .send_to_peer_confirmed(&sender, STORAGE_STREAM, bytes)
                         .await;
                 }
             }
@@ -1057,6 +1429,7 @@ async fn run_product() -> Result<()> {
         let api_pending_acks = pending_acks.clone();
         let api_pending_shards = pending_shards.clone();
         let api_federation_path = federation_path.clone();
+        let api_policy = policy_state.clone();
         tokio::spawn(async move {
             if let Err(e) = serve_ui(
                 stream,
@@ -1067,6 +1440,7 @@ async fn run_product() -> Result<()> {
                 api_storage,
                 api_pending_acks,
                 api_pending_shards,
+                api_policy,
             )
             .await
             {

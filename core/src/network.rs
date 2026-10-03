@@ -37,8 +37,8 @@ const MAX_NODE_RECORDS: usize = 64;
 const PEER_RATE_CAPACITY: u64 = 256;
 const PEER_RATE_REFILL_PER_SECOND: u64 = 128;
 const PREAUTH_MAX_IPS: usize = 1024;
-const PREAUTH_RATE_CAPACITY: u64 = 16;
-const PREAUTH_RATE_REFILL_PER_SECOND: u64 = 8;
+const PREAUTH_RATE_CAPACITY: u64 = 32;
+const PREAUTH_RATE_REFILL_PER_SECOND: u64 = 16;
 const FRAME_PAD_MIN: usize = 256;
 const FRAME_LENGTH_PREFIX: usize = 4;
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
@@ -325,6 +325,7 @@ enum Control {
         ephemeral: [u8; 32],
         nonce: [u8; 32],
         signature: Vec<u8>,
+        advertised_addr: SocketAddr,
     },
     Ping {
         sequence: u64,
@@ -399,20 +400,29 @@ async fn read_frame(s: &mut TcpStream) -> Result<Vec<u8>, NetworkError> {
     s.read_exact(&mut b).await?;
     Ok(b)
 }
-fn hello_bytes(v: u16, id: &[u8; 32], pk: &[u8; 32], e: &[u8; 32], n: &[u8; 32]) -> Vec<u8> {
-    let mut b = Vec::with_capacity(146);
+fn hello_bytes(
+    v: u16,
+    id: &[u8; 32],
+    pk: &[u8; 32],
+    e: &[u8; 32],
+    n: &[u8; 32],
+    advertised_addr: SocketAddr,
+) -> Vec<u8> {
+    let mut b = Vec::with_capacity(170);
     b.extend_from_slice(b"AWE/HELLO/v1");
     b.extend_from_slice(&v.to_be_bytes());
     b.extend_from_slice(id);
     b.extend_from_slice(pk);
     b.extend_from_slice(e);
     b.extend_from_slice(n);
+    b.extend_from_slice(advertised_addr.to_string().as_bytes());
     b
 }
 
 async fn handshake(
     mut stream: TcpStream,
     identity: Arc<Identity>,
+    advertised_addr: SocketAddr,
     initiator: bool,
 ) -> Result<SecureConnection, NetworkError> {
     let secret = StaticSecret::random_from_rng(OsRng);
@@ -421,7 +431,14 @@ async fn handshake(
     OsRng.fill_bytes(&mut nonce);
     let id = *identity.public.awe_id.as_bytes();
     let pk = identity.public.public_key;
-    let sig = identity.sign(&hello_bytes(VERSION, &id, &pk, &ephemeral, &nonce));
+    let sig = identity.sign(&hello_bytes(
+        VERSION,
+        &id,
+        &pk,
+        &ephemeral,
+        &nonce,
+        advertised_addr,
+    ));
     let hello = Control::Hello {
         version: VERSION,
         awe_id: id,
@@ -429,6 +446,7 @@ async fn handshake(
         ephemeral,
         nonce,
         signature: sig.to_vec(),
+        advertised_addr,
     };
     let remote = if initiator {
         write_frame(&mut stream, &encode(&hello)?).await?;
@@ -446,7 +464,7 @@ async fn handshake(
         write_frame(&mut stream, &encode(&hello)?).await?;
         r
     };
-    let (rid, rpk, re, rnonce, rsig, version) = match remote {
+    let (rid, rpk, re, rnonce, rsig, version, remote_addr) = match remote {
         Control::Hello {
             version,
             awe_id,
@@ -454,7 +472,16 @@ async fn handshake(
             ephemeral,
             nonce,
             signature,
-        } => (awe_id, public_key, ephemeral, nonce, signature, version),
+            advertised_addr,
+        } => (
+            awe_id,
+            public_key,
+            ephemeral,
+            nonce,
+            signature,
+            version,
+            advertised_addr,
+        ),
         _ => return Err(NetworkError::Protocol("expected hello".into())),
     };
     if version != VERSION {
@@ -469,7 +496,11 @@ async fn handshake(
         .as_slice()
         .try_into()
         .map_err(|_| NetworkError::Authentication)?;
-    if !Identity::verify(&rpk, &hello_bytes(version, &rid, &rpk, &re, &rnonce), &rsig) {
+    if !Identity::verify(
+        &rpk,
+        &hello_bytes(version, &rid, &rpk, &re, &rnonce, remote_addr),
+        &rsig,
+    ) {
         return Err(NetworkError::Authentication);
     }
     let shared = secret.diffie_hellman(&XPublic::from(re));
@@ -497,6 +528,7 @@ async fn handshake(
         stream,
         remote_id: rid,
         remote_public_key: rpk,
+        remote_address: remote_addr,
         tx: ChaCha20Poly1305::new_from_slice(tx).map_err(|_| NetworkError::Encryption)?,
         rx: ChaCha20Poly1305::new_from_slice(rx).map_err(|_| NetworkError::Encryption)?,
         tx_seq: 0,
@@ -509,6 +541,7 @@ pub struct SecureConnection {
     stream: TcpStream,
     pub remote_id: [u8; 32],
     pub remote_public_key: [u8; 32],
+    pub remote_address: SocketAddr,
     tx: ChaCha20Poly1305,
     rx: ChaCha20Poly1305,
     tx_seq: u64,
@@ -778,13 +811,14 @@ impl Node {
     async fn handle(
         stream: TcpStream,
         address: SocketAddr,
+        listen_addr: SocketAddr,
         identity: Arc<Identity>,
         routing: Arc<RwLock<RoutingTable>>,
         peers: Arc<RwLock<HashMap<[u8; 32], PeerRecord>>>,
         admission: Arc<Mutex<PeerAdmission>>,
         inbox: InboxQueue,
     ) {
-        let Ok(mut c) = handshake(stream, identity, false).await else {
+        let Ok(mut c) = handshake(stream, identity, listen_addr, false).await else {
             return;
         };
         if !admission
@@ -797,7 +831,11 @@ impl Node {
         let r = PeerRecord {
             awe_id: c.remote_id,
             public_key: c.remote_public_key,
-            addresses: vec![address],
+            addresses: vec![if c.remote_address.ip().is_unspecified() {
+                SocketAddr::new(address.ip(), c.remote_address.port())
+            } else {
+                c.remote_address
+            }],
             protocol_version: VERSION,
             last_seen_unix: now(),
         };
@@ -894,8 +932,19 @@ impl Node {
             let peers = Arc::clone(&self.peers);
             let admission = Arc::clone(&self.admission);
             let inbox = Arc::clone(&self.inbox);
+            let listen_addr = self.listen_addr;
             tokio::spawn(async move {
-                Self::handle(s, a, identity, routing, peers, admission, inbox).await;
+                Self::handle(
+                    s,
+                    a,
+                    listen_addr,
+                    identity,
+                    routing,
+                    peers,
+                    admission,
+                    inbox,
+                )
+                .await;
                 drop(permit);
             });
         }
@@ -905,7 +954,7 @@ impl Node {
             .await
             .map_err(|_| NetworkError::Timeout)??;
         let _ = s.set_nodelay(true);
-        handshake(s, Arc::clone(&self.identity), true).await
+        handshake(s, Arc::clone(&self.identity), self.listen_addr, true).await
     }
     pub async fn bootstrap(&self, addresses: &[SocketAddr]) -> Result<usize, NetworkError> {
         let mut found = 0;
@@ -917,7 +966,11 @@ impl Node {
             let remote = PeerRecord {
                 awe_id: c.remote_id,
                 public_key: c.remote_public_key,
-                addresses: vec![a],
+                addresses: vec![if c.remote_address.ip().is_unspecified() {
+                    SocketAddr::new(a.ip(), c.remote_address.port())
+                } else {
+                    c.remote_address
+                }],
                 protocol_version: VERSION,
                 last_seen_unix: now(),
             };
@@ -984,11 +1037,35 @@ impl Node {
             connection
         };
         let mut connection = connection.lock().await;
-        let result = connection.send_data_roundtrip(stream, payload).await;
+        let started = Instant::now();
+        let result = connection
+            .send_data(stream, payload)
+            .await
+            .map(|_| started.elapsed());
         if result.is_err() {
             self.active.write().await.remove(peer_id);
         }
         result
+    }
+
+    /// Send application data over a fresh authenticated connection and wait for
+    /// the receiver's network-level DataAck. This is used for application-level
+    /// acknowledgements so a stale cached callback connection cannot be reused.
+    pub async fn send_to_peer_confirmed(
+        &self,
+        peer_id: &[u8; 32],
+        stream: u32,
+        payload: Vec<u8>,
+    ) -> Result<std::time::Duration, NetworkError> {
+        let address = self
+            .peers
+            .read()
+            .await
+            .get(peer_id)
+            .and_then(|peer| peer.addresses.first().copied())
+            .ok_or_else(|| NetworkError::Protocol("peer address is unknown".into()))?;
+        let mut connection = self.connect(address).await?;
+        connection.send_data_roundtrip(stream, payload).await
     }
 
     pub fn take_inbox(&self) -> Vec<([u8; 32], u32, Vec<u8>)> {
@@ -1146,11 +1223,11 @@ mod tests {
         let ci = Arc::new(Identity::generate(Username::new("client").unwrap()));
         let t = tokio::spawn(async move {
             let (s, _) = l.accept().await.unwrap();
-            let mut c = handshake(s, si, false).await.unwrap();
+            let mut c = handshake(s, si, a, false).await.unwrap();
             c.recv_data().await.unwrap()
         });
         let s = TcpStream::connect(a).await.unwrap();
-        let mut c = handshake(s, ci, true).await.unwrap();
+        let mut c = handshake(s, ci, a, true).await.unwrap();
         c.send_data(1, b"awep2p".to_vec()).await.unwrap();
         assert_eq!(t.await.unwrap(), Some((1, b"awep2p".to_vec())));
     }
@@ -1166,7 +1243,7 @@ mod tests {
         ));
         let t = tokio::spawn(async move {
             let (s, _) = l.accept().await.unwrap();
-            let mut server = handshake(s, si, false).await.unwrap();
+            let mut server = handshake(s, si, a, false).await.unwrap();
             loop {
                 match server.recv().await.unwrap() {
                     Control::Data { stream, payload } => {
@@ -1187,7 +1264,7 @@ mod tests {
             }
         });
         let s = TcpStream::connect(a).await.unwrap();
-        let mut client = handshake(s, ci, true).await.unwrap();
+        let mut client = handshake(s, ci, a, true).await.unwrap();
         let elapsed = client
             .send_data_roundtrip(42, b"AWE-NET-END-TO-END-DATA".to_vec())
             .await
@@ -1204,10 +1281,10 @@ mod tests {
         let ci = Arc::new(Identity::generate(Username::new("client2").unwrap()));
         let t = tokio::spawn(async move {
             let (s, _) = l.accept().await.unwrap();
-            handshake(s, si, false).await.unwrap()
+            handshake(s, si, a, false).await.unwrap()
         });
         let s = TcpStream::connect(a).await.unwrap();
-        let mut c = handshake(s, ci, true).await.unwrap();
+        let mut c = handshake(s, ci, a, true).await.unwrap();
         let mut server = t.await.unwrap();
         server.send_data(7, b"ok".to_vec()).await.unwrap();
         assert_eq!(c.recv_data().await.unwrap(), Some((7, b"ok".to_vec())));
@@ -1222,6 +1299,7 @@ mod tests {
             ephemeral: [3; 32],
             nonce: [4; 32],
             signature: vec![0; 63],
+            advertised_addr: "127.0.0.1:0".parse().unwrap(),
         };
         let encoded = encode(&hello).unwrap();
         assert!(matches!(
