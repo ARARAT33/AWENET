@@ -1,4 +1,4 @@
-use std::{fs, path::PathBuf, process::Command};
+use std::{fs, process::Command};
 #[cfg(not(target_os = "android"))]
 use tauri::Manager;
 
@@ -23,6 +23,11 @@ fn start_node(app: &tauri::AppHandle) {
 pub fn run() {
     let builder = tauri::Builder::default();
     #[cfg(not(target_os = "android"))]
-    let builder = builder.setup(|app| { start_node(app); Ok(()) });
-    builder.run(tauri::generate_context!()).expect("error while running AWEp2P");
+    let builder = builder.setup(|app| {
+        start_node(app.handle());
+        Ok(())
+    });
+    builder
+        .run(tauri::generate_context!())
+        .expect("error while running AWEp2P");
 }
