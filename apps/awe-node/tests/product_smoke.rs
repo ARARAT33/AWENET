@@ -32,7 +32,7 @@ fn request(addr: &str, request: &str) -> String {
                     || err.kind() == std::io::ErrorKind::TimedOut =>
             {
                 if Instant::now() >= deadline {
-                    panic!("read timed out: {err}");
+                    panic!("read timed out for {}: {err}", request.lines().next().unwrap_or("<request>"));
                 }
                 thread::sleep(Duration::from_millis(10));
             }
