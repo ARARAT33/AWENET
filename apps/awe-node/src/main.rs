@@ -1218,7 +1218,8 @@ async fn run_product() -> Result<()> {
                 &repair_pending_acks,
                 &repair_data_dir,
                 &policy,
-            ).await;
+            )
+            .await;
             tokio::time::sleep(std::time::Duration::from_secs(30)).await;
         }
     });
