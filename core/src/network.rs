@@ -985,7 +985,10 @@ impl Node {
         };
         let mut connection = connection.lock().await;
         let started = Instant::now();
-        let result = connection.send_data(stream, payload).await.map(|_| started.elapsed());
+        let result = connection
+            .send_data(stream, payload)
+            .await
+            .map(|_| started.elapsed());
         if result.is_err() {
             self.active.write().await.remove(peer_id);
         }
