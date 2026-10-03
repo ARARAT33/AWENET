@@ -471,7 +471,7 @@ async fn serve_ui(
                                     let mut sent_remote = 0usize;
                                     let mut failed = Vec::new();
                                     let transfer_limit = Arc::new(tokio::sync::Semaphore::new(32));
-                                    let mut remote_jobs = tokio::task::JoinSet::new();
+                                    let mut remote_jobs: tokio::task::JoinSet<Result<(usize, Option<serde_json::Value>), String>> = tokio::task::JoinSet::new();
 
                                     for (index, shard) in shards.into_iter().enumerate() {
                                         let placement = &plan.placements[index];
