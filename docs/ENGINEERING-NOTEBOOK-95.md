@@ -71,3 +71,13 @@ core/src/lib.rs exposes the NAT layer so product/network code can consume the sa
 ## Important boundary
 
 A source-level implementation percentage is not the same as operational readiness. The 95% target here means the code paths and contracts are substantially connected; Internet/NAT diversity, real-device behavior and clean-machine installation still require evidence from execution.
+
+### 7. CI/CD hardening and runtime activation (2026-10-04)
+
+- Workspace CI now validates PRs and main changes with unified workflow triggers, bounded concurrency, Rust build caching, architecture boundary checks, and the 95%-phase modules explicitly required.
+- Cross-platform product CI now validates desktop builds on Windows/Linux/macOS plus Android APK/AAB on pull requests, while version tags publish release artifacts with checksums and a release manifest.
+- Desktop release packaging now covers Windows, Linux, macOS Intel and Apple Silicon, plus portable Windows/Linux packages, with distributable-only latest-release publishing.
+- Windows binary/product workflows now use the same checkout/toolchain/cache conventions and expose deterministic artifacts.
+- The node now owns a live `MessengerState`: message IDs receive monotonic runtime sequences, enter the bounded offline queue, transition to Sent after transport submission, transition to Delivered only after the recipient ACK, and remain retryable with bounded exponential backoff when the ACK is absent.
+- Messenger runtime envelopes are now accepted by the node dispatcher with recipient validation and replay-window enforcement before an application ACK is emitted.
+- The implementation phase still intentionally does not execute tests; tomorrow's validation phase must verify compilation, workflow runs, multi-node delivery/retry, NAT behavior, desktop installation, and real product gates.
