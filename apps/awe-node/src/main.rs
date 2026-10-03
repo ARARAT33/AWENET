@@ -902,7 +902,7 @@ async fn autonomous_repair_cycle(
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_owned();
-        let Ok(file_id_bytes) = hex::decode(file_id_hex) else {
+        let Ok(file_id_bytes) = hex::decode(&file_id_hex) else {
             continue;
         };
         let Ok(file_id) = <[u8; 32]>::try_from(file_id_bytes) else {
