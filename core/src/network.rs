@@ -852,7 +852,16 @@ impl Node {
                                 break;
                             }
                         }
-                        Control::DataAck { .. } => {}
+                        Control::DataAck { stream, bytes } => {
+                            if let Ok(mut queue) = inbox.lock() {
+                                queue.push((
+                                    c.remote_id,
+                                    stream,
+                                    serde_json::to_vec(&Control::DataAck { stream, bytes })
+                                        .unwrap_or_default(),
+                                ));
+                            }
+                        }
                         Control::Nodes { .. } | Control::Hello { .. } => break,
                     }
                 }
