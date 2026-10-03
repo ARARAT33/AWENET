@@ -993,7 +993,8 @@ async fn autonomous_repair_cycle(
                         {
                             continue;
                         }
-                        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+                        let deadline =
+                            tokio::time::Instant::now() + std::time::Duration::from_secs(5);
                         while tokio::time::Instant::now() < deadline {
                             if let Ok(mut pending) = pending_shards.lock() {
                                 if let Some(response) = pending.remove(&request_id) {
@@ -1079,7 +1080,8 @@ async fn autonomous_repair_cycle(
                         {
                             continue;
                         }
-                        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+                        let deadline =
+                            tokio::time::Instant::now() + std::time::Duration::from_secs(5);
                         while tokio::time::Instant::now() < deadline {
                             if let Ok(mut acks) = pending_acks.lock() {
                                 if let Some(ack) = acks.remove(&request_id) {
