@@ -816,9 +816,10 @@ impl Node {
         routing: Arc<RwLock<RoutingTable>>,
         peers: Arc<RwLock<HashMap<[u8; 32], PeerRecord>>>,
         admission: Arc<Mutex<PeerAdmission>>,
+        active: ActiveConnections,
         inbox: InboxQueue,
     ) {
-        let Ok(mut c) = handshake(stream, identity, listen_addr, false).await else {
+        let Ok(c) = handshake(stream, identity, listen_addr, false).await else {
             return;
         };
         if !admission
@@ -828,8 +829,10 @@ impl Node {
         {
             return;
         }
+
+        let remote_id = c.remote_id;
         let r = PeerRecord {
-            awe_id: c.remote_id,
+            awe_id: remote_id,
             public_key: c.remote_public_key,
             addresses: vec![if c.remote_address.ip().is_unspecified() {
                 SocketAddr::new(address.ip(), c.remote_address.port())
@@ -841,9 +844,25 @@ impl Node {
         };
         routing.write().await.insert(r.clone());
         peers.write().await.insert(r.awe_id, r);
+
+        let connection = Arc::new(tokio::sync::Mutex::new(c));
+        let connection_is_active = {
+            let mut active_guard = active.write().await;
+            if let Some(existing) = active_guard.get(&remote_id) {
+                existing.clone()
+            } else {
+                active_guard.insert(remote_id, connection.clone());
+                connection.clone()
+            }
+        };
+
         let mut seq = 0u64;
         loop {
-            match timeout(HEARTBEAT, c.recv()).await {
+            let message_result = {
+                let mut c = connection.lock().await;
+                timeout(HEARTBEAT, c.recv()).await
+            };
+            match message_result {
                 Ok(Ok(message)) => {
                     let cost = match &message {
                         Control::Ping { .. } | Control::Pong { .. } => 1,
@@ -854,7 +873,7 @@ impl Node {
                         Control::Hello { .. } => PEER_RATE_CAPACITY + 1,
                     };
                     if !admission.lock().expect("admission lock poisoned").allow(
-                        c.remote_id,
+                        remote_id,
                         cost,
                         now(),
                     ) {
@@ -862,6 +881,7 @@ impl Node {
                     }
                     match message {
                         Control::Ping { sequence } => {
+                            let mut c = connection.lock().await;
                             if c.send(&Control::Pong { sequence }).await.is_err() {
                                 break;
                             }
@@ -872,14 +892,16 @@ impl Node {
                                 .read()
                                 .await
                                 .closest(&target, MAX_PEERS_PER_RESPONSE);
+                            let mut c = connection.lock().await;
                             if c.send(&Control::Nodes { records }).await.is_err() {
                                 break;
                             }
                         }
                         Control::Data { stream, payload } => {
                             if let Ok(mut queue) = inbox.lock() {
-                                queue.push((c.remote_id, stream, payload.clone()));
+                                queue.push((remote_id, stream, payload.clone()));
                             }
+                            let mut c = connection.lock().await;
                             if c.send(&Control::DataAck {
                                 stream,
                                 bytes: payload.len() as u32,
@@ -896,6 +918,7 @@ impl Node {
                 }
                 Ok(Err(_)) => break,
                 Err(_) => {
+                    let mut c = connection.lock().await;
                     if c.is_idle() || c.ping(seq).await.is_err() {
                         break;
                     }
@@ -903,8 +926,16 @@ impl Node {
                 }
             }
         }
-        routing.write().await.remove(&c.remote_id);
-        peers.write().await.remove(&c.remote_id);
+
+        let mut active_guard = active.write().await;
+        if let Some(existing) = active_guard.get(&remote_id) {
+            if Arc::ptr_eq(existing, &connection_is_active) {
+                active_guard.remove(&remote_id);
+            }
+        }
+        drop(active_guard);
+        routing.write().await.remove(&remote_id);
+        peers.write().await.remove(&remote_id);
     }
     pub async fn listen(&self) -> Result<(), NetworkError> {
         let l = TcpListener::bind(self.listen_addr).await?;
@@ -942,6 +973,7 @@ impl Node {
                     routing,
                     peers,
                     admission,
+                    Arc::clone(&self.active),
                     inbox,
                 )
                 .await;
