@@ -195,7 +195,11 @@ fn three_node_product_smoke() {
             "127.0.0.1:46201",
             &format!("/api/storage/get?file_id={file_id}"),
         );
-        assert!(downloaded.contains(payload), "storage get: {downloaded}");
+        assert!(
+            downloaded.contains(r#""status":"reconstructed""#)
+                && downloaded.contains(&format!(r#""data_hex":"{hex}""#)),
+            "storage get: {downloaded}"
+        );
     });
 
     for child in &mut children {
