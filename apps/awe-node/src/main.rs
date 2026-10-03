@@ -888,12 +888,6 @@ async fn autonomous_repair_cycle(
         let Ok(mut manifest) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
             continue;
         };
-        let Some(placements) = manifest
-            .get_mut("placements")
-            .and_then(|v| v.as_array_mut())
-        else {
-            continue;
-        };
         let Some(shard_hashes) = manifest
             .get("shard_hashes")
             .and_then(|v| v.as_array())
@@ -916,6 +910,12 @@ async fn autonomous_repair_cycle(
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
         let total_shards = manifest.get("shards").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+        let Some(placements) = manifest
+            .get_mut("placements")
+            .and_then(|v| v.as_array_mut())
+        else {
+            continue;
+        };
 
         for index in 0..total_shards.min(1000) {
             let Some(nodes_value) = placements
