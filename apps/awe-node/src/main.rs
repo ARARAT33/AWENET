@@ -1093,6 +1093,7 @@ async fn run_product() -> Result<()> {
         let api_pending_acks = pending_acks.clone();
         let api_pending_shards = pending_shards.clone();
         let api_federation_path = federation_path.clone();
+        let api_policy = policy_state.clone();
         tokio::spawn(async move {
             if let Err(e) = serve_ui(
                 stream,
@@ -1103,7 +1104,7 @@ async fn run_product() -> Result<()> {
                 api_storage,
                 api_pending_acks,
                 api_pending_shards,
-                policy_state.clone(),
+                api_policy,
             )
             .await
             {
