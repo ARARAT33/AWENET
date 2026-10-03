@@ -5,6 +5,6 @@
   "identifier":"org.awe.awep2p",
   "build":{"frontendDist":"../../awe-desktop/ui"},
   "app":{"windows":[{"title":"AWEp2P","width":1280,"height":820,"minWidth":900,"minHeight":620,"resizable":true}],"security":{"csp":null}},
-  "bundle":{"active":true,"targets":["nsis","msi","deb","rpm","appimage","dmg","app"],"icon":[],"externalBin":["binaries/awe-node"],"resources":["binaries/*"],"category":"Utility","shortDescription":"Decentralized AWE peer-to-peer network","longDescription":"AWEp2P node and network dashboard."},
+  "bundle":{"active":true,"targets":["nsis","msi","deb","rpm","appimage","dmg","app"],"icon":["icons/icon.png","icons/icon.ico"],"externalBin":["binaries/awe-node"],"resources":["binaries/*"],"category":"Utility","shortDescription":"Decentralized AWE peer-to-peer network","longDescription":"AWEp2P node and network dashboard."},
   "plugins":{}
 }
