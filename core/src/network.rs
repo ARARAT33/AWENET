@@ -963,6 +963,7 @@ impl Node {
             let peers = Arc::clone(&self.peers);
             let admission = Arc::clone(&self.admission);
             let inbox = Arc::clone(&self.inbox);
+            let active = Arc::clone(&self.active);
             let listen_addr = self.listen_addr;
             tokio::spawn(async move {
                 Self::handle(
@@ -973,7 +974,7 @@ impl Node {
                     routing,
                     peers,
                     admission,
-                    Arc::clone(&self.active),
+                    active,
                     inbox,
                 )
                 .await;
