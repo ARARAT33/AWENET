@@ -521,13 +521,6 @@ async fn serve_ui(
                                                                         confirmed = ack.file_id == file_id
                                                                             && ack.shard_index == index as u16
                                                                             && ack.stored_object_id == shard_hash;
-                                                                        if !confirmed {
-                                                                            eprintln!(
-                                                                                "storage ACK mismatch: request={:?} file={:?} shard={} ack_file={:?} ack_shard={} object={:?} expected={:?}",
-                                                                                request_id, file_id, index, ack.file_id, ack.shard_index,
-                                                                                ack.stored_object_id, shard_hash
-                                                                            );
-                                                                        }
                                                                         break;
                                                                     }
                                                                 }
@@ -1392,7 +1385,7 @@ async fn run_product() -> Result<()> {
                 );
                 if let Ok(bytes) = serde_json::to_vec(&ack) {
                     if let Err(error) = dispatcher_node
-                        .send_to_peer(&sender, STORAGE_STREAM, bytes)
+                        .send_to_peer_confirmed(&sender, STORAGE_STREAM, bytes)
                         .await
                     {
                         eprintln!(
