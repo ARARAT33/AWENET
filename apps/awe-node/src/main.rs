@@ -470,6 +470,8 @@ async fn serve_ui(
                                     let mut stored_local = 0usize;
                                     let mut sent_remote = 0usize;
                                     let mut failed = Vec::new();
+                                    let transfer_limit = Arc::new(tokio::sync::Semaphore::new(32));
+                                    let mut remote_jobs = tokio::task::JoinSet::new();
 
                                     for (index, shard) in shards.into_iter().enumerate() {
                                         let placement = &plan.placements[index];
@@ -482,7 +484,7 @@ async fn serve_ui(
                                                         "shard": index, "node": target, "error": error.to_string()
                                                     }))
                                                 }
-                                            } else if let Some(peer_id) = peer_ids.get(target) {
+                                            } else if let Some(peer_id) = peer_ids.get(target).copied() {
                                                 let request_id = blake3::hash(
                                                     format!("upload:{}:{}:{}:{}", hex::encode(file_id), index, target, now_unix()).as_bytes()
                                                 ).as_bytes()[..16].try_into().unwrap_or([0u8; 16]);
@@ -495,14 +497,26 @@ async fn serve_ui(
                                                     data.len() as u64,
                                                     shard.clone(),
                                                 );
-                                                match serde_json::to_vec(&transfer) {
-                                                    Ok(bytes) => match node.send_to_peer(peer_id, STORAGE_STREAM, bytes).await {
+                                                let Ok(bytes) = serde_json::to_vec(&transfer) else {
+                                                    failed.push(serde_json::json!({
+                                                        "shard": index, "node": target, "error": "failed to serialize storage transfer"
+                                                    }));
+                                                    continue;
+                                                };
+                                                let task_node = node.clone();
+                                                let task_pending_acks = pending_acks.clone();
+                                                let task_limit = transfer_limit.clone();
+                                                let target_name = target.clone();
+                                                remote_jobs.spawn(async move {
+                                                    let _permit = task_limit.acquire_owned().await
+                                                        .map_err(|_| "storage transfer scheduler closed".to_string())?;
+                                                    match task_node.send_to_peer(&peer_id, STORAGE_STREAM, bytes).await {
                                                         Ok(_) => {
-                                                            let deadline =
-                            tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+                                                            let deadline = tokio::time::Instant::now()
+                                                                + std::time::Duration::from_secs(5);
                                                             let mut confirmed = false;
                                                             while tokio::time::Instant::now() < deadline {
-                                                                if let Ok(mut acks) = pending_acks.lock() {
+                                                                if let Ok(mut acks) = task_pending_acks.lock() {
                                                                     if let Some(ack) = acks.remove(&request_id) {
                                                                         confirmed = ack.file_id == file_id
                                                                             && ack.shard_index == index as u16
@@ -513,26 +527,40 @@ async fn serve_ui(
                                                                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                                                             }
                                                             if confirmed {
-                                                                sent_remote += 1;
+                                                                Ok((1usize, None))
                                                             } else {
-                                                                failed.push(serde_json::json!({
-                                                                    "shard": index, "node": target, "error": "remote storage ACK not confirmed"
-                                                                }));
+                                                                Ok((0usize, Some(serde_json::json!({
+                                                                    "shard": index, "node": target_name, "error": "remote storage ACK not confirmed"
+                                                                }))))
                                                             }
-                                                        },
-                                                        Err(error) => failed.push(serde_json::json!({
-                                                            "shard": index, "node": target, "error": error.to_string()
-                                                        }))
-                                                    },
-                                                    Err(error) => failed.push(serde_json::json!({
-                                                        "shard": index, "node": target, "error": error.to_string()
-                                                    }))
-                                                }
+                                                        }
+                                                        Err(error) => Ok((0usize, Some(serde_json::json!({
+                                                            "shard": index, "node": target_name, "error": error.to_string()
+                                                        }))))
+                                                    }
+                                                });
                                             } else {
                                                 failed.push(serde_json::json!({
                                                     "shard": index, "node": target, "error": "peer is no longer known"
                                                 }));
                                             }
+                                        }
+                                    }
+
+                                    while let Some(result) = remote_jobs.join_next().await {
+                                        match result {
+                                            Ok(Ok((count, error))) => {
+                                                sent_remote += count;
+                                                if let Some(error) = error {
+                                                    failed.push(error);
+                                                }
+                                            }
+                                            Ok(Err(error)) => failed.push(serde_json::json!({
+                                                "error": format!("storage transfer task failed: {error}")
+                                            })),
+                                            Err(error) => failed.push(serde_json::json!({
+                                                "error": format!("storage transfer task panicked: {error}")
+                                            })),
                                         }
                                     }
 
