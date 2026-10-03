@@ -138,6 +138,7 @@ pub struct MessengerState {
     pub delivery: HashMap<[u8; 16], DeliveryRecord>,
     pub replay: ReplayGuard,
     pub offline: OfflineQueue,
+    next_sequence: u64,
 }
 
 impl Default for MessengerState {
@@ -146,11 +147,18 @@ impl Default for MessengerState {
             delivery: HashMap::new(),
             replay: ReplayGuard::default(),
             offline: OfflineQueue::default(),
+            next_sequence: 0,
         }
     }
 }
 
 impl MessengerState {
+    pub fn allocate_sequence(&mut self) -> u64 {
+        let sequence = self.next_sequence;
+        self.next_sequence = self.next_sequence.saturating_add(1);
+        sequence
+    }
+
     pub fn queue(&mut self, e: Envelope, now_unix: u64) -> Result<(), &'static str> {
         e.validate()?;
         self.delivery.entry(e.message_id).or_insert(DeliveryRecord {
