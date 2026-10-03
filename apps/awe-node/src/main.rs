@@ -421,6 +421,7 @@ async fn serve_ui(
                     }
                 }
             }
+        }
         },
         "/api/storage/put" if method == "POST" => {
             let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
