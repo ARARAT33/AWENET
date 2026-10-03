@@ -799,13 +799,14 @@ impl Node {
     async fn handle(
         stream: TcpStream,
         address: SocketAddr,
+        listen_addr: SocketAddr,
         identity: Arc<Identity>,
         routing: Arc<RwLock<RoutingTable>>,
         peers: Arc<RwLock<HashMap<[u8; 32], PeerRecord>>>,
         admission: Arc<Mutex<PeerAdmission>>,
         inbox: InboxQueue,
     ) {
-        let Ok(mut c) = handshake(stream, identity, address, false).await else {
+        let Ok(mut c) = handshake(stream, identity, listen_addr, false).await else {
             return;
         };
         if !admission
@@ -818,7 +819,11 @@ impl Node {
         let r = PeerRecord {
             awe_id: c.remote_id,
             public_key: c.remote_public_key,
-            addresses: vec![address],
+            addresses: vec![if c.remote_address.ip().is_unspecified() {
+                SocketAddr::new(address.ip(), c.remote_address.port())
+            } else {
+                c.remote_address
+            }],
             protocol_version: VERSION,
             last_seen_unix: now(),
         };
@@ -915,8 +920,9 @@ impl Node {
             let peers = Arc::clone(&self.peers);
             let admission = Arc::clone(&self.admission);
             let inbox = Arc::clone(&self.inbox);
+            let listen_addr = self.listen_addr;
             tokio::spawn(async move {
-                Self::handle(s, a, identity, routing, peers, admission, inbox).await;
+                Self::handle(s, a, listen_addr, identity, routing, peers, admission, inbox).await;
                 drop(permit);
             });
         }
@@ -939,7 +945,7 @@ impl Node {
                 awe_id: c.remote_id,
                 public_key: c.remote_public_key,
                 addresses: vec![if c.remote_address.ip().is_unspecified() {
-                    a.ip().into()
+                    SocketAddr::new(a.ip(), c.remote_address.port())
                 } else {
                     c.remote_address
                 }],
