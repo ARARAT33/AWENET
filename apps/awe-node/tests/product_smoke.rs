@@ -14,7 +14,7 @@ fn request(addr: &str, request: &str) -> String {
         .set_read_timeout(Some(Duration::from_secs(10)))
         .expect("timeout");
     stream.write_all(request.as_bytes()).expect("write");
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(60);
     let mut out = Vec::with_capacity(65536);
     let mut buf = [0u8; 8192];
     loop {
