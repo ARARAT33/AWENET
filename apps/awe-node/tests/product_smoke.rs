@@ -14,9 +14,31 @@ fn request(addr: &str, request: &str) -> String {
         .set_read_timeout(Some(Duration::from_secs(10)))
         .expect("timeout");
     stream.write_all(request.as_bytes()).expect("write");
-    let mut out = [0u8; 65536];
-    let n = stream.read(&mut out).expect("read");
-    String::from_utf8_lossy(&out[..n])
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut out = Vec::with_capacity(65536);
+    let mut buf = [0u8; 8192];
+    loop {
+        match stream.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                out.extend_from_slice(&buf[..n]);
+                if out.len() >= 65536 {
+                    break;
+                }
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock
+                || err.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                if Instant::now() >= deadline {
+                    panic!("read timed out: {err}");
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(err) => panic!("read: {err}"),
+        }
+    }
+    String::from_utf8_lossy(&out)
         .split("\r\n\r\n")
         .nth(1)
         .unwrap_or("")
