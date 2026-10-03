@@ -1,8 +1,6 @@
 name: AWEp2P Windows Product
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -11,19 +9,12 @@ permissions:
 jobs:
   package-windows:
     runs-on: windows-latest
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
-
-      - name: Build complete product
-        run: cargo build --release -p awe-node --target x86_64-pc-windows-msvc
-
+      - run: cargo build --release -p awe-node --target x86_64-pc-windows-msvc
       - name: Create portable package
         shell: pwsh
         run: |
@@ -31,22 +22,11 @@ jobs:
           Copy-Item target/x86_64-pc-windows-msvc/release/awe-node.exe package/awe-node.exe
           Copy-Item awenet.cmd package/awenet.cmd
           Copy-Item awenet.ps1 package/awenet.ps1
-          @'
-          AWEp2P
-          ======
-          Ready-to-run Windows package.
-
-          Double-click awe-node.exe to start the complete local product.
-          The dashboard opens automatically in your default browser.
-
-          The included awenet.cmd launcher can also be used from Command Prompt.
-          '@ | Set-Content package/README.txt -Encoding UTF8
+          "AWEp2P ready-to-run Windows package." | Set-Content package/README.txt -Encoding UTF8
           Compress-Archive -Path package/* -DestinationPath AWEP2P-Windows-x64-Portable.zip -Force
-
       - name: Install Inno Setup
         shell: pwsh
         run: choco install innosetup --no-progress -y
-
       - name: Build Windows installer
         shell: pwsh
         run: |
@@ -55,8 +35,6 @@ jobs:
           #define MyAppName "AWEp2P"
           #define MyAppVersion "0.1.0"
           #define MyAppPublisher "AWE"
-          #define MyAppExeName "awe-node.exe"
-
           [Setup]
           AppId={{8B0B9F31-6A0B-4F3D-A6C2-8E0F6D5E9B21}
           AppName={#MyAppName}
@@ -70,36 +48,18 @@ jobs:
           SolidCompression=yes
           ArchitecturesInstallIn64BitMode=x64
           PrivilegesRequired=admin
-          UninstallDisplayName=AWEp2P
-          WizardStyle=modern
-
           [Files]
           Source: "..\target\x86_64-pc-windows-msvc\release\awe-node.exe"; DestDir: "{app}"; Flags: ignoreversion
           Source: "..\awenet.cmd"; DestDir: "{app}"; Flags: ignoreversion
           Source: "..\awenet.ps1"; DestDir: "{app}"; Flags: ignoreversion
-
           [Icons]
           Name: "{autoprograms}\AWEp2P"; Filename: "{app}\awe-node.exe"
           Name: "{autodesktop}\AWEp2P"; Filename: "{app}\awe-node.exe"
-
           [Run]
           Filename: "{app}\awe-node.exe"; Description: "Start AWEp2P now"; Flags: nowait postinstall skipifsilent
           '@ | Set-Content installer/AWEP2P.iss -Encoding ASCII
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer/AWEP2P.iss
-
-      - name: Publish latest downloadable product
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: latest
-          name: AWEp2P Latest
-          prerelease: true
-          make_latest: false
-          files: |
-            installer/AWEP2P-Setup-Windows-x64.exe
-            AWEP2P-Windows-x64-Portable.zip
-
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: AWEp2P-Windows-x64
           path: |
