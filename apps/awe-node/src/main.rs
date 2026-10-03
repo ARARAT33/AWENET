@@ -1304,7 +1304,6 @@ async fn run_product() -> Result<()> {
     let dispatcher_storage = storage.clone();
     let dispatcher_messenger = messenger.clone();
     let dispatcher_acks = pending_acks.clone();
-    let dispatcher_messenger_acks = pending_messenger_acks.clone();
     let dispatcher_policy = policy_state.clone();
     tokio::spawn(async move {
         loop {
