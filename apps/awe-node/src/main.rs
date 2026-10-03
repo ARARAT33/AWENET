@@ -851,6 +851,164 @@ fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
+
+async fn autonomous_repair_cycle(
+    node: &Node,
+    storage: &LocalNodeStore,
+    pending_shards: &PendingShards,
+    pending_acks: &PendingAcks,
+    data_dir: &std::path::Path,
+    policy: &NetworkPolicy,
+) {
+    if !policy.enabled || !policy.allows_stream(STORAGE_STREAM) {
+        return;
+    }
+
+    let manifest_dir = data_dir.join("storage").join("manifests");
+    let Ok(entries) = fs::read_dir(&manifest_dir) else {
+        return;
+    };
+
+    let peers = node.peers().await;
+    let local_id = format_uid(node.identity.public.awe_id.as_bytes());
+    let mut peer_ids = std::collections::BTreeMap::<String, [u8; 32]>::new();
+    for peer in peers {
+        peer_ids.insert(format_uid(&peer.awe_id), peer.awe_id);
+    }
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(bytes) = fs::read(&path) else { continue; };
+        let Ok(mut manifest) = serde_json::from_slice::<serde_json::Value>(&bytes) else { continue; };
+        let Some(placements) = manifest.get_mut("placements").and_then(|v| v.as_array_mut()) else { continue; };
+        let Some(shard_hashes) = manifest.get("shard_hashes").and_then(|v| v.as_array()).cloned() else { continue; };
+        let file_id_hex = manifest.get("file_id").and_then(|v| v.as_str()).unwrap_or("");
+        let Ok(file_id_bytes) = hex::decode(file_id_hex) else { continue; };
+        let Ok(file_id) = <[u8; 32]>::try_from(file_id_bytes) else { continue; };
+        let original_size = manifest.get("original_size").and_then(|v| v.as_u64()).unwrap_or(0);
+        let total_shards = manifest.get("shards").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+
+        for index in 0..total_shards.min(1000) {
+            let Some(nodes_value) = placements.get_mut(index).and_then(|v| v.get_mut("nodes")).and_then(|v| v.as_array_mut()) else { continue; };
+            let current_nodes = nodes_value.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect::<Vec<_>>();
+            let available = current_nodes.iter().filter(|id| *id == &local_id || peer_ids.contains_key(*id)).count();
+            if available >= 3 { continue; }
+
+            let Some(expected_hex) = shard_hashes.get(index).and_then(|v| v.as_str()) else { continue; };
+            let Ok(expected_bytes) = hex::decode(expected_hex) else { continue; };
+            let Ok(expected_hash) = <[u8; 32]>::try_from(expected_bytes) else { continue; };
+
+            let mut source_data: Option<Vec<u8>> = None;
+            for source in &current_nodes {
+                if source == &local_id {
+                    if let Ok(data) = storage.get(&expected_hash) {
+                        source_data = Some(data);
+                        break;
+                    }
+                } else if let Some(source_id) = peer_ids.get(source) {
+                    let request_id = blake3::hash(
+                        format!("repair-source:{}:{}:{}:{}", file_id_hex, index, source, now_unix()).as_bytes()
+                    ).as_bytes()[..16].try_into().unwrap_or([0u8; 16]);
+                    let request = StorageShardRequest::new(
+                        request_id,
+                        *node.identity.public.awe_id.as_bytes(),
+                        file_id,
+                        index as u16,
+                        total_shards as u16,
+                        expected_hash,
+                        original_size,
+                        4 * 1024 * 1024,
+                    );
+                    let Ok(request_bytes) = serde_json::to_vec(&request) else { continue; };
+                    if node.send_to_peer(source_id, STORAGE_STREAM, request_bytes).await.is_err() {
+                        continue;
+                    }
+                    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+                    while tokio::time::Instant::now() < deadline {
+                        if let Ok(mut pending) = pending_shards.lock() {
+                            if let Some(response) = pending.remove(&request_id) {
+                                if response.file_id == file_id
+                                    && response.shard_index == index as u16
+                                    && response.payload_hash == expected_hash
+                                    && response.verify().is_ok()
+                                {
+                                    source_data = Some(response.payload);
+                                }
+                                break;
+                            }
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                    }
+                    if source_data.is_some() { break; }
+                }
+            }
+
+            let Some(data) = source_data else { continue; };
+            if !policy.allows_shard(data.len()) || *blake3::hash(&data).as_bytes() != expected_hash {
+                continue;
+            }
+
+            let mut repaired = false;
+            let mut candidates = peer_ids.keys().filter(|id| !current_nodes.contains(id)).cloned().collect::<Vec<_>>();
+            if !current_nodes.contains(&local_id) {
+                candidates.insert(0, local_id.clone());
+            }
+            candidates.sort();
+            candidates.dedup();
+
+            for target in candidates {
+                if current_nodes.contains(&target) { continue; }
+
+                if target == local_id {
+                    if storage.put(&data).is_ok() {
+                        nodes_value.push(serde_json::Value::String(target.clone()));
+                        repaired = true;
+                    }
+                } else if let Some(target_id) = peer_ids.get(&target) {
+                    let request_id = blake3::hash(
+                        format!("repair-target:{}:{}:{}:{}", file_id_hex, index, target, now_unix()).as_bytes()
+                    ).as_bytes()[..16].try_into().unwrap_or([0u8; 16]);
+                    let transfer = StorageShardTransfer::new(
+                        request_id,
+                        *node.identity.public.awe_id.as_bytes(),
+                        file_id,
+                        index as u16,
+                        total_shards as u16,
+                        original_size,
+                        data.clone(),
+                    );
+                    let Ok(transfer_bytes) = serde_json::to_vec(&transfer) else { continue; };
+                    if node.send_to_peer(target_id, STORAGE_STREAM, transfer_bytes).await.is_err() {
+                        continue;
+                    }
+                    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+                    while tokio::time::Instant::now() < deadline {
+                        if let Ok(mut acks) = pending_acks.lock() {
+                            if let Some(ack) = acks.remove(&request_id) {
+                                if ack.file_id == file_id
+                                    && ack.shard_index == index as u16
+                                    && ack.stored_object_id == expected_hash
+                                {
+                                    nodes_value.push(serde_json::Value::String(target.clone()));
+                                    repaired = true;
+                                }
+                                break;
+                            }
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                    }
+                }
+
+                if repaired { break; }
+            }
+
+            if repaired {
+                let _ = fs::write(&path, serde_json::to_vec_pretty(&manifest).unwrap_or_default());
+            }
+        }
+    }
+}
+
 async fn run_product() -> Result<()> {
     let data_dir = if let Some(value) = env::var_os("AWE_DATA_DIR") {
         PathBuf::from(value)
@@ -940,6 +1098,27 @@ async fn run_product() -> Result<()> {
             .map_err(anyhow::Error::msg)?;
         let _supervisor_task = supervisor.spawn();
     }
+    let repair_node = node.clone();
+    let repair_storage = storage.clone();
+    let repair_pending_shards = pending_shards.clone();
+    let repair_pending_acks = pending_acks.clone();
+    let repair_policy = policy_state.clone();
+    let repair_data_dir = data_dir.clone();
+    tokio::spawn(async move {
+        loop {
+            let policy = repair_policy.lock().map(|p| p.clone()).unwrap_or_default();
+            autonomous_repair_cycle(
+                &repair_node,
+                &repair_storage,
+                &repair_pending_shards,
+                &repair_pending_acks,
+                &repair_data_dir,
+                &policy,
+            ).await;
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        }
+    });
+
     let node_for_listener = node.clone();
     tokio::spawn(async move {
         if let Err(e) = node_for_listener.listen().await {
