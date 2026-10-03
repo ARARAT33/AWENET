@@ -898,7 +898,8 @@ async fn autonomous_repair_cycle(
         let file_id_hex = manifest
             .get("file_id")
             .and_then(|v| v.as_str())
-            .unwrap_or("");
+            .unwrap_or("")
+            .to_owned();
         let Ok(file_id_bytes) = hex::decode(file_id_hex) else {
             continue;
         };
@@ -910,14 +911,16 @@ async fn autonomous_repair_cycle(
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
         let total_shards = manifest.get("shards").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-        let Some(placements) = manifest
-            .get_mut("placements")
-            .and_then(|v| v.as_array_mut())
-        else {
-            continue;
-        };
+        let mut manifest_changed = false;
+        {
+            let Some(placements) = manifest
+                .get_mut("placements")
+                .and_then(|v| v.as_array_mut())
+            else {
+                continue;
+            };
 
-        for index in 0..total_shards.min(1000) {
+            for index in 0..total_shards.min(1000) {
             let Some(nodes_value) = placements
                 .get_mut(index)
                 .and_then(|v| v.get_mut("nodes"))
@@ -1097,11 +1100,16 @@ async fn autonomous_repair_cycle(
             }
 
             if repaired {
-                let _ = fs::write(
-                    &path,
-                    serde_json::to_vec_pretty(&manifest).unwrap_or_default(),
-                );
+                manifest_changed = true;
             }
+            }
+        }
+
+        if manifest_changed {
+            let _ = fs::write(
+                &path,
+                serde_json::to_vec_pretty(&manifest).unwrap_or_default(),
+            );
         }
     }
 }
