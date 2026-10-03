@@ -27,8 +27,9 @@ fn request(addr: &str, request: &str) -> String {
                 }
             }
             Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock
-                || err.kind() == std::io::ErrorKind::TimedOut =>
+            Err(err)
+                if err.kind() == std::io::ErrorKind::WouldBlock
+                    || err.kind() == std::io::ErrorKind::TimedOut =>
             {
                 if Instant::now() >= deadline {
                     panic!("read timed out: {err}");
