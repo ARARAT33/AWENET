@@ -168,6 +168,7 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> Result<String>
     String::from_utf8(data).context("HTTP request must be UTF-8")
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn serve_ui(
     mut stream: tokio::net::TcpStream,
     node: Node,
@@ -620,9 +621,7 @@ async fn serve_ui(
             let recipient_id = hex::decode(recipient)
                 .ok()
                 .and_then(|b| <[u8; 32]>::try_from(b).ok())
-                .or_else(|| {
-                    None
-                });
+                .or(None);
             let file_id = hex::decode(file_id_hex)
                 .ok()
                 .and_then(|b| <[u8; 32]>::try_from(b).ok());
