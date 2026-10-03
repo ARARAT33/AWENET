@@ -32,6 +32,7 @@ type MessengerLog = Arc<Mutex<Vec<serde_json::Value>>>;
 type FederationState = Arc<Mutex<AweNetConfig>>;
 type StorageState = Arc<LocalNodeStore>;
 type PendingAcks = Arc<Mutex<BTreeMap<[u8; 16], StorageShardAck>>>;
+type PendingMessengerAcks = Arc<Mutex<BTreeMap<String, u64>>>;
 type PendingShards = Arc<Mutex<BTreeMap<[u8; 16], StorageShardTransfer>>>;
 type PolicyState = Arc<Mutex<NetworkPolicy>>;
 
@@ -177,6 +178,7 @@ async fn serve_ui(
     federation_path: PathBuf,
     storage: StorageState,
     pending_acks: PendingAcks,
+    pending_messenger_acks: PendingMessengerAcks,
     pending_shards: PendingShards,
     policy_state: PolicyState,
 ) -> Result<()> {
@@ -385,38 +387,59 @@ async fn serve_ui(
                     "timestamp": timestamp
                 });
                 match serde_json::to_vec(&envelope) {
-                    Ok(payload) => match node.send_to_peer(&recipient_id, 100, payload).await {
-                        Ok(rtt) => {
-                            let item = serde_json::json!({
-                                "id": message_id,
-                                "sender": format_uid(node.identity.public.awe_id.as_bytes()),
-                                "recipient": format_uid(&recipient_id),
-                                "text": text,
-                                "state": "sent",
-                                "timestamp": timestamp,
-                                "rtt_ms": rtt.as_millis()
-                            });
-                            if let Ok(mut log) = messenger.lock() {
-                                log.push(item.clone());
-                            }
-                            ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"sent","message":item}).to_string())
+                    Ok(payload) => {
+                        if let Ok(mut pending) = pending_messenger_acks.lock() {
+                            pending.remove(&message_id);
                         }
-                        Err(error) => {
-                            let item = serde_json::json!({
-                                "id": message_id,
-                                "sender": format_uid(node.identity.public.awe_id.as_bytes()),
-                                "recipient": format_uid(&recipient_id),
-                                "text": text,
-                                "state": "failed",
-                                "timestamp": timestamp,
-                                "error": error.to_string()
-                            });
-                            if let Ok(mut log) = messenger.lock() {
-                                log.push(item.clone());
+                        match node.send_to_peer(&recipient_id, policy::MESSENGER_STREAM, payload).await {
+                            Ok(rtt) => {
+                                let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+                                let mut delivered = false;
+                                while tokio::time::Instant::now() < deadline {
+                                    if let Ok(mut pending) = pending_messenger_acks.lock() {
+                                        if pending.remove(&message_id).is_some() {
+                                            delivered = true;
+                                            break;
+                                        }
+                                    }
+                                    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                                }
+                                let state = if delivered { "delivered" } else { "failed" };
+                                let item = serde_json::json!({
+                                    "id": message_id,
+                                    "sender": format_uid(node.identity.public.awe_id.as_bytes()),
+                                    "recipient": format_uid(&recipient_id),
+                                    "text": text,
+                                    "state": state,
+                                    "timestamp": timestamp,
+                                    "rtt_ms": rtt.as_millis()
+                                });
+                                if let Ok(mut log) = messenger.lock() {
+                                    log.push(item.clone());
+                                }
+                                if delivered {
+                                    ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"delivered","message":item}).to_string())
+                                } else {
+                                    ("504 Gateway Timeout", "application/json; charset=utf-8", serde_json::json!({"status":"pending_ack","message":item}).to_string())
+                                }
                             }
-                            ("502 Bad Gateway", "application/json; charset=utf-8", serde_json::json!({"status":"failed","message":item}).to_string())
+                            Err(error) => {
+                                let item = serde_json::json!({
+                                    "id": message_id,
+                                    "sender": format_uid(node.identity.public.awe_id.as_bytes()),
+                                    "recipient": format_uid(&recipient_id),
+                                    "text": text,
+                                    "state": "failed",
+                                    "timestamp": timestamp,
+                                    "error": error.to_string()
+                                });
+                                if let Ok(mut log) = messenger.lock() {
+                                    log.push(item.clone());
+                                }
+                                ("502 Bad Gateway", "application/json; charset=utf-8", serde_json::json!({"status":"failed","message":item}).to_string())
+                            }
                         }
-                    },
+                    }
                     Err(error) => ("500 Internal Server Error", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":error.to_string()}).to_string())
                 }
                     }
@@ -1185,6 +1208,7 @@ async fn run_product() -> Result<()> {
     let storage: StorageState = Arc::new(LocalNodeStore::open(&storage_root, storage_quota)?);
     let messenger: MessengerLog = Arc::new(Mutex::new(Vec::new()));
     let pending_acks: PendingAcks = Arc::new(Mutex::new(BTreeMap::new()));
+    let pending_messenger_acks: PendingMessengerAcks = Arc::new(Mutex::new(BTreeMap::new()));
     let pending_shards: PendingShards = Arc::new(Mutex::new(BTreeMap::new()));
     let federation_path = data_dir.join("awenet.json");
     let policy_path = data_dir.join("policy.json");
@@ -1280,6 +1304,7 @@ async fn run_product() -> Result<()> {
     let dispatcher_storage = storage.clone();
     let dispatcher_messenger = messenger.clone();
     let dispatcher_acks = pending_acks.clone();
+    let dispatcher_messenger_acks = pending_messenger_acks.clone();
     let dispatcher_policy = policy_state.clone();
     tokio::spawn(async move {
         loop {
@@ -1291,8 +1316,16 @@ async fn run_product() -> Result<()> {
                 if !runtime_policy.allows_stream(stream) {
                     continue;
                 }
-                if stream == 100 {
+                if stream == policy::MESSENGER_STREAM {
                     if let Ok(message) = serde_json::from_slice::<serde_json::Value>(&payload) {
+                        if message.get("kind").and_then(|v| v.as_str()) == Some("awe.messenger.ack.v1") {
+                            if let Some(id) = message.get("id").and_then(|v| v.as_str()) {
+                                if let Ok(mut pending) = pending_messenger_acks.lock() {
+                                    pending.insert(id.to_owned(), now_unix());
+                                }
+                            }
+                            continue;
+                        }
                         if message.get("kind").and_then(|v| v.as_str()) == Some("awe.messenger.v1")
                         {
                             let id = message.get("id").and_then(|v| v.as_str()).unwrap_or("");
@@ -1317,6 +1350,10 @@ async fn run_product() -> Result<()> {
                                     }) {
                                         log.push(item);
                                     }
+                                }
+                                let ack = serde_json::json!({"kind":"awe.messenger.ack.v1","id":id});
+                                if let Ok(bytes) = serde_json::to_vec(&ack) {
+                                    let _ = dispatcher_node.send_to_peer(&sender, policy::MESSENGER_STREAM, bytes).await;
                                 }
                             }
                         }
@@ -1427,6 +1464,7 @@ async fn run_product() -> Result<()> {
         let api_federation = federation_state.clone();
         let api_storage = storage.clone();
         let api_pending_acks = pending_acks.clone();
+        let api_pending_messenger_acks = pending_messenger_acks.clone();
         let api_pending_shards = pending_shards.clone();
         let api_federation_path = federation_path.clone();
         let api_policy = policy_state.clone();
@@ -1439,6 +1477,7 @@ async fn run_product() -> Result<()> {
                 api_federation_path,
                 api_storage,
                 api_pending_acks,
+                api_pending_messenger_acks,
                 api_pending_shards,
                 api_policy,
             )
