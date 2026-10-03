@@ -1203,11 +1203,11 @@ mod tests {
         let ci = Arc::new(Identity::generate(Username::new("client").unwrap()));
         let t = tokio::spawn(async move {
             let (s, _) = l.accept().await.unwrap();
-            let mut c = handshake(s, si, false).await.unwrap();
+            let mut c = handshake(s, si, a, false).await.unwrap();
             c.recv_data().await.unwrap()
         });
         let s = TcpStream::connect(a).await.unwrap();
-        let mut c = handshake(s, ci, true).await.unwrap();
+        let mut c = handshake(s, ci, a, true).await.unwrap();
         c.send_data(1, b"awep2p".to_vec()).await.unwrap();
         assert_eq!(t.await.unwrap(), Some((1, b"awep2p".to_vec())));
     }
@@ -1223,7 +1223,7 @@ mod tests {
         ));
         let t = tokio::spawn(async move {
             let (s, _) = l.accept().await.unwrap();
-            let mut server = handshake(s, si, false).await.unwrap();
+            let mut server = handshake(s, si, a, false).await.unwrap();
             loop {
                 match server.recv().await.unwrap() {
                     Control::Data { stream, payload } => {
@@ -1244,7 +1244,7 @@ mod tests {
             }
         });
         let s = TcpStream::connect(a).await.unwrap();
-        let mut client = handshake(s, ci, true).await.unwrap();
+        let mut client = handshake(s, ci, a, true).await.unwrap();
         let elapsed = client
             .send_data_roundtrip(42, b"AWE-NET-END-TO-END-DATA".to_vec())
             .await
@@ -1261,10 +1261,10 @@ mod tests {
         let ci = Arc::new(Identity::generate(Username::new("client2").unwrap()));
         let t = tokio::spawn(async move {
             let (s, _) = l.accept().await.unwrap();
-            handshake(s, si, false).await.unwrap()
+            handshake(s, si, a, false).await.unwrap()
         });
         let s = TcpStream::connect(a).await.unwrap();
-        let mut c = handshake(s, ci, true).await.unwrap();
+        let mut c = handshake(s, ci, a, true).await.unwrap();
         let mut server = t.await.unwrap();
         server.send_data(7, b"ok".to_vec()).await.unwrap();
         assert_eq!(c.recv_data().await.unwrap(), Some((7, b"ok".to_vec())));
@@ -1279,6 +1279,7 @@ mod tests {
             ephemeral: [3; 32],
             nonce: [4; 32],
             signature: vec![0; 63],
+            advertised_addr: "127.0.0.1:0".parse().unwrap(),
         };
         let encoded = encode(&hello).unwrap();
         assert!(matches!(
