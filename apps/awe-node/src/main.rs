@@ -10,6 +10,8 @@ use awep2p_core::identity::{AweSecret, Identity, LocalVault, Username};
 use awep2p_core::lan_mesh::LanPeerBeacon;
 use awep2p_core::messenger::format_uid;
 use awep2p_core::network::{format_node_descriptor, Node};
+use awep2p_core::policy::{self, NetworkPolicy};
+use awep2p_core::supervisor::{PeerSupervisor, SupervisorConfig};
 use awep2p_core::reputation::NodeReputation;
 use awep2p_core::storage::{encode_shards, recover_shards, LocalNodeStore, StoragePolicy};
 use std::{
@@ -31,6 +33,7 @@ type FederationState = Arc<Mutex<AweNetConfig>>;
 type StorageState = Arc<LocalNodeStore>;
 type PendingAcks = Arc<Mutex<BTreeMap<[u8; 16], StorageShardAck>>>;
 type PendingShards = Arc<Mutex<BTreeMap<[u8; 16], StorageShardTransfer>>>;
+type PolicyState = Arc<Mutex<NetworkPolicy>>;
 
 fn default_vault() -> PathBuf {
     if let Some(home) = env::var_os("HOME") {
@@ -174,6 +177,7 @@ async fn serve_ui(
     storage: StorageState,
     pending_acks: PendingAcks,
     pending_shards: PendingShards,
+    policy_state: PolicyState,
 ) -> Result<()> {
     let request = read_http_request(&mut stream).await?;
     let request_line = request.lines().next().unwrap_or("");
@@ -191,6 +195,10 @@ async fn serve_ui(
             "address": node.listen_addr.to_string(),
             "protocol": 1
         }).to_string()),
+        "/api/policy" => {
+            let policy = policy_state.lock().map(|p| p.clone()).unwrap_or_default();
+            ("200 OK", "application/json; charset=utf-8", serde_json::to_string(&policy).unwrap_or_else(|_| "{}".into()))
+        },
         "/api/status" => {
             let peers = node.closest_peers(node.identity.public.awe_id.as_bytes(), 64).await;
             let peer_json = peers.iter().map(|p| serde_json::json!({
@@ -349,6 +357,10 @@ async fn serve_ui(
             if recipient.is_empty() || text.is_empty() {
                 ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":"recipient and text are required"}).to_string())
             } else {
+                let runtime_policy = policy_state.lock().map(|p| p.clone()).unwrap_or_default();
+                if !runtime_policy.allows_message(text.len()) || !runtime_policy.allows_stream(policy::MESSENGER_STREAM) {
+                    ("413 Payload Too Large", "application/json; charset=utf-8", serde_json::json!({"status":"rejected","error":"message rejected by local AWENET policy"}).to_string())
+                } else {
                 let peers = node.closest_peers(node.identity.public.awe_id.as_bytes(), 64).await;
                 let recipient_id = if let Some(hex_id) = recipient.strip_prefix("0x").or_else(|| recipient.strip_prefix("0X")) {
                     hex::decode(hex_id).ok().and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
@@ -424,6 +436,10 @@ async fn serve_ui(
                     Err(_) => ("400 Bad Request", "application/json; charset=utf-8",
                         serde_json::json!({"status":"error","error":"data_hex is not valid hexadecimal"}).to_string()),
                     Ok(data) => {
+                        let runtime_policy = policy_state.lock().map(|p| p.clone()).unwrap_or_default();
+                        if !runtime_policy.allows_upload(data.len()) || !runtime_policy.allows_stream(STORAGE_STREAM) {
+                            ("403 Forbidden", "application/json; charset=utf-8", serde_json::json!({"status":"rejected","error":"upload rejected by local AWENET policy"}).to_string())
+                        } else {
                         let policy = StoragePolicy::for_file_size(data.len());
                         let file_id = *blake3::hash(&data).as_bytes();
                         let peers = node.closest_peers(node.identity.public.awe_id.as_bytes(), 64).await;
@@ -870,6 +886,9 @@ async fn run_product() -> Result<()> {
     let pending_acks: PendingAcks = Arc::new(Mutex::new(BTreeMap::new()));
     let pending_shards: PendingShards = Arc::new(Mutex::new(BTreeMap::new()));
     let federation_path = data_dir.join("awenet.json");
+    let policy_path = data_dir.join("policy.json");
+    let initial_policy = policy::load_or_create(&policy_path).map_err(anyhow::Error::msg)?;
+    let policy_state: PolicyState = Arc::new(Mutex::new(initial_policy));
     let federation_state: FederationState = if federation_path.exists() {
         fs::read(&federation_path)
             .ok()
@@ -897,6 +916,17 @@ async fn run_product() -> Result<()> {
     if let Ok(state) = federation_state.lock() {
         let _ = federation::save_json(&*state, &federation_path);
     }
+    let policy_refresh = policy_state.clone();
+    let policy_refresh_path = policy_path.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+            let current = policy_refresh.lock().map(|p| p.clone()).unwrap_or_default();
+            if let Ok(next) = policy::load_if_changed(&policy_refresh_path, &current) {
+                if let Ok(mut p) = policy_refresh.lock() { *p = next; }
+            }
+        }
+    });
     let startup_bootstrap = federation_state
         .lock()
         .map(|s| s.bootstrap_endpoints.clone())
@@ -906,6 +936,9 @@ async fn run_product() -> Result<()> {
         .collect::<Vec<_>>();
     if !startup_bootstrap.is_empty() {
         let _ = node.bootstrap(&startup_bootstrap).await;
+        let supervisor = PeerSupervisor::new(node.clone(), startup_bootstrap.clone(), SupervisorConfig::default())
+            .map_err(anyhow::Error::msg)?;
+        tokio::spawn(async move { supervisor.spawn().await.abort(); });
     }
     let node_for_listener = node.clone();
     tokio::spawn(async move {
@@ -918,9 +951,12 @@ async fn run_product() -> Result<()> {
     let dispatcher_storage = storage.clone();
     let dispatcher_messenger = messenger.clone();
     let dispatcher_acks = pending_acks.clone();
+    let dispatcher_policy = policy_state.clone();
     tokio::spawn(async move {
         loop {
             for (sender, stream, payload) in dispatcher_node.take_inbox() {
+                let runtime_policy = dispatcher_policy.lock().map(|p| p.clone()).unwrap_or_default();
+                if !runtime_policy.allows_stream(stream) { continue; }
                 if stream == 100 {
                     if let Ok(message) = serde_json::from_slice::<serde_json::Value>(&payload) {
                         if message.get("kind").and_then(|v| v.as_str()) == Some("awe.messenger.v1")
@@ -972,7 +1008,7 @@ async fn run_product() -> Result<()> {
                     let Ok(data) = dispatcher_storage.get(&request.expected_hash) else {
                         continue;
                     };
-                    if data.len() > request.max_bytes as usize {
+                    if data.len() > request.max_bytes as usize || !runtime_policy.allows_shard(data.len()) {
                         continue;
                     }
                     let transfer = StorageShardTransfer::new(
@@ -1067,6 +1103,7 @@ async fn run_product() -> Result<()> {
                 api_storage,
                 api_pending_acks,
                 api_pending_shards,
+                policy_state.clone(),
             )
             .await
             {
