@@ -1048,6 +1048,26 @@ impl Node {
         result
     }
 
+    /// Send application data over a fresh authenticated connection and wait for
+    /// the receiver's network-level DataAck. This is used for application-level
+    /// acknowledgements so a stale cached callback connection cannot be reused.
+    pub async fn send_to_peer_confirmed(
+        &self,
+        peer_id: &[u8; 32],
+        stream: u32,
+        payload: Vec<u8>,
+    ) -> Result<std::time::Duration, NetworkError> {
+        let address = self
+            .peers
+            .read()
+            .await
+            .get(peer_id)
+            .and_then(|peer| peer.addresses.first().copied())
+            .ok_or_else(|| NetworkError::Protocol("peer address is unknown".into()))?;
+        let mut connection = self.connect(address).await?;
+        connection.send_data_roundtrip(stream, payload).await
+    }
+
     pub fn take_inbox(&self) -> Vec<([u8; 32], u32, Vec<u8>)> {
         self.inbox
             .lock()
