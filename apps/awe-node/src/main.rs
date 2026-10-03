@@ -837,6 +837,7 @@ async fn serve_ui(
     stream
         .write_all(&http_response(status, mime, &body).await)
         .await?;
+    stream.shutdown().await?;
     Ok(())
 }
 
