@@ -458,9 +458,12 @@ async fn serve_ui(
                     match owner_id{
                         None=>("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"invalid channel owner"}).to_string()),
                         Some(owner_id)=>{
-                            if owner==local{return ("200 OK","application/json; charset=utf-8",serde_json::json!({"status":"already_subscribed"}).to_string());}
+                            if owner == local {
+                                ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"already_subscribed"}).to_string())
+                            } else {
                             let env=serde_json::json!({"kind":"awe.channel.v1","event":"subscribe","channel_id":cid,"subscriber":local,"sender":local});
                             match serde_json::to_vec(&env){Ok(payload)=>match node.send_to_peer(&owner_id,100,payload).await{Ok(_)=>( "200 OK","application/json; charset=utf-8",serde_json::json!({"status":"requested","channel_id":cid}).to_string()),Err(e)=>( "502 Bad Gateway","application/json; charset=utf-8",serde_json::json!({"status":"error","error":e.to_string()}).to_string())},Err(e)=>( "500 Internal Server Error","application/json; charset=utf-8",serde_json::json!({"status":"error","error":e.to_string()}).to_string())}
+                            }
                         }
                     }
                 }
