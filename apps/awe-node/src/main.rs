@@ -570,7 +570,8 @@ async fn serve_ui(
                             ResourceRequest { cpu_slots: 1, memory_bytes: 0, storage_bytes: data.len() as u64, bandwidth_bytes: data.len() as u64 },
                         ));
                         if !runtime_policy.allows_upload(data.len()) || !runtime_policy.allows_stream(STORAGE_STREAM) || lease.is_none() {
-                            ("403 Forbidden", "application/json; charset=utf-8", serde_json::json!({"status":"rejected","error":"upload rejected by local AWENET policy"}).to_string())
+                            if let Some(lease) = lease.as_ref() { if let Ok(mut b) = resource_state.lock() { b.release(lease); } }
+                        ("403 Forbidden", "application/json; charset=utf-8", serde_json::json!({"status":"rejected","error":"upload rejected by local AWENET policy"}).to_string())
                         } else {
                         let policy = StoragePolicy::for_file_size(data.len());
                         let file_id = *blake3::hash(&data).as_bytes();
