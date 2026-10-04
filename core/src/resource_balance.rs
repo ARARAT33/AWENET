@@ -110,7 +110,10 @@ impl ResourceBalancer {
         let storage = if ssd.saturating_add(hdd) > 0 {
             ssd.saturating_add(hdd)
         } else {
-            pct(self.host_capacity.storage_bytes, ssd_percent.max(hdd_percent))
+            pct(
+                self.host_capacity.storage_bytes,
+                ssd_percent.max(hdd_percent),
+            )
         };
         self.capacity = ResourceCapacity {
             cpu_slots: cpu,
