@@ -9,11 +9,15 @@ use awep2p_core::federation::{
 use awep2p_core::identity::{AweSecret, Identity, LocalVault, Username};
 use awep2p_core::lan_mesh::LanPeerBeacon;
 use awep2p_core::messenger::format_uid;
-use awep2p_core::messenger_runtime::{ContactId, Envelope as RuntimeEnvelope, MediaKind, MessengerState};
+use awep2p_core::messenger_runtime::{
+    ContactId, Envelope as RuntimeEnvelope, MediaKind, MessengerState,
+};
 use awep2p_core::network::{format_node_descriptor, Node};
 use awep2p_core::policy::{self, NetworkPolicy};
 use awep2p_core::reputation::NodeReputation;
-use awep2p_core::storage::{decrypt_file, encode_shards, encrypt_file, recover_shards, LocalNodeStore, StoragePolicy};
+use awep2p_core::storage::{
+    decrypt_file, encode_shards, encrypt_file, recover_shards, LocalNodeStore, StoragePolicy,
+};
 use awep2p_core::supervisor::{PeerSupervisor, SupervisorConfig};
 use std::{
     collections::BTreeMap,
@@ -1369,14 +1373,25 @@ async fn run_product() -> Result<()> {
     tokio::spawn(async move {
         loop {
             let now = now_unix();
-            let retries = retry_runtime.lock().map(|state| state.due_retries(now)).unwrap_or_default();
+            let retries = retry_runtime
+                .lock()
+                .map(|state| state.due_retries(now))
+                .unwrap_or_default();
             for retry in retries {
                 if let Ok(policy) = retry_policy.lock() {
-                    if !policy.allows_stream(policy::MESSENGER_STREAM) { continue; }
+                    if !policy.allows_stream(policy::MESSENGER_STREAM) {
+                        continue;
+                    }
                 }
                 let recipient = retry.envelope.recipient.0;
-                let payload = match serde_json::to_vec(&retry.envelope) { Ok(p) => p, Err(_) => continue };
-                match retry_node.send_to_peer(&recipient, policy::MESSENGER_STREAM, payload).await {
+                let payload = match serde_json::to_vec(&retry.envelope) {
+                    Ok(p) => p,
+                    Err(_) => continue,
+                };
+                match retry_node
+                    .send_to_peer(&recipient, policy::MESSENGER_STREAM, payload)
+                    .await
+                {
                     Ok(_) => {
                         if let Ok(mut state) = retry_runtime.lock() {
                             let _ = state.mark_sent(retry.envelope.message_id, now);
@@ -1384,7 +1399,11 @@ async fn run_product() -> Result<()> {
                     }
                     Err(error) => {
                         if let Ok(mut state) = retry_runtime.lock() {
-                            let _ = state.mark_failed(retry.envelope.message_id, error.to_string(), now);
+                            let _ = state.mark_failed(
+                                retry.envelope.message_id,
+                                error.to_string(),
+                                now,
+                            );
                         }
                     }
                 }
@@ -1404,14 +1423,17 @@ async fn run_product() -> Result<()> {
                 }
                 if stream == policy::MESSENGER_STREAM {
                     if let Ok(message) = serde_json::from_slice::<serde_json::Value>(&payload) {
-                        if message.get("kind").and_then(|v| v.as_str()) == Some("awe.messenger.ack.v1") {
+                        if message.get("kind").and_then(|v| v.as_str())
+                            == Some("awe.messenger.ack.v1")
+                        {
                             if let Some(id) = message.get("id").and_then(|v| v.as_str()) {
                                 if let Ok(mut pending) = pending_messenger_acks.lock() {
                                     pending.insert(id.to_owned(), now_unix());
                                 }
                                 if let Ok(bytes) = hex::decode(id) {
                                     if let Ok(message_id) = <[u8; 16]>::try_from(bytes.as_slice()) {
-                                        if let Ok(mut runtime) = dispatcher_messenger_runtime.lock() {
+                                        if let Ok(mut runtime) = dispatcher_messenger_runtime.lock()
+                                        {
                                             let _ = runtime.mark_delivered(message_id);
                                         }
                                     }
@@ -1444,9 +1466,12 @@ async fn run_product() -> Result<()> {
                                         log.push(item);
                                     }
                                 }
-                                let ack = serde_json::json!({"kind":"awe.messenger.ack.v1","id":id});
+                                let ack =
+                                    serde_json::json!({"kind":"awe.messenger.ack.v1","id":id});
                                 if let Ok(bytes) = serde_json::to_vec(&ack) {
-                                    let _ = dispatcher_node.send_to_peer(&sender, policy::MESSENGER_STREAM, bytes).await;
+                                    let _ = dispatcher_node
+                                        .send_to_peer(&sender, policy::MESSENGER_STREAM, bytes)
+                                        .await;
                                 }
                             }
                         }
@@ -1454,9 +1479,12 @@ async fn run_product() -> Result<()> {
                     continue;
                 }
                 if stream == policy::MESSENGER_STREAM {
-                    if let Ok(runtime_envelope) = serde_json::from_slice::<RuntimeEnvelope>(&payload) {
+                    if let Ok(runtime_envelope) =
+                        serde_json::from_slice::<RuntimeEnvelope>(&payload)
+                    {
                         if runtime_envelope.validate().is_ok()
-                            && runtime_envelope.recipient.0 == *dispatcher_node.identity.public.awe_id.as_bytes()
+                            && runtime_envelope.recipient.0
+                                == *dispatcher_node.identity.public.awe_id.as_bytes()
                         {
                             let sender_id = runtime_envelope.sender.0;
                             if let Ok(mut runtime) = dispatcher_messenger_runtime.lock() {
@@ -1465,7 +1493,8 @@ async fn run_product() -> Result<()> {
                                 }
                             }
                             let id = hex::encode(runtime_envelope.message_id);
-                            let text_value = String::from_utf8_lossy(&runtime_envelope.ciphertext).to_string();
+                            let text_value =
+                                String::from_utf8_lossy(&runtime_envelope.ciphertext).to_string();
                             let item = serde_json::json!({
                                 "id": id,
                                 "sender": format_uid(&sender_id),
@@ -1475,13 +1504,17 @@ async fn run_product() -> Result<()> {
                                 "timestamp": runtime_envelope.session_epoch
                             });
                             if let Ok(mut log) = dispatcher_messenger.lock() {
-                                if !log.iter().any(|existing| existing.get("id").and_then(|v| v.as_str()) == Some(&id)) {
+                                if !log.iter().any(|existing| {
+                                    existing.get("id").and_then(|v| v.as_str()) == Some(&id)
+                                }) {
                                     log.push(item);
                                 }
                             }
                             let ack = serde_json::json!({"kind":"awe.messenger.ack.v1","id":id});
                             if let Ok(bytes) = serde_json::to_vec(&ack) {
-                                let _ = dispatcher_node.send_to_peer(&sender_id, policy::MESSENGER_STREAM, bytes).await;
+                                let _ = dispatcher_node
+                                    .send_to_peer(&sender_id, policy::MESSENGER_STREAM, bytes)
+                                    .await;
                             }
                         }
                     }
