@@ -452,7 +452,7 @@ async fn serve_ui(
             let p:serde_json::Value=serde_json::from_str(body).unwrap_or_default();
             let cid=p.get("channel_id").and_then(|v|v.as_str()).unwrap_or("").trim();
             let local=format_uid(node.identity.public.awe_id.as_bytes());
-            let found=community.lock().ok().and_then(|s|s.get("channels").and_then(|v|v.as_array()).map(|a|a.iter().any(|c|c.get("id").and_then(|v|v.as_str())==Some(cid))).unwrap_or(false));
+            let found=community.lock().map(|s|s.get("channels").and_then(|v|v.as_array()).map(|a|a.iter().any(|c|c.get("id").and_then(|v|v.as_str())==Some(cid))).unwrap_or(false)).unwrap_or(false);
             if cid.is_empty()||!found {
                 ("404 Not Found","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"channel not found"}).to_string())
             } else {
