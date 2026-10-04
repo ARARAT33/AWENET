@@ -59,6 +59,6 @@ function bind(k){
  const gd=document.getElementById("genDc");if(gd)gd.onclick=()=>gen("awedc",{data_centre_id:document.getElementById("fedDcId").value.trim(),name:document.getElementById("fedDcName").value.trim()||"AWE Data Centre",endpoints:[live.node_address]});
  const gg=document.getElementById("genDgc");if(gg)gg.onclick=()=>gen("dgc",{owner_data_centre_id:live.federation?.data_centre_id||"",name:document.getElementById("fedGroupName").value.trim()||"AWE Data Group",data_centre_ids:(document.getElementById("fedCentres").value||"").split(",").map(x=>x.trim()).filter(Boolean)});
 }
-navs.forEach(n=>n.addEventListener("click",()=>render(n.dataset.view)));
+document.addEventListener("click",e=>{const n=e.target.closest(".nav[data-view]");if(n){e.preventDefault();e.stopPropagation();render(n.dataset.view)}});
 document.getElementById("avatarBtn").onclick=()=>render("profile");
-(async()=>{await refresh();render("dashboard");setInterval(async()=>{await refresh();if(title.textContent===pages.dashboard[0])render("dashboard")},5000)})();
+render("dashboard");(async()=>{await refresh();render("dashboard");setInterval(async()=>{await refresh();if(title.textContent===pages.dashboard[0])render("dashboard")},5000)})();
