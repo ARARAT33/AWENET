@@ -1579,20 +1579,20 @@ async fn run_product() -> Result<()> {
                                 } else if event=="subscribe" {
                                     let cid=message.get("channel_id").and_then(|v|v.as_str()).unwrap_or("");
                                     let subscriber=message.get("subscriber").and_then(|v|v.as_str()).unwrap_or(&sender_uid);
+                                    let local_uid=format_uid(dispatcher_node.identity.public.awe_id.as_bytes());
                                     let mut sync:Option<serde_json::Value>=None;
                                     if let Some(ch)=state.get_mut("channels").and_then(|v|v.as_array_mut()).and_then(|a|a.iter_mut().find(|c|c.get("id").and_then(|v|v.as_str())==Some(cid))) {
-                                        if ch.get("owner").and_then(|v|v.as_str())==Some(sender_uid.as_str()) {
-                                            continue;
+                                        if ch.get("owner").and_then(|v|v.as_str())==Some(local_uid.as_str()) {
+                                            if !ch.get("subscribers").and_then(|v|v.as_array()).map(|a|a.iter().any(|v|v.as_str()==Some(subscriber))).unwrap_or(false) {
+                                                if let Some(a)=ch.get_mut("subscribers").and_then(|v|v.as_array_mut()){a.push(serde_json::Value::String(subscriber.to_string()));}
+                                            }
+                                            sync=Some(ch.clone());
                                         }
-                                        if !ch.get("subscribers").and_then(|v|v.as_array()).map(|a|a.iter().any(|v|v.as_str()==Some(subscriber))).unwrap_or(false) {
-                                            if let Some(a)=ch.get_mut("subscribers").and_then(|v|v.as_array_mut()){a.push(serde_json::Value::String(subscriber.to_string()));}
-                                        }
-                                        if ch.get("owner").and_then(|v|v.as_str())==Some(sender_uid.as_str()){sync=Some(ch.clone());}
                                     }
                                     if let Some(ch)=sync {
-                                        if let Some(owner)=ch.get("owner").and_then(|v|v.as_str()).and_then(|x|hex::decode(x).ok()).and_then(|b|<[u8;32]>::try_from(b).ok()) {
-                                            let env=serde_json::json!({"kind":"awe.channel.v1","event":"upsert","channel":ch,"sender":sender_uid});
-                                            if let Ok(bytes)=serde_json::to_vec(&env){let _=dispatcher_node.send_to_peer(&owner,100,bytes).await;}
+                                        if let Some(target)=hex::decode(subscriber).ok().and_then(|b|<[u8;32]>::try_from(b).ok()) {
+                                            let env=serde_json::json!({"kind":"awe.channel.v1","event":"upsert","channel":ch,"sender":local_uid});
+                                            if let Ok(bytes)=serde_json::to_vec(&env){let _=dispatcher_node.send_to_peer(&target,100,bytes).await;}
                                         }
                                     }
                                 } else if event=="message" {
