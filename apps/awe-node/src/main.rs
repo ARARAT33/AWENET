@@ -42,7 +42,12 @@ type MessengerRuntimeState = Arc<Mutex<MessengerState>>;
 type PendingShards = Arc<Mutex<BTreeMap<[u8; 16], StorageShardTransfer>>>;
 type PolicyState = Arc<Mutex<NetworkPolicy>>;
 
-fn connection_device_id(identity: &Identity) -> String {\n    let digest = blake3::hash(format!("AWE/DEVICE/{}", format_uid(identity.public.awe_id.as_bytes())).as_bytes());\n    hex::encode(&digest.as_bytes()[..8])\n}\n\nfn drive_key(identity: &Identity, file_id: &[u8; 32]) -> [u8; 32] {
+fn connection_device_id(identity: &Identity) -> String {
+    let digest = blake3::hash(format!("AWE/DEVICE/{}", format_uid(identity.public.awe_id.as_bytes())).as_bytes());
+    hex::encode(&digest.as_bytes()[..8])
+}
+
+fn drive_key(identity: &Identity, file_id: &[u8; 32]) -> [u8; 32] {
     *blake3::keyed_hash(&identity.export_secret(), file_id).as_bytes()
 }
 
@@ -59,7 +64,20 @@ fn default_vault() -> PathBuf {
 }
 
 fn usage() -> ! {
-    eprintln!("AWEp2P\n\nUsage:\n  awe-node                 Start the complete local product\n  awe-node app             Start UI + local node\n  awe-node secret <username> [out-file]\n  awe-node init <username> [vault-file]\n  awe-node run <vault-file> <password> <listen-addr> [bootstrap-addr ...]\n  awe-node id <vault-file> <password> <username>\n  awe-node status [vault-file]\n  awe-node diagnostics\n  awe-node mesh <listen-port>\n  awe-node health\n  awe-node probe <address>");
+    eprintln!("AWEp2P
+
+Usage:
+  awe-node                 Start the complete local product
+  awe-node app             Start UI + local node
+  awe-node secret <username> [out-file]
+  awe-node init <username> [vault-file]
+  awe-node run <vault-file> <password> <listen-addr> [bootstrap-addr ...]
+  awe-node id <vault-file> <password> <username>
+  awe-node status [vault-file]
+  awe-node diagnostics
+  awe-node mesh <listen-port>
+  awe-node health
+  awe-node probe <address>");
     std::process::exit(2)
 }
 
@@ -120,7 +138,16 @@ fn load_identity(path: &PathBuf, password: &str, username: &str) -> Result<Ident
 }
 
 async fn http_response(status: &str, content_type: &str, body: &str) -> Vec<u8> {
-    format!("HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: content-type\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}", body.len()).into_bytes()
+    format!("HTTP/1.1 {status}\r
+Content-Type: {content_type}\r
+Content-Length: {}\r
+Access-Control-Allow-Origin: *\r
+Access-Control-Allow-Methods: GET, POST, OPTIONS\r
+Access-Control-Allow-Headers: content-type\r
+Cache-Control: no-store\r
+Connection: close\r
+\r
+{body}", body.len()).into_bytes()
 }
 
 async fn read_http_request(stream: &mut tokio::net::TcpStream) -> Result<String> {
@@ -138,7 +165,9 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> Result<String>
         if data.len() > HEADER_LIMIT {
             anyhow::bail!("HTTP headers too large");
         }
-        if let Some(pos) = data.windows(4).position(|w| w == b"\r\n\r\n") {
+        if let Some(pos) = data.windows(4).position(|w| w == b"\r
+\r
+") {
             header_end = pos + 4;
             break;
         }
@@ -203,9 +232,8 @@ async fn serve_ui(
         "/style.css" => ("200 OK", "text/css; charset=utf-8", UI_CSS.to_string()),
         "/app.js" => ("200 OK", "application/javascript; charset=utf-8", UI_JS.to_string()),
         "/api/node" => ("200 OK", "application/json; charset=utf-8", serde_json::json!({
-            "id": format_uid(node.identity.public.awe_id.as_bytes()),
+            "device_id": connection_device_id(&node.identity),
             "descriptor": node.node_descriptor(),
-            "username": node.identity.public.username.as_str(),
             "address": node.listen_addr.to_string(),
             "protocol": 1
         }).to_string()),
@@ -216,13 +244,13 @@ async fn serve_ui(
         "/api/status" => {
             let peers = node.closest_peers(node.identity.public.awe_id.as_bytes(), 64).await;
             let peer_json = peers.iter().map(|p| serde_json::json!({
-                "id": format_uid(&p.awe_id),
+                "device_id": { let digest = blake3::hash(format!("AWE/DEVICE/{}", format_uid(&p.awe_id)).as_bytes()); hex::encode(&digest.as_bytes()[..8]) },
                 "address": p.addresses.first().map(ToString::to_string).unwrap_or_else(|| "unknown".into()),
                 "last_seen": p.last_seen_unix
             })).collect::<Vec<_>>();
             ("200 OK", "application/json; charset=utf-8", serde_json::json!({
                 "product": "AWEp2P", "status": "online",
-                "node_id": format_uid(node.identity.public.awe_id.as_bytes()),
+                "device_id": connection_device_id(&node.identity),
                 "node_address": node.listen_addr.to_string(),
                 "transport": "AWE encrypted TCP", "ui": "connected", "peers": peer_json, "discovered_peers": peer_json.len(), "active_connections": node.active_peer_count().await
             }).to_string())
@@ -245,14 +273,17 @@ async fn serve_ui(
         "/api/federation" => {
             let state = federation_state.lock().map(|s| s.clone()).unwrap_or_default();
             ("200 OK", "application/json; charset=utf-8", serde_json::json!({
-                "format": state.format, "version": state.version, "local_node_id": state.local_node_id,\n                "device_id": connection_device_id(&node.identity),
+                "format": state.format, "version": state.version, "local_node_id": state.local_node_id,
+                "device_id": connection_device_id(&node.identity),
                 "data_centre_id": state.local_data_centre_id, "data_group_id": state.local_data_group_id,
                 "joined_data_centres": state.joined_data_centres, "joined_data_groups": state.joined_data_groups,
                 "bootstrap_endpoints": state.bootstrap_endpoints
             }).to_string())
         },
         "/api/federation/generate" if method == "POST" => {
-            let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+            let body = request.split("\r
+\r
+").nth(1).unwrap_or("");
             let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
             let kind = parsed.get("kind").and_then(|v| v.as_str()).unwrap_or("");
             let name = parsed.get("name").and_then(|v| v.as_str()).unwrap_or("AWE");
@@ -290,7 +321,9 @@ async fn serve_ui(
             }
         },
         "/api/federation/import" if method == "POST" => {
-            let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+            let body = request.split("\r
+\r
+").nth(1).unwrap_or("");
             let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
             let kind = parsed.get("kind").and_then(|v| v.as_str()).unwrap_or("");
             let content = parsed.get("content").and_then(|v| v.as_str()).unwrap_or("");
@@ -364,7 +397,9 @@ async fn serve_ui(
             "identity":"ed25519","transport":"x25519 + chacha20-poly1305","replay_protection":"enabled","a2p2_fixed_packet":1280
         }).to_string()),
         "/api/messenger/send" if method == "POST" => {
-            let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+            let body = request.split("\r
+\r
+").nth(1).unwrap_or("");
             let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
             let recipient = parsed.get("recipient").and_then(|v| v.as_str()).unwrap_or("").trim();
             let text = parsed.get("text").and_then(|v| v.as_str()).unwrap_or("").trim();
@@ -482,7 +517,9 @@ async fn serve_ui(
         }
         },
         "/api/storage/put" if method == "POST" => {
-            let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+            let body = request.split("\r
+\r
+").nth(1).unwrap_or("");
             let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
             let filename = parsed.get("filename").and_then(|v| v.as_str()).unwrap_or("object.bin").trim();
             let data_hex = parsed.get("data_hex").and_then(|v| v.as_str()).unwrap_or("").trim();
@@ -678,7 +715,9 @@ async fn serve_ui(
         }
         },
         "/api/storage/push" if method == "POST" => {
-            let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+            let body = request.split("\r
+\r
+").nth(1).unwrap_or("");
             let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
             let recipient = parsed.get("recipient").and_then(|v| v.as_str()).unwrap_or("").trim();
             let file_id_hex = parsed.get("file_id").and_then(|v| v.as_str()).unwrap_or("").trim();
