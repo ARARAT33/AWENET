@@ -3,8 +3,6 @@ const pages={dashboard:["Overview","Network-wide status at a glance"],node:["My 
 let live={status:"starting",node_id:"loading",node_address:"loading",transport:"loading",ui:"connecting",peers:[],node:{},storage:{},security:{},federation:{}};
 
 function apiBase(){
- const saved=localStorage.getItem("aweApiBase");
- if(saved)return saved.replace(/\/$/,"");
  if(location.protocol==="http:"||location.protocol==="https:")return location.origin;
  return "http://127.0.0.1:41800";
 }
@@ -90,7 +88,9 @@ function render(k){
   body=panel("Messenger",'<div class="peer-form"><input id="msgRecipient" placeholder="Recipient AWE ID"><input id="msgText" placeholder="Message"><button class="primary" id="sendMsg">Send</button></div><div id="msgState" class="muted" style="margin-top:8px">Messages are queued locally until transport delivery is available.</div>')+
   panel("Local message queue",'<div id="messageList" class="list"><div class="empty">Loading…</div></div>');
  } else if(k==="store"){
-  body='<div class="store-grid"><div class="card store-card"><div class="store-icon">◈</div><b>AWE Core</b><p>Core networking, identity, routing and node services.</p><span class="status"><i></i>Installed</span></div><div class="card store-card"><div class="store-icon">◎</div><b>Node Dashboard</b><p>Local management interface for your AWEp2P node.</p><span class="status"><i></i>Installed</span></div><div class="card store-card"><div class="store-icon">+</div><b>Modules</b><p>Future AWEStore packages will be managed here.</p><span class="pill">Catalog API needed</span></div></div>';
+  body=panel("AWEStore",'<div id="storeCatalog" class="store-grid"><div class="empty">Loading verified packages…</div></div>','<button class="secondary" id="storeRefresh">Refresh</button>')+
+  panel("Security",'<div class="notice">Only packages that pass AWE package integrity and developer-signature verification are shown. Installation grants only the capabilities you explicitly approve.</div>');
+
  } else if(k==="security"){
   body='<div class="grid">'+card("Identity",live.node_id,"Public node identity")+card("Transport",live.transport,"Network layer")+card("Peer count",live.peers.length,"Known peers")+card("Trust","Core-managed","No UI-only security state")+'</div>'+
   panel("Security model",'<div class="list"><div class="list-row"><span>Node identity</span><b>Rust core</b></div><div class="list-row"><span>Authentication</span><b>Core protocol</b></div><div class="list-row"><span>Transport</span><b>'+esc(live.transport)+'</b></div><div class="list-row"><span>Secrets</span><b>Local identity vault</b></div></div>');
@@ -99,8 +99,8 @@ function render(k){
   panel("Runtime diagnostics",'<div class="terminal"><div>$ GET /api/status</div><div class="green">200 · '+esc(live.status)+'</div><div>$ node</div><div class="green">'+esc(live.node_id)+'</div><div>$ peers</div><div class="green">'+live.peers.length+' known peer(s)</div></div>','<button class="primary" id="healthBtn">Run health check</button>')+
   panel("Result",'<div id="healthResult" class="notice">Press “Run health check” to query the live node health endpoint.</div>');
  } else if(k==="settings"){
-  body=panel("Node API",'<div class="peer-form"><input id="apiBase" placeholder="http://192.168.1.10:41800" value="'+esc(apiBase())+'"><button class="primary" id="saveApi">Save & Test</button></div><div class="muted" style="margin-top:8px">Leave empty for the bundled local desktop node. Android can point to a reachable node API.</div>')+
-  panel("Interface",'<div class="list"><div class="list-row"><span>Theme</span><b>System UI</b></div><div class="list-row"><span>Auto refresh</span><b>5 seconds</b></div><div class="list-row"><span>API mode</span><b>'+esc(apiBase()||"Local")+'</b></div></div>');
+  body=panel("Automatic runtime",'<div class="list"><div class="list-row"><span>Node API</span><b>'+esc(apiBase())+'</b></div><div class="list-row"><span>Connection</span><b>Automatic</b></div><div class="list-row"><span>Auto refresh</span><b>5 seconds</b></div><div class="list-row"><span>Storage</span><b>Node-managed</b></div></div>')+
+  panel("Identity & security",'<div class="notice">AWEp2P manages the local node, identity, transport and storage automatically. There is no manual API endpoint configuration in the product UI.</div>');
  }
  view.innerHTML='<div class="content"><div class="hero"><div><h1>'+p[0]+'</h1><p>'+p[1]+'</p></div><div class="actions"><button class="secondary" id="refreshBtn">Refresh</button></div></div>'+body+'</div>';
  bind(k);
@@ -110,8 +110,7 @@ function bind(k){
  const g=document.getElementById("goNetwork");if(g)g.onclick=()=>render("network");
  const pr=document.getElementById("peerRefresh");if(pr)pr.onclick=async()=>{await refresh();render("network")};
  const cb=document.getElementById("connectBtn");if(cb)cb.onclick=async()=>{const a=document.getElementById("peerAddress").value.trim();if(!a)return toast("Enter a node address");cb.disabled=true;try{const x=await api("/api/connect?address="+encodeURIComponent(a),{method:"POST"});toast("Bootstrap complete");await refresh();render("network")}catch(e){toast("Connection failed: "+e.message)}finally{cb.disabled=false}};
- const sa=document.getElementById("saveApi");if(sa)sa.onclick=async()=>{localStorage.setItem("aweApiBase",document.getElementById("apiBase").value.trim().replace(/\/$/,""));await refresh();render("settings");toast("API endpoint saved")};
- const ss=document.getElementById("saveStorage");if(ss)ss.onclick=()=>{localStorage.setItem("aweStoragePath",document.getElementById("storagePath").value.trim());toast("Storage preference saved")};
+ const sr=document.getElementById("storeRefresh");if(sr)sr.onclick=()=>render("store");
  const up=document.getElementById("uploadStorage");if(up)up.onclick=async()=>{const file=document.getElementById("storageFile").files[0],box=document.getElementById("storageUploadResult");if(!file)return toast("Choose a file first");if(file.size>64*1024*1024)return toast("Maximum upload size is 64 MB");up.disabled=true;try{const buf=await file.arrayBuffer(),bytes=new Uint8Array(buf);let hex="";for(const b of bytes)hex+=b.toString(16).padStart(2,"0");const r=await api("/api/storage/put",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({filename:file.name,data_hex:hex})});box.textContent="Stored: "+r.file_id+" · "+r.status+" · "+(r.sent_remote||0)+" remote replica transfers";document.getElementById("downloadFileId").value=r.file_id;await refresh();render("storage")}catch(e){box.textContent="Upload failed: "+e.message}finally{up.disabled=false}};
  const dl=document.getElementById("downloadStorage");if(dl)dl.onclick=async()=>{const id=document.getElementById("downloadFileId").value.trim(),box=document.getElementById("storageDownloadResult");if(!/^[0-9a-fA-F]{64}$/.test(id))return toast("Enter a valid 64-hex file ID");dl.disabled=true;try{const r=await api("/api/storage/get?file_id="+encodeURIComponent(id));const raw=r.data_hex||"";const bytes=new Uint8Array(raw.length/2);for(let i=0;i<bytes.length;i++)bytes[i]=parseInt(raw.slice(i*2,i*2+2),16);const blob=new Blob([bytes],{type:"application/octet-stream"}),a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=r.filename||"awep2p-file";a.click();URL.revokeObjectURL(a.href);box.textContent="Reconstructed and downloaded: "+r.filename+" · "+r.size+" bytes"}catch(e){box.textContent="Download failed: "+e.message}finally{dl.disabled=false}};
  const hb=document.getElementById("healthBtn");if(hb)hb.onclick=async()=>{const box=document.getElementById("healthResult");try{const x=await api("/api/health");box.innerHTML='<span class="status"><i></i>Health check passed</span><div class="detail" style="margin-top:8px">'+esc(JSON.stringify(x))+'</div>'}catch(e){box.textContent="Health check failed: "+e.message}};
@@ -121,7 +120,29 @@ function bind(k){
   const gg=document.getElementById("genDgc");if(gg)gg.onclick=()=>gen("dgc",{owner_data_centre_id:document.getElementById("fedOwnerDc").value.trim(),name:document.getElementById("fedGroupName").value.trim()||"AWE Data Group",data_centre_ids:document.getElementById("fedCentres").value.split(",").map(x=>x.trim()).filter(Boolean)});
   const imp=document.getElementById("importFed");if(imp)imp.onclick=async()=>{const file=document.getElementById("fedFile").files[0],box=document.getElementById("fedResult");if(!file)return toast("Choose a configuration file");imp.disabled=true;try{const content=await file.text(),kind=document.getElementById("fedKind").value,r=await api("/api/federation/import",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({kind,content})});if(r.status!=="imported")throw new Error(r.error||"import failed");box.textContent="Imported successfully. AWENET membership is now stored in this running node.";await refresh();render("federation");toast("AWENET configuration imported")}catch(e){box.textContent="Import failed: "+e.message}finally{imp.disabled=false}};
  if(k==="messenger")loadMessenger();
+ const sc=document.getElementById("storeCatalog");if(sc)loadStore();
  const sm=document.getElementById("sendMsg");if(sm)sm.onclick=async()=>{const recipient=document.getElementById("msgRecipient").value.trim(),message=document.getElementById("msgText").value.trim(),state=document.getElementById("msgState");if(!recipient||!message)return toast("Recipient and message are required");sm.disabled=true;try{const r=await api("/api/messenger/send",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({recipient,text:message})});state.textContent="Queued: "+r.message.id;document.getElementById("msgText").value="";await loadMessenger()}catch(e){state.textContent="Send failed: "+e.message}finally{sm.disabled=false}};
+}
+async function loadStore(){
+ const box=document.getElementById("storeCatalog");if(!box)return;
+ try{
+  const data=await api("/api/store/catalog");
+  const installed=new Map((data.installed||[]).map(x=>[x.id,x.version]));
+  const apps=data.apps||[];
+  if(!apps.length){box.innerHTML='<div class="empty">No verified packages are cached on this node yet.</div>';return}
+  box.innerHTML=apps.map(item=>{
+   const m=item.manifest||{}, perms=(m.permissions||[]).map(esc), current=installed.get(m.id);
+   const installedText=current?'<span class="status"><i></i>Installed '+esc(current)+'</span>':'<button class="primary store-install" data-hash="'+esc(item.package_hash)+'">Install</button>';
+   return '<div class="card store-card"><div class="store-icon">◈</div><b>'+esc(m.name||m.id)+'</b><p>'+esc(m.id)+' · v'+esc(m.version)+' · '+esc(m.kind)+' · '+esc(m.size)+' bytes</p><div class="muted">Permissions: '+(perms.length?perms.join(", "):"none")+'</div><div style="margin-top:12px">'+installedText+'</div></div>';
+  }).join("");
+  box.querySelectorAll(".store-install").forEach(btn=>btn.onclick=async()=>{
+   const item=apps.find(x=>x.package_hash===btn.dataset.hash);if(!item)return;
+   const perms=item.manifest?.permissions||[];
+   if(perms.length&&!confirm("This package requests: "+perms.join(", ")+"\n\nGrant these capabilities and install it?"))return;
+   btn.disabled=true;
+   try{const r=await api("/api/store/install",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({package_hash:btn.dataset.hash,granted_permissions:perms})});if(r.status!=="installed")throw new Error(r.error||"installation failed");toast("Installed "+r.app.id);await loadStore()}catch(e){toast("Install failed: "+e.message)}finally{btn.disabled=false}
+  });
+ }catch(e){box.innerHTML='<div class="empty">AWEStore unavailable: '+esc(e.message)+'</div>'}
 }
 function toast(t){const e=document.createElement("div");e.textContent=t;e.style="position:fixed;right:22px;bottom:22px;background:#111829;color:#fff;padding:11px 15px;border-radius:9px;font-size:11px;z-index:10";document.body.appendChild(e);setTimeout(()=>e.remove(),2200)}
 navs.forEach(n=>n.addEventListener("click",e=>{e.preventDefault();render(n.dataset.view)}));
