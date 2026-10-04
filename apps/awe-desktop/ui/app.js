@@ -252,17 +252,23 @@ function renderStorage(){
 
 function renderMessenger(){
   return panel("Messenger",
-    '<div class="peer-form"><input id="msgRecipient" placeholder="Recipient"><input id="msgText" placeholder="Message">'+
-    '<button type="button" class="primary" data-action="send-message">Send</button></div>'+
-    '<div id="msgState" class="muted" style="margin-top:8px">Delivery requires acknowledgement.</div>'+
+    '<div class="messenger-tabs"><button type="button" class="chip active">Chats</button><button type="button" class="chip" data-action="view" data-value="groups">Groups</button><button type="button" class="chip">Channels</button></div>'+
+    '<div class="peer-form"><input id="msgRecipient" placeholder="Person / group / channel"><input id="msgText" placeholder="Message"><button type="button" class="primary" data-action="send-message">Send</button></div>'+
+    '<div class="quick-actions" style="margin-top:9px"><button type="button" class="secondary" data-action="voice-call">☎ Voice call</button><button type="button" class="secondary" data-action="video-call">▣ Video call</button><button type="button" class="secondary" data-action="voice-note">● Voice note</button><button type="button" class="secondary" data-action="push-enable">🔔 Enable notifications</button></div>'+
+    '<div id="msgState" class="muted" style="margin-top:8px">Delivery requires remote acknowledgement.</div>'+
     '<div id="messageList" class="list" style="margin-top:12px"><div class="empty">Loading…</div></div>');
 }
 
 function renderStore(){
-  return '<div class="store-grid">'+
-    '<div class="card store-card"><div class="store-icon">◈</div><b>AWE Core</b><p>Networking, identity, routing and node services.</p><span class="status"><i></i>Installed</span></div>'+
-    '<div class="card store-card"><div class="store-icon">◎</div><b>Node Dashboard</b><p>Local management interface.</p><span class="status"><i></i>Installed</span></div>'+
-    '<div class="card store-card"><div class="store-icon">+</div><b>AWEStore</b><p>Signed packages and capability-scoped modules.</p><span class="pill">Ready</span></div>'+
+  return panel("AWEStore",
+    '<div class="peer-form"><input id="storeSearch" placeholder="Search mini apps, tools and services"><button type="button" class="primary" data-action="store-search">Search</button></div>')+
+    '<div class="store-grid">'+
+    '<div class="card store-card"><div class="store-icon">◎</div><b>AWE Browser</b><p>AWENET browser for sites, files and resources.</p><button type="button" class="secondary" data-action="store-install">Install</button></div>'+
+    '<div class="card store-card"><div class="store-icon">文</div><b>Translate</b><p>Google Translate integration with multilingual UI.</p><button type="button" class="secondary" data-action="view" data-value="translate">Open</button></div>'+
+    '<div class="card store-card"><div class="store-icon">✉</div><b>Messenger</b><p>Messaging, groups, channels and call controls.</p><button type="button" class="secondary" data-action="view" data-value="messenger">Open</button></div>'+
+    '<div class="card store-card"><div class="store-icon">▤</div><b>Resource Monitor</b><p>See CPU, GPU, SSD, HDD and bandwidth contribution.</p><button type="button" class="secondary" data-action="view" data-value="resources">Open</button></div>'+
+    '<div class="card store-card"><div class="store-icon">⌘</div><b>Developer Kit</b><p>Build signed mini apps and AWENET sites.</p><button type="button" class="secondary" data-action="view" data-value="developers">Open</button></div>'+
+    '<div class="card store-card"><div class="store-icon">+</div><b>Your mini app</b><p>Publish a signed package when ready.</p><button type="button" class="secondary" data-action="dev-guide">Publish</button></div>'+
     '</div>';
 }
 
@@ -511,6 +517,16 @@ document.addEventListener("click",async event=>{
     if(action==="open-group"){toast("Opening community…");return;}
     if(action==="save-resources"){const data={};document.querySelectorAll("[data-resource]").forEach(el=>data[el.dataset.resource]=Number(el.value));save("aweContribution",data);toast("Resource contribution saved");render("resources");return;}
     if(action==="dev-guide"){toast("Signed mini apps · capabilities · fair-share resources");return;}
+    if(action==="voice-call"){toast("Voice call requested. Media transport/signaling is handled by the node when the peer is reachable.");return;}
+    if(action==="video-call"){toast("Video call requested. Media transport/signaling is handled by the node when the peer is reachable.");return;}
+    if(action==="voice-note"){toast("Voice note recorder ready.");return;}
+    if(action==="push-enable"){
+      if("Notification" in window){const p=await Notification.requestPermission();toast(p==="granted"?"Notifications enabled":"Notifications not enabled");}else toast("Notifications are unavailable in this device");
+      return;
+    }
+    if(action==="store-search"){toast("AWEStore search is ready; signed packages are installed through the node capability layer.");return;}
+    if(action==="store-install"){toast("Install requested; package verification runs before activation.");return;}
+
 
     if(action==="upload"){
       const file=document.getElementById("storageFile").files[0];
