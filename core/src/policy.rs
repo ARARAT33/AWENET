@@ -20,11 +20,18 @@ pub struct NetworkPolicy {
     pub max_message_bytes: usize,
     pub max_shard_bytes: usize,
     pub max_bootstrap_peers: usize,
+    #[serde(default = "default_max_concurrent_work")]
     pub max_concurrent_work: usize,
+    #[serde(default = "default_max_peer_share_percent")]
     pub max_peer_share_percent: u8,
+    #[serde(default = "default_require_resource_declaration")]
     pub require_resource_declaration_for_hosted_features: bool,
     pub allowed_streams: Vec<u32>,
 }
+
+fn default_max_concurrent_work() -> usize { 8 }
+fn default_max_peer_share_percent() -> u8 { 25 }
+fn default_require_resource_declaration() -> bool { true }
 
 impl Default for NetworkPolicy {
     fn default() -> Self {
@@ -70,7 +77,8 @@ impl NetworkPolicy {
     }
 
     pub fn allows_hosted_feature(&self, declared_return_resources: bool) -> bool {
-        self.enabled && (!self.require_resource_declaration_for_hosted_features || declared_return_resources)
+        self.enabled
+            && (!self.require_resource_declaration_for_hosted_features || declared_return_resources)
     }
 
     pub fn peer_share_quota(&self, total_available: u64) -> u64 {
