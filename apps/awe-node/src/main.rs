@@ -13,6 +13,7 @@ use awep2p_core::network::{format_node_descriptor, Node};
 use awep2p_core::policy::{self, NetworkPolicy};
 use awep2p_core::reputation::NodeReputation;
 use awep2p_core::storage::{encode_shards, recover_shards, LocalNodeStore, StoragePolicy};
+use awep2p_core::store::{AppCapability, Store};
 use awep2p_core::supervisor::{PeerSupervisor, SupervisorConfig};
 use std::{
     collections::BTreeMap,
@@ -346,6 +347,37 @@ async fn serve_ui(
                 "application_transport":"authenticated peer data stream",
                 "messages": messenger.lock().map(|x| x.clone()).unwrap_or_default()
             }).to_string())
+        },
+        "/api/store/catalog" => {
+            let root = PathBuf::from(data_dir_for_api()).join("store");
+            match Store::open(&root).and_then(|store| store.catalog()) {
+                Ok(apps) => {
+                    let installed = fs::read_dir(root.join("installed")).ok().into_iter().flatten()
+                        .filter_map(|e| e.ok()).filter_map(|e| fs::read(e.path()).ok())
+                        .filter_map(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+                        .collect::<Vec<_>>();
+                    ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"ok","apps":apps,"installed":installed}).to_string())
+                }
+                Err(error) => ("500 Internal Server Error", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":error.to_string()}).to_string())
+            }
+        },
+        "/api/store/install" if method == "POST" => {
+            let body = request.split("\\r\\n\\r\\n").nth(1).unwrap_or("");
+            let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+            let hash = parsed.get("package_hash").and_then(|v| v.as_str()).unwrap_or("");
+            let granted = parsed.get("granted_permissions").cloned().unwrap_or_else(|| serde_json::json!([]));
+            let hash_bytes = hex::decode(hash).ok().and_then(|b| <[u8;32]>::try_from(b).ok());
+            let permissions: Result<Vec<AppCapability>, _> = serde_json::from_value(granted);
+            match (hash_bytes, permissions) {
+                (Some(hash), Ok(permissions)) => {
+                    let root = PathBuf::from(data_dir_for_api()).join("store");
+                    match Store::open(&root).and_then(|store| store.install(&hash, &permissions)) {
+                        Ok(app) => ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"installed","app":app}).to_string()),
+                        Err(error) => ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":error.to_string()}).to_string())
+                    }
+                }
+                _ => ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":"invalid package hash or permissions"}).to_string())
+            }
         },
         "/api/security" => ("200 OK", "application/json; charset=utf-8", serde_json::json!({
             "identity":"ed25519","transport":"x25519 + chacha20-poly1305","replay_protection":"enabled","a2p2_fixed_packet":1280
