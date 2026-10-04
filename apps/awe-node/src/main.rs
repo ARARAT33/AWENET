@@ -1540,62 +1540,66 @@ async fn run_product() -> Result<()> {
                         }
                         if message.get("kind").and_then(|v| v.as_str()) == Some("awe.group.v1") {
                             if let Ok(mut state) = dispatcher_community.lock() {
-                                let gid = message
-                                    .get("group_id")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("");
+                                let event = message.get("event").and_then(|v| v.as_str()).unwrap_or("");
                                 let sender_uid = format_uid(&sender);
-                                if let Some(g) = state["groups"].as_array_mut().and_then(|a| {
-                                    a.iter_mut()
-                                        .find(|g| g.get("id").and_then(|v| v.as_str()) == Some(gid))
-                                }) {
-                                    if g["members"]
-                                        .as_array()
-                                        .map(|a| {
-                                            a.iter()
-                                                .any(|v| v.as_str() == Some(sender_uid.as_str()))
-                                        })
-                                        .unwrap_or(false)
-                                    {
-                                        let mut item = message.clone();
-                                        if let Some(obj) = item.as_object_mut() {
-                                            obj.insert(
-                                                "sender".into(),
-                                                serde_json::json!(sender_uid),
-                                            );
+                                if event == "upsert" {
+                                    if let Some(group) = message.get("group").cloned() {
+                                        let owner = group.get("owner").and_then(|v| v.as_str()).unwrap_or("");
+                                        if owner == sender_uid {
+                                            let gid = group.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                                            if let Some(groups)=state.get_mut("groups").and_then(|v|v.as_array_mut()) {
+                                                if let Some(existing)=groups.iter_mut().find(|g|g.get("id").and_then(|v|v.as_str())==Some(gid)) {*existing=group;} else {groups.push(group);}
+                                            }
                                         }
-                                        if let Some(a) = g["messages"].as_array_mut() {
-                                            a.push(item);
-                                        }
+                                    }
+                                } else if event == "message" {
+                                    let gid=message.get("group_id").and_then(|v|v.as_str()).unwrap_or("");
+                                    if let Some(g)=state.get_mut("groups").and_then(|v|v.as_array_mut()).and_then(|a|a.iter_mut().find(|g|g.get("id").and_then(|v|v.as_str())==Some(gid))) {
+                                        let member=g.get("members").and_then(|v|v.as_array()).map(|a|a.iter().any(|v|v.as_str()==Some(sender_uid.as_str()))).unwrap_or(false);
+                                        if member {if let Some(m)=message.get("message").cloned(){if let Some(a)=g.get_mut("messages").and_then(|v|v.as_array_mut()){a.push(m);}}}
                                     }
                                 }
                             }
                             continue;
                         }
                         if message.get("kind").and_then(|v| v.as_str()) == Some("awe.channel.v1") {
-                            if let Ok(mut state) = dispatcher_community.lock() {
-                                let cid = message
-                                    .get("channel_id")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("");
-                                if let Some(ch) = state["channels"].as_array_mut().and_then(|a| {
-                                    a.iter_mut()
-                                        .find(|c| c.get("id").and_then(|v| v.as_str()) == Some(cid))
-                                }) {
-                                    let sender_uid = format_uid(&sender);
-                                    if ch["subscribers"]
-                                        .as_array()
-                                        .map(|a| {
-                                            a.iter()
-                                                .any(|v| v.as_str() == Some(sender_uid.as_str()))
-                                        })
-                                        .unwrap_or(false)
-                                    {
-                                        if let Some(item) = message.get("message").cloned() {
-                                            if let Some(a) = ch["messages"].as_array_mut() {
-                                                a.push(item);
+                            if let Ok(mut state)=dispatcher_community.lock() {
+                                let event=message.get("event").and_then(|v|v.as_str()).unwrap_or("");
+                                let sender_uid=format_uid(&sender);
+                                if event=="upsert" {
+                                    if let Some(channel)=message.get("channel").cloned() {
+                                        let owner=channel.get("owner").and_then(|v|v.as_str()).unwrap_or("");
+                                        if owner==sender_uid {
+                                            let cid=channel.get("id").and_then(|v|v.as_str()).unwrap_or("");
+                                            if let Some(chs)=state.get_mut("channels").and_then(|v|v.as_array_mut()) {
+                                                if let Some(existing)=chs.iter_mut().find(|c|c.get("id").and_then(|v|v.as_str())==Some(cid)){*existing=channel;}else{chs.push(channel);}
                                             }
                                         }
+                                    }
+                                } else if event=="subscribe" {
+                                    let cid=message.get("channel_id").and_then(|v|v.as_str()).unwrap_or("");
+                                    let subscriber=message.get("subscriber").and_then(|v|v.as_str()).unwrap_or(&sender_uid);
+                                    let mut sync:Option<serde_json::Value>=None;
+                                    if let Some(ch)=state.get_mut("channels").and_then(|v|v.as_array_mut()).and_then(|a|a.iter_mut().find(|c|c.get("id").and_then(|v|v.as_str())==Some(cid))) {
+                                        if ch.get("owner").and_then(|v|v.as_str())==Some(sender_uid.as_str()) {
+                                            continue;
+                                        }
+                                        if !ch.get("subscribers").and_then(|v|v.as_array()).map(|a|a.iter().any(|v|v.as_str()==Some(subscriber))).unwrap_or(false) {
+                                            if let Some(a)=ch.get_mut("subscribers").and_then(|v|v.as_array_mut()){a.push(serde_json::Value::String(subscriber.to_string()));}
+                                        }
+                                        if ch.get("owner").and_then(|v|v.as_str())==Some(sender_uid.as_str()){sync=Some(ch.clone());}
+                                    }
+                                    if let Some(ch)=sync {
+                                        if let Some(owner)=ch.get("owner").and_then(|v|v.as_str()).and_then(|x|hex::decode(x).ok()).and_then(|b|<[u8;32]>::try_from(b).ok()) {
+                                            let env=serde_json::json!({"kind":"awe.channel.v1","event":"upsert","channel":ch,"sender":sender_uid});
+                                            if let Ok(bytes)=serde_json::to_vec(&env){let _=dispatcher_node.send_to_peer(&owner,100,bytes).await;}
+                                        }
+                                    }
+                                } else if event=="message" {
+                                    let cid=message.get("channel_id").and_then(|v|v.as_str()).unwrap_or("");
+                                    if let Some(ch)=state.get_mut("channels").and_then(|v|v.as_array_mut()).and_then(|a|a.iter_mut().find(|c|c.get("id").and_then(|v|v.as_str())==Some(cid))) {
+                                        let subscriber=ch.get("subscribers").and_then(|v|v.as_array()).map(|a|a.iter().any(|v|v.as_str()==Some(sender_uid.as_str()))).unwrap_or(false);
+                                        if subscriber {if let Some(m)=message.get("message").cloned(){if let Some(a)=ch.get_mut("messages").and_then(|v|v.as_array_mut()){a.push(m);}}}
                                     }
                                 }
                             }
