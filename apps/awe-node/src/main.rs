@@ -13,7 +13,7 @@ use awep2p_core::messenger_runtime::{ContactId, Envelope as RuntimeEnvelope, Med
 use awep2p_core::network::{format_node_descriptor, Node};
 use awep2p_core::policy::{self, NetworkPolicy};
 use awep2p_core::reputation::NodeReputation;
-use awep2p_core::storage::{encode_shards, recover_shards, LocalNodeStore, StoragePolicy};
+use awep2p_core::storage::{decrypt_file, encode_shards, encrypt_file, recover_shards, LocalNodeStore, StoragePolicy};
 use awep2p_core::supervisor::{PeerSupervisor, SupervisorConfig};
 use std::{
     collections::BTreeMap,
@@ -37,6 +37,10 @@ type PendingMessengerAcks = Arc<Mutex<BTreeMap<String, u64>>>;
 type MessengerRuntimeState = Arc<Mutex<MessengerState>>;
 type PendingShards = Arc<Mutex<BTreeMap<[u8; 16], StorageShardTransfer>>>;
 type PolicyState = Arc<Mutex<NetworkPolicy>>;
+
+fn drive_key(identity: &Identity, file_id: &[u8; 32]) -> [u8; 32] {
+    *blake3::keyed_hash(&identity.export_secret(), file_id).as_bytes()
+}
 
 fn default_vault() -> PathBuf {
     if let Some(home) = env::var_os("HOME") {
@@ -493,6 +497,11 @@ async fn serve_ui(
                         } else {
                         let policy = StoragePolicy::for_file_size(data.len());
                         let file_id = *blake3::hash(&data).as_bytes();
+                        let encryption_key = drive_key(&node.identity, &file_id);
+                        let encrypted_data = match encrypt_file(&data, &encryption_key) {
+                            Ok(blob) => blob,
+                            Err(error) => return ("500 Internal Server Error", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":format!("private Drive encryption failed: {error}")}).to_string()),
+                        };
                         let peers = node.closest_peers(node.identity.public.awe_id.as_bytes(), 64).await;
                         let local_id = format_uid(node.identity.public.awe_id.as_bytes());
                         let mut node_ids = vec![local_id.clone()];
@@ -506,7 +515,7 @@ async fn serve_ui(
                         match awep2p_core::replication::build_plan_for_shards(file_id, &node_ids, policy.total_shards()) {
                             Err(error) => ("409 Conflict", "application/json; charset=utf-8",
                                 serde_json::json!({"status":"error","error":error,"discovered_nodes":node_ids.len()}).to_string()),
-                            Ok(plan) => match encode_shards(&data, &policy) {
+                            Ok(plan) => match encode_shards(&encrypted_data, &policy) {
                                 Err(error) => ("500 Internal Server Error", "application/json; charset=utf-8",
                                     serde_json::json!({"status":"error","error":error.to_string()}).to_string()),
                                 Ok(shards) => {
@@ -622,7 +631,10 @@ async fn serve_ui(
                                         "version": 1,
                                         "file_id": hex::encode(file_id),
                                         "filename": filename,
-                                        "original_size": data.len(),
+                                        "original_size": encrypted_data.len(),
+                                        "plaintext_size": data.len(),
+                                        "encrypted": true,
+                                        "encryption": "ChaCha20-Poly1305 / node-derived key",
                                         "shards": policy.total_shards(),
                                         "data_shards": policy.data_shards,
                                         "parity_shards": policy.parity_shards,
@@ -644,6 +656,9 @@ async fn serve_ui(
                                             "file_id": hex::encode(file_id),
                                             "filename": filename,
                                             "original_size": data.len(),
+                                            "plaintext_size": data.len(),
+                                            "encrypted": true,
+                                            "encryption": "ChaCha20-Poly1305 / node-derived key",
                                             "shards": 1000,
                                             "replicas": 3,
                                             "stored_local": stored_local,
@@ -839,13 +854,28 @@ async fn serve_ui(
                             Ok(mut data) => {
                                 let original_size = manifest.get("original_size").and_then(|v| v.as_u64()).unwrap_or(data.len() as u64) as usize;
                                 data.truncate(original_size);
+                                let is_encrypted = manifest.get("encrypted").and_then(|v| v.as_bool()).unwrap_or(false);
+                                let plaintext = if is_encrypted {
+                                    let Ok(file_id_bytes) = <[u8; 32]>::try_from(hex::decode(file_id_hex).unwrap_or_default().as_slice()) else {
+                                        return ("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"invalid file_id"}).to_string());
+                                    };
+                                    let key = drive_key(&node.identity, &file_id_bytes);
+                                    match decrypt_file(&data, &key) {
+                                        Ok(value) => value,
+                                        Err(error) => {
+                                            return ("403 Forbidden","application/json; charset=utf-8",serde_json::json!({"status":"error","error":format!("private Drive decryption failed: {error}")}).to_string());
+                                        }
+                                    }
+                                } else {
+                                    data
+                                };
                                 ("200 OK","application/json; charset=utf-8",
                                     serde_json::json!({
                                         "status":"reconstructed",
                                         "file_id":file_id_hex,
                                         "filename":manifest.get("filename").and_then(|v| v.as_str()).unwrap_or("object.bin"),
-                                        "size":data.len(),
-                                        "data_hex":hex::encode(data)
+                                        "size":plaintext.len(),
+                                        "data_hex":hex::encode(plaintext)
                                     }).to_string())
                             },
                             Err(error) => ("500 Internal Server Error","application/json; charset=utf-8",
