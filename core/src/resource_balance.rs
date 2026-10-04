@@ -114,9 +114,9 @@ impl ResourceBalancer {
     pub fn try_acquire(&mut self, key: impl Into<String>, request: ResourceRequest) -> Option<ResourceLease> {
         if request.cpu_slots == 0
             || request.cpu_slots > self.per_consumer_cpu_limit()
-            || request.memory_bytes > self.per_consumer_memory_limit()
-            || request.storage_bytes > self.per_consumer_storage_limit()
-            || request.bandwidth_bytes > self.capacity.bandwidth_bytes_per_sec
+            || (self.capacity.memory_bytes != 0 && request.memory_bytes > self.per_consumer_memory_limit())
+            || (self.capacity.storage_bytes != 0 && request.storage_bytes > self.per_consumer_storage_limit())
+            || (self.capacity.bandwidth_bytes_per_sec != 0 && request.bandwidth_bytes > self.capacity.bandwidth_bytes_per_sec)
         {
             return None;
         }
@@ -130,16 +130,16 @@ impl ResourceBalancer {
             bandwidth_bytes: current.bandwidth_bytes.saturating_add(request.bandwidth_bytes),
         };
         if next.cpu_slots > self.per_consumer_cpu_limit()
-            || next.memory_bytes > self.per_consumer_memory_limit()
-            || next.storage_bytes > self.per_consumer_storage_limit()
+            || (self.capacity.memory_bytes != 0 && next.memory_bytes > self.per_consumer_memory_limit())
+            || (self.capacity.storage_bytes != 0 && next.storage_bytes > self.per_consumer_storage_limit())
         {
             return None;
         }
 
         let total = self.usage();
         let capacity_ok = total.cpu_slots.saturating_add(request.cpu_slots) <= self.capacity.cpu_slots
-            && total.memory_bytes.saturating_add(request.memory_bytes) <= self.capacity.memory_bytes
-            && total.storage_bytes.saturating_add(request.storage_bytes) <= self.capacity.storage_bytes;
+            && (self.capacity.memory_bytes == 0 || total.memory_bytes.saturating_add(request.memory_bytes) <= self.capacity.memory_bytes)
+            && (self.capacity.storage_bytes == 0 || total.storage_bytes.saturating_add(request.storage_bytes) <= self.capacity.storage_bytes);
         if !capacity_ok {
             return None;
         }
