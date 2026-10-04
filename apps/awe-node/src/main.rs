@@ -1740,7 +1740,9 @@ async fn run_product() -> Result<()> {
                                 let sync_node = dispatcher_node.clone();
                                 tokio::spawn(async move {
                                     let peers = sync_node.active_peers().await;
-                                    if let Some(target) = peers.into_iter().find(|p| format_uid(p) == target_uid) {
+                                    if let Some(target) =
+                                        peers.into_iter().find(|p| format_uid(p) == target_uid)
+                                    {
                                         let _ = sync_node.send_to_peer(&target, 100, bytes).await;
                                     }
                                 });
