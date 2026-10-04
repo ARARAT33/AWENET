@@ -483,7 +483,7 @@ document.addEventListener("click",async event=>{
     }
     if(action==="open-saved"){
       const item=store("aweSaved",[])[Number(button.dataset.index)];
-      if(item?.url) window.open(item.url,"_blank"); return;
+      if(item?.url){render("browser");setTimeout(()=>browserOpen(item.url),0);} return;
     }
     if(action==="choose-node-folder"){
       const input=document.getElementById("folderFiles");
