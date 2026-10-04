@@ -3,6 +3,7 @@ use awep2p_core::data_plane::{
     StorageShardAck, StorageShardRequest, StorageShardTransfer, STORAGE_STREAM,
 };
 use awep2p_core::diagnostics::{NodeDiagnostics, NodeMetrics};
+use awep2p_core::host::{AweHost, HostPolicy};
 use awep2p_core::federation::{
     self, AweNetConfig, AweNodeConfig, DataCentreConfig, DataGroupConfig,
 };
@@ -36,6 +37,7 @@ type PendingAcks = Arc<Mutex<BTreeMap<[u8; 16], StorageShardAck>>>;
 type PendingShards = Arc<Mutex<BTreeMap<[u8; 16], StorageShardTransfer>>>;
 type PolicyState = Arc<Mutex<NetworkPolicy>>;
 type CommunityState = Arc<Mutex<serde_json::Value>>;
+type HostState = Arc<Mutex<AweHost>>;
 
 fn default_vault() -> PathBuf {
     if let Some(home) = env::var_os("HOME") {
@@ -182,16 +184,49 @@ async fn serve_ui(
     pending_shards: PendingShards,
     policy_state: PolicyState,
     community: CommunityState,
+    host: HostState,
 ) -> Result<()> {
     let request = read_http_request(&mut stream).await?;
     let request_line = request.lines().next().unwrap_or("");
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or("GET");
-    let path = parts.next().unwrap_or("/").split('?').next().unwrap_or("/");
+    let target = parts.next().unwrap_or("/");
+    let path = target.split('?').next().unwrap_or("/");
     let (status, mime, body) = match path {
         "/" | "/index.html" => ("200 OK", "text/html; charset=utf-8", UI_HTML.to_string()),
         "/style.css" => ("200 OK", "text/css; charset=utf-8", UI_CSS.to_string()),
         "/app.js" => ("200 OK", "application/javascript; charset=utf-8", UI_JS.to_string()),
+        "/api/sites" => {
+            let query = target.split('?').nth(1).unwrap_or("");
+            let domain = query.split('&').find_map(|p| p.strip_prefix("domain=")).unwrap_or("").replace("%2E",".").replace("%2e",".");
+            let host_root = PathBuf::from(data_dir_for_api()).join("host");
+            let sites = fs::read_dir(&host_root).ok().into_iter().flatten()
+                .filter_map(|e| e.ok()).filter_map(|e| fs::read(e.path()).ok())
+                .filter_map(|b| serde_json::from_slice::<awep2p_core::host::SiteManifest>(&b).ok())
+                .filter(|m| domain.is_empty() || m.domain == domain)
+                .map(|m| serde_json::json!({"domain":m.domain,"version":m.version,"root_hash":hex::encode(m.root_hash),"files":m.files.len()}))
+                .collect::<Vec<_>>();
+            ("200 OK","application/json; charset=utf-8",serde_json::json!({"status":"ok","sites":sites}).to_string())
+        },
+        "/api/sites/content" => {
+            let query = target.split('?').nth(1).unwrap_or("");
+            let domain = query.split('&').find_map(|p| p.strip_prefix("domain=")).unwrap_or("").replace("%2E",".").replace("%2e",".");
+            let web_path = query.split('&').find_map(|p| p.strip_prefix("path=")).unwrap_or("/").replace("%2F","/").replace("%2f","/");
+            if domain.is_empty() {
+                ("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"domain is required"}).to_string())
+            } else {
+                match host.lock() {
+                    Ok(mut h) => match h.load_manifest(&domain).and_then(|m| {
+                        let ct=m.files.iter().find(|f| f.path==awep2p_core::host::normalize_path(&web_path).unwrap_or("/index.html")).map(|f| f.content_type.clone()).unwrap_or_else(||"application/octet-stream".into());
+                        h.get(&m,&web_path).map(|b|(b,ct))
+                    }) {
+                        Ok((bytes,content_type)) => ("200 OK","application/json; charset=utf-8",serde_json::json!({"status":"ok","domain":domain,"path":web_path,"content_type":content_type,"data_base64":base64::Engine::encode(&base64::engine::general_purpose::STANDARD,&bytes)}).to_string()),
+                        Err(e) => ("404 Not Found","application/json; charset=utf-8",serde_json::json!({"status":"error","error":e.to_string()}).to_string())
+                    },
+                    Err(_) => ("500 Internal Server Error","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"host unavailable"}).to_string())
+                }
+            }
+        },
         "/api/node" => ("200 OK", "application/json; charset=utf-8", serde_json::json!({
             "id": format_uid(node.identity.public.awe_id.as_bytes()),
             "descriptor": node.node_descriptor(),
@@ -1391,6 +1426,9 @@ async fn run_product() -> Result<()> {
             }
         }
     });
+    let host_root = data_dir.join("host");
+    fs::create_dir_all(&host_root)?;
+    let host: HostState = Arc::new(Mutex::new(AweHost::open(&host_root, storage_quota, HostPolicy::default())?));
     let pending_acks: PendingAcks = Arc::new(Mutex::new(BTreeMap::new()));
     let pending_shards: PendingShards = Arc::new(Mutex::new(BTreeMap::new()));
     let federation_path = data_dir.join("awenet.json");
@@ -1919,6 +1957,7 @@ async fn run_product() -> Result<()> {
         let api_federation_path = federation_path.clone();
         let api_policy = policy_state.clone();
         let api_community = community.clone();
+        let api_host = host.clone();
         tokio::spawn(async move {
             if let Err(e) = serve_ui(
                 stream,
@@ -1931,6 +1970,7 @@ async fn run_product() -> Result<()> {
                 api_pending_shards,
                 api_policy,
                 api_community,
+                api_host,
             )
             .await
             {
