@@ -394,6 +394,94 @@ async fn serve_ui(
                 }
             }
         },
+        "/api/groups" => {
+            let groups = community.lock().map(|s| s.get("groups").cloned().unwrap_or_else(|| serde_json::json!([]))).unwrap_or_else(|_| serde_json::json!([]));
+            ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"ok","groups":groups}).to_string())
+        },
+        "/api/groups/create" if method == "POST" => {
+            let body=request.split("\r\n\r\n").nth(1).unwrap_or("");
+            let p:serde_json::Value=serde_json::from_str(body).unwrap_or_default();
+            let title=p.get("title").and_then(|v|v.as_str()).unwrap_or("").trim().to_string();
+            let mut members=p.get("members").and_then(|v|v.as_array()).cloned().unwrap_or_default().into_iter().filter_map(|v|v.as_str().map(str::to_string)).filter(|v|!v.is_empty()).collect::<Vec<_>>();
+            let local=format_uid(node.identity.public.awe_id.as_bytes());
+            if title.is_empty(){("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"title is required"}).to_string())}else{
+                if !members.contains(&local){members.push(local.clone());} members.sort();members.dedup();
+                let id=format!("gid-{}",hex::encode(&blake3::hash(format!("{}:{}:{}",local,title,now_unix()).as_bytes()).as_bytes()[..12]));
+                let group=serde_json::json!({"id":id,"title":title,"owner":local,"members":members,"created_at":now_unix(),"messages":[]});
+                if let Ok(mut s)=community.lock(){if let Some(a)=s.get_mut("groups").and_then(|v|v.as_array_mut()){a.push(group.clone());}}
+                let env=serde_json::json!({"kind":"awe.group.v1","event":"upsert","group":group,"sender":format_uid(node.identity.public.awe_id.as_bytes())});
+                let members=group.get("members").and_then(|v|v.as_array()).cloned().unwrap_or_default(); let mut delivered=0usize;
+                if let Ok(payload)=serde_json::to_vec(&env){for peer in node.peers().await{let pid=format_uid(&peer.awe_id);if pid!=local&&members.iter().any(|v|v.as_str()==Some(pid.as_str())){if node.send_to_peer(&peer.awe_id,100,payload.clone()).await.is_ok(){delivered+=1;}}}}
+                ("200 OK","application/json; charset=utf-8",serde_json::json!({"status":"created","group":group,"delivered_members":delivered}).to_string())
+            }
+        },
+        "/api/groups/send" if method == "POST" => {
+            let body=request.split("\r\n\r\n").nth(1).unwrap_or(""); let p:serde_json::Value=serde_json::from_str(body).unwrap_or_default();
+            let gid=p.get("group_id").and_then(|v|v.as_str()).unwrap_or("").trim(); let text=p.get("text").and_then(|v|v.as_str()).unwrap_or("").trim(); let local=format_uid(node.identity.public.awe_id.as_bytes());
+            if gid.is_empty()||text.is_empty(){("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"group_id and text are required"}).to_string())}else{
+                let group=community.lock().ok().and_then(|s|s.get("groups").and_then(|v|v.as_array()).and_then(|a|a.iter().find(|g|g.get("id").and_then(|v|v.as_str())==Some(gid)).cloned()));
+                match group{
+                    None=>("404 Not Found","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"group not found"}).to_string()),
+                    Some(group) if !group.get("members").and_then(|v|v.as_array()).map(|a|a.iter().any(|v|v.as_str()==Some(local.as_str()))).unwrap_or(false)=>("403 Forbidden","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"not a group member"}).to_string()),
+                    Some(group)=>{
+                        let timestamp=now_unix(); let message=serde_json::json!({"id":hex::encode(&blake3::hash(format!("group:{}:{}:{}",gid,local,timestamp).as_bytes()).as_bytes()[..16]),"sender":local,"text":text,"timestamp":timestamp});
+                        if let Ok(mut s)=community.lock(){if let Some(g)=s.get_mut("groups").and_then(|v|v.as_array_mut()).and_then(|a|a.iter_mut().find(|g|g.get("id").and_then(|v|v.as_str())==Some(gid))){if let Some(a)=g.get_mut("messages").and_then(|v|v.as_array_mut()){a.push(message.clone());}}}
+                        let env=serde_json::json!({"kind":"awe.group.v1","event":"message","group_id":gid,"message":message,"sender":local}); let members=group.get("members").and_then(|v|v.as_array()).cloned().unwrap_or_default(); let mut delivered=0usize;
+                        if let Ok(payload)=serde_json::to_vec(&env){for peer in node.peers().await{let pid=format_uid(&peer.awe_id);if pid!=local&&members.iter().any(|v|v.as_str()==Some(pid.as_str())){if node.send_to_peer(&peer.awe_id,100,payload.clone()).await.is_ok(){delivered+=1;}}}}
+                        ("200 OK","application/json; charset=utf-8",serde_json::json!({"status":"sent","message":message,"delivered_members":delivered}).to_string())
+                    }
+                }
+            }
+        },
+        "/api/channels" => {
+            let channels=community.lock().map(|s|s.get("channels").cloned().unwrap_or_else(||serde_json::json!([]))).unwrap_or_else(|_|serde_json::json!([]));
+            ("200 OK","application/json; charset=utf-8",serde_json::json!({"status":"ok","channels":channels}).to_string())
+        },
+        "/api/channels/create" if method == "POST" => {
+            let body=request.split("\r\n\r\n").nth(1).unwrap_or(""); let p:serde_json::Value=serde_json::from_str(body).unwrap_or_default(); let title=p.get("title").and_then(|v|v.as_str()).unwrap_or("").trim().to_string(); let local=format_uid(node.identity.public.awe_id.as_bytes());
+            if title.is_empty(){("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"title is required"}).to_string())}else{
+                let id=format!("cid-{}",hex::encode(&blake3::hash(format!("{}:{}:{}",local,title,now_unix()).as_bytes()).as_bytes()[..12])); let channel=serde_json::json!({"id":id,"title":title,"owner":local,"subscribers":[local],"created_at":now_unix(),"messages":[]});
+                if let Ok(mut s)=community.lock(){if let Some(a)=s.get_mut("channels").and_then(|v|v.as_array_mut()){a.push(channel.clone());}}
+                let env=serde_json::json!({"kind":"awe.channel.v1","event":"upsert","channel":channel,"sender":local}); let mut delivered=0usize;
+                if let Ok(payload)=serde_json::to_vec(&env){for peer in node.peers().await{if node.send_to_peer(&peer.awe_id,100,payload.clone()).await.is_ok(){delivered+=1;}}}
+                ("200 OK","application/json; charset=utf-8",serde_json::json!({"status":"created","channel":channel,"delivered_peers":delivered}).to_string())
+            }
+        },
+        "/api/channels/subscribe" if method == "POST" => {
+            let body=request.split("\r\n\r\n").nth(1).unwrap_or(""); let p:serde_json::Value=serde_json::from_str(body).unwrap_or_default(); let cid=p.get("channel_id").and_then(|v|v.as_str()).unwrap_or("").trim(); let local=format_uid(node.identity.public.awe_id.as_bytes());
+            let channel=community.lock().ok().and_then(|s|s.get("channels").and_then(|v|v.as_array()).and_then(|a|a.iter().find(|c|c.get("id").and_then(|v|v.as_str())==Some(cid)).cloned()));
+            match channel{
+                None=>("404 Not Found","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"channel not found"}).to_string()),
+                Some(channel)=>{
+                    let owner=channel.get("owner").and_then(|v|v.as_str()).unwrap_or("");
+                    let owner_id=hex::decode(owner).ok().and_then(|b|<[u8;32]>::try_from(b).ok());
+                    match owner_id{
+                        None=>("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"invalid channel owner"}).to_string()),
+                        Some(owner_id)=>{
+                            if owner==local{return ("200 OK","application/json; charset=utf-8",serde_json::json!({"status":"already_subscribed"}).to_string());}
+                            let env=serde_json::json!({"kind":"awe.channel.v1","event":"subscribe","channel_id":cid,"subscriber":local,"sender":local});
+                            match serde_json::to_vec(&env){Ok(payload)=>match node.send_to_peer(&owner_id,100,payload).await{Ok(_)=>( "200 OK","application/json; charset=utf-8",serde_json::json!({"status":"requested","channel_id":cid}).to_string()),Err(e)=>( "502 Bad Gateway","application/json; charset=utf-8",serde_json::json!({"status":"error","error":e.to_string()}).to_string())},Err(e)=>( "500 Internal Server Error","application/json; charset=utf-8",serde_json::json!({"status":"error","error":e.to_string()}).to_string())}
+                        }
+                    }
+                }
+            }
+        },
+        "/api/channels/publish" if method == "POST" => {
+            let body=request.split("\r\n\r\n").nth(1).unwrap_or(""); let p:serde_json::Value=serde_json::from_str(body).unwrap_or_default(); let cid=p.get("channel_id").and_then(|v|v.as_str()).unwrap_or("").trim(); let text=p.get("text").and_then(|v|v.as_str()).unwrap_or("").trim(); let local=format_uid(node.identity.public.awe_id.as_bytes());
+            let channel=community.lock().ok().and_then(|s|s.get("channels").and_then(|v|v.as_array()).and_then(|a|a.iter().find(|c|c.get("id").and_then(|v|v.as_str())==Some(cid)).cloned()));
+            match channel{
+                None=>("404 Not Found","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"channel not found"}).to_string()),
+                Some(channel) if channel.get("owner").and_then(|v|v.as_str())!=Some(local.as_str())=>("403 Forbidden","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"only channel owner may publish"}).to_string()),
+                Some(channel) if text.is_empty()=>("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"text is required"}).to_string()),
+                Some(channel)=>{
+                    let message=serde_json::json!({"id":hex::encode(&blake3::hash(format!("channel:{}:{}:{}",cid,local,now_unix()).as_bytes()).as_bytes()[..16]),"sender":local,"text":text,"timestamp":now_unix()});
+                    if let Ok(mut s)=community.lock(){if let Some(c)=s.get_mut("channels").and_then(|v|v.as_array_mut()).and_then(|a|a.iter_mut().find(|c|c.get("id").and_then(|v|v.as_str())==Some(cid))){if let Some(a)=c.get_mut("messages").and_then(|v|v.as_array_mut()){a.push(message.clone());}}}
+                    let env=serde_json::json!({"kind":"awe.channel.v1","event":"message","channel_id":cid,"message":message,"sender":local}); let subs=channel.get("subscribers").and_then(|v|v.as_array()).cloned().unwrap_or_default(); let mut delivered=0usize;
+                    if let Ok(payload)=serde_json::to_vec(&env){for peer in node.peers().await{let pid=format_uid(&peer.awe_id);if pid!=local&&subs.iter().any(|v|v.as_str()==Some(pid.as_str())){if node.send_to_peer(&peer.awe_id,100,payload.clone()).await.is_ok(){delivered+=1;}}}}
+                    ("200 OK","application/json; charset=utf-8",serde_json::json!({"status":"published","message":message,"delivered_subscribers":delivered}).to_string())
+                }
+            }
+        },
         "/api/messenger" => {
             ("200 OK", "application/json; charset=utf-8", serde_json::json!({
                 "transport":"AWE encrypted TCP",
