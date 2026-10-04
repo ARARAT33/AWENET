@@ -516,7 +516,7 @@ async fn serve_ui(
                     let message=serde_json::json!({"id":hex::encode(&blake3::hash(format!("channel:{}:{}:{}",cid,local,now_unix()).as_bytes()).as_bytes()[..16]),"sender":local,"text":text,"timestamp":now_unix()});
                     if let Ok(mut s)=community.lock(){if let Some(c)=s.get_mut("channels").and_then(|v|v.as_array_mut()).and_then(|a|a.iter_mut().find(|c|c.get("id").and_then(|v|v.as_str())==Some(cid))){if let Some(a)=c.get_mut("messages").and_then(|v|v.as_array_mut()){a.push(message.clone());}}}
                     let env=serde_json::json!({"kind":"awe.channel.v1","event":"message","channel_id":cid,"message":message,"sender":local}); let subs=channel.get("subscribers").and_then(|v|v.as_array()).cloned().unwrap_or_default(); let mut delivered=0usize;
-                    if let Ok(payload)=serde_json::to_vec(&env){for peer in node.peers().await{let pid=format_uid(&peer.awe_id);if pid!=local&&subs.iter().any(|v|v.as_str()==Some(pid.as_str())){if node.send_to_peer_confirmed(&peer.awe_id,100,payload.clone()).await.is_ok(){delivered+=1;}}}}
+                    if let Ok(payload)=serde_json::to_vec(&env){for peer in node.peers().await{let pid=format_uid(&peer.awe_id);if pid!=local&&subs.iter().any(|v|v.as_str()==Some(pid.as_str())){let send_node=node.clone();let peer_id=peer.awe_id;let bytes=payload.clone();tokio::spawn(async move{let _=send_node.send_to_peer(&peer_id,100,bytes).await;});delivered+=1;}}}
                     ("200 OK","application/json; charset=utf-8",serde_json::json!({"status":"published","message":message,"delivered_subscribers":delivered}).to_string())
                 }
             }
