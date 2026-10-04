@@ -471,7 +471,7 @@ document.addEventListener("click",async event=>{
     }
     if(action==="open-site"){
       const item=store("aweSites",[])[Number(button.dataset.index)];
-      if(item?.url) window.open(item.url,"_blank"); return;
+      if(item?.url){render("browser");setTimeout(()=>browserOpen(item.url),0);} return;
     }
     if(action==="add-saved"){
       const titleValue=document.getElementById("saveTitle").value.trim(),url=document.getElementById("saveUrl").value.trim();
@@ -505,7 +505,7 @@ document.addEventListener("click",async event=>{
     if(action==="browser-back"){if(browserIndex>0){browserIndex--;const u=browserHistory[browserIndex];render("browser");setTimeout(()=>browserOpen(u),0);}return;}
     if(action==="browser-forward"){if(browserIndex<browserHistory.length-1){browserIndex++;const u=browserHistory[browserIndex];render("browser");setTimeout(()=>browserOpen(u),0);}return;}
     if(action==="browser-reload"){const frame=document.getElementById("browserFrame");if(frame?.src)frame.contentWindow?.location.reload();return;}
-    if(action==="translate-open"){const t=document.getElementById("translateText").value.trim(),from=document.getElementById("translateFrom").value,to=document.getElementById("translateTo").value;if(!t){toast("Enter text to translate");return;}window.open("https://translate.google.com/?sl="+encodeURIComponent(from)+"&tl="+encodeURIComponent(to)+"&text="+encodeURIComponent(t)+"&op=translate","_blank");return;}
+    if(action==="translate-open"){const t=document.getElementById("translateText").value.trim(),from=document.getElementById("translateFrom").value,to=document.getElementById("translateTo").value;if(!t){toast("Enter text to translate");return;}const url="https://translate.google.com/?sl="+encodeURIComponent(from)+"&tl="+encodeURIComponent(to)+"&text="+encodeURIComponent(t)+"&op=translate";render("browser");setTimeout(()=>browserOpen(url),0);return;}
     if(action==="translate-swap"){const a=document.getElementById("translateFrom"),b=document.getElementById("translateTo");if(a&&b&&a.value!=="auto"){const v=a.value;a.value=b.value;b.value=v;}return;}
     if(action==="translate-page"){const u=document.getElementById("translateUrl").value.trim();if(u){render("browser");setTimeout(()=>browserOpen(u),0);}return;}
     if(action==="add-group"){const n=document.getElementById("groupName").value.trim();if(!n){toast("Enter a name");return;}const items=store("aweGroups",[]);items.push({name:n,type:document.getElementById("groupType").value,members:1,created:Date.now()});save("aweGroups",items);toast("Community added");render("groups");return;}
