@@ -468,8 +468,16 @@ async fn serve_ui(
                                 let env = serde_json::json!({"kind":"awe.channel.v1","event":"subscribe","channel_id":cid,"subscriber":local,"sender":local});
                                 match serde_json::to_vec(&env) {
                                     Ok(payload) => {
-                                        tokio::spawn(async move { let _ = node.send_to_peer(&owner_id, 100, payload).await; });
-                                        ("202 Accepted", "application/json; charset=utf-8", serde_json::json!({"status":"requested","channel_id":cid}).to_string())
+                                        match tokio::time::timeout(
+                                            std::time::Duration::from_secs(3),
+                                            node.send_to_peer(&owner_id, 100, payload),
+                                        )
+                                        .await
+                                        {
+                                            Ok(Ok(_)) => ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"requested","channel_id":cid}).to_string()),
+                                            Ok(Err(e)) => ("502 Bad Gateway", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":e.to_string()}).to_string()),
+                                            Err(_) => ("504 Gateway Timeout", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":"channel owner did not accept subscription in time"}).to_string()),
+                                        }
                                     }
                                     Err(e) => ("500 Internal Server Error", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":e.to_string()}).to_string())
                                 }
