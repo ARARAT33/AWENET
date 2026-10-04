@@ -346,8 +346,10 @@ async fn serve_ui(
                 .and_then(|p| p.split('?').nth(1))
                 .and_then(|q| q.split('&').find_map(|v| v.strip_prefix("since=")))
                 .and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+            let local_uid = format_uid(node.identity.public.awe_id.as_bytes());
             let signals = messenger.lock().map(|log| log.iter().filter(|m| {
                 m.get("kind").and_then(|v| v.as_str()) == Some("awe.call.v1")
+                    && m.get("recipient").and_then(|v| v.as_str()) == Some(local_uid.as_str())
                     && m.get("timestamp").and_then(|v| v.as_u64()).unwrap_or(0) > since
             }).cloned().collect::<Vec<_>>()).unwrap_or_default();
             ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"ok","signals":signals}).to_string())
