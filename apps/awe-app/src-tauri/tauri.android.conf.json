@@ -1,1 +1,17 @@
-{"bundle":{"active":true},"app":{"windows":[{"title":"AWEp2P","width":420,"height":820,"resizable":true}]}}
+{
+  "bundle": {
+    "active": true,
+    "externalBin": [],
+    "resources": []
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "AWEp2P",
+        "width": 420,
+        "height": 820,
+        "resizable": true
+      }
+    ]
+  }
+}
