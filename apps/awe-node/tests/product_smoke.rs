@@ -201,6 +201,116 @@ fn three_node_product_smoke() {
             thread::sleep(Duration::from_millis(100));
         }
 
+        let group_create = post(
+            "127.0.0.1:46201",
+            "/api/groups/create",
+            &format!(r#"{{"title":"E2E Group","members":["{node2_id}"]}}"#),
+        );
+        assert!(
+            group_create.contains(r#""status":"created""#),
+            "group create: {group_create}"
+        );
+        let group: serde_json::Value =
+            serde_json::from_str(&group_create).expect("group create json");
+        let group_id = group
+            .get("group")
+            .and_then(|g| g.get("id"))
+            .and_then(|v| v.as_str())
+            .expect("group id");
+        let group_sync_deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let groups = get("127.0.0.1:46202", "/api/groups");
+            if groups.contains(group_id) && groups.contains("E2E Group") {
+                break;
+            }
+            if Instant::now() >= group_sync_deadline {
+                panic!("group sync not observed: {groups}");
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        let group_send = post(
+            "127.0.0.1:46201",
+            "/api/groups/send",
+            &format!(r#"{{"group_id":"{group_id}","text":"AWEP2P-E2E-GROUP"}}"#),
+        );
+        assert!(
+            group_send.contains(r#""status":"sent""#),
+            "group send: {group_send}"
+        );
+        let group_message_deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let groups = get("127.0.0.1:46202", "/api/groups");
+            if groups.contains("AWEP2P-E2E-GROUP") {
+                break;
+            }
+            if Instant::now() >= group_message_deadline {
+                panic!("group message not observed: {groups}");
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+
+        let channel_create = post(
+            "127.0.0.1:46201",
+            "/api/channels/create",
+            r#"{"title":"E2E Channel"}"#,
+        );
+        assert!(
+            channel_create.contains(r#""status":"created""#),
+            "channel create: {channel_create}"
+        );
+        let channel: serde_json::Value =
+            serde_json::from_str(&channel_create).expect("channel create json");
+        let channel_id = channel
+            .get("channel")
+            .and_then(|g| g.get("id"))
+            .and_then(|v| v.as_str())
+            .expect("channel id");
+        let channel_sync_deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let channels = get("127.0.0.1:46202", "/api/channels");
+            if channels.contains(channel_id) && channels.contains("E2E Channel") {
+                break;
+            }
+            if Instant::now() >= channel_sync_deadline {
+                panic!("channel sync not observed: {channels}");
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        let subscribe = post(
+            "127.0.0.1:46202",
+            "/api/channels/subscribe",
+            &format!(r#"{{"channel_id":"{channel_id}"}}"#),
+        );
+        assert!(
+            subscribe.contains(r#""status":"subscribed""#),
+            "subscribe: {subscribe}"
+        );
+        let subscriber_channels = get("127.0.0.1:46202", "/api/channels");
+        assert!(
+            subscriber_channels.contains(&format!(r#""{node2_id}""#)),
+            "subscriber state: {subscriber_channels}"
+        );
+        let publish = post(
+            "127.0.0.1:46201",
+            "/api/channels/publish",
+            &format!(r#"{{"channel_id":"{channel_id}","text":"AWEP2P-E2E-CHANNEL"}}"#),
+        );
+        assert!(
+            publish.contains(r#""status":"published""#),
+            "publish: {publish}"
+        );
+        let channel_message_deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let channels = get("127.0.0.1:46202", "/api/channels");
+            if channels.contains("AWEP2P-E2E-CHANNEL") {
+                break;
+            }
+            if Instant::now() >= channel_message_deadline {
+                panic!("channel message not observed: {channels}");
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+
         let ui = get("127.0.0.1:46201", "/");
         assert!(ui.contains("<title>AWEp2P</title>"), "desktop UI: {ui}");
         let store = get("127.0.0.1:46201", "/api/store/catalog");

@@ -1,5 +1,5 @@
 const view=document.getElementById("view"),title=document.getElementById("pageTitle"),navs=[...document.querySelectorAll(".nav")];
-const pages={dashboard:["Overview","Network-wide status at a glance"],node:["My Node","Your identity, runtime and listening endpoint"],network:["Peers & Connections","Discover and connect to AWEp2P nodes"],federation:["AWENET","Build Nodes, Data Centres and Data Groups"],storage:["Storage","Local and distributed data plane"],messenger:["Messenger","Peer-to-peer messaging"],store:["AWEStore","AWE modules and services"],security:["Security","Identity, transport and trust"],diagnostics:["Diagnostics","Health checks and runtime inspection"],settings:["Settings","Application configuration"]};
+const pages={dashboard:["Overview","Network-wide status at a glance"],node:["My Node","Your identity, runtime and listening endpoint"],network:["Peers & Connections","Discover and connect to AWEp2P nodes"],federation:["AWENET","Build Nodes, Data Centres and Data Groups"],storage:["Storage","Local and distributed data plane"],messenger:["Messenger","Peer-to-peer messaging"],communities:["Groups & Channels","Real peer communities over AWE transport"],store:["AWEStore","AWE modules and services"],security:["Security","Identity, transport and trust"],diagnostics:["Diagnostics","Health checks and runtime inspection"],settings:["Settings","Application configuration"]};
 let live={status:"starting",node_id:"loading",node_address:"loading",transport:"loading",ui:"connecting",peers:[],node:{},storage:{},security:{},federation:{}};
 
 function apiBase(){
@@ -32,10 +32,10 @@ async function startCall(kind){
  const status=document.getElementById("callStatus");if(status)status.textContent="Starting "+kind+" call…";
  const pc=new RTCPeerConnection({iceServers:[{urls:"stun:stun.l.google.com:19302"}]});call.pc=pc;
  pc.onicecandidate=e=>{if(e.candidate)sendCallSignal("ice",e.candidate).catch(()=>{})};
- pc.ontrack=e=>{const audio=document.getElementById("remoteAudio");if(audio&&e.streams[0])audio.srcObject=e.streams[0]};
+ pc.ontrack=e=>{if(e.streams[0]){const v=document.getElementById("remoteVideo"),a=document.getElementById("remoteAudio");if(e.track.kind==="video"&&v){v.srcObject=e.streams[0];v.style.display="block"}else if(a)a.srcObject=e.streams[0}}};
  pc.onconnectionstatechange=()=>{if(status)status.textContent="Call: "+pc.connectionState};
  const stream=await navigator.mediaDevices.getUserMedia({audio:true,video:kind==="video"});
- stream.getTracks().forEach(t=>pc.addTrack(t,stream));
+ stream.getTracks().forEach(t=>pc.addTrack(t,stream));const lv=document.getElementById("localVideo");if(lv&&kind==="video"){lv.srcObject=stream;lv.style.display="block"}
  const offer=await pc.createOffer();await pc.setLocalDescription(offer);
  await sendCallSignal("offer",{sdp:offer.sdp,type:offer.type,media:kind});
  if(status)status.textContent="Calling…";
@@ -57,7 +57,7 @@ async function stopCall(){
  if(call.active&&call.remote&&call.id){try{await sendCallSignal("hangup",{})}catch(_){}}
  if(call.pc){call.pc.getSenders().forEach(s=>s.track?.stop());call.pc.close()}
  call.pc=null;call.id=null;call.remote=null;call.active=false;
- const audio=document.getElementById("remoteAudio");if(audio)audio.srcObject=null;
+ const audio=document.getElementById("remoteAudio");if(audio)audio.srcObject=null;const lv=document.getElementById("localVideo");if(lv){lv.srcObject=null;lv.style.display="none"}const rv=document.getElementById("remoteVideo");if(rv){rv.srcObject=null;rv.style.display="none"}
  const status=document.getElementById("callStatus");if(status)status.textContent="No active call";
 }
 async function pollCallSignals(){
@@ -140,8 +140,15 @@ function render(k){
   panel("Storage details",'<div class="list"><div class="list-row"><span>Storage root</span><b>'+esc(live.storage.root||used)+'</b></div><div class="list-row"><span>Objects</span><b>'+esc(live.storage.objects||0)+'</b></div><div class="list-row"><span>Healthy replicas</span><b>'+esc(live.storage.healthy_replicas||0)+'</b></div><div class="list-row"><span>Repaired chunks</span><b>'+esc(live.storage.repaired_chunks||0)+'</b></div></div>');
  } else if(k==="messenger"){
   body=panel("Messenger",'<div class="peer-form"><input id="msgRecipient" placeholder="Recipient AWE ID"><input id="msgText" placeholder="Message"><button class="primary" id="sendMsg">Send</button></div><div id="msgState" class="muted" style="margin-top:8px">Messages use authenticated AWE peer transport; delivery appears when the remote node receives the message.</div>')+
-  panel("Realtime calls",'<div class="peer-form"><input id="callRecipient" placeholder="Recipient AWE ID"><button class="primary" id="voiceCall">Voice call</button><button class="secondary" id="videoCall">Video call</button><button class="secondary" id="hangupCall">Hang up</button></div><div id="callStatus" class="notice" style="margin-top:10px">No active call</div><audio id="remoteAudio" autoplay playsinline></audio>')+
+  panel("Realtime calls",'<div class="peer-form"><input id="callRecipient" placeholder="Recipient AWE ID"><button class="primary" id="voiceCall">Voice call</button><button class="secondary" id="videoCall">Video call</button><button class="secondary" id="hangupCall">Hang up</button></div><div id="callStatus" class="notice" style="margin-top:10px">No active call</div><video id="localVideo" autoplay muted playsinline style="display:none;max-width:320px"></video><video id="remoteVideo" autoplay playsinline style="display:none;max-width:480px"></video><audio id="remoteAudio" autoplay playsinline></audio>')+
   panel("Local message queue",'<div id="messageList" class="list"><div class="empty">Loading…</div></div>');
+ } else if(k==="communities"){
+  body=panel("Create group",'<div class="peer-form"><input id="groupTitle" placeholder="Group name"><input id="groupMembers" placeholder="Member AWE IDs, comma separated"><button class="primary" id="createGroup">Create group</button></div>')+
+  panel("Groups",'<div id="groupList" class="list"><div class="empty">Loading…</div></div>')+
+  panel("Send group message",'<div class="peer-form"><input id="groupMessageId" placeholder="Group ID (gid-…)"><input id="groupMessageText" placeholder="Message"><button class="primary" id="sendGroupMessage">Send</button></div>')+
+  panel("Create channel",'<div class="peer-form"><input id="channelTitle" placeholder="Channel name"><button class="primary" id="createChannel">Create channel</button></div>')+
+  panel("Channels",'<div id="channelList" class="list"><div class="empty">Loading…</div></div>')+
+  panel("Subscribe / publish",'<div class="peer-form"><input id="channelId" placeholder="Channel ID (cid-…)"><button class="secondary" id="subscribeChannel">Subscribe</button><input id="channelMessageText" placeholder="Owner message"><button class="primary" id="publishChannel">Publish</button></div>');
  } else if(k==="store"){
   body=panel("AWEStore",'<div id="storeCatalog" class="store-grid"><div class="empty">Loading verified packages…</div></div>','<button class="secondary" id="storeRefresh">Refresh</button>')+
   panel("Security",'<div class="notice">Only packages that pass AWE package integrity and developer-signature verification are shown. Installation grants only the capabilities you explicitly approve.</div>');
@@ -177,7 +184,16 @@ function bind(k){
   const gd=document.getElementById("genDc");if(gd)gd.onclick=()=>gen("awedc",{data_centre_id:document.getElementById("fedDcId").value.trim(),name:document.getElementById("fedDcName").value.trim()||"AWE Data Centre",endpoints:document.getElementById("fedEndpoints").value.split(",").map(x=>x.trim()).filter(Boolean)});
   const gg=document.getElementById("genDgc");if(gg)gg.onclick=()=>gen("dgc",{owner_data_centre_id:document.getElementById("fedOwnerDc").value.trim(),name:document.getElementById("fedGroupName").value.trim()||"AWE Data Group",data_centre_ids:document.getElementById("fedCentres").value.split(",").map(x=>x.trim()).filter(Boolean)});
   const imp=document.getElementById("importFed");if(imp)imp.onclick=async()=>{const file=document.getElementById("fedFile").files[0],box=document.getElementById("fedResult");if(!file)return toast("Choose a configuration file");imp.disabled=true;try{const content=await file.text(),kind=document.getElementById("fedKind").value,r=await api("/api/federation/import",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({kind,content})});if(r.status!=="imported")throw new Error(r.error||"import failed");box.textContent="Imported successfully. AWENET membership is now stored in this running node.";await refresh();render("federation");toast("AWENET configuration imported")}catch(e){box.textContent="Import failed: "+e.message}finally{imp.disabled=false}};
- if(k==="messenger")loadMessenger();
+ if(k==="messenger")loadMessenger(); if(k==="communities"){
+  const load=async()=>{try{const [g,c]=await Promise.all([api("/api/groups"),api("/api/channels")]);document.getElementById("groupList").innerHTML=(g.groups||[]).map(x=>'<div class="list-row"><b>'+esc(x.title)+'</b><span>'+esc(x.members?.length||0)+' members</span></div>').join("")||'<div class="empty">No groups yet.</div>';document.getElementById("channelList").innerHTML=(c.channels||[]).map(x=>'<div class="list-row"><b>'+esc(x.title)+'</b><span>'+esc(x.subscribers?.length||0)+' subscribers</span></div>').join("")||'<div class="empty">No channels yet.</div>'}catch(e){toast("Community load failed: "+e.message)}};
+  const cg=document.getElementById("createGroup");if(cg)cg.onclick=async()=>{try{await api("/api/groups/create",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({title:document.getElementById("groupTitle").value.trim(),members:document.getElementById("groupMembers").value.split(",").map(x=>x.trim()).filter(Boolean)})});await load()}catch(e){toast(e.message)}};
+  const cc=document.getElementById("createChannel");if(cc)cc.onclick=async()=>{try{await api("/api/channels/create",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({title:document.getElementById("channelTitle").value.trim()})});await load()}catch(e){toast(e.message)}};
+  const sg=document.getElementById("sendGroupMessage");if(sg)sg.onclick=async()=>{try{await api("/api/groups/send",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({group_id:document.getElementById("groupMessageId").value.trim(),text:document.getElementById("groupMessageText").value.trim()})});await load()}catch(e){toast(e.message)}};
+  const scb=document.getElementById("subscribeChannel");if(scb)scb.onclick=async()=>{try{await api("/api/channels/subscribe",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({channel_id:document.getElementById("channelId").value.trim()})});await load()}catch(e){toast(e.message)}};
+  const pcb=document.getElementById("publishChannel");if(pcb)pcb.onclick=async()=>{try{await api("/api/channels/publish",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({channel_id:document.getElementById("channelId").value.trim(),text:document.getElementById("channelMessageText").value.trim()})});await load()}catch(e){toast(e.message)}};
+  load();
+ }
+
  const sc=document.getElementById("storeCatalog");if(sc)loadStore();
  const sm=document.getElementById("sendMsg");if(sm)sm.onclick=async()=>{const recipient=document.getElementById("msgRecipient").value.trim(),message=document.getElementById("msgText").value.trim(),state=document.getElementById("msgState");if(!recipient||!message)return toast("Recipient and message are required");sm.disabled=true;try{const r=await api("/api/messenger/send",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({recipient,text:message})});state.textContent="Queued: "+r.message.id;document.getElementById("msgText").value="";await loadMessenger()}catch(e){state.textContent="Send failed: "+e.message}finally{sm.disabled=false}};
 }
