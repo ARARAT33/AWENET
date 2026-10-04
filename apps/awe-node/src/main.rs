@@ -1388,6 +1388,25 @@ async fn run_product() -> Result<()> {
                 }
                 if stream == 100 {
                     if let Ok(message) = serde_json::from_slice::<serde_json::Value>(&payload) {
+                        if message.get("kind").and_then(|v| v.as_str()) == Some("awe.call.v1") {
+                            let id = message.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                            let recipient = message.get("recipient").and_then(|v| v.as_str()).unwrap_or("");
+                            let call_id = message.get("call_id").and_then(|v| v.as_str()).unwrap_or("");
+                            let signal_type = message.get("signal_type").and_then(|v| v.as_str()).unwrap_or("");
+                            let data = message.get("data").and_then(|v| v.as_str()).unwrap_or("");
+                            if !id.is_empty() && !recipient.is_empty() && !call_id.is_empty() && !signal_type.is_empty() && !data.is_empty() {
+                                if let Ok(mut log) = dispatcher_messenger.lock() {
+                                    if !log.iter().any(|existing| existing.get("id").and_then(|v| v.as_str()) == Some(id)) {
+                                        let mut item = message.clone();
+                                        if let Some(obj) = item.as_object_mut() {
+                                            obj.insert("sender".into(), serde_json::json!(format_uid(&sender)));
+                                        }
+                                        log.push(item);
+                                    }
+                                }
+                            }
+                            continue;
+                        }
                         if message.get("kind").and_then(|v| v.as_str()) == Some("awe.messenger.v1")
                         {
                             let id = message.get("id").and_then(|v| v.as_str()).unwrap_or("");
