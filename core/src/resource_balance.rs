@@ -10,8 +10,11 @@ use std::collections::BTreeMap;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub struct ResourceCapacity {
     pub cpu_slots: u32,
+    pub gpu_slots: u32,
     pub memory_bytes: u64,
     pub storage_bytes: u64,
+    pub ssd_bytes: u64,
+    pub hdd_bytes: u64,
     pub bandwidth_bytes_per_sec: u64,
 }
 
@@ -19,8 +22,11 @@ impl ResourceCapacity {
     pub fn normalized(self) -> Self {
         Self {
             cpu_slots: self.cpu_slots.max(1),
+            gpu_slots: self.gpu_slots,
             memory_bytes: self.memory_bytes,
             storage_bytes: self.storage_bytes,
+            ssd_bytes: self.ssd_bytes,
+            hdd_bytes: self.hdd_bytes,
             bandwidth_bytes_per_sec: self.bandwidth_bytes_per_sec,
         }
     }
@@ -75,6 +81,10 @@ impl ResourceBalancer {
 
     pub fn capacity(&self) -> ResourceCapacity {
         self.capacity
+    }
+
+    pub fn configure_capacity(&mut self, capacity: ResourceCapacity) {
+        self.capacity = capacity.normalized();
     }
 
     pub fn usage(&self) -> ResourceUsage {
@@ -189,6 +199,7 @@ mod tests {
         let mut b = ResourceBalancer::new(
             ResourceCapacity {
                 cpu_slots: 8,
+                gpu_slots: 0,
                 memory_bytes: 1_000,
                 storage_bytes: 10_000,
                 bandwidth_bytes_per_sec: 10_000,
@@ -259,6 +270,7 @@ mod tests {
         let mut b = ResourceBalancer::new(
             ResourceCapacity {
                 cpu_slots: 4,
+                gpu_slots: 0,
                 memory_bytes: 1_000,
                 storage_bytes: 10_000,
                 bandwidth_bytes_per_sec: 10_000,
