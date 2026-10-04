@@ -3,10 +3,10 @@ use awep2p_core::data_plane::{
     StorageShardAck, StorageShardRequest, StorageShardTransfer, STORAGE_STREAM,
 };
 use awep2p_core::diagnostics::{NodeDiagnostics, NodeMetrics};
-use awep2p_core::host::{AweHost, HostPolicy};
 use awep2p_core::federation::{
     self, AweNetConfig, AweNodeConfig, DataCentreConfig, DataGroupConfig,
 };
+use awep2p_core::host::{AweHost, HostPolicy};
 use awep2p_core::identity::{AweSecret, Identity, LocalVault, Username};
 use awep2p_core::lan_mesh::LanPeerBeacon;
 use awep2p_core::messenger::format_uid;
@@ -1465,7 +1465,11 @@ async fn run_product() -> Result<()> {
     });
     let host_root = data_dir.join("host");
     fs::create_dir_all(&host_root)?;
-    let host: HostState = Arc::new(Mutex::new(AweHost::open(&host_root, storage_quota, HostPolicy::default())?));
+    let host: HostState = Arc::new(Mutex::new(AweHost::open(
+        &host_root,
+        storage_quota,
+        HostPolicy::default(),
+    )?));
     let pending_acks: PendingAcks = Arc::new(Mutex::new(BTreeMap::new()));
     let pending_shards: PendingShards = Arc::new(Mutex::new(BTreeMap::new()));
     let federation_path = data_dir.join("awenet.json");
