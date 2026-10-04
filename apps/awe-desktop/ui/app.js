@@ -222,15 +222,11 @@ function renderNetwork(){
 
 function renderFederation(){
   return panel("AWENET",
-    '<div class="grid">'+card("Node",live.device_id||"—","Local device")+
-    card("Data centre",live.federation?.data_centre_id||"Not joined")+
-    card("Data group",live.federation?.data_group_id||"Not joined")+
-    card("Live links",live.peers?.length||0)+'</div>')+
-    panel("Configuration",
-      '<div class="notice">Generate signed AWENET configuration files. Runtime membership remains controlled by the node.</div>'+
-      '<div class="peer-form" style="margin-top:10px"><input id="fedNodeName" placeholder="Data centre name"><input id="fedEndpoint" placeholder="'+esc(live.node_address||"endpoint")+'"><button type="button" class="primary" data-action="gen-node">Generate .awenode</button></div>'+
-      '<div class="peer-form" style="margin-top:8px"><input id="fedDcId" placeholder="Data centre ID"><input id="fedDcName" placeholder="Data centre name"><button type="button" class="primary" data-action="gen-dc">Generate .awedc</button></div>'+
-      '<div class="peer-form" style="margin-top:8px"><input id="fedGroupName" placeholder="Data group name"><input id="fedCentres" placeholder="dc-1,dc-2"><button type="button" class="primary" data-action="gen-dgc">Generate .dgc</button></div>');
+    '<div class="auto-connect"><div class="auto-orb">◇</div><div><h3>AWENET builds itself automatically</h3><p>Nodes discover peers, form data groups and route resources without asking the user for network configuration.</p></div><span class="status"><i></i>Automatic</span></div>')+
+    panel("Topology",
+      '<div class="grid">'+card("Node",live.device_id||"—","Local device")+card("Data Centre",live.federation?.data_centre_id||"Auto-assigned")+card("Data Group",live.federation?.data_group_id||"Auto-assigned")+card("Live links",live.peers?.length||0)+'</div>')+
+    panel("What happens automatically",
+      '<div class="list"><div class="list-row"><span>Peer discovery</span><b>Automatic</b></div><div class="list-row"><span>Authentication</span><b>Automatic</b></div><div class="list-row"><span>Routing</span><b>Automatic</b></div><div class="list-row"><span>Replica placement</span><b>Automatic</b></div><div class="list-row"><span>Data Group membership</span><b>Automatic</b></div></div>');
 }
 
 function renderStorage(){
