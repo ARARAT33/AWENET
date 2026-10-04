@@ -19,6 +19,60 @@ async function api(path,options={}){
   throw e;
  }finally{clearTimeout(timer)}
 }
+const call={pc:null,id:null,remote:null,last:0,seen:new Set(),active:false};
+async function sendCallSignal(type,data){
+ if(!call.remote||!call.id)return;
+ await api("/api/call/signal",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({recipient:call.remote,call_id:call.id,signal_type:type,data:JSON.stringify(data)})});
+}
+async function startCall(kind){
+ const remote=document.getElementById("callRecipient")?.value.trim();
+ if(!remote)return toast("Enter the recipient AWE ID");
+ if(!window.RTCPeerConnection||!navigator.mediaDevices?.getUserMedia)return toast("This runtime does not provide WebRTC media");
+ await stopCall(); call.id=crypto.randomUUID();call.remote=remote;call.active=true;
+ const status=document.getElementById("callStatus");if(status)status.textContent="Starting "+kind+" call…";
+ const pc=new RTCPeerConnection({iceServers:[{urls:"stun:stun.l.google.com:19302"}]});call.pc=pc;
+ pc.onicecandidate=e=>{if(e.candidate)sendCallSignal("ice",e.candidate).catch(()=>{})};
+ pc.ontrack=e=>{const audio=document.getElementById("remoteAudio");if(audio&&e.streams[0])audio.srcObject=e.streams[0]};
+ pc.onconnectionstatechange=()=>{if(status)status.textContent="Call: "+pc.connectionState};
+ const stream=await navigator.mediaDevices.getUserMedia({audio:true,video:kind==="video"});
+ stream.getTracks().forEach(t=>pc.addTrack(t,stream));
+ const offer=await pc.createOffer();await pc.setLocalDescription(offer);
+ await sendCallSignal("offer",{sdp:offer.sdp,type:offer.type,media:kind});
+ if(status)status.textContent="Calling…";
+}
+async function acceptCall(signal){
+ await stopCall();call.id=signal.call_id;call.remote=signal.sender;call.active=true;
+ const status=document.getElementById("callStatus");if(status)status.textContent="Incoming "+(signal.data.media||"voice")+" call…";
+ const pc=new RTCPeerConnection({iceServers:[{urls:"stun:stun.l.google.com:19302"}]});call.pc=pc;
+ pc.onicecandidate=e=>{if(e.candidate)sendCallSignal("ice",e.candidate).catch(()=>{})};
+ pc.ontrack=e=>{const audio=document.getElementById("remoteAudio");if(audio&&e.streams[0])audio.srcObject=e.streams[0]};
+ pc.onconnectionstatechange=()=>{if(status)status.textContent="Call: "+pc.connectionState};
+ const stream=await navigator.mediaDevices.getUserMedia({audio:true,video:signal.data.media==="video"});
+ stream.getTracks().forEach(t=>pc.addTrack(t,stream));
+ await pc.setRemoteDescription(signal.data);
+ const answer=await pc.createAnswer();await pc.setLocalDescription(answer);
+ await sendCallSignal("answer",{sdp:answer.sdp,type:answer.type});
+}
+async function stopCall(){
+ if(call.active&&call.remote&&call.id){try{await sendCallSignal("hangup",{})}catch(_){}}
+ if(call.pc){call.pc.getSenders().forEach(s=>s.track?.stop());call.pc.close()}
+ call.pc=null;call.id=null;call.remote=null;call.active=false;
+ const audio=document.getElementById("remoteAudio");if(audio)audio.srcObject=null;
+ const status=document.getElementById("callStatus");if(status)status.textContent="No active call";
+}
+async function pollCallSignals(){
+ try{
+  const r=await api("/api/call/signals?since="+encodeURIComponent(call.last));
+  for(const s of (r.signals||[])){
+   if(call.seen.has(s.id))continue;call.seen.add(s.id);call.last=Math.max(call.last,Number(s.timestamp)||0);
+   let data={};try{data=JSON.parse(s.data||"{}")}catch(_){}
+   if(s.signal_type==="offer"&&!call.active){await acceptCall({...s,data})}
+   else if(call.pc&&s.call_id===call.id&&s.signal_type==="answer"){await call.pc.setRemoteDescription(data)}
+   else if(call.pc&&s.call_id===call.id&&s.signal_type==="ice"){try{await call.pc.addIceCandidate(data)}catch(_){}}
+   else if(call.active&&s.call_id===call.id&&s.signal_type==="hangup"){await stopCall()}
+  }
+ }catch(_){}
+}
 async function loadMessenger(){
  try{
   const d=await api("/api/messenger");
@@ -86,6 +140,7 @@ function render(k){
   panel("Storage details",'<div class="list"><div class="list-row"><span>Storage root</span><b>'+esc(live.storage.root||used)+'</b></div><div class="list-row"><span>Objects</span><b>'+esc(live.storage.objects||0)+'</b></div><div class="list-row"><span>Healthy replicas</span><b>'+esc(live.storage.healthy_replicas||0)+'</b></div><div class="list-row"><span>Repaired chunks</span><b>'+esc(live.storage.repaired_chunks||0)+'</b></div></div>');
  } else if(k==="messenger"){
   body=panel("Messenger",'<div class="peer-form"><input id="msgRecipient" placeholder="Recipient AWE ID"><input id="msgText" placeholder="Message"><button class="primary" id="sendMsg">Send</button></div><div id="msgState" class="muted" style="margin-top:8px">Messages use authenticated AWE peer transport; delivery appears when the remote node receives the message.</div>')+
+  panel("Realtime calls",'<div class="peer-form"><input id="callRecipient" placeholder="Recipient AWE ID"><button class="primary" id="voiceCall">Voice call</button><button class="secondary" id="videoCall">Video call</button><button class="secondary" id="hangupCall">Hang up</button></div><div id="callStatus" class="notice" style="margin-top:10px">No active call</div><audio id="remoteAudio" autoplay playsinline></audio>')+
   panel("Local message queue",'<div id="messageList" class="list"><div class="empty">Loading…</div></div>');
  } else if(k==="store"){
   body=panel("AWEStore",'<div id="storeCatalog" class="store-grid"><div class="empty">Loading verified packages…</div></div>','<button class="secondary" id="storeRefresh">Refresh</button>')+
@@ -110,6 +165,9 @@ function bind(k){
  const g=document.getElementById("goNetwork");if(g)g.onclick=()=>render("network");
  const pr=document.getElementById("peerRefresh");if(pr)pr.onclick=async()=>{await refresh();render("network")};
  const cb=document.getElementById("connectBtn");if(cb)cb.onclick=async()=>{const a=document.getElementById("peerAddress").value.trim();if(!a)return toast("Enter a node address");cb.disabled=true;try{const x=await api("/api/connect?address="+encodeURIComponent(a),{method:"POST"});toast("Bootstrap complete");await refresh();render("network")}catch(e){toast("Connection failed: "+e.message)}finally{cb.disabled=false}};
+ const vc=document.getElementById("voiceCall");if(vc)vc.onclick=()=>startCall("voice");
+ const vdc=document.getElementById("videoCall");if(vdc)vdc.onclick=()=>startCall("video");
+ const hc=document.getElementById("hangupCall");if(hc)hc.onclick=()=>stopCall();
  const sr=document.getElementById("storeRefresh");if(sr)sr.onclick=()=>render("store");
  const up=document.getElementById("uploadStorage");if(up)up.onclick=async()=>{const file=document.getElementById("storageFile").files[0],box=document.getElementById("storageUploadResult");if(!file)return toast("Choose a file first");if(file.size>64*1024*1024)return toast("Maximum upload size is 64 MB");up.disabled=true;try{const buf=await file.arrayBuffer(),bytes=new Uint8Array(buf);let hex="";for(const b of bytes)hex+=b.toString(16).padStart(2,"0");const r=await api("/api/storage/put",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({filename:file.name,data_hex:hex})});box.textContent="Stored: "+r.file_id+" · "+r.status+" · "+(r.sent_remote||0)+" remote replica transfers";document.getElementById("downloadFileId").value=r.file_id;await refresh();render("storage")}catch(e){box.textContent="Upload failed: "+e.message}finally{up.disabled=false}};
  const dl=document.getElementById("downloadStorage");if(dl)dl.onclick=async()=>{const id=document.getElementById("downloadFileId").value.trim(),box=document.getElementById("storageDownloadResult");if(!/^[0-9a-fA-F]{64}$/.test(id))return toast("Enter a valid 64-hex file ID");dl.disabled=true;try{const r=await api("/api/storage/get?file_id="+encodeURIComponent(id));const raw=r.data_hex||"";const bytes=new Uint8Array(raw.length/2);for(let i=0;i<bytes.length;i++)bytes[i]=parseInt(raw.slice(i*2,i*2+2),16);const blob=new Blob([bytes],{type:"application/octet-stream"}),a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=r.filename||"awep2p-file";a.click();URL.revokeObjectURL(a.href);box.textContent="Reconstructed and downloaded: "+r.filename+" · "+r.size+" bytes"}catch(e){box.textContent="Download failed: "+e.message}finally{dl.disabled=false}};
@@ -146,4 +204,4 @@ async function loadStore(){
 }
 function toast(t){const e=document.createElement("div");e.textContent=t;e.style="position:fixed;right:22px;bottom:22px;background:#111829;color:#fff;padding:11px 15px;border-radius:9px;font-size:11px;z-index:10";document.body.appendChild(e);setTimeout(()=>e.remove(),2200)}
 navs.forEach(n=>n.addEventListener("click",e=>{e.preventDefault();render(n.dataset.view)}));
-(async()=>{render("dashboard");await refresh();render("dashboard");setInterval(async()=>{await refresh();if(title.textContent===pages.dashboard[0])render("dashboard")},5000)})();
+(async()=>{render("dashboard");await refresh();render("dashboard");setInterval(async()=>{await refresh();if(title.textContent===pages.dashboard[0])render("dashboard")},5000);setInterval(pollCallSignals,1000)})();
