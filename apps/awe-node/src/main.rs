@@ -149,7 +149,8 @@ fn load_identity(path: &PathBuf, password: &str, username: &str) -> Result<Ident
 }
 
 async fn http_response(status: &str, content_type: &str, body: &str) -> Vec<u8> {
-    format!("HTTP/1.1 {status}\r
+    format!(
+        "HTTP/1.1 {status}\r
 Content-Type: {content_type}\r
 Content-Length: {}\r
 Access-Control-Allow-Origin: *\r
@@ -158,7 +159,10 @@ Access-Control-Allow-Headers: content-type\r
 Cache-Control: no-store\r
 Connection: close\r
 \r
-{body}", body.len()).into_bytes()
+{body}",
+        body.len()
+    )
+    .into_bytes()
 }
 
 async fn read_http_request(stream: &mut tokio::net::TcpStream) -> Result<String> {
@@ -176,11 +180,7 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> Result<String>
         if data.len() > HEADER_LIMIT {
             anyhow::bail!("HTTP headers too large");
         }
-        if let Some(pos) = data.windows(4).position(|w| {
-            w == b"\r
-\r
-"
-        }) {
+        if let Some(pos) = data.windows(4).position(|w| w == b"\r\n\r\n") {
             header_end = pos + 4;
             break;
         }
