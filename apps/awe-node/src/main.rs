@@ -437,7 +437,20 @@ async fn serve_ui(
                 ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":"recipient and text are required"}).to_string())
             } else {
                 let runtime_policy = policy_state.lock().map(|p| p.clone()).unwrap_or_default();
-                if !runtime_policy.allows_message(text.len()) || !runtime_policy.allows_stream(policy::MESSENGER_STREAM) {
+                let lease = resource_state.lock().ok().and_then(|mut b| {
+                    b.try_acquire(
+                        connection_device_id(&node.identity),
+                        ResourceRequest {
+                            cpu_slots: 1,
+                            memory_bytes: text.len() as u64,
+                            storage_bytes: 0,
+                            bandwidth_bytes: text.len() as u64,
+                        },
+                    )
+                });
+                if !runtime_policy.allows_message(text.len())
+                    || !runtime_policy.allows_stream(policy::MESSENGER_STREAM)
+                    || lease.is_none() {
                     ("413 Payload Too Large", "application/json; charset=utf-8", serde_json::json!({"status":"rejected","error":"message rejected by local AWENET policy"}).to_string())
                 } else {
                 let peers = node.closest_peers(node.identity.public.awe_id.as_bytes(), 64).await;
@@ -1466,7 +1479,6 @@ async fn run_product() -> Result<()> {
     let dispatcher_policy = policy_state.clone();
     let dispatcher_messenger_runtime = messenger_runtime.clone();
     let dispatcher_pending_messenger_acks = pending_messenger_acks.clone();
-    let dispatcher_resources = resource_state.clone();
     let retry_node = node.clone();
     let retry_runtime = messenger_runtime.clone();
     let retry_policy = policy_state.clone();
