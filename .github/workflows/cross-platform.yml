@@ -135,6 +135,9 @@ jobs:
       - name: Build Android APK
         working-directory: apps/awe-app
         run: npx tauri android build --ci --apk
+      - name: Build Android debug APK
+        working-directory: apps/awe-app
+        run: npx tauri android build --ci --debug --apk
       - name: Build Android AAB
         working-directory: apps/awe-app
         run: npx tauri android build --ci --aab
