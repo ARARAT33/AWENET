@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub struct ResourceCapacity {
     pub cpu_slots: u32,
     pub memory_bytes: u64,
@@ -34,21 +34,13 @@ pub struct ResourceRequest {
     pub bandwidth_bytes: u64,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub struct ResourceUsage {
     pub cpu_slots: u32,
     pub memory_bytes: u64,
     pub storage_bytes: u64,
     pub bandwidth_bytes: u64,
 }
-
-impl ResourceUsage {
-    fn add(&mut self, request: ResourceRequest) {
-        self.cpu_slots = self.cpu_slots.saturating_add(request.cpu_slots);
-        self.memory_bytes = self.memory_bytes.saturating_add(request.memory_bytes);
-        self.storage_bytes = self.storage_bytes.saturating_add(request.storage_bytes);
-        self.bandwidth_bytes = self.bandwidth_bytes.saturating_add(request.bandwidth_bytes);
-    }
 
     fn sub(&mut self, request: ResourceRequest) {
         self.cpu_slots = self.cpu_slots.saturating_sub(request.cpu_slots);
