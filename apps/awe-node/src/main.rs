@@ -411,7 +411,7 @@ async fn serve_ui(
                 if let Ok(mut s)=community.lock(){if let Some(a)=s.get_mut("groups").and_then(|v|v.as_array_mut()){a.push(group.clone());}}
                 let env=serde_json::json!({"kind":"awe.group.v1","event":"upsert","group":group,"sender":format_uid(node.identity.public.awe_id.as_bytes())});
                 let members=group.get("members").and_then(|v|v.as_array()).cloned().unwrap_or_default(); let mut delivered=0usize;
-                if let Ok(payload)=serde_json::to_vec(&env){for peer in node.peers().await{let pid=format_uid(&peer.awe_id);if pid!=local&&members.iter().any(|v|v.as_str()==Some(pid.as_str())){if node.send_to_peer(&peer.awe_id,100,payload.clone()).await.is_ok(){delivered+=1;}}}}
+                if let Ok(payload)=serde_json::to_vec(&env){for peer in node.peers().await{let pid=format_uid(&peer.awe_id);if pid!=local&&members.iter().any(|v|v.as_str()==Some(pid.as_str()))&&node.send_to_peer(&peer.awe_id,100,payload.clone()).await.is_ok(){delivered+=1;}}}
                 ("200 OK","application/json; charset=utf-8",serde_json::json!({"status":"created","group":group,"delivered_members":delivered}).to_string())
             }
         },
