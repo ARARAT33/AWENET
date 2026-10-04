@@ -860,27 +860,32 @@ async fn serve_ui(
                                 data.truncate(original_size);
                                 let is_encrypted = manifest.get("encrypted").and_then(|v| v.as_bool()).unwrap_or(false);
                                 let plaintext = if is_encrypted {
-                                    let Ok(file_id_bytes) = <[u8; 32]>::try_from(hex::decode(file_id_hex).unwrap_or_default().as_slice()) else {
-                                        return ("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"invalid file_id"}).to_string());
-                                    };
-                                    let key = drive_key(&node.identity, &file_id_bytes);
-                                    match decrypt_file(&data, &key) {
-                                        Ok(value) => value,
-                                        Err(error) => {
-                                            return ("403 Forbidden","application/json; charset=utf-8",serde_json::json!({"status":"error","error":format!("private Drive decryption failed: {error}")}).to_string());
+                                    match <[u8; 32]>::try_from(hex::decode(file_id_hex).unwrap_or_default().as_slice()) {
+                                        Ok(file_id_bytes) => {
+                                            let key = drive_key(&node.identity, &file_id_bytes);
+                                            decrypt_file(&data, &key).map_err(|error| error.to_string())
                                         }
+                                        Err(_) => Err("invalid file_id".to_string()),
                                     }
                                 } else {
-                                    data
+                                    Ok(data)
                                 };
-                                ("200 OK","application/json; charset=utf-8",
-                                    serde_json::json!({
-                                        "status":"reconstructed",
-                                        "file_id":file_id_hex,
-                                        "filename":manifest.get("filename").and_then(|v| v.as_str()).unwrap_or("object.bin"),
-                                        "size":plaintext.len(),
-                                        "data_hex":hex::encode(plaintext)
-                                    }).to_string())
+                                match plaintext {
+                                    Ok(plaintext) => (
+                                        "200 OK","application/json; charset=utf-8",
+                                        serde_json::json!({
+                                            "status":"reconstructed",
+                                            "file_id":file_id_hex,
+                                            "filename":manifest.get("filename").and_then(|v| v.as_str()).unwrap_or("object.bin"),
+                                            "size":plaintext.len(),
+                                            "data_hex":hex::encode(plaintext)
+                                        }).to_string()
+                                    ),
+                                    Err(error) => (
+                                        "403 Forbidden","application/json; charset=utf-8",
+                                        serde_json::json!({"status":"error","error":format!("private Drive decryption failed: {error}")}).to_string()
+                                    )
+                                }
                             },
                             Err(error) => ("500 Internal Server Error","application/json; charset=utf-8",
                                 serde_json::json!({"status":"error","error":error.to_string()}).to_string())
