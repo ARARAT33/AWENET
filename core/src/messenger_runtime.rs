@@ -53,8 +53,10 @@ impl Envelope {
         if self.ciphertext.is_empty() || self.ciphertext.len() > MAX_ENCRYPTED_MESSAGE_BYTES {
             return Err("encrypted message exceeds runtime bounds");
         }
-        if matches!(self.kind, MediaKind::EncryptedFile | MediaKind::VoiceMessage)
-            && self.ciphertext.len() > MAX_ATTACHMENT_BYTES
+        if matches!(
+            self.kind,
+            MediaKind::EncryptedFile | MediaKind::VoiceMessage
+        ) && self.ciphertext.len() > MAX_ATTACHMENT_BYTES
         {
             return Err("encrypted attachment exceeds runtime bounds");
         }
@@ -62,7 +64,10 @@ impl Envelope {
     }
 
     pub fn is_attachment(&self) -> bool {
-        matches!(self.kind, MediaKind::EncryptedFile | MediaKind::VoiceMessage)
+        matches!(
+            self.kind,
+            MediaKind::EncryptedFile | MediaKind::VoiceMessage
+        )
     }
 }
 
@@ -197,7 +202,12 @@ impl MessengerState {
         }
     }
 
-    pub fn mark_failed(&mut self, id: [u8; 16], error: impl Into<String>, now_unix: u64) -> Result<(), &'static str> {
+    pub fn mark_failed(
+        &mut self,
+        id: [u8; 16],
+        error: impl Into<String>,
+        now_unix: u64,
+    ) -> Result<(), &'static str> {
         let record = self.delivery.get_mut(&id).ok_or("unknown message id")?;
         record.last_error = Some(error.into());
         if record.attempts >= MAX_RETRY_ATTEMPTS {
@@ -298,8 +308,14 @@ mod tests {
     fn relay_route_rejects_duplicate_adjacent_hops() {
         let r = PrivacyRoute {
             hops: vec![
-                RelayHop { node_id: [1; 32], expires_at_unix: 20 },
-                RelayHop { node_id: [1; 32], expires_at_unix: 20 },
+                RelayHop {
+                    node_id: [1; 32],
+                    expires_at_unix: 20,
+                },
+                RelayHop {
+                    node_id: [1; 32],
+                    expires_at_unix: 20,
+                },
             ],
         };
         assert!(!validate_route(&r, 10));
