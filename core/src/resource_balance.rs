@@ -91,9 +91,7 @@ impl ResourceBalancer {
                 total.cpu_slots = total.cpu_slots.saturating_add(usage.cpu_slots);
                 total.memory_bytes = total.memory_bytes.saturating_add(usage.memory_bytes);
                 total.storage_bytes = total.storage_bytes.saturating_add(usage.storage_bytes);
-                total.bandwidth_bytes = total
-                    .bandwidth_bytes
-                    .saturating_add(usage.bandwidth_bytes);
+                total.bandwidth_bytes = total.bandwidth_bytes.saturating_add(usage.bandwidth_bytes);
                 total
             })
     }
