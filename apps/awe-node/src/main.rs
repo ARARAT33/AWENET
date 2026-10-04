@@ -1713,22 +1713,6 @@ async fn run_product() -> Result<()> {
     println!("Node transport: {listen}");
     println!("UI: http://{ui_addr}");
 
-    let url = format!("http://{ui_addr}/");
-    #[cfg(target_os = "windows")]
-    {
-        let _ = std::process::Command::new("cmd")
-            .args(["/C", "start", "", &url])
-            .spawn();
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let _ = std::process::Command::new("open").arg(&url).spawn();
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
-    }
-
     loop {
         let (stream, _) = listener.accept().await?;
         let api_node = node.clone();
