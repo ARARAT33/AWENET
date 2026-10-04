@@ -350,8 +350,22 @@ async fn serve_ui(
         },
         "/api/store/catalog" => {
             let root = PathBuf::from(data_dir_for_api()).join("store");
-            match Store::open(&root).and_then(|store| store.catalog()) {
-                Ok(apps) => {
+            match Store::open(&root) {
+                Ok(_store) => {
+                    let mut apps = Vec::new();
+                    if let Ok(entries) = fs::read_dir(root.join("packages")) {
+                        for entry in entries.flatten() {
+                            if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) { continue; }
+                            let Ok(bytes) = fs::read(entry.path()) else { continue; };
+                            let Ok(package) = awep2p_core::store::AWEPackage::from_bytes(&bytes) else { continue; };
+                            let package_hash = hex::encode(blake3::hash(&bytes).as_bytes());
+                            apps.push(serde_json::json!({
+                                "package_hash": package_hash,
+                                "manifest": package.manifest.manifest
+                            }));
+                        }
+                    }
+                    apps.sort_by(|a,b| a.get("package_hash").and_then(|v| v.as_str()).cmp(&b.get("package_hash").and_then(|v| v.as_str())));
                     let installed = fs::read_dir(root.join("installed")).ok().into_iter().flatten()
                         .filter_map(|e| e.ok()).filter_map(|e| fs::read(e.path()).ok())
                         .filter_map(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
