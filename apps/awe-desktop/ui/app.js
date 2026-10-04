@@ -512,13 +512,6 @@ document.addEventListener("click",async event=>{
     if(action==="save-resources"){const data={};document.querySelectorAll("[data-resource]").forEach(el=>data[el.dataset.resource]=Number(el.value));save("aweContribution",data);toast("Resource contribution saved");render("resources");return;}
     if(action==="dev-guide"){toast("Signed mini apps · capabilities · fair-share resources");return;}
 
-      const address=document.getElementById("peerAddress").value.trim();
-      if(!address){toast("Enter a node address");return;}
-      button.disabled=true;
-      try{await api("/api/connect?address="+encodeURIComponent(address),{method:"POST"});toast("Connect requested");await refresh();render("network");}
-      finally{button.disabled=false;}
-      return;
-    }
     if(action==="upload"){
       const file=document.getElementById("storageFile").files[0];
       if(!file){toast("Choose a file");return;}
