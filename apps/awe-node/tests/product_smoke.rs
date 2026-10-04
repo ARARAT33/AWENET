@@ -133,6 +133,25 @@ fn three_node_product_smoke() {
             );
         }
 
+        let site_publish = post(
+            "127.0.0.1:46201",
+            "/api/sites/publish",
+            r#"{"domain":"e2e.awe","version":1,"files":[{"path":"/index.html","content_type":"text/html","data_base64":"PGgxPkFXRXAyUDyvaGVyPC9oMT4="}]}"#,
+        );
+        assert!(
+            site_publish.contains(r#""status":"published""#),
+            "site publish: {site_publish}"
+        );
+        let sites = get("127.0.0.1:46201", "/api/sites?domain=e2e.awe");
+        assert!(sites.contains("e2e.awe"), "sites catalog: {sites}");
+        let site_content = get(
+            "127.0.0.1:46201",
+            "/api/sites/content?domain=e2e.awe&path=/",
+        );
+        assert!(
+            site_content.contains("data_base64"),
+            "site content: {site_content}"
+        );
         let storage = get("127.0.0.1:46201", "/api/storage");
         assert!(
             storage.contains(r#""capacity_bytes""#),
