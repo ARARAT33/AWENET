@@ -59,9 +59,6 @@ impl NetworkPolicy {
         if self.max_peer_share_percent == 0 || self.max_peer_share_percent > 100 {
             return Err("max_peer_share_percent must be between 1 and 100".into());
         }
-        if self.max_bootstrap_peers == 0 {
-            return Err("max_bootstrap_peers must be non-zero".into());
-        }
         if self.require_authenticated_peers && self.allowed_streams.is_empty() {
             return Err("authenticated policy must declare allowed streams".into());
         }
