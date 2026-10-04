@@ -75,7 +75,8 @@ fn default_vault() -> PathBuf {
 }
 
 fn usage() -> ! {
-    eprintln!("AWEp2P
+    eprintln!(
+        "AWEp2P
 
 Usage:
   awe-node                 Start the complete local product
@@ -88,7 +89,8 @@ Usage:
   awe-node diagnostics
   awe-node mesh <listen-port>
   awe-node health
-  awe-node probe <address>");
+  awe-node probe <address>"
+    );
     std::process::exit(2)
 }
 
