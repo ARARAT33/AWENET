@@ -511,7 +511,7 @@ document.addEventListener("click",async event=>{
     if(action==="add-group"){const n=document.getElementById("groupName").value.trim();if(!n){toast("Enter a name");return;}const items=store("aweGroups",[]);items.push({name:n,type:document.getElementById("groupType").value,members:1,created:Date.now()});save("aweGroups",items);toast("Community added");render("groups");return;}
     if(action==="delete-group"){const items=store("aweGroups",[]);items.splice(Number(button.dataset.index),1);save("aweGroups",items);render("groups");return;}
     if(action==="open-group"){toast("Opening community…");return;}
-    if(action==="save-resources"){const data={};document.querySelectorAll("[data-resource]").forEach(el=>data[el.dataset.resource]=Number(el.value));save("aweContribution",data);toast("Resource contribution saved");render("resources");return;}
+    if(action==="save-resources"){const data={};document.querySelectorAll("[data-resource]").forEach(el=>data[el.dataset.resource]=Number(el.value));save("aweContribution",data);try{await api("/api/resources/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(data)});toast("Resource contribution saved to node");}catch(e){toast("Saved locally; node update unavailable");}render("resources");return;}
     if(action==="dev-guide"){toast("Signed mini apps · capabilities · fair-share resources");return;}
     if(action==="voice-call"){toast("Voice call requested. Media transport/signaling is handled by the node when the peer is reachable.");return;}
     if(action==="video-call"){toast("Video call requested. Media transport/signaling is handled by the node when the peer is reachable.");return;}
