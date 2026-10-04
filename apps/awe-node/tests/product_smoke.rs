@@ -171,8 +171,13 @@ fn three_node_product_smoke() {
             "connections: {status}"
         );
 
-        let node2_status: serde_json::Value = serde_json::from_str(&get("127.0.0.1:46202", "/api/status")).expect("node2 status json");
-        let node2_id = node2_status.get("node_id").and_then(|v| v.as_str()).expect("node2 id");
+        let node2_status: serde_json::Value =
+            serde_json::from_str(&get("127.0.0.1:46202", "/api/status"))
+                .expect("node2 status json");
+        let node2_id = node2_status
+            .get("node_id")
+            .and_then(|v| v.as_str())
+            .expect("node2 id");
         let message = post(
             "127.0.0.1:46201",
             "/api/messenger/send",
@@ -185,7 +190,9 @@ fn three_node_product_smoke() {
         let message_deadline = Instant::now() + Duration::from_secs(5);
         loop {
             let received = get("127.0.0.1:46202", "/api/messenger");
-            if received.contains("AWEP2P-E2E-MESSENGER") && received.contains(r#""state":"delivered""#) {
+            if received.contains("AWEP2P-E2E-MESSENGER")
+                && received.contains(r#""state":"delivered""#)
+            {
                 break;
             }
             if Instant::now() >= message_deadline {
