@@ -448,32 +448,22 @@ async fn serve_ui(
             }
         },
         "/api/channels/subscribe" if method == "POST" => {
-            let body=request.split("\r\n\r\n").nth(1).unwrap_or(""); let p:serde_json::Value=serde_json::from_str(body).unwrap_or_default(); let cid=p.get("channel_id").and_then(|v|v.as_str()).unwrap_or("").trim(); let local=format_uid(node.identity.public.awe_id.as_bytes());
-            let channel=community.lock().ok().and_then(|s|s.get("channels").and_then(|v|v.as_array()).and_then(|a|a.iter().find(|c|c.get("id").and_then(|v|v.as_str())==Some(cid)).cloned()));
-            match channel{
-                None=>("404 Not Found","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"channel not found"}).to_string()),
-                Some(channel)=>{
-                    let owner=channel.get("owner").and_then(|v|v.as_str()).unwrap_or("");
-                    if owner==local{("200 OK","application/json; charset=utf-8",serde_json::json!({"status":"already_subscribed"}).to_string())}else{
-                        if let Ok(mut st)=community.lock(){if let Some(ch)=st.get_mut("channels").and_then(|v|v.as_array_mut()).and_then(|a|a.iter_mut().find(|c|c.get("id").and_then(|v|v.as_str())==Some(cid))){if !ch.get("subscribers").and_then(|v|v.as_array()).map(|a|a.iter().any(|v|v.as_str()==Some(local.as_str()))).unwrap_or(false){if let Some(a)=ch.get_mut("subscribers").and_then(|v|v.as_array_mut()){a.push(serde_json::Value::String(local.clone()));}}}}
-                        let peers=node.peers().await; let owner_id=peers.into_iter().find(|p|format_uid(&p.awe_id)==owner).map(|p|p.awe_id);
-                        match owner_id{
-                            None=>("404 Not Found","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"channel owner is not connected"}).to_string()),
-                            Some(owner_id)=>{
-                                let env=serde_json::json!({"kind":"awe.channel.v1","event":"subscribe","channel_id":cid,"subscriber":local,"sender":local});
-                                match serde_json::to_vec(&env) {
-                                    Ok(payload) => {
-                                        tokio::spawn(async move {
-                                            let _ = node.send_to_peer(&owner_id, 100, payload).await;
-                                        });
-                                        ("202 Accepted","application/json; charset=utf-8",serde_json::json!({"status":"requested","channel_id":cid}).to_string())
-                                    }
-                                    Err(e) => ("500 Internal Server Error","application/json; charset=utf-8",serde_json::json!({"status":"error","error":e.to_string()}).to_string())
-                                }
-                            }
+            let body=request.split("\r\n\r\n").nth(1).unwrap_or("");
+            let p:serde_json::Value=serde_json::from_str(body).unwrap_or_default();
+            let cid=p.get("channel_id").and_then(|v|v.as_str()).unwrap_or("").trim();
+            let local=format_uid(node.identity.public.awe_id.as_bytes());
+            let found=community.lock().ok().and_then(|s|s.get("channels").and_then(|v|v.as_array()).map(|a|a.iter().any(|c|c.get("id").and_then(|v|v.as_str())==Some(cid))).unwrap_or(false));
+            if cid.is_empty()||!found {
+                ("404 Not Found","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"channel not found"}).to_string())
+            } else {
+                if let Ok(mut st)=community.lock() {
+                    if let Some(ch)=st.get_mut("channels").and_then(|v|v.as_array_mut()).and_then(|a|a.iter_mut().find(|c|c.get("id").and_then(|v|v.as_str())==Some(cid))) {
+                        if !ch.get("subscribers").and_then(|v|v.as_array()).map(|a|a.iter().any(|v|v.as_str()==Some(local.as_str()))).unwrap_or(false) {
+                            if let Some(a)=ch.get_mut("subscribers").and_then(|v|v.as_array_mut()) { a.push(serde_json::Value::String(local.clone())); }
                         }
                     }
                 }
+                ("200 OK","application/json; charset=utf-8",serde_json::json!({"status":"subscribed","channel_id":cid,"subscriber":local}).to_string())
             }
         },
         "/api/channels/publish" if method == "POST" => {
