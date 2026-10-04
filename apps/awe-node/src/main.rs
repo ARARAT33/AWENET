@@ -35,6 +35,7 @@ type StorageState = Arc<LocalNodeStore>;
 type PendingAcks = Arc<Mutex<BTreeMap<[u8; 16], StorageShardAck>>>;
 type PendingShards = Arc<Mutex<BTreeMap<[u8; 16], StorageShardTransfer>>>;
 type PolicyState = Arc<Mutex<NetworkPolicy>>;
+type CommunityState = Arc<Mutex<serde_json::Value>>;
 
 fn default_vault() -> PathBuf {
     if let Some(home) = env::var_os("HOME") {
@@ -180,6 +181,7 @@ async fn serve_ui(
     pending_acks: PendingAcks,
     pending_shards: PendingShards,
     policy_state: PolicyState,
+    community: CommunityState,
 ) -> Result<()> {
     let request = read_http_request(&mut stream).await?;
     let request_line = request.lines().next().unwrap_or("");
