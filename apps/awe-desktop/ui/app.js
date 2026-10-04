@@ -212,10 +212,8 @@ function renderSaved(){
 }
 
 function renderNetwork(){
-  return panel("Connect",
-    '<div class="peer-form"><input id="peerAddress" placeholder="127.0.0.1:41000">'+
-    '<button type="button" class="primary" data-action="connect">Connect</button></div>'+
-    '<div class="notice" style="margin-top:10px"><b>connect</b> is the peer-facing action. The displayed ID is a device connection ID.</div>')+
+  return panel("Automatic connections",
+    '<div class="auto-connect"><div class="auto-orb">⌁</div><div><h3>AWENET connects automatically</h3><p>Discovery, authentication, routing and reconnection are handled by the node. You do not enter peer addresses.</p></div><span class="status"><i></i>Automatic</span></div>')+
     panel("Connected devices",
       '<table class="table"><thead><tr><th>Device</th><th>Endpoint</th><th>Last seen</th><th>State</th></tr></thead><tbody>'+
       peerRows()+'</tbody></table>',
@@ -291,6 +289,70 @@ function renderSettings(){
       '<div class="list-row"><span>Auto refresh</span><b>5 seconds</b></div></div>');
 }
 
+let browserHistory=[]; let browserIndex=-1;
+
+function browserOpen(url){
+  const input=document.getElementById("browserAddress");
+  const frame=document.getElementById("browserFrame");
+  const empty=document.getElementById("browserEmpty");
+  if(!url) return;
+  if(!/^(https?:\\/\\/|awe:\\/\\/)/i.test(url)) url="awe://search/"+encodeURIComponent(url);
+  if(/^https?:\\/\\//i.test(url)){
+    frame.hidden=false; empty.hidden=true; frame.src=url;
+  }else{
+    frame.hidden=true; empty.hidden=false;
+    empty.innerHTML='<div class="browser-logo">A</div><h2>AWENET resource</h2><p>'+esc(url)+'</p><div class="notice">The local AWE node resolves AWENET resources automatically. No peer address is required.</div>';
+  }
+  if(input) input.value=url;
+  if(browserIndex<0 || browserHistory[browserIndex]!==url){
+    browserHistory=browserHistory.slice(0,browserIndex+1); browserHistory.push(url); browserIndex++;
+  }
+}
+
+function renderBrowser(){
+  return panel("AWENET Browser",
+    '<div class="browser-bar"><button type="button" class="secondary" data-action="browser-back">←</button><button type="button" class="secondary" data-action="browser-forward">→</button><button type="button" class="secondary" data-action="browser-reload">↻</button><input id="browserAddress" placeholder="Search AWENET or enter awe://site / https://…"><button type="button" class="primary" data-action="browser-go">Open</button></div>'+
+    '<div class="browser-hints"><button type="button" class="chip" data-action="browser-home">AWENET Home</button><button type="button" class="chip" data-action="browser-search">Search network</button><span>Sites · files · resources</span></div>'+
+    '<div class="browser-frame"><div id="browserEmpty"><div class="browser-logo">A</div><h2>AWENET</h2><p>Search the network or open a site.</p></div><iframe id="browserFrame" title="AWE Browser" hidden></iframe></div>');
+}
+
+function renderTranslate(){
+  const langs=[
+    ["af","Afrikaans"],["sq","Shqip"],["am","አማርኛ"],["ar","العربية"],["hy","Հայերեն"],["az","Azərbaycanca"],["be","Беларуская"],["bn","বাংলা"],["bg","Български"],["ca","Català"],["zh-CN","中文（简体）"],["zh-TW","中文（繁體）"],["hr","Hrvatski"],["cs","Čeština"],["da","Dansk"],["nl","Nederlands"],["en","English"],["et","Eesti"],["fil","Filipino"],["fi","Suomi"],["fr","Français"],["ka","ქართული"],["de","Deutsch"],["el","Ελληνικά"],["gu","ગુજરાતી"],["he","עברית"],["hi","हिन्दी"],["hu","Magyar"],["id","Bahasa Indonesia"],["it","Italiano"],["ja","日本語"],["kn","ಕನ್ನಡ"],["ko","한국어"],["ky","Кыргызча"],["lo","ລາວ"],["lv","Latviešu"],["lt","Lietuvių"],["mk","Македонски"],["ms","Bahasa Melayu"],["ml","മലയാളം"],["mr","मराठी"],["mn","Монгол"],["ne","नेपाली"],["no","Norsk"],["fa","فارسی"],["pl","Polski"],["pt","Português"],["ro","Română"],["ru","Русский"],["sr","Српски"],["sk","Slovenčina"],["sl","Slovenščina"],["es","Español"],["sw","Kiswahili"],["sv","Svenska"],["tg","Тоҷикӣ"],["ta","தமிழ்"],["te","తెలుగు"],["th","ไทย"],["tr","Türkçe"],["uk","Українська"],["ur","اردو"],["uz","O‘zbek"],["vi","Tiếng Việt"],["cy","Cymraeg"],["yo","Yorùbá"],["zu","isiZulu"]
+  ];
+  const opts=langs.map(([code,name])=>'<option value="'+code+'">'+name+'</option>').join("");
+  return panel("Google Translate",
+    '<div class="translate-grid"><label class="field-label">From<select id="translateFrom"><option value="auto">Detect language</option>'+opts+'</select></label><label class="field-label">To<select id="translateTo">'+opts+'</select></label></div>'+
+    '<textarea id="translateText" class="translate-text" placeholder="Write or paste text…"></textarea>'+
+    '<div class="quick-actions"><button type="button" class="primary" data-action="translate-open">Translate</button><button type="button" class="secondary" data-action="translate-swap">Swap</button></div>'+
+    '<div class="notice" style="margin-top:10px">Google Translate is used for the translation action; the node does not store your text as a network resource.</div>')+
+    panel("Translate an AWENET page",'<div class="peer-form"><input id="translateUrl" placeholder="https://… or awe://…"><button type="button" class="secondary" data-action="translate-page">Open</button></div>');
+}
+
+function renderGroups(){
+  const groups=store("aweGroups",[]);
+  const rows=groups.length?groups.map((g,i)=>'<div class="site-row"><div><b>'+esc(g.name)+'</b><div class="muted">'+esc(g.type)+' · '+esc(g.members||0)+' members</div></div><div class="row-actions"><button type="button" class="secondary" data-action="open-group" data-index="'+i+'">Open</button><button type="button" class="secondary danger" data-action="delete-group" data-index="'+i+'">Leave</button></div></div>').join(""):'<div class="empty">Groups and channels are discovered automatically by AWENET.</div>';
+  return panel("Groups & Channels",'<div class="feature-strip"><span>☷ Groups</span><span>◉ Channels</span><span>🔔 Push notifications</span><span>↻ Automatic discovery</span></div><div class="peer-form"><input id="groupName" placeholder="Create a group or channel"><select id="groupType"><option value="group">Group</option><option value="channel">Channel</option></select><button type="button" class="primary" data-action="add-group">Create</button></div>')+
+    panel("Your communities",'<div class="site-list">'+rows+'</div>');
+}
+
+function resourceSlider(name,key,value,note){
+  return '<div class="resource-card"><div class="resource-head"><div><b>'+name+'</b><span>'+note+'</span></div><output id="out-'+key+'">'+value+'%</output></div><input class="resource-slider" id="res-'+key+'" data-resource="'+key+'" type="range" min="0" max="100" value="'+value+'"><div class="resource-scale"><span>0%</span><span>100%</span></div></div>';
+}
+
+function renderResources(){
+  const r=store("aweContribution",{cpu:25,gpu:0,ssd:50,hdd:0,bandwidth:10});
+  const u=live.resources?.usage||{};
+  return '<div class="resource-grid">'+resourceSlider("CPU","cpu",r.cpu,"CPU contribution")+resourceSlider("GPU","gpu",r.gpu,"GPU contribution")+resourceSlider("SSD","ssd",r.ssd,"SSD contribution")+resourceSlider("HDD","hdd",r.hdd,"HDD contribution")+resourceSlider("Bandwidth","bandwidth",r.bandwidth,"Network contribution")+'</div>'+
+    panel("Live resource balance",'<div class="grid">'+card("CPU slots",u.cpu_slots||0)+card("Memory",fmt(u.memory_bytes||0))+card("Storage",fmt(u.storage_bytes||0))+card("Active workloads",live.resources?.active_consumers||0)+'</div>')+
+    panel("Fair share",'<div class="notice">Each resource is selected independently. AWE uses only the contribution you choose and keeps consumers bounded.</div><button type="button" class="primary" style="margin-top:10px" data-action="save-resources">Save contribution</button>');
+}
+
+function renderDevelopers(){
+  return panel("Developer Center",'<div class="dev-grid"><div class="dev-card"><b>Mini Apps</b><p>Build signed AWEStore applications with explicit capabilities.</p><button type="button" class="secondary" data-action="dev-guide">Open guide</button></div><div class="dev-card"><b>Sites</b><p>Create versioned AWENET sites and content-addressed resources.</p><button type="button" class="secondary" data-action="view" data-value="sites">Build site</button></div><div class="dev-card"><b>Services</b><p>Run workloads through the node resource scheduler.</p><button type="button" class="secondary" data-action="view" data-value="resources">Resource policy</button></div></div>')+
+    panel("Capabilities",'<div class="list"><div class="list-row"><span>Storage</span><b>Explicit grant</b></div><div class="list-row"><span>Network</span><b>Authenticated</b></div><div class="list-row"><span>Compute</span><b>Fair-share lease</b></div><div class="list-row"><span>Package</span><b>Signature required</b></div></div>');
+}
+
 function render(key="dashboard"){
   const page=pages[key]||pages.dashboard;
   navs.forEach(n=>n.classList.toggle("active",n.dataset.view===key));
@@ -301,10 +363,15 @@ function render(key="dashboard"){
   else if(key==="profile") body=renderProfile();
   else if(key==="sites") body=renderSites();
   else if(key==="saved") body=renderSaved();
+  else if(key==="browser") body=renderBrowser();
+  else if(key==="translate") body=renderTranslate();
   else if(key==="network") body=renderNetwork();
   else if(key==="federation") body=renderFederation();
   else if(key==="storage") body=renderStorage();
   else if(key==="messenger") body=renderMessenger();
+  else if(key==="groups") body=renderGroups();
+  else if(key==="resources") body=renderResources();
+  else if(key==="developers") body=renderDevelopers();
   else if(key==="store") body=renderStore();
   else if(key==="security") body=renderSecurity();
   else if(key==="diagnostics") body=renderDiagnostics();
@@ -429,7 +496,22 @@ document.addEventListener("click",async event=>{
       return;
     }
     if(action==="choose-storage-folder"){document.getElementById("storageFolderFiles").click();return;}
-    if(action==="connect"){
+    if(action==="connect"){return;}
+    if(action==="browser-go"){browserOpen(document.getElementById("browserAddress").value.trim());return;}
+    if(action==="browser-home"){browserOpen("awe://home");return;}
+    if(action==="browser-search"){const q=prompt("Search AWENET");if(q)browserOpen(q);return;}
+    if(action==="browser-back"){if(browserIndex>0){browserIndex--;const u=browserHistory[browserIndex];render("browser");setTimeout(()=>browserOpen(u),0);}return;}
+    if(action==="browser-forward"){if(browserIndex<browserHistory.length-1){browserIndex++;const u=browserHistory[browserIndex];render("browser");setTimeout(()=>browserOpen(u),0);}return;}
+    if(action==="browser-reload"){const frame=document.getElementById("browserFrame");if(frame?.src)frame.contentWindow?.location.reload();return;}
+    if(action==="translate-open"){const t=document.getElementById("translateText").value.trim(),from=document.getElementById("translateFrom").value,to=document.getElementById("translateTo").value;if(!t){toast("Enter text to translate");return;}window.open("https://translate.google.com/?sl="+encodeURIComponent(from)+"&tl="+encodeURIComponent(to)+"&text="+encodeURIComponent(t)+"&op=translate","_blank");return;}
+    if(action==="translate-swap"){const a=document.getElementById("translateFrom"),b=document.getElementById("translateTo");if(a&&b&&a.value!=="auto"){const v=a.value;a.value=b.value;b.value=v;}return;}
+    if(action==="translate-page"){const u=document.getElementById("translateUrl").value.trim();if(u){render("browser");setTimeout(()=>browserOpen(u),0);}return;}
+    if(action==="add-group"){const n=document.getElementById("groupName").value.trim();if(!n){toast("Enter a name");return;}const items=store("aweGroups",[]);items.push({name:n,type:document.getElementById("groupType").value,members:1,created:Date.now()});save("aweGroups",items);toast("Community added");render("groups");return;}
+    if(action==="delete-group"){const items=store("aweGroups",[]);items.splice(Number(button.dataset.index),1);save("aweGroups",items);render("groups");return;}
+    if(action==="open-group"){toast("Opening community…");return;}
+    if(action==="save-resources"){const data={};document.querySelectorAll("[data-resource]").forEach(el=>data[el.dataset.resource]=Number(el.value));save("aweContribution",data);toast("Resource contribution saved");render("resources");return;}
+    if(action==="dev-guide"){toast("Signed mini apps · capabilities · fair-share resources");return;}
+
       const address=document.getElementById("peerAddress").value.trim();
       if(!address){toast("Enter a node address");return;}
       button.disabled=true;
@@ -484,6 +566,8 @@ document.addEventListener("click",async event=>{
     }
   }catch(e){toast(e.message||"Action failed");}
 });
+
+document.addEventListener("input",event=>{if(event.target.matches("[data-resource]")){const o=document.getElementById("out-"+event.target.dataset.resource);if(o)o.textContent=event.target.value+"%";}});
 
 document.addEventListener("change",event=>{
   if(event.target.id==="folderFiles"){
