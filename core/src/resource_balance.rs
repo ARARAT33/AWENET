@@ -42,6 +42,7 @@ pub struct ResourceUsage {
     pub bandwidth_bytes: u64,
 }
 
+impl ResourceUsage {
     fn sub(&mut self, request: ResourceRequest) {
         self.cpu_slots = self.cpu_slots.saturating_sub(request.cpu_slots);
         self.memory_bytes = self.memory_bytes.saturating_sub(request.memory_bytes);
