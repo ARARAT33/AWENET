@@ -1633,7 +1633,7 @@ async fn run_product() -> Result<()> {
                         if message.get("kind").and_then(|v| v.as_str()) == Some("awe.channel.v1") {
                             let event = message.get("event").and_then(|v| v.as_str()).unwrap_or("");
                             let sender_uid = format_uid(&sender);
-                            let mut sync: Option<([u8; 32], Vec<u8>)> = None;
+                            let mut sync: Option<(String, Vec<u8>)> = None;
                             if let Ok(mut state) = dispatcher_community.lock() {
                                 if event == "upsert" {
                                     if let Some(channel) = message.get("channel").cloned() {
@@ -1702,14 +1702,9 @@ async fn run_product() -> Result<()> {
                                                     ));
                                                 }
                                             }
-                                            if let Some(target) = hex::decode(subscriber)
-                                                .ok()
-                                                .and_then(|b| <[u8; 32]>::try_from(b).ok())
-                                            {
-                                                let env = serde_json::json!({"kind":"awe.channel.v1","event":"upsert","channel":ch.clone(),"sender":local_uid});
-                                                if let Ok(bytes) = serde_json::to_vec(&env) {
-                                                    sync = Some((target, bytes));
-                                                }
+                                            let env = serde_json::json!({"kind":"awe.channel.v1","event":"upsert","channel":ch.clone(),"sender":local_uid});
+                                            if let Ok(bytes) = serde_json::to_vec(&env) {
+                                                sync = Some((subscriber.to_string(), bytes));
                                             }
                                         }
                                     }
@@ -1749,11 +1744,24 @@ async fn run_product() -> Result<()> {
                                     }
                                 }
                             }
-                            if let Some((target, bytes)) = sync {
+                            if let Some((target_uid, bytes)) = sync {
                                 let sync_node = dispatcher_node.clone();
                                 tokio::spawn(async move {
-                                    let _ =
-                                        sync_node.send_to_peer_confirmed(&target, 100, bytes).await;
+                                    let peers = sync_node
+                                        .closest_peers(
+                                            sync_node.identity.public.awe_id.as_bytes(),
+                                            64,
+                                        )
+                                        .await;
+                                    if let Some(target) = peers
+                                        .iter()
+                                        .find(|p| format_uid(&p.awe_id) == target_uid)
+                                        .map(|p| p.awe_id)
+                                    {
+                                        let _ = sync_node
+                                            .send_to_peer_confirmed(&target, 100, bytes)
+                                            .await;
+                                    }
                                 });
                             }
                             continue;
