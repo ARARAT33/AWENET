@@ -42,7 +42,7 @@ type MessengerRuntimeState = Arc<Mutex<MessengerState>>;
 type PendingShards = Arc<Mutex<BTreeMap<[u8; 16], StorageShardTransfer>>>;
 type PolicyState = Arc<Mutex<NetworkPolicy>>;
 
-fn drive_key(identity: &Identity, file_id: &[u8; 32]) -> [u8; 32] {
+fn connection_device_id(identity: &Identity) -> String {\n    let digest = blake3::hash(format!("AWE/DEVICE/{}", format_uid(identity.public.awe_id.as_bytes())).as_bytes());\n    hex::encode(&digest.as_bytes()[..8])\n}\n\nfn drive_key(identity: &Identity, file_id: &[u8; 32]) -> [u8; 32] {
     *blake3::keyed_hash(&identity.export_secret(), file_id).as_bytes()
 }
 
@@ -245,7 +245,7 @@ async fn serve_ui(
         "/api/federation" => {
             let state = federation_state.lock().map(|s| s.clone()).unwrap_or_default();
             ("200 OK", "application/json; charset=utf-8", serde_json::json!({
-                "format": state.format, "version": state.version, "local_node_id": state.local_node_id,
+                "format": state.format, "version": state.version, "local_node_id": state.local_node_id,\n                "device_id": connection_device_id(&node.identity),
                 "data_centre_id": state.local_data_centre_id, "data_group_id": state.local_data_group_id,
                 "joined_data_centres": state.joined_data_centres, "joined_data_groups": state.joined_data_groups,
                 "bootstrap_endpoints": state.bootstrap_endpoints
