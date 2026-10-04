@@ -1748,7 +1748,9 @@ async fn run_product() -> Result<()> {
                                                     v.as_str() == Some(sender_uid.as_str())
                                                 })
                                             })
-                                            .unwrap_or(false);
+                                            .unwrap_or(false)
+                                            || ch.get("owner").and_then(|v| v.as_str())
+                                                == Some(sender_uid.as_str());
                                         if subscriber {
                                             if let Some(m) = message.get("message").cloned() {
                                                 if let Some(a) = ch
