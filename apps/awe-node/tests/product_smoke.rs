@@ -297,6 +297,17 @@ fn three_node_product_smoke() {
             thread::sleep(Duration::from_millis(100));
         }
         assert!(subscribed, "channel subscription not observed");
+        let subscriber_sync_deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let subscriber_channels = get("127.0.0.1:46202", "/api/channels");
+            if subscriber_channels.contains(&format!(r#""{node2_id}""#)) {
+                break;
+            }
+            if Instant::now() >= subscriber_sync_deadline {
+                panic!("subscriber sync not observed: {subscriber_channels}");
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
         let publish = post(
             "127.0.0.1:46201",
             "/api/channels/publish",
