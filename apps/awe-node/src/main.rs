@@ -48,7 +48,13 @@ fn peer_device_id(awe_id: &[u8; 32]) -> String {
 }
 
 fn connection_device_id(identity: &Identity) -> String {
-    let digest = blake3::hash(format!("AWE/DEVICE/{}", format_uid(identity.public.awe_id.as_bytes())).as_bytes());
+    let digest = blake3::hash(
+        format!(
+            "AWE/DEVICE/{}",
+            format_uid(identity.public.awe_id.as_bytes())
+        )
+        .as_bytes(),
+    );
     hex::encode(&digest.as_bytes()[..8])
 }
 
@@ -170,9 +176,11 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> Result<String>
         if data.len() > HEADER_LIMIT {
             anyhow::bail!("HTTP headers too large");
         }
-        if let Some(pos) = data.windows(4).position(|w| w == b"\r
+        if let Some(pos) = data.windows(4).position(|w| {
+            w == b"\r
 \r
-") {
+"
+        }) {
             header_end = pos + 4;
             break;
         }
