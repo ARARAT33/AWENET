@@ -341,6 +341,55 @@ async fn serve_ui(
         "/api/health" => ("200 OK", "application/json; charset=utf-8", serde_json::json!({
             "status":"healthy","core":"ready","network":"listening","ui":"ready","api":"ready"
         }).to_string()),
+        "/api/call/signals" => {
+            let since = request.lines().next().unwrap_or("").split_whitespace().nth(1)
+                .and_then(|p| p.split('?').nth(1))
+                .and_then(|q| q.split('&').find_map(|v| v.strip_prefix("since=")))
+                .and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+            let signals = messenger.lock().map(|log| log.iter().filter(|m| {
+                m.get("kind").and_then(|v| v.as_str()) == Some("awe.call.v1")
+                    && m.get("timestamp").and_then(|v| v.as_u64()).unwrap_or(0) > since
+            }).cloned().collect::<Vec<_>>()).unwrap_or_default();
+            ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"ok","signals":signals}).to_string())
+        },
+        "/api/call/signal" if method == "POST" => {
+            let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+            let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+            let recipient = parsed.get("recipient").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let call_id = parsed.get("call_id").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let signal_type = parsed.get("signal_type").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let data = parsed.get("data").and_then(|v| v.as_str()).unwrap_or("");
+            if recipient.is_empty() || call_id.is_empty() || signal_type.is_empty() || data.is_empty() {
+                ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":"recipient, call_id, signal_type and data are required"}).to_string())
+            } else {
+                let peers = node.closest_peers(node.identity.public.awe_id.as_bytes(), 64).await;
+                let recipient_id = hex::decode(recipient).ok().and_then(|b| <[u8;32]>::try_from(b).ok())
+                    .or_else(|| peers.iter().find(|p| format_uid(&p.awe_id) == recipient).map(|p| p.awe_id));
+                match recipient_id {
+                    None => ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":"recipient must be a 64-hex AWE ID or discovered UID"}).to_string()),
+                    Some(recipient_id) => {
+                        let timestamp = now_unix();
+                        let digest = blake3::hash(format!("call:{}:{}:{}:{}", call_id, signal_type, timestamp, format_uid(node.identity.public.awe_id.as_bytes())).as_bytes());
+                        let id = hex::encode(&digest.as_bytes()[..16]);
+                        let envelope = serde_json::json!({
+                            "kind":"awe.call.v1","id":id,"call_id":call_id,
+                            "sender":format_uid(node.identity.public.awe_id.as_bytes()),
+                            "recipient":format_uid(&recipient_id),"signal_type":signal_type,"data":data,"timestamp":timestamp
+                        });
+                        match serde_json::to_vec(&envelope) {
+                            Ok(payload) => match node.send_to_peer(&recipient_id, 100, payload).await {
+                                Ok(_) => {
+                                    if let Ok(mut log)=messenger.lock(){ log.push(envelope.clone()); }
+                                    ("200 OK","application/json; charset=utf-8",serde_json::json!({"status":"sent","signal":envelope}).to_string())
+                                },
+                                Err(error)=>("502 Bad Gateway","application/json; charset=utf-8",serde_json::json!({"status":"error","error":error.to_string()}).to_string())
+                            },
+                            Err(error)=>("500 Internal Server Error","application/json; charset=utf-8",serde_json::json!({"status":"error","error":error.to_string()}).to_string())
+                        }
+                    }
+                }
+            }
+        },
         "/api/messenger" => {
             ("200 OK", "application/json; charset=utf-8", serde_json::json!({
                 "transport":"AWE encrypted TCP",
