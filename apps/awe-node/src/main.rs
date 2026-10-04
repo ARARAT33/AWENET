@@ -196,6 +196,43 @@ async fn serve_ui(
         "/" | "/index.html" => ("200 OK", "text/html; charset=utf-8", UI_HTML.to_string()),
         "/style.css" => ("200 OK", "text/css; charset=utf-8", UI_CSS.to_string()),
         "/app.js" => ("200 OK", "application/javascript; charset=utf-8", UI_JS.to_string()),
+        "/api/sites/publish" if method == "POST" => {
+            let body=request.split("\r\n\r\n").nth(1).unwrap_or("");
+            let p:serde_json::Value=serde_json::from_str(body).unwrap_or_default();
+            let domain=p.get("domain").and_then(|v|v.as_str()).unwrap_or("").trim();
+            let version=p.get("version").and_then(|v|v.as_u64()).unwrap_or(1);
+            let files=p.get("files").and_then(|v|v.as_array()).cloned().unwrap_or_default();
+            if domain.is_empty()||files.is_empty() {
+                ("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"domain and files are required"}).to_string())
+            } else {
+                match host.lock() {
+                    Ok(mut h) => {
+                        let mut hosted=Vec::new(); let mut error=None;
+                        for f in files {
+                            let path=f.get("path").and_then(|v|v.as_str()).unwrap_or("/");
+                            let ct=f.get("content_type").and_then(|v|v.as_str()).unwrap_or("text/plain");
+                            let b64=f.get("data_base64").and_then(|v|v.as_str()).unwrap_or("");
+                            match base64::Engine::decode(&base64::engine::general_purpose::STANDARD,b64).ok().and_then(|b|h.publish_file(path,&b,ct).ok()) {
+                                Some(file)=>hosted.push(file),
+                                None=>{error=Some("invalid site file or host policy rejected it");break;}
+                            }
+                        }
+                        if let Some(error)=error {
+                            ("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":error}).to_string())
+                        } else {
+                            match h.publish_manifest(domain,version,node.identity.public.awe_id.as_bytes().to_vec(),hosted) {
+                                Ok(manifest)=>match h.save_manifest(&manifest) {
+                                    Ok(())=>("200 OK","application/json; charset=utf-8",serde_json::json!({"status":"published","domain":manifest.domain,"version":manifest.version,"root_hash":hex::encode(manifest.root_hash)}).to_string()),
+                                    Err(e)=>("500 Internal Server Error","application/json; charset=utf-8",serde_json::json!({"status":"error","error":e.to_string()}).to_string())
+                                },
+                                Err(e)=>("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":e.to_string()}).to_string())
+                            }
+                        }
+                    },
+                    Err(_) => ("500 Internal Server Error","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"host unavailable"}).to_string())
+                }
+            }
+        },
         "/api/sites" => {
             let query = target.split('?').nth(1).unwrap_or("");
             let domain = query.split('&').find_map(|p| p.strip_prefix("domain=")).unwrap_or("").replace("%2E",".").replace("%2e",".");
