@@ -9,10 +9,16 @@ use awep2p_core::federation::{
 use awep2p_core::identity::{AweSecret, Identity, LocalVault, Username};
 use awep2p_core::lan_mesh::LanPeerBeacon;
 use awep2p_core::messenger::format_uid;
+use awep2p_core::messenger_runtime::{
+    ContactId, Envelope as RuntimeEnvelope, MediaKind, MessengerState,
+};
 use awep2p_core::network::{format_node_descriptor, Node};
 use awep2p_core::policy::{self, NetworkPolicy};
 use awep2p_core::reputation::NodeReputation;
-use awep2p_core::storage::{encode_shards, recover_shards, LocalNodeStore, StoragePolicy};
+use awep2p_core::resource_balance::{ResourceBalancer, ResourceCapacity, ResourceRequest};
+use awep2p_core::storage::{
+    decrypt_file, encode_shards, encrypt_file, recover_shards, LocalNodeStore, StoragePolicy,
+};
 use awep2p_core::supervisor::{PeerSupervisor, SupervisorConfig};
 use std::{
     collections::BTreeMap,
@@ -32,8 +38,31 @@ type MessengerLog = Arc<Mutex<Vec<serde_json::Value>>>;
 type FederationState = Arc<Mutex<AweNetConfig>>;
 type StorageState = Arc<LocalNodeStore>;
 type PendingAcks = Arc<Mutex<BTreeMap<[u8; 16], StorageShardAck>>>;
+type PendingMessengerAcks = Arc<Mutex<BTreeMap<String, u64>>>;
+type MessengerRuntimeState = Arc<Mutex<MessengerState>>;
 type PendingShards = Arc<Mutex<BTreeMap<[u8; 16], StorageShardTransfer>>>;
 type PolicyState = Arc<Mutex<NetworkPolicy>>;
+type ResourceState = Arc<Mutex<ResourceBalancer>>;
+
+fn peer_device_id(awe_id: &[u8; 32]) -> String {
+    let digest = blake3::hash(format!("AWE/DEVICE/{}", format_uid(awe_id)).as_bytes());
+    hex::encode(&digest.as_bytes()[..8])
+}
+
+fn connection_device_id(identity: &Identity) -> String {
+    let digest = blake3::hash(
+        format!(
+            "AWE/DEVICE/{}",
+            format_uid(identity.public.awe_id.as_bytes())
+        )
+        .as_bytes(),
+    );
+    hex::encode(&digest.as_bytes()[..8])
+}
+
+fn drive_key(identity: &Identity, file_id: &[u8; 32]) -> [u8; 32] {
+    *blake3::keyed_hash(&identity.export_secret(), file_id).as_bytes()
+}
 
 fn default_vault() -> PathBuf {
     if let Some(home) = env::var_os("HOME") {
@@ -48,7 +77,22 @@ fn default_vault() -> PathBuf {
 }
 
 fn usage() -> ! {
-    eprintln!("AWEp2P\n\nUsage:\n  awe-node                 Start the complete local product\n  awe-node app             Start UI + local node\n  awe-node secret <username> [out-file]\n  awe-node init <username> [vault-file]\n  awe-node run <vault-file> <password> <listen-addr> [bootstrap-addr ...]\n  awe-node id <vault-file> <password> <username>\n  awe-node status [vault-file]\n  awe-node diagnostics\n  awe-node mesh <listen-port>\n  awe-node health\n  awe-node probe <address>");
+    eprintln!(
+        "AWEp2P
+
+Usage:
+  awe-node                 Start the complete local product
+  awe-node app             Start UI + local node
+  awe-node secret <username> [out-file]
+  awe-node init <username> [vault-file]
+  awe-node run <vault-file> <password> <listen-addr> [bootstrap-addr ...]
+  awe-node id <vault-file> <password> <username>
+  awe-node status [vault-file]
+  awe-node diagnostics
+  awe-node mesh <listen-port>
+  awe-node health
+  awe-node probe <address>"
+    );
     std::process::exit(2)
 }
 
@@ -109,7 +153,20 @@ fn load_identity(path: &PathBuf, password: &str, username: &str) -> Result<Ident
 }
 
 async fn http_response(status: &str, content_type: &str, body: &str) -> Vec<u8> {
-    format!("HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: content-type\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}", body.len()).into_bytes()
+    format!(
+        "HTTP/1.1 {status}\r
+Content-Type: {content_type}\r
+Content-Length: {}\r
+Access-Control-Allow-Origin: *\r
+Access-Control-Allow-Methods: GET, POST, OPTIONS\r
+Access-Control-Allow-Headers: content-type\r
+Cache-Control: no-store\r
+Connection: close\r
+\r
+{body}",
+        body.len()
+    )
+    .into_bytes()
 }
 
 async fn read_http_request(stream: &mut tokio::net::TcpStream) -> Result<String> {
@@ -177,8 +234,11 @@ async fn serve_ui(
     federation_path: PathBuf,
     storage: StorageState,
     pending_acks: PendingAcks,
+    pending_messenger_acks: PendingMessengerAcks,
+    messenger_runtime: MessengerRuntimeState,
     pending_shards: PendingShards,
     policy_state: PolicyState,
+    resource_state: ResourceState,
 ) -> Result<()> {
     let request = read_http_request(&mut stream).await?;
     let request_line = request.lines().next().unwrap_or("");
@@ -190,9 +250,8 @@ async fn serve_ui(
         "/style.css" => ("200 OK", "text/css; charset=utf-8", UI_CSS.to_string()),
         "/app.js" => ("200 OK", "application/javascript; charset=utf-8", UI_JS.to_string()),
         "/api/node" => ("200 OK", "application/json; charset=utf-8", serde_json::json!({
-            "id": format_uid(node.identity.public.awe_id.as_bytes()),
+            "device_id": connection_device_id(&node.identity),
             "descriptor": node.node_descriptor(),
-            "username": node.identity.public.username.as_str(),
             "address": node.listen_addr.to_string(),
             "protocol": 1
         }).to_string()),
@@ -200,16 +259,46 @@ async fn serve_ui(
             let policy = policy_state.lock().map(|p| p.clone()).unwrap_or_default();
             ("200 OK", "application/json; charset=utf-8", serde_json::to_string(&policy).unwrap_or_else(|_| "{}".into()))
         },
+        "/api/resources/config" if method == "POST" => {
+            let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+            let parsed = serde_json::from_str::<serde_json::Value>(body).unwrap_or_default();
+            let pct = |key: &str| parsed.get(key).and_then(|v| v.as_u64()).unwrap_or(0).min(100) as u8;
+            if let Ok(mut balancer) = resource_state.lock() {
+                balancer.configure_contribution(
+                    pct("cpu"),
+                    pct("gpu"),
+                    pct("ssd"),
+                    pct("hdd"),
+                    pct("bandwidth"),
+                );
+                let resources = serde_json::json!({"status":"saved","capacity":balancer.capacity()});
+                ("200 OK", "application/json; charset=utf-8", resources.to_string())
+            } else {
+                ("503 Service Unavailable", "application/json; charset=utf-8", serde_json::json!({"status":"unavailable"}).to_string())
+            }
+        },
+        "/api/resources" => {
+            let resources = resource_state.lock().map(|r| serde_json::json!({
+                "capacity": r.capacity(),
+                "usage": r.usage(),
+                "active_consumers": r.active_consumers(),
+                "per_consumer_cpu_limit": r.per_consumer_cpu_limit(),
+                "per_consumer_memory_limit": r.per_consumer_memory_limit(),
+                "per_consumer_storage_limit": r.per_consumer_storage_limit(),
+                "policy": "fair-share"
+            })).unwrap_or_else(|_| serde_json::json!({"status":"unavailable"}));
+            ("200 OK", "application/json; charset=utf-8", resources.to_string())
+        },
         "/api/status" => {
             let peers = node.closest_peers(node.identity.public.awe_id.as_bytes(), 64).await;
             let peer_json = peers.iter().map(|p| serde_json::json!({
-                "id": format_uid(&p.awe_id),
+                "device_id": peer_device_id(&p.awe_id),
                 "address": p.addresses.first().map(ToString::to_string).unwrap_or_else(|| "unknown".into()),
                 "last_seen": p.last_seen_unix
             })).collect::<Vec<_>>();
             ("200 OK", "application/json; charset=utf-8", serde_json::json!({
                 "product": "AWEp2P", "status": "online",
-                "node_id": format_uid(node.identity.public.awe_id.as_bytes()),
+                "device_id": connection_device_id(&node.identity),
                 "node_address": node.listen_addr.to_string(),
                 "transport": "AWE encrypted TCP", "ui": "connected", "peers": peer_json, "discovered_peers": peer_json.len(), "active_connections": node.active_peer_count().await
             }).to_string())
@@ -233,13 +322,16 @@ async fn serve_ui(
             let state = federation_state.lock().map(|s| s.clone()).unwrap_or_default();
             ("200 OK", "application/json; charset=utf-8", serde_json::json!({
                 "format": state.format, "version": state.version, "local_node_id": state.local_node_id,
+                "device_id": connection_device_id(&node.identity),
                 "data_centre_id": state.local_data_centre_id, "data_group_id": state.local_data_group_id,
                 "joined_data_centres": state.joined_data_centres, "joined_data_groups": state.joined_data_groups,
                 "bootstrap_endpoints": state.bootstrap_endpoints
             }).to_string())
         },
         "/api/federation/generate" if method == "POST" => {
-            let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+            let body = request.split("\r
+\r
+").nth(1).unwrap_or("");
             let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
             let kind = parsed.get("kind").and_then(|v| v.as_str()).unwrap_or("");
             let name = parsed.get("name").and_then(|v| v.as_str()).unwrap_or("AWE");
@@ -277,7 +369,9 @@ async fn serve_ui(
             }
         },
         "/api/federation/import" if method == "POST" => {
-            let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+            let body = request.split("\r
+\r
+").nth(1).unwrap_or("");
             let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
             let kind = parsed.get("kind").and_then(|v| v.as_str()).unwrap_or("");
             let content = parsed.get("content").and_then(|v| v.as_str()).unwrap_or("");
@@ -351,7 +445,9 @@ async fn serve_ui(
             "identity":"ed25519","transport":"x25519 + chacha20-poly1305","replay_protection":"enabled","a2p2_fixed_packet":1280
         }).to_string()),
         "/api/messenger/send" if method == "POST" => {
-            let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+            let body = request.split("\r
+\r
+").nth(1).unwrap_or("");
             let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
             let recipient = parsed.get("recipient").and_then(|v| v.as_str()).unwrap_or("").trim();
             let text = parsed.get("text").and_then(|v| v.as_str()).unwrap_or("").trim();
@@ -359,7 +455,20 @@ async fn serve_ui(
                 ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":"recipient and text are required"}).to_string())
             } else {
                 let runtime_policy = policy_state.lock().map(|p| p.clone()).unwrap_or_default();
-                if !runtime_policy.allows_message(text.len()) || !runtime_policy.allows_stream(policy::MESSENGER_STREAM) {
+                let lease = resource_state.lock().ok().and_then(|mut b| {
+                    b.try_acquire(
+                        connection_device_id(&node.identity),
+                        ResourceRequest {
+                            cpu_slots: 1,
+                            memory_bytes: text.len() as u64,
+                            storage_bytes: 0,
+                            bandwidth_bytes: text.len() as u64,
+                        },
+                    )
+                });
+                if !runtime_policy.allows_message(text.len())
+                    || !runtime_policy.allows_stream(policy::MESSENGER_STREAM)
+                    || lease.is_none() {
                     ("413 Payload Too Large", "application/json; charset=utf-8", serde_json::json!({"status":"rejected","error":"message rejected by local AWENET policy"}).to_string())
                 } else {
                 let peers = node.closest_peers(node.identity.public.awe_id.as_bytes(), 64).await;
@@ -375,48 +484,94 @@ async fn serve_ui(
                     Some(recipient_id) => {
                         let timestamp = now_unix();
                 let digest = blake3::hash(format!("{}:{}:{}:{}", format_uid(node.identity.public.awe_id.as_bytes()), recipient, text, timestamp).as_bytes());
-                let message_id = hex::encode(&digest.as_bytes()[..16]);
-                let envelope = serde_json::json!({
-                    "kind": "awe.messenger.v1",
-                    "id": message_id,
-                    "sender": format_uid(node.identity.public.awe_id.as_bytes()),
-                    "recipient": format_uid(&recipient_id),
-                    "text": text,
-                    "timestamp": timestamp
-                });
+                let message_id_bytes = <[u8; 16]>::try_from(&digest.as_bytes()[..16]).expect("blake3 digest slice has 16 bytes");
+                let message_id = hex::encode(message_id_bytes);
+                let sequence = messenger_runtime
+                    .lock()
+                    .map(|mut runtime| runtime.allocate_sequence())
+                    .unwrap_or(timestamp);
+                let envelope = RuntimeEnvelope {
+                    message_id: message_id_bytes,
+                    sender: ContactId(*node.identity.public.awe_id.as_bytes()),
+                    recipient: ContactId(recipient_id),
+                    session_epoch: timestamp,
+                    sequence,
+                    kind: MediaKind::Text,
+                    ciphertext: text.as_bytes().to_vec(),
+                };
+                if let Ok(mut runtime) = messenger_runtime.lock() {
+                    let _ = runtime.queue(envelope.clone(), timestamp);
+                }
                 match serde_json::to_vec(&envelope) {
-                    Ok(payload) => match node.send_to_peer(&recipient_id, 100, payload).await {
-                        Ok(rtt) => {
-                            let item = serde_json::json!({
-                                "id": message_id,
-                                "sender": format_uid(node.identity.public.awe_id.as_bytes()),
-                                "recipient": format_uid(&recipient_id),
-                                "text": text,
-                                "state": "sent",
-                                "timestamp": timestamp,
-                                "rtt_ms": rtt.as_millis()
-                            });
-                            if let Ok(mut log) = messenger.lock() {
-                                log.push(item.clone());
-                            }
-                            ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"sent","message":item}).to_string())
+                    Ok(payload) => {
+                        if let Ok(mut pending) = pending_messenger_acks.lock() {
+                            pending.remove(&message_id);
                         }
-                        Err(error) => {
-                            let item = serde_json::json!({
-                                "id": message_id,
-                                "sender": format_uid(node.identity.public.awe_id.as_bytes()),
-                                "recipient": format_uid(&recipient_id),
-                                "text": text,
-                                "state": "failed",
-                                "timestamp": timestamp,
-                                "error": error.to_string()
-                            });
-                            if let Ok(mut log) = messenger.lock() {
-                                log.push(item.clone());
+                        match node.send_to_peer(&recipient_id, policy::MESSENGER_STREAM, payload).await {
+                            Ok(rtt) => {
+                                if let Ok(mut runtime) = messenger_runtime.lock() {
+                                    let _ = runtime.mark_sent(message_id_bytes, timestamp);
+                                }
+                                let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+                                let mut delivered = false;
+                                while tokio::time::Instant::now() < deadline {
+                                    if let Ok(mut pending) = pending_messenger_acks.lock() {
+                                        if pending.remove(&message_id).is_some() {
+                                            if let Ok(mut runtime) = messenger_runtime.lock() {
+                                                let _ = runtime.mark_delivered(message_id_bytes);
+                                            }
+                                            delivered = true;
+                                            break;
+                                        }
+                                    }
+                                    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                                }
+                                if !delivered {
+                                    if let Ok(mut runtime) = messenger_runtime.lock() {
+                                        let _ = runtime.mark_failed(message_id_bytes, "remote ACK timeout", now_unix());
+                                    }
+                                }
+                                let state = if delivered { "delivered" } else { "pending" };
+                                let item = serde_json::json!({
+                                    "id": message_id,
+                                    "sender": format_uid(node.identity.public.awe_id.as_bytes()),
+                                    "recipient": format_uid(&recipient_id),
+                                    "text": text,
+                                    "state": state,
+                                    "timestamp": timestamp,
+                                    "rtt_ms": rtt.as_millis()
+                                });
+                                if let Ok(mut log) = messenger.lock() {
+                                    log.push(item.clone());
+                                }
+                                if let Some(lease) = lease.as_ref() { if let Ok(mut b) = resource_state.lock() { b.release(lease); } }
+                                if delivered {
+                                    ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"delivered","message":item}).to_string())
+                                } else {
+                                    ("504 Gateway Timeout", "application/json; charset=utf-8", serde_json::json!({"status":"pending_ack","message":item}).to_string())
+                                }
                             }
-                            ("502 Bad Gateway", "application/json; charset=utf-8", serde_json::json!({"status":"failed","message":item}).to_string())
+                            Err(error) => {
+                                if let Some(lease) = lease.as_ref() { if let Ok(mut b) = resource_state.lock() { b.release(lease); } }
+                                if let Ok(mut runtime) = messenger_runtime.lock() {
+                                    let _ = runtime.mark_failed(message_id_bytes, error.to_string(), now_unix());
+                                }
+                                let item = serde_json::json!({
+                                    "id": message_id,
+                                    "sender": format_uid(node.identity.public.awe_id.as_bytes()),
+                                    "recipient": format_uid(&recipient_id),
+                                    "text": text,
+                                    "state": "failed",
+                                    "timestamp": timestamp,
+                                    "error": error.to_string()
+                                });
+                                if let Ok(mut log) = messenger.lock() {
+                                    log.push(item.clone());
+                                }
+                                ("502 Bad Gateway", "application/json; charset=utf-8", serde_json::json!({"status":"failed","message":item}).to_string())
+                            }
                         }
-                    },
+                    }
                     Err(error) => ("500 Internal Server Error", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":error.to_string()}).to_string())
                 }
                     }
@@ -425,7 +580,9 @@ async fn serve_ui(
         }
         },
         "/api/storage/put" if method == "POST" => {
-            let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+            let body = request.split("\r
+\r
+").nth(1).unwrap_or("");
             let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
             let filename = parsed.get("filename").and_then(|v| v.as_str()).unwrap_or("object.bin").trim();
             let data_hex = parsed.get("data_hex").and_then(|v| v.as_str()).unwrap_or("").trim();
@@ -439,11 +596,21 @@ async fn serve_ui(
                         serde_json::json!({"status":"error","error":"data_hex is not valid hexadecimal"}).to_string()),
                     Ok(data) => {
                         let runtime_policy = policy_state.lock().map(|p| p.clone()).unwrap_or_default();
-                        if !runtime_policy.allows_upload(data.len()) || !runtime_policy.allows_stream(STORAGE_STREAM) {
-                            ("403 Forbidden", "application/json; charset=utf-8", serde_json::json!({"status":"rejected","error":"upload rejected by local AWENET policy"}).to_string())
+                        let lease = resource_state.lock().ok().and_then(|mut b| b.try_acquire(
+                            connection_device_id(&node.identity),
+                            ResourceRequest { cpu_slots: 1, memory_bytes: 0, storage_bytes: data.len() as u64, bandwidth_bytes: data.len() as u64 },
+                        ));
+                        if !runtime_policy.allows_upload(data.len()) || !runtime_policy.allows_stream(STORAGE_STREAM) || lease.is_none() {
+                            if let Some(lease) = lease.as_ref() { if let Ok(mut b) = resource_state.lock() { b.release(lease); } }
+                        ("403 Forbidden", "application/json; charset=utf-8", serde_json::json!({"status":"rejected","error":"upload rejected by local AWENET policy"}).to_string())
                         } else {
                         let policy = StoragePolicy::for_file_size(data.len());
                         let file_id = *blake3::hash(&data).as_bytes();
+                        let encryption_key = drive_key(&node.identity, &file_id);
+                        let encrypted_data = match encrypt_file(&data, &encryption_key) {
+                            Ok(blob) => blob,
+                            Err(error) => return Err(anyhow::anyhow!("private Drive encryption failed: {error}")),
+                        };
                         let peers = node.closest_peers(node.identity.public.awe_id.as_bytes(), 64).await;
                         let local_id = format_uid(node.identity.public.awe_id.as_bytes());
                         let mut node_ids = vec![local_id.clone()];
@@ -457,7 +624,7 @@ async fn serve_ui(
                         match awep2p_core::replication::build_plan_for_shards(file_id, &node_ids, policy.total_shards()) {
                             Err(error) => ("409 Conflict", "application/json; charset=utf-8",
                                 serde_json::json!({"status":"error","error":error,"discovered_nodes":node_ids.len()}).to_string()),
-                            Ok(plan) => match encode_shards(&data, &policy) {
+                            Ok(plan) => match encode_shards(&encrypted_data, &policy) {
                                 Err(error) => ("500 Internal Server Error", "application/json; charset=utf-8",
                                     serde_json::json!({"status":"error","error":error.to_string()}).to_string()),
                                 Ok(shards) => {
@@ -573,7 +740,10 @@ async fn serve_ui(
                                         "version": 1,
                                         "file_id": hex::encode(file_id),
                                         "filename": filename,
-                                        "original_size": data.len(),
+                                        "original_size": encrypted_data.len(),
+                                        "plaintext_size": data.len(),
+                                        "encrypted": true,
+                                        "encryption": "ChaCha20-Poly1305 / node-derived key",
                                         "shards": policy.total_shards(),
                                         "data_shards": policy.data_shards,
                                         "parity_shards": policy.parity_shards,
@@ -588,6 +758,7 @@ async fn serve_ui(
                                         serde_json::to_vec_pretty(&manifest).unwrap_or_default(),
                                     );
 
+                                    if let Some(lease) = lease.as_ref() { if let Ok(mut b) = resource_state.lock() { b.release(lease); } }
                                     let status = if failed.is_empty() { "stored" } else { "partial" };
                                     ("200 OK", "application/json; charset=utf-8",
                                         serde_json::json!({
@@ -595,6 +766,9 @@ async fn serve_ui(
                                             "file_id": hex::encode(file_id),
                                             "filename": filename,
                                             "original_size": data.len(),
+                                            "plaintext_size": data.len(),
+                                            "encrypted": true,
+                                            "encryption": "ChaCha20-Poly1305 / node-derived key",
                                             "shards": 1000,
                                             "replicas": 3,
                                             "stored_local": stored_local,
@@ -610,7 +784,9 @@ async fn serve_ui(
         }
         },
         "/api/storage/push" if method == "POST" => {
-            let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+            let body = request.split("\r
+\r
+").nth(1).unwrap_or("");
             let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
             let recipient = parsed.get("recipient").and_then(|v| v.as_str()).unwrap_or("").trim();
             let file_id_hex = parsed.get("file_id").and_then(|v| v.as_str()).unwrap_or("").trim();
@@ -790,14 +966,34 @@ async fn serve_ui(
                             Ok(mut data) => {
                                 let original_size = manifest.get("original_size").and_then(|v| v.as_u64()).unwrap_or(data.len() as u64) as usize;
                                 data.truncate(original_size);
-                                ("200 OK","application/json; charset=utf-8",
-                                    serde_json::json!({
-                                        "status":"reconstructed",
-                                        "file_id":file_id_hex,
-                                        "filename":manifest.get("filename").and_then(|v| v.as_str()).unwrap_or("object.bin"),
-                                        "size":data.len(),
-                                        "data_hex":hex::encode(data)
-                                    }).to_string())
+                                let is_encrypted = manifest.get("encrypted").and_then(|v| v.as_bool()).unwrap_or(false);
+                                let plaintext = if is_encrypted {
+                                    match <[u8; 32]>::try_from(hex::decode(file_id_hex).unwrap_or_default().as_slice()) {
+                                        Ok(file_id_bytes) => {
+                                            let key = drive_key(&node.identity, &file_id_bytes);
+                                            decrypt_file(&data, &key).map_err(|error| error.to_string())
+                                        }
+                                        Err(_) => Err("invalid file_id".to_string()),
+                                    }
+                                } else {
+                                    Ok(data)
+                                };
+                                match plaintext {
+                                    Ok(plaintext) => (
+                                        "200 OK","application/json; charset=utf-8",
+                                        serde_json::json!({
+                                            "status":"reconstructed",
+                                            "file_id":file_id_hex,
+                                            "filename":manifest.get("filename").and_then(|v| v.as_str()).unwrap_or("object.bin"),
+                                            "size":plaintext.len(),
+                                            "data_hex":hex::encode(plaintext)
+                                        }).to_string()
+                                    ),
+                                    Err(error) => (
+                                        "403 Forbidden","application/json; charset=utf-8",
+                                        serde_json::json!({"status":"error","error":format!("private Drive decryption failed: {error}")}).to_string()
+                                    )
+                                }
                             },
                             Err(error) => ("500 Internal Server Error","application/json; charset=utf-8",
                                 serde_json::json!({"status":"error","error":error.to_string()}).to_string())
@@ -1185,11 +1381,41 @@ async fn run_product() -> Result<()> {
     let storage: StorageState = Arc::new(LocalNodeStore::open(&storage_root, storage_quota)?);
     let messenger: MessengerLog = Arc::new(Mutex::new(Vec::new()));
     let pending_acks: PendingAcks = Arc::new(Mutex::new(BTreeMap::new()));
+    let pending_messenger_acks: PendingMessengerAcks = Arc::new(Mutex::new(BTreeMap::new()));
+    let messenger_runtime: MessengerRuntimeState = Arc::new(Mutex::new(MessengerState::default()));
     let pending_shards: PendingShards = Arc::new(Mutex::new(BTreeMap::new()));
     let federation_path = data_dir.join("awenet.json");
     let policy_path = data_dir.join("policy.json");
     let initial_policy = policy::load_or_create(&policy_path).map_err(anyhow::Error::msg)?;
-    let policy_state: PolicyState = Arc::new(Mutex::new(initial_policy));
+    let policy_state: PolicyState = Arc::new(Mutex::new(initial_policy.clone()));
+    let resource_capacity = ResourceCapacity {
+        cpu_slots: initial_policy.max_concurrent_work as u32,
+        gpu_slots: env::var("AWE_GPU_SLOTS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0),
+        memory_bytes: env::var("AWE_MEMORY_BYTES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0),
+        storage_bytes: storage_quota,
+        ssd_bytes: env::var("AWE_SSD_BYTES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0),
+        hdd_bytes: env::var("AWE_HDD_BYTES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0),
+        bandwidth_bytes_per_sec: env::var("AWE_BANDWIDTH_BYTES_PER_SEC")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0),
+    };
+    let resource_state: ResourceState = Arc::new(Mutex::new(ResourceBalancer::new(
+        resource_capacity,
+        initial_policy.max_peer_share_percent,
+    )));
     let federation_state: FederationState = if federation_path.exists() {
         fs::read(&federation_path)
             .ok()
@@ -1281,6 +1507,52 @@ async fn run_product() -> Result<()> {
     let dispatcher_messenger = messenger.clone();
     let dispatcher_acks = pending_acks.clone();
     let dispatcher_policy = policy_state.clone();
+    let dispatcher_messenger_runtime = messenger_runtime.clone();
+    let dispatcher_pending_messenger_acks = pending_messenger_acks.clone();
+    let retry_node = node.clone();
+    let retry_runtime = messenger_runtime.clone();
+    let retry_policy = policy_state.clone();
+    tokio::spawn(async move {
+        loop {
+            let now = now_unix();
+            let retries = retry_runtime
+                .lock()
+                .map(|state| state.due_retries(now))
+                .unwrap_or_default();
+            for retry in retries {
+                if let Ok(policy) = retry_policy.lock() {
+                    if !policy.allows_stream(policy::MESSENGER_STREAM) {
+                        continue;
+                    }
+                }
+                let recipient = retry.envelope.recipient.0;
+                let payload = match serde_json::to_vec(&retry.envelope) {
+                    Ok(p) => p,
+                    Err(_) => continue,
+                };
+                match retry_node
+                    .send_to_peer(&recipient, policy::MESSENGER_STREAM, payload)
+                    .await
+                {
+                    Ok(_) => {
+                        if let Ok(mut state) = retry_runtime.lock() {
+                            let _ = state.mark_sent(retry.envelope.message_id, now);
+                        }
+                    }
+                    Err(error) => {
+                        if let Ok(mut state) = retry_runtime.lock() {
+                            let _ = state.mark_failed(
+                                retry.envelope.message_id,
+                                error.to_string(),
+                                now,
+                            );
+                        }
+                    }
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+    });
     tokio::spawn(async move {
         loop {
             for (sender, stream, payload) in dispatcher_node.take_inbox() {
@@ -1291,8 +1563,26 @@ async fn run_product() -> Result<()> {
                 if !runtime_policy.allows_stream(stream) {
                     continue;
                 }
-                if stream == 100 {
+                if stream == policy::MESSENGER_STREAM {
                     if let Ok(message) = serde_json::from_slice::<serde_json::Value>(&payload) {
+                        if message.get("kind").and_then(|v| v.as_str())
+                            == Some("awe.messenger.ack.v1")
+                        {
+                            if let Some(id) = message.get("id").and_then(|v| v.as_str()) {
+                                if let Ok(mut pending) = dispatcher_pending_messenger_acks.lock() {
+                                    pending.insert(id.to_owned(), now_unix());
+                                }
+                                if let Ok(bytes) = hex::decode(id) {
+                                    if let Ok(message_id) = <[u8; 16]>::try_from(bytes.as_slice()) {
+                                        if let Ok(mut runtime) = dispatcher_messenger_runtime.lock()
+                                        {
+                                            let _ = runtime.mark_delivered(message_id);
+                                        }
+                                    }
+                                }
+                            }
+                            continue;
+                        }
                         if message.get("kind").and_then(|v| v.as_str()) == Some("awe.messenger.v1")
                         {
                             let id = message.get("id").and_then(|v| v.as_str()).unwrap_or("");
@@ -1318,6 +1608,55 @@ async fn run_product() -> Result<()> {
                                         log.push(item);
                                     }
                                 }
+                                let ack =
+                                    serde_json::json!({"kind":"awe.messenger.ack.v1","id":id});
+                                if let Ok(bytes) = serde_json::to_vec(&ack) {
+                                    let _ = dispatcher_node
+                                        .send_to_peer(&sender, policy::MESSENGER_STREAM, bytes)
+                                        .await;
+                                }
+                            }
+                        }
+                    }
+                    continue;
+                }
+                if stream == policy::MESSENGER_STREAM {
+                    if let Ok(runtime_envelope) =
+                        serde_json::from_slice::<RuntimeEnvelope>(&payload)
+                    {
+                        if runtime_envelope.validate().is_ok()
+                            && runtime_envelope.recipient.0
+                                == *dispatcher_node.identity.public.awe_id.as_bytes()
+                        {
+                            let sender_id = runtime_envelope.sender.0;
+                            if let Ok(mut runtime) = dispatcher_messenger_runtime.lock() {
+                                if !runtime.replay.accept(sender_id, runtime_envelope.sequence) {
+                                    continue;
+                                }
+                            }
+                            let id = hex::encode(runtime_envelope.message_id);
+                            let text_value =
+                                String::from_utf8_lossy(&runtime_envelope.ciphertext).to_string();
+                            let item = serde_json::json!({
+                                "id": id,
+                                "sender": format_uid(&sender_id),
+                                "recipient": format_uid(&runtime_envelope.recipient.0),
+                                "text": text_value,
+                                "state": "delivered",
+                                "timestamp": runtime_envelope.session_epoch
+                            });
+                            if let Ok(mut log) = dispatcher_messenger.lock() {
+                                if !log.iter().any(|existing| {
+                                    existing.get("id").and_then(|v| v.as_str()) == Some(&id)
+                                }) {
+                                    log.push(item);
+                                }
+                            }
+                            let ack = serde_json::json!({"kind":"awe.messenger.ack.v1","id":id});
+                            if let Ok(bytes) = serde_json::to_vec(&ack) {
+                                let _ = dispatcher_node
+                                    .send_to_peer(&sender_id, policy::MESSENGER_STREAM, bytes)
+                                    .await;
                             }
                         }
                     }
@@ -1404,22 +1743,6 @@ async fn run_product() -> Result<()> {
     println!("Node transport: {listen}");
     println!("UI: http://{ui_addr}");
 
-    let url = format!("http://{ui_addr}/");
-    #[cfg(target_os = "windows")]
-    {
-        let _ = std::process::Command::new("cmd")
-            .args(["/C", "start", "", &url])
-            .spawn();
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let _ = std::process::Command::new("open").arg(&url).spawn();
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
-    }
-
     loop {
         let (stream, _) = listener.accept().await?;
         let api_node = node.clone();
@@ -1427,9 +1750,12 @@ async fn run_product() -> Result<()> {
         let api_federation = federation_state.clone();
         let api_storage = storage.clone();
         let api_pending_acks = pending_acks.clone();
+        let api_pending_messenger_acks = pending_messenger_acks.clone();
+        let api_messenger_runtime = messenger_runtime.clone();
         let api_pending_shards = pending_shards.clone();
         let api_federation_path = federation_path.clone();
         let api_policy = policy_state.clone();
+        let api_resources = resource_state.clone();
         tokio::spawn(async move {
             if let Err(e) = serve_ui(
                 stream,
@@ -1439,8 +1765,11 @@ async fn run_product() -> Result<()> {
                 api_federation_path,
                 api_storage,
                 api_pending_acks,
+                api_pending_messenger_acks,
+                api_messenger_runtime,
                 api_pending_shards,
                 api_policy,
+                api_resources,
             )
             .await
             {

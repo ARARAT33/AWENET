@@ -20,7 +20,23 @@ pub struct NetworkPolicy {
     pub max_message_bytes: usize,
     pub max_shard_bytes: usize,
     pub max_bootstrap_peers: usize,
+    #[serde(default = "default_max_concurrent_work")]
+    pub max_concurrent_work: usize,
+    #[serde(default = "default_max_peer_share_percent")]
+    pub max_peer_share_percent: u8,
+    #[serde(default = "default_require_resource_declaration")]
+    pub require_resource_declaration_for_hosted_features: bool,
     pub allowed_streams: Vec<u32>,
+}
+
+fn default_max_concurrent_work() -> usize {
+    8
+}
+fn default_max_peer_share_percent() -> u8 {
+    25
+}
+fn default_require_resource_declaration() -> bool {
+    true
 }
 
 impl Default for NetworkPolicy {
@@ -34,6 +50,9 @@ impl Default for NetworkPolicy {
             max_message_bytes: 64 * 1024,
             max_shard_bytes: 4 * 1024 * 1024,
             max_bootstrap_peers: 64,
+            max_concurrent_work: 8,
+            max_peer_share_percent: 25,
+            require_resource_declaration_for_hosted_features: true,
             allowed_streams: vec![MESSENGER_STREAM, crate::data_plane::STORAGE_STREAM],
         }
     }
@@ -47,8 +66,11 @@ impl NetworkPolicy {
         if self.max_upload_bytes == 0 || self.max_message_bytes == 0 || self.max_shard_bytes == 0 {
             return Err("policy limits must be non-zero".into());
         }
-        if self.max_bootstrap_peers == 0 {
-            return Err("max_bootstrap_peers must be non-zero".into());
+        if self.max_bootstrap_peers == 0 || self.max_concurrent_work == 0 {
+            return Err("resource scheduling limits must be non-zero".into());
+        }
+        if self.max_peer_share_percent == 0 || self.max_peer_share_percent > 100 {
+            return Err("max_peer_share_percent must be between 1 and 100".into());
         }
         if self.require_authenticated_peers && self.allowed_streams.is_empty() {
             return Err("authenticated policy must declare allowed streams".into());
@@ -58,6 +80,15 @@ impl NetworkPolicy {
 
     pub fn allows_stream(&self, stream: u32) -> bool {
         self.enabled && self.allowed_streams.contains(&stream)
+    }
+
+    pub fn allows_hosted_feature(&self, declared_return_resources: bool) -> bool {
+        self.enabled
+            && (!self.require_resource_declaration_for_hosted_features || declared_return_resources)
+    }
+
+    pub fn peer_share_quota(&self, total_available: u64) -> u64 {
+        total_available.saturating_mul(self.max_peer_share_percent as u64) / 100
     }
 
     pub fn allows_upload(&self, bytes: usize) -> bool {
