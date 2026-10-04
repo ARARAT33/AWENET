@@ -42,6 +42,11 @@ type MessengerRuntimeState = Arc<Mutex<MessengerState>>;
 type PendingShards = Arc<Mutex<BTreeMap<[u8; 16], StorageShardTransfer>>>;
 type PolicyState = Arc<Mutex<NetworkPolicy>>;
 
+fn peer_device_id(awe_id: &[u8; 32]) -> String {
+    let digest = blake3::hash(format!("AWE/DEVICE/{}", format_uid(awe_id)).as_bytes());
+    hex::encode(&digest.as_bytes()[..8])
+}
+
 fn connection_device_id(identity: &Identity) -> String {
     let digest = blake3::hash(format!("AWE/DEVICE/{}", format_uid(identity.public.awe_id.as_bytes())).as_bytes());
     hex::encode(&digest.as_bytes()[..8])
@@ -244,7 +249,7 @@ async fn serve_ui(
         "/api/status" => {
             let peers = node.closest_peers(node.identity.public.awe_id.as_bytes(), 64).await;
             let peer_json = peers.iter().map(|p| serde_json::json!({
-                "device_id": { let digest = blake3::hash(format!("AWE/DEVICE/{}", format_uid(&p.awe_id)).as_bytes()); hex::encode(&digest.as_bytes()[..8]) },
+                "device_id": peer_device_id(&p.awe_id),
                 "address": p.addresses.first().map(ToString::to_string).unwrap_or_else(|| "unknown".into()),
                 "last_seen": p.last_seen_unix
             })).collect::<Vec<_>>();
