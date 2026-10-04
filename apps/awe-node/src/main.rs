@@ -454,7 +454,7 @@ async fn serve_ui(
                 None=>("404 Not Found","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"channel not found"}).to_string()),
                 Some(channel)=>{
                     let owner=channel.get("owner").and_then(|v|v.as_str()).unwrap_or("");
-                    let owner_id=hex::decode(owner).ok().and_then(|b|<[u8;32]>::try_from(b).ok());
+                    let owner_id=hex::decode(owner).ok().and_then(|b| <[u8;32]>::try_from(b).ok()).or_else(|| { let peers = futures::executor::block_on(node.peers()); peers.iter().find(|p| format_uid(&p.awe_id) == owner).map(|p| p.awe_id) });
                     match owner_id{
                         None=>("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"invalid channel owner"}).to_string()),
                         Some(owner_id)=>{
