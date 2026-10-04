@@ -29,9 +29,15 @@ pub struct NetworkPolicy {
     pub allowed_streams: Vec<u32>,
 }
 
-fn default_max_concurrent_work() -> usize { 8 }
-fn default_max_peer_share_percent() -> u8 { 25 }
-fn default_require_resource_declaration() -> bool { true }
+fn default_max_concurrent_work() -> usize {
+    8
+}
+fn default_max_peer_share_percent() -> u8 {
+    25
+}
+fn default_require_resource_declaration() -> bool {
+    true
+}
 
 impl Default for NetworkPolicy {
     fn default() -> Self {
