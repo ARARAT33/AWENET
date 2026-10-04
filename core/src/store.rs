@@ -257,6 +257,27 @@ impl AWEPackage {
     }
 }
 impl Store {
+    /// Return only packages that pass the same signature and integrity checks
+    /// used by installation. Invalid cached packages never reach the UI.
+    pub fn catalog(&self) -> io::Result<Vec<AppManifest>> {
+        let mut out = Vec::new();
+        let dir = self.root.join("packages");
+        if !dir.exists() {
+            return Ok(out);
+        }
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_file() {
+                continue;
+            }
+            if let Ok(package) = AWEPackage::from_bytes(&fs::read(entry.path())?) {
+                out.push(package.manifest.manifest);
+            }
+        }
+        out.sort_by(|a, b| a.id.cmp(&b.id).then(a.version.cmp(&b.version)));
+        Ok(out)
+    }
+
     pub fn open(root: impl AsRef<Path>) -> io::Result<Self> {
         fs::create_dir_all(root.as_ref().join("packages"))?;
         fs::create_dir_all(root.as_ref().join("installed"))?;
