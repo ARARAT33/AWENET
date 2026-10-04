@@ -85,13 +85,17 @@ impl ResourceBalancer {
     }
 
     pub fn usage(&self) -> ResourceUsage {
-        self.active.values().fold(ResourceUsage::default(), |mut total, usage| {
-            total.cpu_slots = total.cpu_slots.saturating_add(usage.cpu_slots);
-            total.memory_bytes = total.memory_bytes.saturating_add(usage.memory_bytes);
-            total.storage_bytes = total.storage_bytes.saturating_add(usage.storage_bytes);
-            total.bandwidth_bytes = total.bandwidth_bytes.saturating_add(usage.bandwidth_bytes);
-            total
-        })
+        self.active
+            .values()
+            .fold(ResourceUsage::default(), |mut total, usage| {
+                total.cpu_slots = total.cpu_slots.saturating_add(usage.cpu_slots);
+                total.memory_bytes = total.memory_bytes.saturating_add(usage.memory_bytes);
+                total.storage_bytes = total.storage_bytes.saturating_add(usage.storage_bytes);
+                total.bandwidth_bytes = total
+                    .bandwidth_bytes
+                    .saturating_add(usage.bandwidth_bytes);
+                total
+            })
     }
 
     pub fn active_consumers(&self) -> usize {
@@ -99,24 +103,36 @@ impl ResourceBalancer {
     }
 
     pub fn per_consumer_cpu_limit(&self) -> u32 {
-        ((self.capacity.cpu_slots as u64 * self.max_share_percent as u64) / 100)
-            .max(1) as u32
+        ((self.capacity.cpu_slots as u64 * self.max_share_percent as u64) / 100).max(1) as u32
     }
 
     pub fn per_consumer_memory_limit(&self) -> u64 {
-        self.capacity.memory_bytes.saturating_mul(self.max_share_percent as u64) / 100
+        self.capacity
+            .memory_bytes
+            .saturating_mul(self.max_share_percent as u64)
+            / 100
     }
 
     pub fn per_consumer_storage_limit(&self) -> u64 {
-        self.capacity.storage_bytes.saturating_mul(self.max_share_percent as u64) / 100
+        self.capacity
+            .storage_bytes
+            .saturating_mul(self.max_share_percent as u64)
+            / 100
     }
 
-    pub fn try_acquire(&mut self, key: impl Into<String>, request: ResourceRequest) -> Option<ResourceLease> {
+    pub fn try_acquire(
+        &mut self,
+        key: impl Into<String>,
+        request: ResourceRequest,
+    ) -> Option<ResourceLease> {
         if request.cpu_slots == 0
             || request.cpu_slots > self.per_consumer_cpu_limit()
-            || (self.capacity.memory_bytes != 0 && request.memory_bytes > self.per_consumer_memory_limit())
-            || (self.capacity.storage_bytes != 0 && request.storage_bytes > self.per_consumer_storage_limit())
-            || (self.capacity.bandwidth_bytes_per_sec != 0 && request.bandwidth_bytes > self.capacity.bandwidth_bytes_per_sec)
+            || (self.capacity.memory_bytes != 0
+                && request.memory_bytes > self.per_consumer_memory_limit())
+            || (self.capacity.storage_bytes != 0
+                && request.storage_bytes > self.per_consumer_storage_limit())
+            || (self.capacity.bandwidth_bytes_per_sec != 0
+                && request.bandwidth_bytes > self.capacity.bandwidth_bytes_per_sec)
         {
             return None;
         }
@@ -127,19 +143,28 @@ impl ResourceBalancer {
             cpu_slots: current.cpu_slots.saturating_add(request.cpu_slots),
             memory_bytes: current.memory_bytes.saturating_add(request.memory_bytes),
             storage_bytes: current.storage_bytes.saturating_add(request.storage_bytes),
-            bandwidth_bytes: current.bandwidth_bytes.saturating_add(request.bandwidth_bytes),
+            bandwidth_bytes: current
+                .bandwidth_bytes
+                .saturating_add(request.bandwidth_bytes),
         };
         if next.cpu_slots > self.per_consumer_cpu_limit()
-            || (self.capacity.memory_bytes != 0 && next.memory_bytes > self.per_consumer_memory_limit())
-            || (self.capacity.storage_bytes != 0 && next.storage_bytes > self.per_consumer_storage_limit())
+            || (self.capacity.memory_bytes != 0
+                && next.memory_bytes > self.per_consumer_memory_limit())
+            || (self.capacity.storage_bytes != 0
+                && next.storage_bytes > self.per_consumer_storage_limit())
         {
             return None;
         }
 
         let total = self.usage();
-        let capacity_ok = total.cpu_slots.saturating_add(request.cpu_slots) <= self.capacity.cpu_slots
-            && (self.capacity.memory_bytes == 0 || total.memory_bytes.saturating_add(request.memory_bytes) <= self.capacity.memory_bytes)
-            && (self.capacity.storage_bytes == 0 || total.storage_bytes.saturating_add(request.storage_bytes) <= self.capacity.storage_bytes);
+        let capacity_ok = total.cpu_slots.saturating_add(request.cpu_slots)
+            <= self.capacity.cpu_slots
+            && (self.capacity.memory_bytes == 0
+                || total.memory_bytes.saturating_add(request.memory_bytes)
+                    <= self.capacity.memory_bytes)
+            && (self.capacity.storage_bytes == 0
+                || total.storage_bytes.saturating_add(request.storage_bytes)
+                    <= self.capacity.storage_bytes);
         if !capacity_ok {
             return None;
         }
@@ -213,18 +238,53 @@ mod tests {
             },
             25,
         );
-        assert!(b.try_acquire("a", ResourceRequest { cpu_slots: 2, memory_bytes: 100, storage_bytes: 1_000, bandwidth_bytes: 1_000 }).is_some());
-        assert!(b.try_acquire("b", ResourceRequest { cpu_slots: 2, memory_bytes: 100, storage_bytes: 1_000, bandwidth_bytes: 1_000 }).is_some());
+        assert!(b
+            .try_acquire(
+                "a",
+                ResourceRequest {
+                    cpu_slots: 2,
+                    memory_bytes: 100,
+                    storage_bytes: 1_000,
+                    bandwidth_bytes: 1_000
+                }
+            )
+            .is_some());
+        assert!(b
+            .try_acquire(
+                "b",
+                ResourceRequest {
+                    cpu_slots: 2,
+                    memory_bytes: 100,
+                    storage_bytes: 1_000,
+                    bandwidth_bytes: 1_000
+                }
+            )
+            .is_some());
         assert_eq!(b.active_consumers(), 2);
     }
 
     #[test]
     fn release_returns_capacity() {
         let mut b = ResourceBalancer::new(
-            ResourceCapacity { cpu_slots: 4, memory_bytes: 1_000, storage_bytes: 10_000, bandwidth_bytes_per_sec: 10_000 },
+            ResourceCapacity {
+                cpu_slots: 4,
+                memory_bytes: 1_000,
+                storage_bytes: 10_000,
+                bandwidth_bytes_per_sec: 10_000,
+            },
             50,
         );
-        let lease = b.try_acquire("a", ResourceRequest { cpu_slots: 2, memory_bytes: 100, storage_bytes: 1_000, bandwidth_bytes: 1_000 }).unwrap();
+        let lease = b
+            .try_acquire(
+                "a",
+                ResourceRequest {
+                    cpu_slots: 2,
+                    memory_bytes: 100,
+                    storage_bytes: 1_000,
+                    bandwidth_bytes: 1_000,
+                },
+            )
+            .unwrap();
         b.release(&lease);
         assert_eq!(b.usage(), ResourceUsage::default());
     }
