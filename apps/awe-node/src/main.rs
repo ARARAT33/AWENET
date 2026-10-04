@@ -1281,6 +1281,25 @@ async fn run_product() -> Result<()> {
     }
     let storage: StorageState = Arc::new(LocalNodeStore::open(&storage_root, storage_quota)?);
     let messenger: MessengerLog = Arc::new(Mutex::new(Vec::new()));
+    let community_path = data_dir.join("community.json");
+    let community: CommunityState = Arc::new(Mutex::new(
+        fs::read(&community_path)
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_else(|| serde_json::json!({"groups":[],"channels":[]}))
+    ));
+    let community_save = community.clone();
+    let community_save_path = community_path.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            if let Ok(state) = community_save.lock() {
+                if let Ok(bytes) = serde_json::to_vec_pretty(&*state) {
+                    let _ = fs::write(&community_save_path, bytes);
+                }
+            }
+        }
+    });
     let pending_acks: PendingAcks = Arc::new(Mutex::new(BTreeMap::new()));
     let pending_shards: PendingShards = Arc::new(Mutex::new(BTreeMap::new()));
     let federation_path = data_dir.join("awenet.json");
@@ -1378,6 +1397,7 @@ async fn run_product() -> Result<()> {
     let dispatcher_messenger = messenger.clone();
     let dispatcher_acks = pending_acks.clone();
     let dispatcher_policy = policy_state.clone();
+    let dispatcher_community = community.clone();
     tokio::spawn(async move {
         loop {
             for (sender, stream, payload) in dispatcher_node.take_inbox() {
@@ -1423,6 +1443,32 @@ async fn run_product() -> Result<()> {
                                             );
                                         }
                                         log.push(item);
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+                        if message.get("kind").and_then(|v| v.as_str()) == Some("awe.group.v1") {
+                            if let Ok(mut state) = dispatcher_community.lock() {
+                                let gid = message.get("group_id").and_then(|v| v.as_str()).unwrap_or("");
+                                let sender_uid = format_uid(&sender);
+                                if let Some(g) = state["groups"].as_array_mut().and_then(|a| a.iter_mut().find(|g| g.get("id").and_then(|v| v.as_str()) == Some(gid))) {
+                                    if g["members"].as_array().map(|a| a.iter().any(|v| v.as_str() == Some(sender_uid.as_str()))).unwrap_or(false) {
+                                        let mut item = message.clone();
+                                        if let Some(obj)=item.as_object_mut(){obj.insert("sender".into(),serde_json::json!(sender_uid));}
+                                        if let Some(a)=g["messages"].as_array_mut(){a.push(item);}
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+                        if message.get("kind").and_then(|v| v.as_str()) == Some("awe.channel.v1") {
+                            if let Ok(mut state) = dispatcher_community.lock() {
+                                let cid = message.get("channel_id").and_then(|v| v.as_str()).unwrap_or("");
+                                if let Some(ch)=state["channels"].as_array_mut().and_then(|a| a.iter_mut().find(|c| c.get("id").and_then(|v| v.as_str())==Some(cid))) {
+                                    let sender_uid=format_uid(&sender);
+                                    if ch["subscribers"].as_array().map(|a| a.iter().any(|v| v.as_str()==Some(sender_uid.as_str()))).unwrap_or(false) {
+                                        if let Some(item)=message.get("message").cloned(){if let Some(a)=ch["messages"].as_array_mut(){a.push(item);}}
                                     }
                                 }
                             }
@@ -1565,6 +1611,7 @@ async fn run_product() -> Result<()> {
         let api_pending_shards = pending_shards.clone();
         let api_federation_path = federation_path.clone();
         let api_policy = policy_state.clone();
+        let api_community = community.clone();
         tokio::spawn(async move {
             if let Err(e) = serve_ui(
                 stream,
@@ -1576,6 +1623,7 @@ async fn run_product() -> Result<()> {
                 api_pending_acks,
                 api_pending_shards,
                 api_policy,
+                api_community,
             )
             .await
             {
