@@ -1752,7 +1752,8 @@ async fn run_product() -> Result<()> {
                             if let Some((target, bytes)) = sync {
                                 let sync_node = dispatcher_node.clone();
                                 tokio::spawn(async move {
-                                    let _ = sync_node.send_to_peer_confirmed(&target, 100, bytes).await;
+                                    let _ =
+                                        sync_node.send_to_peer_confirmed(&target, 100, bytes).await;
                                 });
                             }
                             continue;
