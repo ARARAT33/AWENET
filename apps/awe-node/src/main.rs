@@ -1390,14 +1390,23 @@ async fn run_product() -> Result<()> {
     let policy_state: PolicyState = Arc::new(Mutex::new(initial_policy.clone()));
     let resource_capacity = ResourceCapacity {
         cpu_slots: initial_policy.max_concurrent_work as u32,
-        gpu_slots: env::var("AWE_GPU_SLOTS").ok().and_then(|v| v.parse().ok()).unwrap_or(0),
+        gpu_slots: env::var("AWE_GPU_SLOTS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0),
         memory_bytes: env::var("AWE_MEMORY_BYTES")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(0),
         storage_bytes: storage_quota,
-        ssd_bytes: env::var("AWE_SSD_BYTES").ok().and_then(|v| v.parse().ok()).unwrap_or(0),
-        hdd_bytes: env::var("AWE_HDD_BYTES").ok().and_then(|v| v.parse().ok()).unwrap_or(0),
+        ssd_bytes: env::var("AWE_SSD_BYTES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0),
+        hdd_bytes: env::var("AWE_HDD_BYTES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0),
         bandwidth_bytes_per_sec: env::var("AWE_BANDWIDTH_BYTES_PER_SEC")
             .ok()
             .and_then(|v| v.parse().ok())
