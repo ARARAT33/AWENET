@@ -1789,20 +1789,47 @@ async fn run_product() -> Result<()> {
                         if message.get("kind").and_then(|v| v.as_str()) == Some("awe.messenger.v1")
                         {
                             let id = message.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                            let text_value = message.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                            let recipient = message.get("recipient").and_then(|v| v.as_str()).unwrap_or("");
+                            let text_value =
+                                message.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                            let recipient = message
+                                .get("recipient")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
                             if !id.is_empty() && !text_value.is_empty() && !recipient.is_empty() {
                                 if let (Some(cid), Some(channel_message)) = (
                                     message.get("channel_id").and_then(|v| v.as_str()),
                                     message.get("channel_message").cloned(),
                                 ) {
                                     if let Ok(mut state) = dispatcher_community.lock() {
-                                        if let Some(ch) = state.get_mut("channels").and_then(|v| v.as_array_mut()).and_then(|a| a.iter_mut().find(|c| c.get("id").and_then(|v| v.as_str()) == Some(cid))) {
+                                        if let Some(ch) = state
+                                            .get_mut("channels")
+                                            .and_then(|v| v.as_array_mut())
+                                            .and_then(|a| {
+                                                a.iter_mut().find(|c| {
+                                                    c.get("id").and_then(|v| v.as_str())
+                                                        == Some(cid)
+                                                })
+                                            })
+                                        {
                                             let sender_uid = format_uid(&sender);
-                                            let authorized = ch.get("owner").and_then(|v| v.as_str()) == Some(sender_uid.as_str())
-                                                || ch.get("subscribers").and_then(|v| v.as_array()).map(|a| a.iter().any(|v| v.as_str() == Some(sender_uid.as_str()))).unwrap_or(false);
+                                            let authorized = ch
+                                                .get("owner")
+                                                .and_then(|v| v.as_str())
+                                                == Some(sender_uid.as_str())
+                                                || ch
+                                                    .get("subscribers")
+                                                    .and_then(|v| v.as_array())
+                                                    .map(|a| {
+                                                        a.iter().any(|v| {
+                                                            v.as_str() == Some(sender_uid.as_str())
+                                                        })
+                                                    })
+                                                    .unwrap_or(false);
                                             if authorized {
-                                                if let Some(a) = ch.get_mut("messages").and_then(|v| v.as_array_mut()) {
+                                                if let Some(a) = ch
+                                                    .get_mut("messages")
+                                                    .and_then(|v| v.as_array_mut())
+                                                {
                                                     a.push(channel_message);
                                                 }
                                             }
@@ -1819,7 +1846,9 @@ async fn run_product() -> Result<()> {
                                         "timestamp": message.get("timestamp").and_then(|v| v.as_u64()).unwrap_or_else(now_unix)
                                     });
                                     if let Ok(mut log) = dispatcher_messenger.lock() {
-                                        if !log.iter().any(|existing| existing.get("id").and_then(|v| v.as_str()) == Some(id)) {
+                                        if !log.iter().any(|existing| {
+                                            existing.get("id").and_then(|v| v.as_str()) == Some(id)
+                                        }) {
                                             log.push(item);
                                         }
                                     }
