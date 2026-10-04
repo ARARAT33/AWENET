@@ -1286,7 +1286,7 @@ async fn run_product() -> Result<()> {
         fs::read(&community_path)
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_else(|| serde_json::json!({"groups":[],"channels":[]}))
+            .unwrap_or_else(|| serde_json::json!({"groups":[],"channels":[]})),
     ));
     let community_save = community.clone();
     let community_save_path = community_path.clone();
@@ -1450,25 +1450,63 @@ async fn run_product() -> Result<()> {
                         }
                         if message.get("kind").and_then(|v| v.as_str()) == Some("awe.group.v1") {
                             if let Ok(mut state) = dispatcher_community.lock() {
-                                let gid = message.get("group_id").and_then(|v| v.as_str()).unwrap_or("");
+                                let gid = message
+                                    .get("group_id")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
                                 let sender_uid = format_uid(&sender);
-                                if let Some(g) = state["groups"].as_array_mut().and_then(|a| a.iter_mut().find(|g| g.get("id").and_then(|v| v.as_str()) == Some(gid))) {
-                                    if g["members"].as_array().map(|a| a.iter().any(|v| v.as_str() == Some(sender_uid.as_str()))).unwrap_or(false) {
+                                if let Some(g) = state["groups"].as_array_mut().and_then(|a| {
+                                    a.iter_mut()
+                                        .find(|g| g.get("id").and_then(|v| v.as_str()) == Some(gid))
+                                }) {
+                                    if g["members"]
+                                        .as_array()
+                                        .map(|a| {
+                                            a.iter()
+                                                .any(|v| v.as_str() == Some(sender_uid.as_str()))
+                                        })
+                                        .unwrap_or(false)
+                                    {
                                         let mut item = message.clone();
-                                        if let Some(obj)=item.as_object_mut(){obj.insert("sender".into(),serde_json::json!(sender_uid));}
-                                        if let Some(a)=g["messages"].as_array_mut(){a.push(item);}
+                                        if let Some(obj) = item.as_object_mut() {
+                                            obj.insert(
+                                                "sender".into(),
+                                                serde_json::json!(sender_uid),
+                                            );
+                                        }
+                                        if let Some(a) = g["messages"].as_array_mut() {
+                                            a.push(item);
+                                        }
                                     }
                                 }
-                            }
                             continue;
                         }
                         if message.get("kind").and_then(|v| v.as_str()) == Some("awe.channel.v1") {
                             if let Ok(mut state) = dispatcher_community.lock() {
-                                let cid = message.get("channel_id").and_then(|v| v.as_str()).unwrap_or("");
-                                if let Some(ch)=state["channels"].as_array_mut().and_then(|a| a.iter_mut().find(|c| c.get("id").and_then(|v| v.as_str())==Some(cid))) {
-                                    let sender_uid=format_uid(&sender);
-                                    if ch["subscribers"].as_array().map(|a| a.iter().any(|v| v.as_str()==Some(sender_uid.as_str()))).unwrap_or(false) {
-                                        if let Some(item)=message.get("message").cloned(){if let Some(a)=ch["messages"].as_array_mut(){a.push(item);}}
+                                let cid = message
+                                    .get("channel_id")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
+                                if let Some(ch) = state["channels"].as_array_mut().and_then(|a| {
+                                    a.iter_mut()
+                                        .find(|c| c.get("id").and_then(|v| v.as_str()) == Some(cid))
+                                }) {
+                                    let sender_uid = format_uid(&sender);
+                                    if ch["subscribers"]
+                                        .as_array()
+                                        .map(|a| {
+                                            a.iter()
+                                                .any(|v| v.as_str() == Some(sender_uid.as_str()))
+                                        })
+                                        .unwrap_or(false)
+                                    {
+                                        if let Some(item) = message.get("message").cloned() {
+                                            if let Some(a) = ch["messages"].as_array_mut() {
+                                                a.push(item);
+                                            }
+                                        }
+                                    }
+                                }
                                     }
                                 }
                             }
