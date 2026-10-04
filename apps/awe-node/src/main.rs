@@ -470,7 +470,7 @@ async fn serve_ui(
                                     Ok(payload) => {
                                         match tokio::time::timeout(
                                             std::time::Duration::from_secs(3),
-                                            node.send_to_peer(&owner_id, 100, payload),
+                                            node.send_to_peer_confirmed(&owner_id, 100, payload),
                                         )
                                         .await
                                         {
