@@ -48,3 +48,11 @@ private keys or plaintext private content.
 ## License
 
 MIT
+
+## Try the real product
+
+The desktop build launches the bundled AWE node and opens the local dashboard. For a real distributed Drive test, run at least three reachable AWE nodes, connect them from **Peers & Connections**, upload a file from **Storage**, then reconstruct it using the returned file ID. Drive data is encrypted on the owner before sharding and remote replication.
+
+For Messenger, connect two independent nodes, use each node's AWE ID in the **Messenger** screen, send a message, and verify the remote delivery acknowledgement.
+
+Real Internet/NAT diversity and clean-machine release acceptance require environment-specific validation; the source tree alone does not claim those gates are complete.
