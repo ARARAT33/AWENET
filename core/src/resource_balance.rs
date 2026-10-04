@@ -66,6 +66,7 @@ pub struct ResourceLease {
 #[derive(Clone, Debug)]
 pub struct ResourceBalancer {
     capacity: ResourceCapacity,
+    host_capacity: ResourceCapacity,
     max_share_percent: u8,
     active: BTreeMap<String, ResourceUsage>,
 }
@@ -74,6 +75,7 @@ impl ResourceBalancer {
     pub fn new(capacity: ResourceCapacity, max_share_percent: u8) -> Self {
         Self {
             capacity: capacity.normalized(),
+            host_capacity: capacity.normalized(),
             max_share_percent: max_share_percent.clamp(1, 100),
             active: BTreeMap::new(),
         }
@@ -85,6 +87,44 @@ impl ResourceBalancer {
 
     pub fn configure_capacity(&mut self, capacity: ResourceCapacity) {
         self.capacity = capacity.normalized();
+    }
+
+    pub fn configure_contribution(
+        &mut self,
+        cpu_percent: u8,
+        gpu_percent: u8,
+        ssd_percent: u8,
+        hdd_percent: u8,
+        bandwidth_percent: u8,
+    ) {
+        let pct = |value: u64, percent: u8| value.saturating_mul(percent.min(100) as u64) / 100;
+        let cpu = ((self.host_capacity.cpu_slots as u64)
+            .saturating_mul(cpu_percent.min(100) as u64)
+            / 100)
+            .max(1) as u32;
+        let gpu = ((self.host_capacity.gpu_slots as u64)
+            .saturating_mul(gpu_percent.min(100) as u64)
+            / 100) as u32;
+        let ssd = pct(self.host_capacity.ssd_bytes, ssd_percent);
+        let hdd = pct(self.host_capacity.hdd_bytes, hdd_percent);
+        let storage = if ssd.saturating_add(hdd) > 0 {
+            ssd.saturating_add(hdd)
+        } else {
+            pct(self.host_capacity.storage_bytes, ssd_percent.max(hdd_percent))
+        };
+        self.capacity = ResourceCapacity {
+            cpu_slots: cpu,
+            gpu_slots: gpu,
+            memory_bytes: self.host_capacity.memory_bytes,
+            storage_bytes: storage,
+            ssd_bytes: ssd,
+            hdd_bytes: hdd,
+            bandwidth_bytes_per_sec: pct(
+                self.host_capacity.bandwidth_bytes_per_sec,
+                bandwidth_percent,
+            ),
+        }
+        .normalized();
     }
 
     pub fn usage(&self) -> ResourceUsage {
