@@ -448,27 +448,31 @@ async fn serve_ui(
             }
         },
         "/api/channels/subscribe" if method == "POST" => {
-            let body=request.split("\r\n\r\n").nth(1).unwrap_or(""); let p:serde_json::Value=serde_json::from_str(body).unwrap_or_default(); let cid=p.get("channel_id").and_then(|v|v.as_str()).unwrap_or("").trim(); let local=format_uid(node.identity.public.awe_id.as_bytes());
-            let channel=community.lock().ok().and_then(|s|s.get("channels").and_then(|v|v.as_array()).and_then(|a|a.iter().find(|c|c.get("id").and_then(|v|v.as_str())==Some(cid)).cloned()));
-            match channel{
-                None=>("404 Not Found","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"channel not found"}).to_string()),
-                Some(channel)=>{
-                    let owner=channel.get("owner").and_then(|v|v.as_str()).unwrap_or("");
-                    let owner_id = match hex::decode(owner).ok().and_then(|b| <[u8; 32]>::try_from(b).ok()) {
-                        Some(id) => Some(id),
-                        None => {
-                            let peers = node.peers().await;
-                            peers.iter().find(|p| format_uid(&p.awe_id) == owner).map(|p| p.awe_id)
-                        }
-                    };
-                    match owner_id{
-                        None=>("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"invalid channel owner"}).to_string()),
-                        Some(owner_id)=>{
-                            if owner == local {
-                                ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"already_subscribed"}).to_string())
-                            } else {
-                            let env=serde_json::json!({"kind":"awe.channel.v1","event":"subscribe","channel_id":cid,"subscriber":local,"sender":local});
-                            match serde_json::to_vec(&env){Ok(payload)=>match node.send_to_peer(&owner_id,100,payload).await{Ok(_)=>( "200 OK","application/json; charset=utf-8",serde_json::json!({"status":"requested","channel_id":cid}).to_string()),Err(e)=>( "502 Bad Gateway","application/json; charset=utf-8",serde_json::json!({"status":"error","error":e.to_string()}).to_string())},Err(e)=>( "500 Internal Server Error","application/json; charset=utf-8",serde_json::json!({"status":"error","error":e.to_string()}).to_string())}
+            let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+            let p: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+            let cid = p.get("channel_id").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let local = format_uid(node.identity.public.awe_id.as_bytes());
+            let channel = community.lock().ok().and_then(|s| s.get("channels").and_then(|v| v.as_array()).and_then(|a| a.iter().find(|c| c.get("id").and_then(|v| v.as_str()) == Some(cid)).cloned()));
+            match channel {
+                None => ("404 Not Found", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":"channel not found"}).to_string()),
+                Some(channel) => {
+                    let owner = channel.get("owner").and_then(|v| v.as_str()).unwrap_or("");
+                    if owner == local {
+                        ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"already_subscribed"}).to_string())
+                    } else {
+                        let peers = node.closest_peers(node.identity.public.awe_id.as_bytes(), 64).await;
+                        let owner_id = peers.iter().find(|p| format_uid(&p.awe_id) == owner).map(|p| p.awe_id);
+                        match owner_id {
+                            None => ("404 Not Found", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":"channel owner is not connected"}).to_string()),
+                            Some(owner_id) => {
+                                let env = serde_json::json!({"kind":"awe.channel.v1","event":"subscribe","channel_id":cid,"subscriber":local,"sender":local});
+                                match serde_json::to_vec(&env) {
+                                    Ok(payload) => {
+                                        tokio::spawn(async move { let _ = node.send_to_peer(&owner_id, 100, payload).await; });
+                                        ("202 Accepted", "application/json; charset=utf-8", serde_json::json!({"status":"requested","channel_id":cid}).to_string())
+                                    }
+                                    Err(e) => ("500 Internal Server Error", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":e.to_string()}).to_string())
+                                }
                             }
                         }
                     }
