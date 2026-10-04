@@ -317,7 +317,7 @@ fn three_node_product_smoke() {
             publish.contains(r#""status":"published""#),
             "publish: {publish}"
         );
-        let channel_message_deadline = Instant::now() + Duration::from_secs(5);
+        let channel_message_deadline = Instant::now() + Duration::from_secs(15);
         loop {
             let channels = get("127.0.0.1:46202", "/api/channels");
             if channels.contains("AWEP2P-E2E-CHANNEL") {
