@@ -29,6 +29,7 @@ pub mod repair;
 pub mod replay;
 pub mod replication;
 pub mod reputation;
+pub mod resource_balance;
 pub mod routing;
 pub mod sandbox;
 pub mod security;
