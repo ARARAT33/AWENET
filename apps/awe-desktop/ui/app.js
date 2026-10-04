@@ -125,4 +125,4 @@ function bind(k){
 }
 function toast(t){const e=document.createElement("div");e.textContent=t;e.style="position:fixed;right:22px;bottom:22px;background:#111829;color:#fff;padding:11px 15px;border-radius:9px;font-size:11px;z-index:10";document.body.appendChild(e);setTimeout(()=>e.remove(),2200)}
 navs.forEach(n=>n.addEventListener("click",e=>{e.preventDefault();render(n.dataset.view)}));
-(async()=>{await refresh();render("dashboard");setInterval(async()=>{await refresh();if(title.textContent===pages.dashboard[0])render("dashboard")},5000)})();
+(async()=>{render("dashboard");await refresh();render("dashboard");setInterval(async()=>{await refresh();if(title.textContent===pages.dashboard[0])render("dashboard")},5000)})();
