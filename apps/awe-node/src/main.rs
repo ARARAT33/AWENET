@@ -504,7 +504,7 @@ async fn serve_ui(
                         let encryption_key = drive_key(&node.identity, &file_id);
                         let encrypted_data = match encrypt_file(&data, &encryption_key) {
                             Ok(blob) => blob,
-                            Err(error) => return ("500 Internal Server Error", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":format!("private Drive encryption failed: {error}")}).to_string()),
+                            Err(error) => return Err(anyhow::anyhow!("private Drive encryption failed: {error}")),
                         };
                         let peers = node.closest_peers(node.identity.public.awe_id.as_bytes(), 64).await;
                         let local_id = format_uid(node.identity.public.awe_id.as_bytes());
@@ -1367,6 +1367,7 @@ async fn run_product() -> Result<()> {
     let dispatcher_acks = pending_acks.clone();
     let dispatcher_policy = policy_state.clone();
     let dispatcher_messenger_runtime = messenger_runtime.clone();
+    let dispatcher_pending_messenger_acks = pending_messenger_acks.clone();
     let retry_node = node.clone();
     let retry_runtime = messenger_runtime.clone();
     let retry_policy = policy_state.clone();
@@ -1427,7 +1428,7 @@ async fn run_product() -> Result<()> {
                             == Some("awe.messenger.ack.v1")
                         {
                             if let Some(id) = message.get("id").and_then(|v| v.as_str()) {
-                                if let Ok(mut pending) = pending_messenger_acks.lock() {
+                                if let Ok(mut pending) = dispatcher_pending_messenger_acks.lock() {
                                     pending.insert(id.to_owned(), now_unix());
                                 }
                                 if let Ok(bytes) = hex::decode(id) {
