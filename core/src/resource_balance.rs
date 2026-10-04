@@ -202,6 +202,8 @@ mod tests {
                 gpu_slots: 0,
                 memory_bytes: 1_000,
                 storage_bytes: 10_000,
+                ssd_bytes: 5_000,
+                hdd_bytes: 5_000,
                 bandwidth_bytes_per_sec: 10_000,
             },
             25,
@@ -234,8 +236,11 @@ mod tests {
         let mut b = ResourceBalancer::new(
             ResourceCapacity {
                 cpu_slots: 8,
+                gpu_slots: 0,
                 memory_bytes: 1_000,
                 storage_bytes: 10_000,
+                ssd_bytes: 5_000,
+                hdd_bytes: 5_000,
                 bandwidth_bytes_per_sec: 10_000,
             },
             25,
