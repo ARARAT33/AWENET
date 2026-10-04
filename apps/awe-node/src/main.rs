@@ -456,7 +456,7 @@ async fn serve_ui(
                     let owner=channel.get("owner").and_then(|v|v.as_str()).unwrap_or("");
                     if owner==local{("200 OK","application/json; charset=utf-8",serde_json::json!({"status":"already_subscribed"}).to_string())}else{
                         if let Ok(mut st)=community.lock(){if let Some(ch)=st.get_mut("channels").and_then(|v|v.as_array_mut()).and_then(|a|a.iter_mut().find(|c|c.get("id").and_then(|v|v.as_str())==Some(cid))){if !ch.get("subscribers").and_then(|v|v.as_array()).map(|a|a.iter().any(|v|v.as_str()==Some(local.as_str()))).unwrap_or(false){if let Some(a)=ch.get_mut("subscribers").and_then(|v|v.as_array_mut()){a.push(serde_json::Value::String(local.clone()));}}}}
-                        let peers=node.active_peers().await; let owner_id=peers.into_iter().find(|p|format_uid(p)==owner);
+                        let peers=node.peers().await; let owner_id=peers.into_iter().find(|p|format_uid(&p.awe_id)==owner).map(|p|p.awe_id);
                         match owner_id{
                             None=>("404 Not Found","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"channel owner is not connected"}).to_string()),
                             Some(owner_id)=>{
