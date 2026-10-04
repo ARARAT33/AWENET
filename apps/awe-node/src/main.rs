@@ -262,25 +262,15 @@ async fn serve_ui(
         "/api/resources/config" if method == "POST" => {
             let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
             let parsed = serde_json::from_str::<serde_json::Value>(body).unwrap_or_default();
-            let pct = |key: &str| parsed.get(key).and_then(|v| v.as_u64()).unwrap_or(0).min(100);
-            let base = resource_state.lock().map(|r| r.capacity()).unwrap_or_default();
-            let scale = |total: u64, percent: u64| total.saturating_mul(percent) / 100;
-            let cpu = ((base.cpu_slots as u64).saturating_mul(pct("cpu")) / 100).max(1) as u32;
-            let gpu = ((base.gpu_slots as u64).saturating_mul(pct("gpu")) / 100) as u32;
-            let ssd = scale(base.ssd_bytes, pct("ssd"));
-            let hdd = scale(base.hdd_bytes, pct("hdd"));
-            let aggregate_storage = if ssd.saturating_add(hdd) > 0 { ssd.saturating_add(hdd) } else { scale(base.storage_bytes, pct("ssd").max(pct("hdd"))) };
-            let bandwidth = scale(base.bandwidth_bytes_per_sec, pct("bandwidth"));
+            let pct = |key: &str| parsed.get(key).and_then(|v| v.as_u64()).unwrap_or(0).min(100) as u8;
             if let Ok(mut balancer) = resource_state.lock() {
-                balancer.configure_capacity(ResourceCapacity {
-                    cpu_slots: cpu,
-                    gpu_slots: gpu,
-                    memory_bytes: base.memory_bytes,
-                    storage_bytes: aggregate_storage,
-                    ssd_bytes: ssd,
-                    hdd_bytes: hdd,
-                    bandwidth_bytes_per_sec: bandwidth,
-                });
+                balancer.configure_contribution(
+                    pct("cpu"),
+                    pct("gpu"),
+                    pct("ssd"),
+                    pct("hdd"),
+                    pct("bandwidth"),
+                );
                 let resources = serde_json::json!({"status":"saved","capacity":balancer.capacity()});
                 ("200 OK", "application/json; charset=utf-8", resources.to_string())
             } else {
