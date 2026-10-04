@@ -2,7 +2,7 @@ const view=document.getElementById("view"),title=document.getElementById("pageTi
 const pages={dashboard:["Overview","Your AWE network at a glance"],node:["My Node","Manage the local node and its storage"],profile:["My Profile","Private local profile settings"],sites:["My Sites","Create, edit, open and remove your sites"],saved:["Saved","Your saved sites and resources"],network:["Connections","Connect to devices without exposing user profile data"],federation:["AWENET","Manage Node, Data Centre and Data Group membership"],storage:["Node Storage","Choose local data and serve it through your node"],messenger:["Messenger","Peer-to-peer messaging"],store:["AWEStore","Installed and available AWE modules"],security:["Security","Identity, transport and trust"],diagnostics:["Diagnostics","Live node health and diagnostics"],settings:["Settings","Application configuration"]};
 let live={status:"starting",node_id:"loading",node_address:"loading",transport:"loading",ui:"connecting",peers:[],node:{},storage:{},security:{},federation:{}};
 
-function apiBase(){return localStorage.getItem("aweApiBase")||""}
+function apiBase(){return localStorage.getItem("aweApiBase")||"http://127.0.0.1:41800"}
 async function api(path,options={}){const r=await fetch(apiBase()+path,options);if(!r.ok)throw new Error(await r.text());return r.json()}
 function esc(x){return String(x??"").replace(/[&<>'"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;","\"":"&quot;"}[c]))}
 function jsonStore(k,fallback=[]){try{return JSON.parse(localStorage.getItem(k)||JSON.stringify(fallback))}catch{return fallback}}
