@@ -26,7 +26,12 @@ pub struct NatChallenge {
 }
 
 impl NatChallenge {
-    pub fn derive(session_id: &[u8; 32], local: &SocketAddr, remote: &SocketAddr, now_unix: u64) -> Self {
+    pub fn derive(
+        session_id: &[u8; 32],
+        local: &SocketAddr,
+        remote: &SocketAddr,
+        now_unix: u64,
+    ) -> Self {
         let mut h = Hasher::new();
         h.update(NAT_PROBE_MAGIC);
         h.update(session_id);
