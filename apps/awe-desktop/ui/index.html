@@ -5,12 +5,16 @@
 <div class="app">
 <aside class="sidebar">
   <div class="brand"><div class="logo">A</div><div><b>AWEp2P</b><span>Decentralized network</span></div></div>
-  <div class="nav-label">NETWORK</div>
+  <div class="nav-label">HOME</div>
   <button class="nav active" data-view="dashboard">⌂ <span>Overview</span></button>
   <button class="nav" data-view="node">◉ <span>My Node</span></button>
-  <button class="nav" data-view="network">⌁ <span>Peers & Connections</span></button>
+  <button class="nav" data-view="profile">● <span>My Profile</span></button>
+  <button class="nav" data-view="sites">◇ <span>My Sites</span></button>
+  <button class="nav" data-view="saved">★ <span>Saved</span></button>
+  <div class="nav-label">NETWORK</div>
+  <button class="nav" data-view="network">⌁ <span>Connections</span></button>
   <button class="nav" data-view="federation">◇ <span>AWENET</span></button>
-  <button class="nav" data-view="storage">▣ <span>Storage</span></button>
+  <button class="nav" data-view="storage">▣ <span>Node Storage</span></button>
   <button class="nav" data-view="messenger">✉ <span>Messenger</span></button>
   <button class="nav" data-view="store">◈ <span>AWEStore</span></button>
   <div class="nav-label">SYSTEM</div>
@@ -20,7 +24,7 @@
   <div class="sidebar-bottom"><div class="connection"><i id="sideDot"></i><span id="sideState">Connecting</span><small id="sideTransport">AWE transport</small></div></div>
 </aside>
 <main class="main">
-<header class="topbar"><div class="crumb">AWEp2P <b>/</b> <strong id="pageTitle">Overview</strong></div><div class="top-actions"><span id="apiBadge" class="pill">API · —</span><button class="avatar">A</button></div></header>
+<header class="topbar"><div class="crumb">AWEp2P <b>/</b> <strong id="pageTitle">Overview</strong></div><div class="top-actions"><span id="apiBadge" class="pill">API · —</span><button class="avatar" id="avatarBtn">A</button></div></header>
 <section id="view"></section>
 </main>
 </div>
