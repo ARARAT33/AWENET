@@ -262,10 +262,10 @@ impl Store {
     pub fn catalog(&self) -> io::Result<Vec<AppManifest>> {
         let mut out = Vec::new();
         let dir = self.root.join("packages");
-        if !dir.exists() { return Ok(out); }
+        if !dir.exists() {\n            return Ok(out);\n        }
         for entry in fs::read_dir(dir)? {
             let entry = entry?;
-            if !entry.file_type()?.is_file() { continue; }
+            if !entry.file_type()?.is_file() {\n                continue;\n            }
             if let Ok(package) = AWEPackage::from_bytes(&fs::read(entry.path())?) {
                 out.push(package.manifest.manifest);
             }
