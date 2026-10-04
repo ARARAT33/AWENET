@@ -2,11 +2,54 @@ const view=document.getElementById("view"),title=document.getElementById("pageTi
 const pages={dashboard:["Overview","Network-wide status at a glance"],node:["My Node","Your identity, runtime and listening endpoint"],network:["Peers & Connections","Discover and connect to AWEp2P nodes"],federation:["AWENET","Build Nodes, Data Centres and Data Groups"],storage:["Storage","Local and distributed data plane"],messenger:["Messenger","Peer-to-peer messaging"],store:["AWEStore","AWE modules and services"],security:["Security","Identity, transport and trust"],diagnostics:["Diagnostics","Health checks and runtime inspection"],settings:["Settings","Application configuration"]};
 let live={status:"starting",node_id:"loading",node_address:"loading",transport:"loading",ui:"connecting",peers:[],node:{},storage:{},security:{},federation:{}};
 
-function apiBase(){return localStorage.getItem("aweApiBase")||""}
-async function api(path,options={}){const r=await fetch(apiBase()+path,options);if(!r.ok)throw new Error(await r.text());return r.json()}
-async function loadMessenger(){try{const d=await api("/api/messenger");const box=document.getElementById("messageList");if(box)box.innerHTML=d.messages.length?d.messages.map(m=>'<div class="list-row"><span>'+esc(m.recipient)+'</span><b>'+esc(m.state)+'</b><span>'+esc(m.text)+'</span></div>').join(""):'<div class="empty">No queued messages.</div>'}catch(e){}}\nasync function refresh(){
- try{const [status,node,storage,security,federation]=await Promise.all([api("/api/status"),api("/api/node"),api("/api/storage"),api("/api/security"),api("/api/federation")]);live={...status,node,storage,security,federation};setConnection(true)}
- catch(e){live={...live,status:"offline",ui:"disconnected",peers:[]};setConnection(false)}
+function apiBase(){
+ const saved=localStorage.getItem("aweApiBase");
+ if(saved)return saved.replace(/\/$/,"");
+ if(location.protocol==="http:"||location.protocol==="https:")return location.origin;
+ return "http://127.0.0.1:41800";
+}
+async function api(path,options={}){
+ const controller=new AbortController();
+ const timer=setTimeout(()=>controller.abort(),8000);
+ try{
+  const r=await fetch(apiBase()+path,{...options,signal:controller.signal,cache:"no-store"});
+  const text=await r.text();
+  if(!r.ok)throw new Error(text||("HTTP "+r.status));
+  try{return JSON.parse(text)}catch(_){throw new Error("Invalid API response")}
+ }catch(e){
+  if(e.name==="AbortError")throw new Error("API request timed out");
+  throw e;
+ }finally{clearTimeout(timer)}
+}
+async function loadMessenger(){
+ try{
+  const d=await api("/api/messenger");
+  const box=document.getElementById("messageList");
+  if(box)box.innerHTML=d.messages?.length?d.messages.map(m=>'<div class="list-row"><span>'+esc(m.recipient||m.sender)+'</span><b>'+esc(m.state)+'</b><span>'+esc(m.text)+'</span></div>').join(""):'<div class="empty">No messages yet.</div>';
+ }catch(e){
+  const box=document.getElementById("messageList");
+  if(box)box.innerHTML='<div class="empty">Messenger is unavailable: '+esc(e.message)+'</div>';
+ }
+}\nasync function refresh(){
+ const results=await Promise.allSettled([
+  api("/api/status"),api("/api/node"),api("/api/storage"),api("/api/security"),api("/api/federation")
+ ]);
+ const [status,node,storage,security,federation]=results.map(x=>x.status==="fulfilled"?x.value:null);
+ if(status||node){
+  live={
+   ...live,
+   ...(status||{}),
+   node:node||live.node,
+   storage:storage||live.storage,
+   security:security||live.security,
+   federation:federation||live.federation
+  };
+  if(!status)live.status=live.status||"online";
+  setConnection(true);
+ }else{
+  live={...live,status:"offline",ui:"disconnected",peers:[]};
+  setConnection(false);
+ }
 }
 function setConnection(on){document.getElementById("sideDot").classList.toggle("online",on);document.getElementById("sideState").textContent=on?"Node online":"Disconnected";document.getElementById("sideTransport").textContent=on?live.transport:"API unavailable";document.getElementById("apiBadge").textContent="API · "+(on?live.ui:"offline")}
 function esc(x){return String(x??"").replace(/[&<>'"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;","\"":"&quot;"}[c]))}
@@ -77,8 +120,9 @@ function bind(k){
   const gd=document.getElementById("genDc");if(gd)gd.onclick=()=>gen("awedc",{data_centre_id:document.getElementById("fedDcId").value.trim(),name:document.getElementById("fedDcName").value.trim()||"AWE Data Centre",endpoints:document.getElementById("fedEndpoints").value.split(",").map(x=>x.trim()).filter(Boolean)});
   const gg=document.getElementById("genDgc");if(gg)gg.onclick=()=>gen("dgc",{owner_data_centre_id:document.getElementById("fedOwnerDc").value.trim(),name:document.getElementById("fedGroupName").value.trim()||"AWE Data Group",data_centre_ids:document.getElementById("fedCentres").value.split(",").map(x=>x.trim()).filter(Boolean)});
   const imp=document.getElementById("importFed");if(imp)imp.onclick=async()=>{const file=document.getElementById("fedFile").files[0],box=document.getElementById("fedResult");if(!file)return toast("Choose a configuration file");imp.disabled=true;try{const content=await file.text(),kind=document.getElementById("fedKind").value,r=await api("/api/federation/import",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({kind,content})});if(r.status!=="imported")throw new Error(r.error||"import failed");box.textContent="Imported successfully. AWENET membership is now stored in this running node.";await refresh();render("federation");toast("AWENET configuration imported")}catch(e){box.textContent="Import failed: "+e.message}finally{imp.disabled=false}};
+ if(k==="messenger")loadMessenger();
  const sm=document.getElementById("sendMsg");if(sm)sm.onclick=async()=>{const recipient=document.getElementById("msgRecipient").value.trim(),message=document.getElementById("msgText").value.trim(),state=document.getElementById("msgState");if(!recipient||!message)return toast("Recipient and message are required");sm.disabled=true;try{const r=await api("/api/messenger/send",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({recipient,text:message})});state.textContent="Queued: "+r.message.id;document.getElementById("msgText").value="";await loadMessenger()}catch(e){state.textContent="Send failed: "+e.message}finally{sm.disabled=false}};
 }
 function toast(t){const e=document.createElement("div");e.textContent=t;e.style="position:fixed;right:22px;bottom:22px;background:#111829;color:#fff;padding:11px 15px;border-radius:9px;font-size:11px;z-index:10";document.body.appendChild(e);setTimeout(()=>e.remove(),2200)}
-navs.forEach(n=>n.addEventListener("click",()=>render(n.dataset.view)));
-(async()=>{await refresh();render("dashboard");setInterval(async()=>{await refresh();if(title.textContent===pages.dashboard[0])render("dashboard")},5000)})();
+navs.forEach(n=>n.addEventListener("click",e=>{e.preventDefault();render(n.dataset.view)}));
+(async()=>{render("dashboard");await refresh();render("dashboard");setInterval(async()=>{await refresh();if(title.textContent===pages.dashboard[0])render("dashboard")},5000)})();
