@@ -8,10 +8,15 @@ const pages = {
   profile:["My Profile","Your private local profile"],
   sites:["My Sites","Create, open, edit and remove your sites"],
   saved:["Saved","Your saved resources"],
+  browser:["AWENET Browser","Search AWENET and open sites, files and resources"],
+  translate:["Translate","Translate text and pages with Google Translate"],
   network:["Connections","Connect to devices without exposing your user profile"],
   federation:["AWENET","Node, Data Centre and Data Group configuration"],
   storage:["Node Storage","Choose storage and manage encrypted files"],
-  messenger:["Messenger","Peer-to-peer messaging"],
+  messenger:["Messenger","Messages, voice notes, calls and media"],
+  groups:["Groups & Channels","Automatic groups, channels and communities"],
+  resources:["Resources","Choose CPU, GPU, SSD, HDD and bandwidth contribution"],
+  developers:["Developers","Build mini apps, sites and AWE services"],
   store:["AWEStore","Packages and installed modules"],
   security:["Security","Identity, transport and policy"],
   diagnostics:["Diagnostics","Node health and runtime diagnostics"],
@@ -98,9 +103,9 @@ async function refresh(){
   try{
     const [status,node,storage,security,federation] = await Promise.all([
       api("/api/status"), api("/api/node"), api("/api/storage"),
-      api("/api/security"), api("/api/federation")
+      api("/api/security"), api("/api/federation"), api("/api/resources").catch(()=>({}))
     ]);
-    live={...live,...status,...node,storage,security,federation};
+    live={...live,...status,...node,storage,security,federation,resources};
     setConnection(true);
     return true;
   }catch{
