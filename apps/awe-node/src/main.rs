@@ -15,6 +15,7 @@ use awep2p_core::messenger_runtime::{
 use awep2p_core::network::{format_node_descriptor, Node};
 use awep2p_core::policy::{self, NetworkPolicy};
 use awep2p_core::reputation::NodeReputation;
+use awep2p_core::resource_balance::{ResourceBalancer, ResourceCapacity, ResourceRequest};
 use awep2p_core::storage::{
     decrypt_file, encode_shards, encrypt_file, recover_shards, LocalNodeStore, StoragePolicy,
 };
@@ -41,6 +42,7 @@ type PendingMessengerAcks = Arc<Mutex<BTreeMap<String, u64>>>;
 type MessengerRuntimeState = Arc<Mutex<MessengerState>>;
 type PendingShards = Arc<Mutex<BTreeMap<[u8; 16], StorageShardTransfer>>>;
 type PolicyState = Arc<Mutex<NetworkPolicy>>;
+type ResourceState = Arc<Mutex<ResourceBalancer>>;
 
 fn peer_device_id(awe_id: &[u8; 32]) -> String {
     let digest = blake3::hash(format!("AWE/DEVICE/{}", format_uid(awe_id)).as_bytes());
@@ -236,6 +238,7 @@ async fn serve_ui(
     messenger_runtime: MessengerRuntimeState,
     pending_shards: PendingShards,
     policy_state: PolicyState,
+    resource_state: ResourceState,
 ) -> Result<()> {
     let request = read_http_request(&mut stream).await?;
     let request_line = request.lines().next().unwrap_or("");
@@ -255,6 +258,18 @@ async fn serve_ui(
         "/api/policy" => {
             let policy = policy_state.lock().map(|p| p.clone()).unwrap_or_default();
             ("200 OK", "application/json; charset=utf-8", serde_json::to_string(&policy).unwrap_or_else(|_| "{}".into()))
+        },
+        "/api/resources" => {
+            let resources = resource_state.lock().map(|r| serde_json::json!({
+                "capacity": r.capacity(),
+                "usage": r.usage(),
+                "active_consumers": r.active_consumers(),
+                "per_consumer_cpu_limit": r.per_consumer_cpu_limit(),
+                "per_consumer_memory_limit": r.per_consumer_memory_limit(),
+                "per_consumer_storage_limit": r.per_consumer_storage_limit(),
+                "policy": "fair-share"
+            })).unwrap_or_else(|_| serde_json::json!({"status":"unavailable"}));
+            ("200 OK", "application/json; charset=utf-8", resources.to_string())
         },
         "/api/status" => {
             let peers = node.closest_peers(node.identity.public.awe_id.as_bytes(), 64).await;
@@ -498,6 +513,7 @@ async fn serve_ui(
                                 if let Ok(mut log) = messenger.lock() {
                                     log.push(item.clone());
                                 }
+                                if let Some(lease) = lease.as_ref() { if let Ok(mut b) = resource_state.lock() { b.release(lease); } }
                                 if delivered {
                                     ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"delivered","message":item}).to_string())
                                 } else {
@@ -505,6 +521,7 @@ async fn serve_ui(
                                 }
                             }
                             Err(error) => {
+                                if let Some(lease) = lease.as_ref() { if let Ok(mut b) = resource_state.lock() { b.release(lease); } }
                                 if let Ok(mut runtime) = messenger_runtime.lock() {
                                     let _ = runtime.mark_failed(message_id_bytes, error.to_string(), now_unix());
                                 }
@@ -548,7 +565,11 @@ async fn serve_ui(
                         serde_json::json!({"status":"error","error":"data_hex is not valid hexadecimal"}).to_string()),
                     Ok(data) => {
                         let runtime_policy = policy_state.lock().map(|p| p.clone()).unwrap_or_default();
-                        if !runtime_policy.allows_upload(data.len()) || !runtime_policy.allows_stream(STORAGE_STREAM) {
+                        let lease = resource_state.lock().ok().and_then(|mut b| b.try_acquire(
+                            connection_device_id(&node.identity),
+                            ResourceRequest { cpu_slots: 1, memory_bytes: 0, storage_bytes: data.len() as u64, bandwidth_bytes: data.len() as u64 },
+                        ));
+                        if !runtime_policy.allows_upload(data.len()) || !runtime_policy.allows_stream(STORAGE_STREAM) || lease.is_none() {
                             ("403 Forbidden", "application/json; charset=utf-8", serde_json::json!({"status":"rejected","error":"upload rejected by local AWENET policy"}).to_string())
                         } else {
                         let policy = StoragePolicy::for_file_size(data.len());
@@ -705,6 +726,7 @@ async fn serve_ui(
                                         serde_json::to_vec_pretty(&manifest).unwrap_or_default(),
                                     );
 
+                                    if let Some(lease) = lease.as_ref() { if let Ok(mut b) = resource_state.lock() { b.release(lease); } }
                                     let status = if failed.is_empty() { "stored" } else { "partial" };
                                     ("200 OK", "application/json; charset=utf-8",
                                         serde_json::json!({
@@ -1333,7 +1355,17 @@ async fn run_product() -> Result<()> {
     let federation_path = data_dir.join("awenet.json");
     let policy_path = data_dir.join("policy.json");
     let initial_policy = policy::load_or_create(&policy_path).map_err(anyhow::Error::msg)?;
-    let policy_state: PolicyState = Arc::new(Mutex::new(initial_policy));
+    let policy_state: PolicyState = Arc::new(Mutex::new(initial_policy.clone()));
+    let resource_capacity = ResourceCapacity {
+        cpu_slots: initial_policy.max_concurrent_work as u32,
+        memory_bytes: env::var("AWE_MEMORY_BYTES").ok().and_then(|v| v.parse().ok()).unwrap_or(0),
+        storage_bytes: storage_quota,
+        bandwidth_bytes_per_sec: env::var("AWE_BANDWIDTH_BYTES_PER_SEC").ok().and_then(|v| v.parse().ok()).unwrap_or(0),
+    };
+    let resource_state: ResourceState = Arc::new(Mutex::new(ResourceBalancer::new(
+        resource_capacity,
+        initial_policy.max_peer_share_percent,
+    )));
     let federation_state: FederationState = if federation_path.exists() {
         fs::read(&federation_path)
             .ok()
@@ -1427,6 +1459,7 @@ async fn run_product() -> Result<()> {
     let dispatcher_policy = policy_state.clone();
     let dispatcher_messenger_runtime = messenger_runtime.clone();
     let dispatcher_pending_messenger_acks = pending_messenger_acks.clone();
+    let dispatcher_resources = resource_state.clone();
     let retry_node = node.clone();
     let retry_runtime = messenger_runtime.clone();
     let retry_policy = policy_state.clone();
@@ -1689,6 +1722,7 @@ async fn run_product() -> Result<()> {
         let api_pending_shards = pending_shards.clone();
         let api_federation_path = federation_path.clone();
         let api_policy = policy_state.clone();
+        let api_resources = resource_state.clone();
         tokio::spawn(async move {
             if let Err(e) = serve_ui(
                 stream,
@@ -1702,6 +1736,7 @@ async fn run_product() -> Result<()> {
                 api_messenger_runtime,
                 api_pending_shards,
                 api_policy,
+                api_resources,
             )
             .await
             {
