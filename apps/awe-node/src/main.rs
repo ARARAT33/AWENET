@@ -259,6 +259,34 @@ async fn serve_ui(
             let policy = policy_state.lock().map(|p| p.clone()).unwrap_or_default();
             ("200 OK", "application/json; charset=utf-8", serde_json::to_string(&policy).unwrap_or_else(|_| "{}".into()))
         },
+        "/api/resources/config" if method == "POST" => {
+            let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+            let parsed = serde_json::from_str::<serde_json::Value>(body).unwrap_or_default();
+            let pct = |key: &str| parsed.get(key).and_then(|v| v.as_u64()).unwrap_or(0).min(100);
+            let base = resource_state.lock().map(|r| r.capacity()).unwrap_or_default();
+            let scale = |total: u64, percent: u64| total.saturating_mul(percent) / 100;
+            let cpu = ((base.cpu_slots as u64).saturating_mul(pct("cpu")) / 100).max(1) as u32;
+            let gpu = ((base.gpu_slots as u64).saturating_mul(pct("gpu")) / 100) as u32;
+            let ssd = scale(base.ssd_bytes, pct("ssd"));
+            let hdd = scale(base.hdd_bytes, pct("hdd"));
+            let aggregate_storage = if ssd.saturating_add(hdd) > 0 { ssd.saturating_add(hdd) } else { scale(base.storage_bytes, pct("ssd").max(pct("hdd"))) };
+            let bandwidth = scale(base.bandwidth_bytes_per_sec, pct("bandwidth"));
+            if let Ok(mut balancer) = resource_state.lock() {
+                balancer.configure_capacity(ResourceCapacity {
+                    cpu_slots: cpu,
+                    gpu_slots: gpu,
+                    memory_bytes: base.memory_bytes,
+                    storage_bytes: aggregate_storage,
+                    ssd_bytes: ssd,
+                    hdd_bytes: hdd,
+                    bandwidth_bytes_per_sec: bandwidth,
+                });
+                let resources = serde_json::json!({"status":"saved","capacity":balancer.capacity()});
+                ("200 OK", "application/json; charset=utf-8", resources.to_string())
+            } else {
+                ("503 Service Unavailable", "application/json; charset=utf-8", serde_json::json!({"status":"unavailable"}).to_string())
+            }
+        },
         "/api/resources" => {
             let resources = resource_state.lock().map(|r| serde_json::json!({
                 "capacity": r.capacity(),
@@ -1372,11 +1400,14 @@ async fn run_product() -> Result<()> {
     let policy_state: PolicyState = Arc::new(Mutex::new(initial_policy.clone()));
     let resource_capacity = ResourceCapacity {
         cpu_slots: initial_policy.max_concurrent_work as u32,
+        gpu_slots: env::var("AWE_GPU_SLOTS").ok().and_then(|v| v.parse().ok()).unwrap_or(0),
         memory_bytes: env::var("AWE_MEMORY_BYTES")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(0),
         storage_bytes: storage_quota,
+        ssd_bytes: env::var("AWE_SSD_BYTES").ok().and_then(|v| v.parse().ok()).unwrap_or(0),
+        hdd_bytes: env::var("AWE_HDD_BYTES").ok().and_then(|v| v.parse().ok()).unwrap_or(0),
         bandwidth_bytes_per_sec: env::var("AWE_BANDWIDTH_BYTES_PER_SEC")
             .ok()
             .and_then(|v| v.parse().ok())
