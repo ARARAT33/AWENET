@@ -1479,6 +1479,7 @@ async fn run_product() -> Result<()> {
                                         }
                                     }
                                 }
+                            }
                             continue;
                         }
                         if message.get("kind").and_then(|v| v.as_str()) == Some("awe.channel.v1") {
@@ -1505,8 +1506,6 @@ async fn run_product() -> Result<()> {
                                                 a.push(item);
                                             }
                                         }
-                                    }
-                                }
                                     }
                                 }
                             }
