@@ -427,7 +427,7 @@ async fn serve_ui(
                         let timestamp=now_unix(); let message=serde_json::json!({"id":hex::encode(&blake3::hash(format!("group:{}:{}:{}",gid,local,timestamp).as_bytes()).as_bytes()[..16]),"sender":local,"text":text,"timestamp":timestamp});
                         if let Ok(mut st)=community.lock(){if let Some(g)=st.get_mut("groups").and_then(|v|v.as_array_mut()).and_then(|a|a.iter_mut().find(|g|g.get("id").and_then(|v|v.as_str())==Some(gid))){if let Some(a)=g.get_mut("messages").and_then(|v|v.as_array_mut()){a.push(message.clone());}}}
                         let env=serde_json::json!({"kind":"awe.group.v1","event":"message","group_id":gid,"message":message,"sender":local}); let members=group.get("members").and_then(|v|v.as_array()).cloned().unwrap_or_default(); let mut delivered=0usize;
-                        if let Ok(payload)=serde_json::to_vec(&env){for peer in node.peers().await{let pid=format_uid(&peer.awe_id);if pid!=local&&members.iter().any(|v|v.as_str()==Some(pid.as_str())){if node.send_to_peer(&peer.awe_id,100,payload.clone()).await.is_ok(){delivered+=1;}}}}
+                        if let Ok(payload)=serde_json::to_vec(&env){for peer in node.peers().await{let pid=format_uid(&peer.awe_id);if pid!=local&&members.iter().any(|v|v.as_str()==Some(pid.as_str()))&&node.send_to_peer(&peer.awe_id,100,payload.clone()).await.is_ok(){delivered+=1;}}}
                         ("200 OK","application/json; charset=utf-8",serde_json::json!({"status":"sent","message":message,"delivered_members":delivered}).to_string())
                     }
                 }
