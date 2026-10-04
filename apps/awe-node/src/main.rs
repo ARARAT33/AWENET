@@ -472,8 +472,8 @@ async fn serve_ui(
             match channel{
                 None=>("404 Not Found","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"channel not found"}).to_string()),
                 Some(channel) if channel.get("owner").and_then(|v|v.as_str())!=Some(local.as_str())=>("403 Forbidden","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"only channel owner may publish"}).to_string()),
-                Some(channel) if text.is_empty()=>("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"text is required"}).to_string()),
-                Some(channel)=>{
+                Some(_channel) if text.is_empty()=>("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"text is required"}).to_string()),
+                Some(_channel)=>{
                     let message=serde_json::json!({"id":hex::encode(&blake3::hash(format!("channel:{}:{}:{}",cid,local,now_unix()).as_bytes()).as_bytes()[..16]),"sender":local,"text":text,"timestamp":now_unix()});
                     if let Ok(mut st)=community.lock(){if let Some(ch)=st.get_mut("channels").and_then(|v|v.as_array_mut()).and_then(|a|a.iter_mut().find(|c|c.get("id").and_then(|v|v.as_str())==Some(cid))){if let Some(a)=ch.get_mut("messages").and_then(|v|v.as_array_mut()){a.push(message.clone());}}}
                     let env=serde_json::json!({"kind":"awe.channel.v1","event":"message","channel_id":cid,"message":message,"sender":local}); let mut delivered=0usize;
