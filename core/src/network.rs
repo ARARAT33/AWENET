@@ -34,6 +34,9 @@ const MAX_CONCURRENT_CONNECTIONS: usize = 1024;
 const MAX_PEERS_PER_RESPONSE: usize = 64;
 const MAX_ADDRESSES_PER_PEER: usize = 16;
 const MAX_NODE_RECORDS: usize = 64;
+const MAX_ROUTING_RECORDS: usize = 8192;
+const DISCOVERY_ROUNDS: usize = 4;
+const DISCOVERY_ALPHA: usize = 3;
 const PEER_RATE_CAPACITY: u64 = 256;
 const PEER_RATE_REFILL_PER_SECOND: u64 = 128;
 const PREAUTH_MAX_IPS: usize = 1024;
@@ -739,6 +742,11 @@ pub struct RoutingTable {
 impl RoutingTable {
     pub fn insert(&mut self, p: PeerRecord) {
         self.peers.insert(p.awe_id, p);
+        if self.peers.len() > MAX_ROUTING_RECORDS {
+            if let Some(evict) = self.peers.iter().min_by_key(|(_, r)| r.last_seen_unix).map(|(id, _)| *id) {
+                self.peers.remove(&evict);
+            }
+        }
     }
     pub fn remove(&mut self, id: &[u8; 32]) {
         self.peers.remove(id);
@@ -957,60 +965,92 @@ impl Node {
         handshake(s, Arc::clone(&self.identity), self.listen_addr, true).await
     }
     pub async fn bootstrap(&self, addresses: &[SocketAddr]) -> Result<usize, NetworkError> {
-        let mut found = 0;
-        for &a in addresses {
-            let Ok(mut c) = self.connect(a).await else {
-                continue;
-            };
-            let remote_id = c.remote_id;
-            let remote = PeerRecord {
-                awe_id: c.remote_id,
-                public_key: c.remote_public_key,
-                addresses: vec![if c.remote_address.ip().is_unspecified() {
-                    SocketAddr::new(a.ip(), c.remote_address.port())
-                } else {
-                    c.remote_address
-                }],
-                protocol_version: VERSION,
-                last_seen_unix: now(),
-            };
-            self.routing.write().await.insert(remote.clone());
-            self.peers.write().await.insert(remote.awe_id, remote);
+        // Multi-source bootstrap: no single seed is a dependency.
+        let seeds = addresses.iter().copied().take(64).collect::<Vec<_>>();
+        let mut jobs = JoinSet::new();
+        for address in seeds {
+            let node = self.clone();
+            jobs.spawn(async move {
+                let Ok(mut c) = node.connect(address).await else { return 0usize; };
+                let remote_id = c.remote_id;
+                let remote = PeerRecord {
+                    awe_id: c.remote_id,
+                    public_key: c.remote_public_key,
+                    addresses: vec![if c.remote_address.ip().is_unspecified() {
+                        SocketAddr::new(address.ip(), c.remote_address.port())
+                    } else { c.remote_address }],
+                    protocol_version: VERSION,
+                    last_seen_unix: now(),
+                };
+                node.routing.write().await.insert(remote.clone());
+                node.peers.write().await.insert(remote.awe_id, remote);
 
-            c.send(&Control::FindNode {
-                target: *self.identity.public.awe_id.as_bytes(),
-            })
-            .await?;
-            if let Ok(Control::Nodes { records }) = c.recv().await {
-                let mut r = self.routing.write().await;
-                let mut p = self.peers.write().await;
-                for x in records {
-                    if x.awe_id == *self.identity.public.awe_id.as_bytes() {
-                        continue;
-                    }
-                    r.insert(x.clone());
-                    p.insert(x.awe_id, x);
-                    found += 1
-                }
-            }
-            let shared = Arc::new(tokio::sync::Mutex::new(c));
-            self.active.write().await.insert(remote_id, shared.clone());
-            let active = Arc::clone(&self.active);
-            tokio::spawn(async move {
-                loop {
-                    tokio::time::sleep(HEARTBEAT).await;
-                    let Ok(mut connection) = shared.try_lock() else {
-                        continue;
-                    };
-                    if connection.ping_roundtrip(0).await.is_err() {
-                        drop(connection);
-                        active.write().await.remove(&remote_id);
-                        break;
+                let _ = c.send(&Control::FindNode {
+                    target: *node.identity.public.awe_id.as_bytes(),
+                }).await;
+                let mut discovered = 0usize;
+                if let Ok(Ok(Control::Nodes { records })) =
+                    timeout(HELLO_TIMEOUT, c.recv()).await
+                {
+                    let mut routing = node.routing.write().await;
+                    let mut peers = node.peers.write().await;
+                    for x in records {
+                        if x.awe_id == *node.identity.public.awe_id.as_bytes() { continue; }
+                        routing.insert(x.clone());
+                        peers.insert(x.awe_id, x);
+                        discovered += 1;
                     }
                 }
+                let shared = Arc::new(tokio::sync::Mutex::new(c));
+                node.active.write().await.insert(remote_id, shared.clone());
+                let active = Arc::clone(&node.active);
+                tokio::spawn(async move {
+                    loop {
+                        tokio::time::sleep(HEARTBEAT).await;
+                        let Ok(mut connection) = shared.try_lock() else { continue; };
+                        if connection.ping_roundtrip(now()).await.is_err() {
+                            drop(connection);
+                            active.write().await.remove(&remote_id);
+                            break;
+                        }
+                    }
+                });
+                discovered
             });
         }
-        Ok(found)
+        let mut found = 0usize;
+        while let Some(result) = jobs.join_next().await {
+            found += result.map_err(|e| NetworkError::Protocol(format!("bootstrap task failed: {e}")))?;
+        }
+
+        // Expand beyond the initial seeds. This is bounded Kademlia-style
+        // discovery rather than a single-hop bootstrap response.
+        let target = *self.identity.public.awe_id.as_bytes();
+        let discovered = self.find_nodes_iterative(&target, DISCOVERY_ALPHA, DISCOVERY_ROUNDS).await?;
+        Ok(found.saturating_add(discovered.len()))
+    }
+
+    /// Continuously refreshes discovery so nodes recover from partitions and
+    /// do not become permanently dependent on their original bootstrap peers.
+    pub fn spawn_discovery_loop(&self, seeds: Vec<SocketAddr>) {
+        let node = self.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(60));
+            loop {
+                tick.tick().await;
+                let mut candidates = seeds.clone();
+                candidates.extend(
+                    node.peers().await.into_iter()
+                        .flat_map(|p| p.addresses)
+                        .take(32)
+                );
+                candidates.sort_unstable();
+                candidates.dedup();
+                if !candidates.is_empty() {
+                    let _ = node.bootstrap(&candidates).await;
+                }
+            }
+        });
     }
 
     pub async fn send_to_peer(
