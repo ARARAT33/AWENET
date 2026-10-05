@@ -36,6 +36,8 @@ const MAX_ADDRESSES_PER_PEER: usize = 16;
 const MAX_NODE_RECORDS: usize = 64;
 const MAX_ROUTING_RECORDS: usize = 8192;
 const MAX_PEER_RECORDS: usize = 8192;
+const MAX_ACTIVE_CONNECTIONS: usize = 512;
+const MAX_OUTBOUND_CONCURRENCY: usize = 256;
 const MAX_INBOX_MESSAGES: usize = 4096;
 const MAX_INBOX_BYTES: usize = 64 * 1024 * 1024;
 const DISCOVERY_ROUNDS: usize = 4;
@@ -810,6 +812,7 @@ pub struct Node {
     active: ActiveConnections,
     inbox: InboxQueue,
     inbox_bytes: Arc<Mutex<usize>>,
+    outbound_limit: Arc<tokio::sync::Semaphore>,
 }
 impl Node {
     pub fn new(identity: Identity, listen_addr: SocketAddr) -> Self {
@@ -831,6 +834,7 @@ impl Node {
             active: Arc::new(RwLock::new(HashMap::new())),
             inbox: Arc::new(Mutex::new(Vec::new())),
             inbox_bytes: Arc::new(Mutex::new(0)),
+            outbound_limit: Arc::new(tokio::sync::Semaphore::new(MAX_OUTBOUND_CONCURRENCY)),
         }
     }
     pub fn node_descriptor(&self) -> String {
@@ -1045,7 +1049,18 @@ impl Node {
                     }
                 }
                 let shared = Arc::new(tokio::sync::Mutex::new(c));
-                node.active.write().await.insert(remote_id, shared.clone());
+                let cached = {
+                    let mut active = node.active.write().await;
+                    if active.len() < MAX_ACTIVE_CONNECTIONS {
+                        active.insert(remote_id, shared.clone());
+                        true
+                    } else {
+                        false
+                    }
+                };
+                if !cached {
+                    return discovered;
+                }
                 let active = Arc::clone(&node.active);
                 tokio::spawn(async move {
                     loop {
@@ -1102,6 +1117,8 @@ impl Node {
         stream: u32,
         payload: Vec<u8>,
     ) -> Result<std::time::Duration, NetworkError> {
+        let _outbound_permit = self.outbound_limit.acquire().await
+            .map_err(|_| NetworkError::Protocol("outbound limiter closed".into()))?;
         let connection = if let Some(connection) = self.active.read().await.get(peer_id).cloned() {
             connection
         } else {
@@ -1113,10 +1130,10 @@ impl Node {
                 .and_then(|peer| peer.addresses.first().copied())
                 .ok_or_else(|| NetworkError::Protocol("peer address is unknown".into()))?;
             let connection = Arc::new(tokio::sync::Mutex::new(self.connect(address).await?));
-            self.active
-                .write()
-                .await
-                .insert(*peer_id, connection.clone());
+            let mut active = self.active.write().await;
+            if active.len() < MAX_ACTIVE_CONNECTIONS {
+                active.insert(*peer_id, connection.clone());
+            }
             connection
         };
         let mut connection = connection.lock().await;
@@ -1140,6 +1157,8 @@ impl Node {
         stream: u32,
         payload: Vec<u8>,
     ) -> Result<std::time::Duration, NetworkError> {
+        let _outbound_permit = self.outbound_limit.acquire().await
+            .map_err(|_| NetworkError::Protocol("outbound limiter closed".into()))?;
         let address = self
             .peers
             .read()
