@@ -141,13 +141,16 @@ impl ContributionPolicy {
 
 #[derive(Clone, Debug, Default)]
 pub struct ResourceDirectory {
-    pub nodes: BTreeMap<AweId, NodeAdvertisement>,
+    pub nodes: BTreeMap<String, NodeAdvertisement>,
     pub names: BTreeMap<String, NameBinding>,
     pub resources: BTreeMap<[u8; 32], ResourceDescriptor>,
 }
 impl ResourceDirectory {
     pub fn upsert_node(&mut self, node: NodeAdvertisement) -> Result<(), String> {
-        node.validate()?; self.nodes.insert(node.awe_id.clone(), node); Ok(())
+        node.validate()?;
+        let key = node.awe_id.to_hex();
+        self.nodes.insert(key, node);
+        Ok(())
     }
     pub fn bind_name(&mut self, binding: NameBinding) -> Result<(), String> {
         binding.validate()?;
