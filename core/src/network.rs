@@ -1517,3 +1517,29 @@ mod tests {
         assert_eq!(egress_res.request_payload, req_data);
     }
 }
+    #[test]
+    fn peer_store_is_bounded_and_evicts_oldest() {
+        let mut peers = HashMap::new();
+        for i in 0..=MAX_PEER_RECORDS {
+            let mut id = [0u8; 32];
+            id[..8].copy_from_slice(&(i as u64).to_be_bytes());
+            insert_peer_bounded(&mut peers, PeerRecord {
+                awe_id: id,
+                public_key: id,
+                addresses: vec![],
+                protocol_version: VERSION,
+                last_seen_unix: i as u64,
+            });
+        }
+        assert_eq!(peers.len(), MAX_PEER_RECORDS);
+        let mut oldest = [0u8; 32];
+        oldest[..8].copy_from_slice(&0u64.to_be_bytes());
+        assert!(!peers.contains_key(&oldest));
+    }
+
+    #[test]
+    fn inbox_limits_are_finite() {
+        assert!(MAX_INBOX_MESSAGES < 10_000);
+        assert!(MAX_INBOX_BYTES <= 64 * 1024 * 1024);
+    }
+
