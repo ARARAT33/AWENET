@@ -1953,6 +1953,9 @@ async fn run_node(
         node.bootstrap(&bootstrap)
             .await
             .context("bootstrap failed")?;
+        // Discovery is a continuous control-plane function, not a startup step.
+        // Keep multiple seeds and learned peers alive so partitions can heal.
+        node.spawn_discovery_loop(bootstrap.clone());
     }
     node.listen().await.map_err(anyhow::Error::msg)
 }
