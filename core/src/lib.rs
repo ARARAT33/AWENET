@@ -18,6 +18,7 @@ pub mod messenger_runtime;
 pub mod namespace;
 pub mod network;
 pub mod network_topology;
+pub mod onecoin;
 pub mod node;
 pub mod permissions;
 pub mod policy;
