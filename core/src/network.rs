@@ -1030,7 +1030,7 @@ impl Node {
                     last_seen_unix: now(),
                 };
                 node.routing.write().await.insert(remote.clone());
-                node.peers.write().await.insert(remote.awe_id, remote);
+                insert_peer_bounded(&mut node.peers.write().await, remote);
 
                 let _ = c.send(&Control::FindNode {
                     target: *node.identity.public.awe_id.as_bytes(),
@@ -1266,7 +1266,7 @@ impl Node {
                         discovered = true;
                     }
                     self.routing.write().await.insert(record.clone());
-                    self.peers.write().await.insert(record.awe_id, record);
+                    insert_peer_bounded(&mut self.peers.write().await, record);
                 }
             }
 
