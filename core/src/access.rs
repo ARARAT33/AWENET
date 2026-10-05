@@ -27,6 +27,14 @@ pub struct AccessMap {
 impl AccessMap {
     pub const VERSION: u16 = 1;
 
+    pub fn for_node(node_id: [u8; 32], mode: AccessMode) -> Self {
+        Self::generate(node_id, mode)
+    }
+
+    pub fn for_site(site_id: [u8; 32], mode: AccessMode) -> Self {
+        Self::generate(site_id, mode)
+    }
+
     pub fn generate(resource_id: [u8; 32], mode: AccessMode) -> Self {
         let mut capability = [0u8; 32];
         OsRng.fill_bytes(&mut capability);
