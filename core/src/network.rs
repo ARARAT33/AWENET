@@ -35,6 +35,9 @@ const MAX_PEERS_PER_RESPONSE: usize = 64;
 const MAX_ADDRESSES_PER_PEER: usize = 16;
 const MAX_NODE_RECORDS: usize = 64;
 const MAX_ROUTING_RECORDS: usize = 8192;
+const MAX_PEER_RECORDS: usize = 8192;
+const MAX_INBOX_MESSAGES: usize = 4096;
+const MAX_INBOX_BYTES: usize = 64 * 1024 * 1024;
 const DISCOVERY_ROUNDS: usize = 4;
 const DISCOVERY_ALPHA: usize = 3;
 const PEER_RATE_CAPACITY: u64 = 256;
@@ -62,6 +65,8 @@ pub enum NetworkError {
     Timeout,
     #[error("frame too large")]
     FrameTooLarge,
+    #[error("node is under backpressure")]
+    Backpressure,
 }
 
 pub const A2P2_PROTOCOL_SCHEME: &str = "a2p2://";
@@ -769,6 +774,19 @@ impl RoutingTable {
         self.peers.values().cloned().collect()
     }
 }
+fn insert_peer_bounded(peers: &mut HashMap<[u8; 32], PeerRecord>, record: PeerRecord) {
+    if peers.contains_key(&record.awe_id) {
+        peers.insert(record.awe_id, record);
+        return;
+    }
+    if peers.len() >= MAX_PEER_RECORDS {
+        if let Some(evict) = peers.values().min_by_key(|p| p.last_seen_unix).map(|p| p.awe_id) {
+            peers.remove(&evict);
+        }
+    }
+    peers.insert(record.awe_id, record);
+}
+
 fn xor_distance(a: &[u8; 32], b: &[u8; 32]) -> [u8; 32] {
     let mut d = [0u8; 32];
     for i in 0..32 {
@@ -791,6 +809,7 @@ pub struct Node {
     preauth: Arc<Mutex<IpAdmission>>,
     active: ActiveConnections,
     inbox: InboxQueue,
+    inbox_bytes: Arc<Mutex<usize>>,
 }
 impl Node {
     pub fn new(identity: Identity, listen_addr: SocketAddr) -> Self {
@@ -811,6 +830,7 @@ impl Node {
             ))),
             active: Arc::new(RwLock::new(HashMap::new())),
             inbox: Arc::new(Mutex::new(Vec::new())),
+            inbox_bytes: Arc::new(Mutex::new(0)),
         }
     }
     pub fn node_descriptor(&self) -> String {
@@ -825,6 +845,7 @@ impl Node {
         peers: Arc<RwLock<HashMap<[u8; 32], PeerRecord>>>,
         admission: Arc<Mutex<PeerAdmission>>,
         inbox: InboxQueue,
+        inbox_bytes: Arc<Mutex<usize>>,
     ) {
         let Ok(mut c) = handshake(stream, identity, listen_addr, false).await else {
             return;
@@ -848,7 +869,7 @@ impl Node {
             last_seen_unix: now(),
         };
         routing.write().await.insert(r.clone());
-        peers.write().await.insert(r.awe_id, r);
+        insert_peer_bounded(&mut peers.write().await, r);
         let mut seq = 0u64;
         loop {
             match timeout(HEARTBEAT, c.recv()).await {
@@ -885,8 +906,28 @@ impl Node {
                             }
                         }
                         Control::Data { stream, payload } => {
-                            if let Ok(mut queue) = inbox.lock() {
-                                queue.push((c.remote_id, stream, payload.clone()));
+                            let accepted = if let Ok(mut bytes) = inbox_bytes.lock() {
+                                let message_bytes = payload.len();
+                                if message_bytes > MAX_INBOX_BYTES
+                                    || *bytes > MAX_INBOX_BYTES.saturating_sub(message_bytes)
+                                {
+                                    false
+                                } else if let Ok(mut queue) = inbox.lock() {
+                                    if queue.len() >= MAX_INBOX_MESSAGES {
+                                        false
+                                    } else {
+                                        queue.push((c.remote_id, stream, payload.clone()));
+                                        *bytes += message_bytes;
+                                        true
+                                    }
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            };
+                            if !accepted {
+                                break;
                             }
                             if c.send(&Control::DataAck {
                                 stream,
@@ -940,6 +981,7 @@ impl Node {
             let peers = Arc::clone(&self.peers);
             let admission = Arc::clone(&self.admission);
             let inbox = Arc::clone(&self.inbox);
+            let inbox_bytes = Arc::clone(&self.inbox_bytes);
             let listen_addr = self.listen_addr;
             tokio::spawn(async move {
                 Self::handle(
@@ -951,6 +993,7 @@ impl Node {
                     peers,
                     admission,
                     inbox,
+                    inbox_bytes,
                 )
                 .await;
                 drop(permit);
@@ -997,7 +1040,7 @@ impl Node {
                     for x in records {
                         if x.awe_id == *node.identity.public.awe_id.as_bytes() { continue; }
                         routing.insert(x.clone());
-                        peers.insert(x.awe_id, x);
+                        insert_peer_bounded(&mut peers, x);
                         discovered += 1;
                     }
                 }
@@ -1109,10 +1152,15 @@ impl Node {
     }
 
     pub fn take_inbox(&self) -> Vec<([u8; 32], u32, Vec<u8>)> {
-        self.inbox
+        let queue = self
+            .inbox
             .lock()
             .map(|mut q| std::mem::take(&mut *q))
-            .unwrap_or_default()
+            .unwrap_or_default();
+        if let Ok(mut bytes) = self.inbox_bytes.lock() {
+            *bytes = 0;
+        }
+        queue
     }
 
     pub async fn active_peers(&self) -> Vec<[u8; 32]> {
