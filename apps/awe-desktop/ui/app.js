@@ -1,5 +1,5 @@
 const view=document.getElementById("view"),title=document.getElementById("pageTitle"),navs=[...document.querySelectorAll(".nav")];
-const pages={dashboard:["Overview","Network-wide status at a glance"],node:["My Node","Your identity, runtime and listening endpoint"],network:["Peers & Connections","Discover and connect to AWEp2P nodes"],federation:["AWENET","Build Nodes, Data Centres and Data Groups"],storage:["Storage","Local and distributed data plane"],messenger:["Messenger","Peer-to-peer messaging"],communities:["Groups & Channels","Real peer communities over AWE transport"],store:["AWEStore","AWE modules and services"],security:["Security","Identity, transport and trust"],diagnostics:["Diagnostics","Health checks and runtime inspection"],settings:["Settings","Application configuration"]};
+const pages={dashboard:["Home","Everything important in one place"],browser:["Browser","Open AWE sites and the web in a separate browser view"],node:["My Node","Your identity, runtime and listening endpoint"],network:["Peers & Connections","Discover and connect to AWEp2P nodes"],federation:["AWENET","Build Nodes, Data Centres and Data Groups"],storage:["Storage","Local and distributed data plane"],messenger:["Messenger","Peer-to-peer messaging"],communities:["Groups & Channels","Real peer communities over AWE transport"],store:["AWEStore","AWE modules and services"],security:["Security","Identity, transport and trust"],diagnostics:["Diagnostics","Health checks and runtime inspection"],settings:["Settings","Application configuration"]};
 let live={status:"starting",node_id:"loading",node_address:"loading",transport:"loading",ui:"connecting",peers:[],node:{},storage:{},security:{},federation:{}};
 
 function apiBase(){
@@ -111,7 +111,9 @@ function peerRows(){return live.peers.length?live.peers.map(p=>'<tr><td><div cla
 function render(k){
  const p=pages[k]||pages.dashboard;navs.forEach(n=>n.classList.toggle("active",n.dataset.view===k));title.textContent=p[0];
  let body="";
- if(k==="dashboard"){
+ if(k==="browser"){
+  body=panel("Browser",'<div class="browser-bar"><input id="browserUrl" value="awe://home" placeholder="awe://site-id or https://example.com"><button class="primary" id="browserGo">Open</button><button class="secondary" id="browserExternal">↗ External</button></div><div class="browser-hint">AWE addresses can use <b>awe://</b>. Web pages may block embedding; use External when needed.</div><iframe id="browserFrame" class="browser-frame" title="AWE Browser" src="about:blank"></iframe>');
+ } else if(k==="dashboard"){
   body='<div class="grid">'+card("Node status",live.status.toUpperCase())+card("Data centre",live.node?.descriptor?"Node registered":"Local node","Live node descriptor")+card("Node ID",live.node_id,"AWE identity")+card("Connected peers",live.status?.active_connections||0,"Authenticated live connections")+card("Transport",live.transport,"Node transport")+'</div>'+
   '<div class="section two">'+panel("Network topology",'<div class="network-map"><div class="node-point main" style="left:49%;top:47%"></div>'+live.peers.slice(0,8).map((_,i)=>{const a=i*45;return '<div class="line" style="left:51%;top:51%;width:105px;transform:rotate('+a+'deg)"></div><div class="node-point" style="left:'+(50+34*Math.cos(a*Math.PI/180))+'%;top:'+(50+34*Math.sin(a*Math.PI/180))+'%"></div>'}).join("")+'</div>'),panel("Runtime health",'<div class="big-status"><div class="big-orb">'+(live.status==="online"?"✓":"!")+'</div><div><b>'+esc(live.status==="online"?"Node operational":"Node unavailable")+'</b><div class="detail">'+esc(live.node_address)+'</div></div></div><div class="list section"><div class="list-row"><span>Core API</span><span class="status"><i></i>'+esc(live.ui)+'</span></div><div class="list-row"><span>Known peers</span><b>'+live.peers.length+'</b></div></div>'))+
   panel("Known peers",'<table class="table"><thead><tr><th>Peer</th><th>Address</th><th>Last seen</th><th>State</th></tr></thead><tbody>'+peerRows()+'</tbody></table>','<button class="secondary" id="goNetwork">Manage</button>');
@@ -168,6 +170,9 @@ function render(k){
  bind(k);
 }
 function bind(k){
+ const bg=document.getElementById("browserGo");if(bg)bg.onclick=()=>{let u=document.getElementById("browserUrl").value.trim();if(!u)return;if(u.startsWith("awe://")){u="https://"+u.slice(6)}if(!/^https?:\\/\\//i.test(u))u="https://"+u;document.getElementById("browserUrl").value=u;document.getElementById("browserFrame").src=u};
+ const be=document.getElementById("browserExternal");if(be)be.onclick=()=>{let u=document.getElementById("browserUrl").value.trim();if(u.startsWith("awe://"))u="https://"+u.slice(6);if(!/^https?:\\/\\//i.test(u))u="https://"+u;window.open(u,"_blank","noopener,noreferrer")};
+ const bu=document.getElementById("browserUrl");if(bu)bu.addEventListener("keydown",e=>{if(e.key==="Enter")bg?.click()});
  const r=document.getElementById("refreshBtn");if(r)r.onclick=async()=>{await refresh();render(k)};
  const g=document.getElementById("goNetwork");if(g)g.onclick=()=>render("network");
  const pr=document.getElementById("peerRefresh");if(pr)pr.onclick=async()=>{await refresh();render("network")};
