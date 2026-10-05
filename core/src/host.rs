@@ -1,4 +1,5 @@
 use crate::{
+    access::{AccessDescriptor, AccessMap},
     namespace,
     registry::{Registry, RegistryStatus},
     storage::{content_id, LocalNodeStore},
@@ -46,6 +47,8 @@ pub struct SiteManifest {
     pub files: Vec<HostedFile>,
     pub owner_key: Vec<u8>,
     pub policy: HostPolicy,
+    #[serde(default = "default_host_access")]
+    pub access: AccessDescriptor,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HostHealth {
@@ -55,6 +58,15 @@ pub struct HostHealth {
     pub latency_ms: u64,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+fn default_host_access() -> AccessDescriptor { AccessDescriptor::open() }
+
+impl SiteManifest {
+    pub fn open(&self) -> bool { self.access.mode == crate::access::AccessMode::Open }
+    pub fn authorize(&self, map: Option<&AccessMap>) -> bool {
+        self.access.authorize(map, self.root_hash)
+    }
+}
+
 pub struct HostRecord {
     pub node_id: [u8; 32],
     pub domain: String,
@@ -135,6 +147,7 @@ impl AweHost {
             files,
             owner_key,
             policy: self.policy.clone(),
+            access: AccessDescriptor::open(),
         })
     }
     pub fn authorize_domain(manifest: &SiteManifest, registry: &Registry) -> bool {
@@ -142,6 +155,13 @@ impl AweHost {
             .map(|r| r.status == RegistryStatus::Active && r.owner_public_key == manifest.owner_key)
             .unwrap_or(false)
     }
+    pub fn get_authorized(&mut self, manifest: &SiteManifest, path: &str, map: Option<&AccessMap>) -> io::Result<Vec<u8>> {
+        if !manifest.authorize(map) {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "AWE site access denied"));
+        }
+        self.get(manifest, path)
+    }
+
     pub fn get(&mut self, manifest: &SiteManifest, path: &str) -> io::Result<Vec<u8>> {
         let clean = normalize_path(path)?;
         if let Some(v) = self.cache.get(&clean) {
@@ -223,7 +243,8 @@ mod tests {
             .publish_manifest("example.awe", 1, vec![1], vec![f])
             .unwrap();
         h.save_manifest(&m).unwrap();
-        assert_eq!(h.get(&m, "/").unwrap(), b"<h1>AWE</h1>");
+        assert!(m.open());
+        assert_eq!(h.get_authorized(&m, "/", None).unwrap(), b"<h1>AWE</h1>");
         let _ = fs::remove_dir_all(r);
     }
 }
