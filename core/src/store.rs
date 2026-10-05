@@ -47,6 +47,8 @@ pub struct AppManifest {
     pub payload_hash: [u8; 32],
     pub size: u64,
     pub protocol_version: u16,
+    #[serde(default)]
+    pub price_onecoin_atoms: Option<u128>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SignedManifest {
@@ -133,6 +135,19 @@ fn read_leb(b: &[u8]) -> Result<(u64, usize), &'static str> {
 }
 
 impl AppManifest {
+    /// Set or replace the app's ONECOIN price and re-sign the manifest.
+    pub fn set_price_onecoin(&mut self, identity: &Identity, price_atoms: Option<u128>) -> Result<(), &'static str> {
+        if identity.public.awe_id.as_bytes() != &self.manifest.manifest.developer_awe_id
+            || identity.public.public_key != self.manifest.manifest.developer_public_key {
+            return Err("only the app developer can change its price");
+        }
+        if price_atoms == Some(0) {
+            return Err("ONECOIN price must be positive or omitted");
+        }
+        self.manifest.manifest.price_onecoin_atoms = price_atoms;
+        self.manifest.signature = identity.sign(&canonical_manifest(&self.manifest.manifest)).to_vec();
+        Ok(())
+    }
     pub fn verify(&self) -> Result<(), &'static str> {
         if self.id.is_empty()
             || self.id.len() > 128
@@ -205,6 +220,7 @@ impl AWEPackage {
             size: files.values().map(|v| v.len() as u64).sum(),
             payload_hash: ph,
             protocol_version: 1,
+            price_onecoin_atoms: None,
         };
         let sig = identity.sign(&canonical_manifest(&m));
         Ok(Self {
