@@ -420,6 +420,17 @@ mod tests {
         assert!(p.verify().is_err());
     }
     #[test]
+    fn onecoin_price_is_signed_by_developer() {
+        let i = Identity::generate(Username::new("dev").unwrap());
+        let mut f = BTreeMap::new();
+        f.insert("/app.wasm".into(), b"\0asm\x01\0\0\0".to_vec());
+        let mut p = AWEPackage::new(&i, "paid", "Paid", "1", AppKind::Wasm, "/app.wasm", f, vec![], vec![]).unwrap();
+        p.set_price_onecoin(&i, Some(crate::onecoin::ATOMS_PER_COIN * 5)).unwrap();
+        assert_eq!(p.manifest.manifest.price_onecoin_atoms, Some(crate::onecoin::ATOMS_PER_COIN * 5));
+        assert!(p.verify().is_ok());
+    }
+
+    #[test]
     fn install_rollback() {
         let root = std::env::temp_dir().join(format!("awe-store-{}", std::process::id()));
         let s = Store::open(&root).unwrap();
