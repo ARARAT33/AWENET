@@ -80,6 +80,12 @@ pub struct SiteManifest {
     pub hostname: String,
     pub files: Vec<FileManifest>,
     pub version: u64,
+    #[serde(default = "default_site_access")]
+    pub access: crate::access::AccessDescriptor,
+}
+
+fn default_site_access() -> crate::access::AccessDescriptor {
+    crate::access::AccessDescriptor::open()
 }
 
 impl SiteManifest {
@@ -273,6 +279,7 @@ mod tests {
             hostname: "example.awe".into(),
             files: vec![],
             version: 1,
+            access: crate::access::AccessDescriptor::open(),
         };
         assert!(s.validate().is_err());
     }
