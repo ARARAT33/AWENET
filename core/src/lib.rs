@@ -21,6 +21,8 @@ pub mod network;
 pub mod network_topology;
 pub mod onecoin;
 pub mod onecoin_store;
+pub mod onecoin_payment;
+pub mod onecoin_governance;
 pub mod node;
 pub mod permissions;
 pub mod policy;
