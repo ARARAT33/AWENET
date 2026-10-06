@@ -390,6 +390,17 @@ mod tests {
     use super::*;
     use crate::identity::Username;
     #[test]
+    fn developer_identity_mismatch_is_rejected() {
+        let i = Identity::generate(Username::new("dev").unwrap());
+        let other = Identity::generate(Username::new("other").unwrap());
+        let mut f = BTreeMap::new();
+        f.insert("/app.wasm".into(), b"\\0asm\\x01\\0\\0\\0".to_vec());
+        let mut p = AWEPackage::new(&i, "org_awe_test", "Test", "1.0.0", AppKind::Wasm, "/app.wasm", f, vec![], vec![]).unwrap();
+        p.manifest.manifest.developer_awe_id = *other.public.awe_id.as_bytes();
+        assert!(p.verify().is_err());
+    }
+
+    #[test]
     fn signed_package_roundtrip() {
         let i = Identity::generate(Username::new("dev").unwrap());
         let mut f = BTreeMap::new();
