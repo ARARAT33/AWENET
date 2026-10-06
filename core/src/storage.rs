@@ -464,6 +464,13 @@ impl SecretFilePackage {
 mod tests {
     use super::*;
     #[test]
+    fn empty_erasure_input_is_safe() {
+        let p = StoragePolicy::default();
+        let encoded = encode_shards(&[], &p).unwrap();
+        assert_eq!(encoded.len(), p.total_shards());
+    }
+
+    #[test]
     fn encryption_roundtrip() {
         let key = [7u8; 32];
         let plain = b"AWE Drive secret";
