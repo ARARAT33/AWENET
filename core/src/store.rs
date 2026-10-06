@@ -142,19 +142,6 @@ fn read_leb(b: &[u8]) -> Result<(u64, usize), &'static str> {
 }
 
 impl AppManifest {
-    /// Set or replace the app's ONECOIN price and re-sign the manifest.
-    pub fn set_price_onecoin(&mut self, identity: &Identity, price_atoms: Option<u128>) -> Result<(), &'static str> {
-        if identity.public.awe_id.as_bytes() != &self.developer_awe_id
-            || identity.public.public_key != self.developer_public_key {
-            return Err("only the app developer can change its price");
-        }
-        if price_atoms == Some(0) {
-            return Err("ONECOIN price must be positive or omitted");
-        }
-        self.price_onecoin_atoms = price_atoms;
-        self.manifest.signature = identity.sign(&canonical_manifest(self)).to_vec();
-        Ok(())
-    }
     pub fn verify(&self) -> Result<(), &'static str> {
         if !valid_app_id(&self.id)
             || !valid_version(&self.version)
@@ -171,6 +158,23 @@ impl AppManifest {
         Ok(())
     }
 }
+impl AWEPackage {
+    /// Set or replace the app's ONECOIN price and re-sign the manifest.
+    pub fn set_price_onecoin(&mut self, identity: &Identity, price_atoms: Option<u128>) -> Result<(), &'static str> {
+        let manifest = &mut self.manifest.manifest;
+        if identity.public.awe_id.as_bytes() != &manifest.developer_awe_id
+            || identity.public.public_key != manifest.developer_public_key {
+            return Err("only the app developer can change its price");
+        }
+        if price_atoms == Some(0) {
+            return Err("ONECOIN price must be positive or omitted");
+        }
+        manifest.price_onecoin_atoms = price_atoms;
+        self.manifest.signature = identity.sign(&canonical_manifest(manifest)).to_vec();
+        Ok(())
+    }
+}
+
 impl SignedManifest {
     pub fn verify(&self) -> Result<(), &'static str> {
         self.manifest.verify()?;
