@@ -118,7 +118,7 @@ impl PersistentOnecoinLedger {
             ));
         }
         for (id, public_key) in &ledger.members {
-            if crate::identity::AweId::from_public_key(public_key).to_hex() != *id {
+            if hex::encode(public_key) != *id {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "ledger AWEID/public-key mismatch",
@@ -185,7 +185,7 @@ impl PersistentOnecoinState {
             ));
         }
         for (id, public_key) in &ledger.members {
-            if AweId::from_public_key(public_key).to_hex() != *id {
+            if hex::encode(public_key) != *id {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "ONECOIN state AWEID/public-key mismatch",
