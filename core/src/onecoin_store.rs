@@ -58,6 +58,38 @@ impl PersistentOnecoinLedger {
         }
     }
 
+    fn validate_state(state: &OnecoinFinalizedState) -> io::Result<()> {
+        let ledger = &state.ledger;
+        if ledger.members.len() != ledger.balances.len()
+            || ledger.members.len() != ledger.nonces.len()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "ONECOIN state member invariant violated",
+            ));
+        }
+        let computed = ledger
+            .balances
+            .values()
+            .copied()
+            .fold(0u128, u128::saturating_add);
+        if computed > ledger.total_issued_atoms {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "ONECOIN state supply invariant violated",
+            ));
+        }
+        for (id, public_key) in &ledger.members {
+            if AweId::from_public_key(public_key).to_hex() != *id {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "ONECOIN state AWEID/public-key mismatch",
+                ));
+            }
+        }
+        Ok(())
+    }
+
     pub fn save(&self) -> io::Result<()> { save_json(&self.path, &self.ledger) }
 
     pub fn apply_transfer(&mut self, tx: &OnecoinTransaction, sender_public_key: &[u8; 32]) -> Result<[u8; 32], String> {
@@ -130,11 +162,7 @@ impl PersistentOnecoinState {
             }
             let state: OnecoinFinalizedState = serde_json::from_slice(&bytes[STATE_MAGIC.len()..])
                 .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "corrupt AWENET ONECOIN state"))?;
-            if state.ledger.members.len() != state.ledger.balances.len()
-                || state.ledger.members.len() != state.ledger.nonces.len()
-            {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "ONECOIN state member invariant violated"));
-            }
+            Self::validate_state(&state)?;
             Ok(Self { path, state })
         } else {
             Ok(Self { path, state: OnecoinFinalizedState::default() })
