@@ -295,6 +295,9 @@ pub fn encode_shards(data: &[u8], policy: &StoragePolicy) -> io::Result<Vec<Vec<
             "invalid erasure policy",
         ));
     }
+    if data.is_empty() {
+        return Ok(vec![vec![0u8; 1]; policy.data_shards + policy.parity_shards]);
+    }
     let shard_len = data.len().div_ceil(policy.data_shards);
     let mut shards = vec![vec![0u8; shard_len]; policy.data_shards + policy.parity_shards];
     for (i, byte) in data.iter().enumerate() {
@@ -409,9 +412,13 @@ impl LocalNodeStore {
 }
 
 pub fn save_manifest(path: impl AsRef<Path>, manifest: &[u8]) -> io::Result<()> {
-    let mut f = fs::File::create(path)?;
+    let path = path.as_ref();
+    let tmp = path.with_extension("part");
+    let mut f = fs::File::create(&tmp)?;
     f.write_all(manifest)?;
-    f.flush()
+    f.sync_all()?;
+    drop(f);
+    fs::rename(tmp, path)
 }
 pub fn load_manifest(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
     let mut f = fs::File::open(path)?;
