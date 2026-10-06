@@ -50,6 +50,7 @@ impl OnecoinTransaction {
         amount_atoms: u128,
         memo: Option<String>,
     ) -> Self {
+        let memo = memo.filter(|m| m.len() <= MAX_TRANSACTION_MEMO);
         let mut tx = Self {
             version: 1,
             nonce,
