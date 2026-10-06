@@ -24,6 +24,7 @@ pub mod onecoin_store;
 pub mod onecoin_payment;
 pub mod onecoin_governance;
 pub mod onecoin_consensus;
+pub mod onecoin_consensus_runtime;
 pub mod node;
 pub mod permissions;
 pub mod policy;
