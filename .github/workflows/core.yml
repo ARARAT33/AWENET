@@ -1,5 +1,10 @@
 name: AWEp2P Workspace CI
 
+
+concurrency:
+  group: awe-core-${{ github.ref }}
+  cancel-in-progress: true
+
 on:
   push:
     branches: [main]
