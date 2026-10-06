@@ -1,4 +1,5 @@
 name: Rust Format Check
+# Workspace is kept rustfmt-clean by the main-branch formatter job.
 
 
 concurrency:
