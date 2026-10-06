@@ -27,12 +27,19 @@ pub struct SignedFloorVote {
 
 impl SignedFloorVote {
     pub fn new(identity: &Identity, proposal_id: [u8; 32], approve: bool) -> Self {
-        let mut vote = Self { proposal_id, voter: identity.public.awe_id.clone(), approve, signature: [0; 64] };
+        let mut vote = Self {
+            proposal_id,
+            voter: identity.public.awe_id.clone(),
+            approve,
+            signature: [0; 64],
+        };
         vote.signature = identity.sign(&vote.signing_bytes());
         vote
     }
     fn signing_bytes(&self) -> Vec<u8> {
-        let mut v = self.clone(); v.signature = [0; 64]; serde_json::to_vec(&v).expect("vote serialization")
+        let mut v = self.clone();
+        v.signature = [0; 64];
+        serde_json::to_vec(&v).expect("vote serialization")
     }
     pub fn verify(&self, public_key: &[u8; 32]) -> bool {
         self.voter.as_bytes() == AweId::from_public_key(public_key).as_bytes()
@@ -52,15 +59,23 @@ impl PriceFloorGovernance {
         members: &BTreeMap<String, [u8; 32]>,
         now_unix: u64,
     ) -> Result<bool, String> {
-        if proposal.version != GOVERNANCE_VERSION || proposal.proposed_floor_usd_cents >= proposal.current_floor_usd_cents {
+        if proposal.version != GOVERNANCE_VERSION
+            || proposal.proposed_floor_usd_cents >= proposal.current_floor_usd_cents
+        {
             return Err("proposal must lower the current floor".into());
         }
-        if now_unix > proposal.expires_at_unix { return Err("proposal expired".into()); }
+        if now_unix > proposal.expires_at_unix {
+            return Err("proposal expired".into());
+        }
         self.votes.clear();
         for vote in votes {
             let key = vote.voter.to_hex();
-            let Some(pk) = members.get(&key) else { continue; };
-            if vote.proposal_id != proposal.proposal_id || !vote.verify(pk) { continue; }
+            let Some(pk) = members.get(&key) else {
+                continue;
+            };
+            if vote.proposal_id != proposal.proposal_id || !vote.verify(pk) {
+                continue;
+            }
             self.votes.entry(key).or_insert(vote.approve);
         }
         let total = members.len() as u64;
@@ -84,9 +99,33 @@ mod tests {
             (b.public.awe_id.to_hex(), b.public.public_key),
             (c.public.awe_id.to_hex(), c.public.public_key),
         ]);
-        let proposal = PriceFloorProposal { version: GOVERNANCE_VERSION, proposal_id: [1; 32], current_floor_usd_cents: 2_100, proposed_floor_usd_cents: 2_000, created_at_unix: 1, expires_at_unix: 100 };
+        let proposal = PriceFloorProposal {
+            version: GOVERNANCE_VERSION,
+            proposal_id: [1; 32],
+            current_floor_usd_cents: 2_100,
+            proposed_floor_usd_cents: 2_000,
+            created_at_unix: 1,
+            expires_at_unix: 100,
+        };
         let mut g = PriceFloorGovernance::default();
-        assert!(!g.approve_if_quorum(&proposal, &[SignedFloorVote::new(&a, [1; 32], true)], &members, 2).unwrap());
-        assert!(g.approve_if_quorum(&proposal, &[SignedFloorVote::new(&a, [1; 32], true), SignedFloorVote::new(&b, [1; 32], true)], &members, 2).unwrap());
+        assert!(!g
+            .approve_if_quorum(
+                &proposal,
+                &[SignedFloorVote::new(&a, [1; 32], true)],
+                &members,
+                2
+            )
+            .unwrap());
+        assert!(g
+            .approve_if_quorum(
+                &proposal,
+                &[
+                    SignedFloorVote::new(&a, [1; 32], true),
+                    SignedFloorVote::new(&b, [1; 32], true)
+                ],
+                &members,
+                2
+            )
+            .unwrap());
     }
 }

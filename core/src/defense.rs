@@ -34,7 +34,11 @@ pub struct PeerDefense {
 
 impl Default for PeerDefense {
     fn default() -> Self {
-        Self::new(DEFAULT_MAX_ENTRIES, DEFAULT_MAX_STRIKES, DEFAULT_QUARANTINE_SECS)
+        Self::new(
+            DEFAULT_MAX_ENTRIES,
+            DEFAULT_MAX_STRIKES,
+            DEFAULT_QUARANTINE_SECS,
+        )
     }
 }
 
@@ -49,22 +53,34 @@ impl PeerDefense {
     }
 
     fn ensure(&mut self, peer: [u8; 32], now: u64) {
-        if self.states.contains_key(&peer) { return; }
+        if self.states.contains_key(&peer) {
+            return;
+        }
         if self.states.len() >= self.max_entries {
             if let Some((oldest, _)) = self.states.iter().min_by_key(|(_, s)| s.last_seen) {
                 let oldest = *oldest;
                 self.states.remove(&oldest);
             }
         }
-        self.states.insert(peer, PeerDefenseState { last_seen: now, ..Default::default() });
+        self.states.insert(
+            peer,
+            PeerDefenseState {
+                last_seen: now,
+                ..Default::default()
+            },
+        );
     }
 
     pub fn check(&mut self, peer: [u8; 32], now: u64) -> DefenseDecision {
         self.ensure(peer, now);
         let state = self.states.get_mut(&peer).expect("peer state exists");
         state.last_seen = now;
-        if state.strikes >= self.max_strikes { return DefenseDecision::Banned; }
-        if state.quarantined_until > now { return DefenseDecision::Quarantined; }
+        if state.strikes >= self.max_strikes {
+            return DefenseDecision::Banned;
+        }
+        if state.quarantined_until > now {
+            return DefenseDecision::Quarantined;
+        }
         DefenseDecision::Allow
     }
 
@@ -81,14 +97,18 @@ impl PeerDefense {
     }
 
     pub fn clear_quarantine(&mut self, peer: [u8; 32]) {
-        if let Some(state) = self.states.get_mut(&peer) { state.quarantined_until = 0; }
+        if let Some(state) = self.states.get_mut(&peer) {
+            state.quarantined_until = 0;
+        }
     }
 
     pub fn strikes(&self, peer: &[u8; 32]) -> u32 {
         self.states.get(peer).map(|s| s.strikes).unwrap_or(0)
     }
 
-    pub fn tracked_peers(&self) -> usize { self.states.len() }
+    pub fn tracked_peers(&self) -> usize {
+        self.states.len()
+    }
 }
 
 /// Sliding-window circuit breaker for expensive operations. A caller is
@@ -104,11 +124,21 @@ pub struct CircuitBreaker {
 
 impl CircuitBreaker {
     pub fn new(threshold: u32, cooldown_secs: u64) -> Self {
-        Self { failures: 0, opened_until: 0, threshold: threshold.max(1), cooldown_secs }
+        Self {
+            failures: 0,
+            opened_until: 0,
+            threshold: threshold.max(1),
+            cooldown_secs,
+        }
     }
     pub fn allow(&mut self, now: u64) -> bool {
-        if self.opened_until > now { return false; }
-        if self.opened_until != 0 { self.failures = 0; self.opened_until = 0; }
+        if self.opened_until > now {
+            return false;
+        }
+        if self.opened_until != 0 {
+            self.failures = 0;
+            self.opened_until = 0;
+        }
         true
     }
     pub fn record_failure(&mut self, now: u64) {
@@ -117,7 +147,9 @@ impl CircuitBreaker {
             self.opened_until = now.saturating_add(self.cooldown_secs);
         }
     }
-    pub fn record_success(&mut self) { self.failures = 0; }
+    pub fn record_success(&mut self) {
+        self.failures = 0;
+    }
 }
 
 #[cfg(test)]

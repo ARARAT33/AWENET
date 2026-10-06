@@ -57,10 +57,14 @@ pub struct HostHealth {
     pub last_check_unix: u64,
     pub latency_ms: u64,
 }
-fn default_host_access() -> AccessDescriptor { AccessDescriptor::open() }
+fn default_host_access() -> AccessDescriptor {
+    AccessDescriptor::open()
+}
 
 impl SiteManifest {
-    pub fn open(&self) -> bool { self.access.mode == crate::access::AccessMode::Open }
+    pub fn open(&self) -> bool {
+        self.access.mode == crate::access::AccessMode::Open
+    }
     pub fn authorize(&self, map: Option<&AccessMap>) -> bool {
         self.access.authorize(map, &self.root_hash)
     }
@@ -155,9 +159,17 @@ impl AweHost {
             .map(|r| r.status == RegistryStatus::Active && r.owner_public_key == manifest.owner_key)
             .unwrap_or(false)
     }
-    pub fn get_authorized(&mut self, manifest: &SiteManifest, path: &str, map: Option<&AccessMap>) -> io::Result<Vec<u8>> {
+    pub fn get_authorized(
+        &mut self,
+        manifest: &SiteManifest,
+        path: &str,
+        map: Option<&AccessMap>,
+    ) -> io::Result<Vec<u8>> {
         if !manifest.authorize(map) {
-            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "AWE site access denied"));
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "AWE site access denied",
+            ));
         }
         self.get(manifest, path)
     }

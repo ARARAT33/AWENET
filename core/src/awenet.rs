@@ -19,9 +19,15 @@ pub struct ResourceOffer {
 }
 impl ResourceOffer {
     pub fn validate(&self) -> Result<(), String> {
-        if self.online_hours_per_day > 24 { return Err("online_hours_per_day must be <= 24".into()); }
-        if self.storage_bytes == 0 && self.bandwidth_bytes_per_day == 0 && self.compute_units_per_day == 0
-            && self.relay_bytes_per_day == 0 && self.online_hours_per_day == 0 {
+        if self.online_hours_per_day > 24 {
+            return Err("online_hours_per_day must be <= 24".into());
+        }
+        if self.storage_bytes == 0
+            && self.bandwidth_bytes_per_day == 0
+            && self.compute_units_per_day == 0
+            && self.relay_bytes_per_day == 0
+            && self.online_hours_per_day == 0
+        {
             return Err("a node must offer at least one resource".into());
         }
         Ok(())
@@ -30,15 +36,32 @@ impl ResourceOffer {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Capability {
-    Routing, Discovery, Storage, Relay, Compute, Browser, Messaging, Calls, Sites, Apps, Store,
+    Routing,
+    Discovery,
+    Storage,
+    Relay,
+    Compute,
+    Browser,
+    Messaging,
+    Calls,
+    Sites,
+    Apps,
+    Store,
 }
 impl Capability {
     pub fn wire_name(&self) -> &'static str {
         match self {
-            Self::Routing=>"routing", Self::Discovery=>"discovery", Self::Storage=>"storage",
-            Self::Relay=>"relay", Self::Compute=>"compute", Self::Browser=>"browser",
-            Self::Messaging=>"messaging", Self::Calls=>"calls", Self::Sites=>"sites",
-            Self::Apps=>"apps", Self::Store=>"store",
+            Self::Routing => "routing",
+            Self::Discovery => "discovery",
+            Self::Storage => "storage",
+            Self::Relay => "relay",
+            Self::Compute => "compute",
+            Self::Browser => "browser",
+            Self::Messaging => "messaging",
+            Self::Calls => "calls",
+            Self::Sites => "sites",
+            Self::Apps => "apps",
+            Self::Store => "store",
         }
     }
 }
@@ -54,8 +77,12 @@ pub struct NodeAdvertisement {
 }
 impl NodeAdvertisement {
     pub fn validate(&self) -> Result<(), String> {
-        if self.protocol != AWENET_PROTOCOL { return Err("unsupported AWENET protocol".into()); }
-        if self.capabilities.len() > MAX_CAPABILITIES { return Err("too many advertised capabilities".into()); }
+        if self.protocol != AWENET_PROTOCOL {
+            return Err("unsupported AWENET protocol".into());
+        }
+        if self.capabilities.len() > MAX_CAPABILITIES {
+            return Err("too many advertised capabilities".into());
+        }
         self.offer.validate()
     }
     pub fn compatible_with(&self, required: &BTreeSet<Capability>) -> bool {
@@ -92,11 +119,19 @@ pub struct ResourceDescriptor {
     pub access_commitment: Option<[u8; 32]>,
 }
 impl ResourceDescriptor {
-    pub fn is_secret(&self) -> bool { self.access_commitment.is_some() }
+    pub fn is_secret(&self) -> bool {
+        self.access_commitment.is_some()
+    }
     pub fn validate(&self) -> Result<(), String> {
-        if self.replicas < MIN_REPLICATION { return Err(format!("resource requires at least {MIN_REPLICATION} replicas")); }
+        if self.replicas < MIN_REPLICATION {
+            return Err(format!(
+                "resource requires at least {MIN_REPLICATION} replicas"
+            ));
+        }
         if let Some(n) = &self.name {
-            if n.trim().is_empty() || n.len() > MAX_ALIAS_LEN { return Err("invalid resource name".into()); }
+            if n.trim().is_empty() || n.len() > MAX_ALIAS_LEN {
+                return Err("invalid resource name".into());
+            }
         }
         Ok(())
     }
@@ -129,12 +164,20 @@ pub struct ContributionPolicy {
     pub max_priority: u8,
 }
 impl Default for ContributionPolicy {
-    fn default() -> Self { Self { free_priority: 1, max_priority: 100 } }
+    fn default() -> Self {
+        Self {
+            free_priority: 1,
+            max_priority: 100,
+        }
+    }
 }
 impl ContributionPolicy {
     pub fn priority(&self, score: u128) -> u8 {
-        if score == 0 { return self.free_priority; }
-        self.free_priority.max(score.saturating_div(1024).min(self.max_priority as u128) as u8)
+        if score == 0 {
+            return self.free_priority;
+        }
+        self.free_priority
+            .max(score.saturating_div(1024).min(self.max_priority as u128) as u8)
             .min(self.max_priority)
     }
 }
@@ -155,17 +198,29 @@ impl ResourceDirectory {
     pub fn bind_name(&mut self, binding: NameBinding) -> Result<(), String> {
         binding.validate()?;
         if let Some(old) = self.names.get(&binding.name) {
-            if old.owner != binding.owner { return Err("resource name is already owned".into()); }
-            if binding.revision <= old.revision { return Err("name binding revision must increase".into()); }
+            if old.owner != binding.owner {
+                return Err("resource name is already owned".into());
+            }
+            if binding.revision <= old.revision {
+                return Err("name binding revision must increase".into());
+            }
         }
-        self.names.insert(binding.name.clone(), binding); Ok(())
+        self.names.insert(binding.name.clone(), binding);
+        Ok(())
     }
     pub fn publish_resource(&mut self, resource: ResourceDescriptor) -> Result<(), String> {
-        resource.validate()?; self.resources.insert(resource.resource_id, resource); Ok(())
+        resource.validate()?;
+        self.resources.insert(resource.resource_id, resource);
+        Ok(())
     }
-    pub fn resolve_name(&self, name: &str) -> Option<&NameBinding> { self.names.get(name) }
+    pub fn resolve_name(&self, name: &str) -> Option<&NameBinding> {
+        self.names.get(name)
+    }
     pub fn nodes_for(&self, required: &BTreeSet<Capability>) -> Vec<&NodeAdvertisement> {
-        self.nodes.values().filter(|n| n.compatible_with(required)).collect()
+        self.nodes
+            .values()
+            .filter(|n| n.compatible_with(required))
+            .collect()
     }
 }
 
@@ -173,25 +228,73 @@ impl ResourceDirectory {
 mod tests {
     use super::*;
     use crate::identity::{Identity, Username};
-    fn id() -> AweId { Identity::generate(Username::new("test").unwrap()).public.awe_id }
+    fn id() -> AweId {
+        Identity::generate(Username::new("test").unwrap())
+            .public
+            .awe_id
+    }
     #[test]
     fn rename_keeps_resource_id() {
-        let owner=id(); let rid=[7u8;32]; let mut d=ResourceDirectory::default();
-        d.bind_name(NameBinding{name:"old".into(),resource_id:rid,owner:owner.clone(),revision:1,secret:false}).unwrap();
-        d.bind_name(NameBinding{name:"new".into(),resource_id:rid,owner,revision:2,secret:false}).unwrap();
-        assert_eq!(d.resolve_name("new").unwrap().resource_id,rid);
+        let owner = id();
+        let rid = [7u8; 32];
+        let mut d = ResourceDirectory::default();
+        d.bind_name(NameBinding {
+            name: "old".into(),
+            resource_id: rid,
+            owner: owner.clone(),
+            revision: 1,
+            secret: false,
+        })
+        .unwrap();
+        d.bind_name(NameBinding {
+            name: "new".into(),
+            resource_id: rid,
+            owner,
+            revision: 2,
+            secret: false,
+        })
+        .unwrap();
+        assert_eq!(d.resolve_name("new").unwrap().resource_id, rid);
     }
     #[test]
     fn foreign_owner_cannot_take_name() {
-        let mut d=ResourceDirectory::default();
-        d.bind_name(NameBinding{name:"site".into(),resource_id:[1;32],owner:id(),revision:1,secret:false}).unwrap();
-        assert!(d.bind_name(NameBinding{name:"site".into(),resource_id:[2;32],owner:id(),revision:2,secret:false}).is_err());
+        let mut d = ResourceDirectory::default();
+        d.bind_name(NameBinding {
+            name: "site".into(),
+            resource_id: [1; 32],
+            owner: id(),
+            revision: 1,
+            secret: false,
+        })
+        .unwrap();
+        assert!(d
+            .bind_name(NameBinding {
+                name: "site".into(),
+                resource_id: [2; 32],
+                owner: id(),
+                revision: 2,
+                secret: false
+            })
+            .is_err());
     }
     #[test]
     fn capability_matching_works() {
-        let mut caps=BTreeSet::new(); caps.insert(Capability::Storage);
-        let n=NodeAdvertisement{protocol:AWENET_PROTOCOL.into(),awe_id:id(),capabilities:caps,offer:ResourceOffer{storage_bytes:1,..Default::default()},software:"test".into(),software_version:"1".into()};
-        n.validate().unwrap(); let mut required=BTreeSet::new(); required.insert(Capability::Storage);
+        let mut caps = BTreeSet::new();
+        caps.insert(Capability::Storage);
+        let n = NodeAdvertisement {
+            protocol: AWENET_PROTOCOL.into(),
+            awe_id: id(),
+            capabilities: caps,
+            offer: ResourceOffer {
+                storage_bytes: 1,
+                ..Default::default()
+            },
+            software: "test".into(),
+            software_version: "1".into(),
+        };
+        n.validate().unwrap();
+        let mut required = BTreeSet::new();
+        required.insert(Capability::Storage);
         assert!(n.compatible_with(&required));
     }
 }

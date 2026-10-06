@@ -89,9 +89,11 @@ impl OnecoinBlock {
         if hash_transactions(&self.transactions) != self.header.transactions_hash {
             return Err("transaction set hash mismatch".into());
         }
-        if self.transactions.windows(2).any(|w| {
-            (w[0].sender, w[0].nonce, w[0].id()) > (w[1].sender, w[1].nonce, w[1].id())
-        }) {
+        if self
+            .transactions
+            .windows(2)
+            .any(|w| (w[0].sender, w[0].nonce, w[0].id()) > (w[1].sender, w[1].nonce, w[1].id()))
+        {
             return Err("transactions are not in canonical order".into());
         }
         Ok(())
@@ -153,7 +155,9 @@ impl QuorumCertificate {
         let mut unique = BTreeMap::new();
         for vote in &self.votes {
             let key = vote.voter.to_hex();
-            let Some(public_key) = validators.get(&key) else { continue; };
+            let Some(public_key) = validators.get(&key) else {
+                continue;
+            };
             if vote.block_hash != self.block_hash || vote.height != self.height {
                 continue;
             }
@@ -179,7 +183,11 @@ pub struct OnecoinFinalizedState {
 
 impl Default for OnecoinFinalizedState {
     fn default() -> Self {
-        Self { ledger: OnecoinLedger::default(), height: 0, tip_hash: [0; 32] }
+        Self {
+            ledger: OnecoinLedger::default(),
+            height: 0,
+            tip_hash: [0; 32],
+        }
     }
 }
 
@@ -260,12 +268,15 @@ mod tests {
         let c = id("c");
         let recipient = id("recipient");
         let mut state = OnecoinFinalizedState::default();
-        state.ledger.initialize_genesis(&[
-            a.public.awe_id.clone(),
-            b.public.awe_id.clone(),
-            c.public.awe_id.clone(),
-            recipient.public.awe_id.clone(),
-        ]).unwrap();
+        state
+            .ledger
+            .initialize_genesis(&[
+                a.public.awe_id.clone(),
+                b.public.awe_id.clone(),
+                c.public.awe_id.clone(),
+                recipient.public.awe_id.clone(),
+            ])
+            .unwrap();
         let validators = BTreeMap::from([
             (a.public.awe_id.to_hex(), a.public.public_key),
             (b.public.awe_id.to_hex(), b.public.public_key),

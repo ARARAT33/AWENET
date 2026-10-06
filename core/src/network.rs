@@ -1,8 +1,8 @@
 use crate::{
     crypto::hash,
+    defense::{DefenseDecision, PeerDefense},
     identity::Identity,
     limits::{IpAdmission, PeerAdmission},
-    defense::{DefenseDecision, PeerDefense},
     replay::ReplayGuard,
 };
 use chacha20poly1305::{
@@ -751,7 +751,12 @@ impl RoutingTable {
     pub fn insert(&mut self, p: PeerRecord) {
         self.peers.insert(p.awe_id, p);
         if self.peers.len() > MAX_ROUTING_RECORDS {
-            if let Some(evict) = self.peers.iter().min_by_key(|(_, r)| r.last_seen_unix).map(|(id, _)| *id) {
+            if let Some(evict) = self
+                .peers
+                .iter()
+                .min_by_key(|(_, r)| r.last_seen_unix)
+                .map(|(id, _)| *id)
+            {
                 self.peers.remove(&evict);
             }
         }
@@ -783,7 +788,11 @@ fn insert_peer_bounded(peers: &mut HashMap<[u8; 32], PeerRecord>, record: PeerRe
         return;
     }
     if peers.len() >= MAX_PEER_RECORDS {
-        if let Some(evict) = peers.values().min_by_key(|p| p.last_seen_unix).map(|p| p.awe_id) {
+        if let Some(evict) = peers
+            .values()
+            .min_by_key(|p| p.last_seen_unix)
+            .map(|p| p.awe_id)
+        {
             peers.remove(&evict);
         }
     }
@@ -863,10 +872,19 @@ impl Node {
             .expect("admission lock poisoned")
             .allow(c.remote_id, 1, now())
         {
-            let _ = defense.lock().expect("defense lock poisoned").strike(c.remote_id, now());
+            let _ = defense
+                .lock()
+                .expect("defense lock poisoned")
+                .strike(c.remote_id, now());
             return;
         }
-        if matches!(defense.lock().expect("defense lock poisoned").check(c.remote_id, now()), DefenseDecision::Banned | DefenseDecision::Quarantined) {
+        if matches!(
+            defense
+                .lock()
+                .expect("defense lock poisoned")
+                .check(c.remote_id, now()),
+            DefenseDecision::Banned | DefenseDecision::Quarantined
+        ) {
             return;
         }
         let r = PeerRecord {
@@ -881,7 +899,10 @@ impl Node {
             last_seen_unix: now(),
         };
         routing.write().await.insert(r.clone());
-        { let mut peers = peers.write().await; insert_peer_bounded(&mut peers, r); }
+        {
+            let mut peers = peers.write().await;
+            insert_peer_bounded(&mut peers, r);
+        }
         let mut seq = 0u64;
         loop {
             match timeout(HEARTBEAT, c.recv()).await {
@@ -899,7 +920,10 @@ impl Node {
                         cost,
                         now(),
                     ) {
-                        let _ = defense.lock().expect("defense lock poisoned").strike(c.remote_id, now());
+                        let _ = defense
+                            .lock()
+                            .expect("defense lock poisoned")
+                            .strike(c.remote_id, now());
                         break;
                     }
                     match message {
@@ -957,7 +981,10 @@ impl Node {
                     }
                 }
                 Ok(Err(_)) => {
-                    let _ = defense.lock().expect("defense lock poisoned").strike(c.remote_id, now());
+                    let _ = defense
+                        .lock()
+                        .expect("defense lock poisoned")
+                        .strike(c.remote_id, now());
                     break;
                 }
                 Err(_) => {
@@ -1032,31 +1059,40 @@ impl Node {
         for address in seeds {
             let node = self.clone();
             jobs.spawn(async move {
-                let Ok(mut c) = node.connect(address).await else { return 0usize; };
+                let Ok(mut c) = node.connect(address).await else {
+                    return 0usize;
+                };
                 let remote_id = c.remote_id;
                 let remote = PeerRecord {
                     awe_id: c.remote_id,
                     public_key: c.remote_public_key,
                     addresses: vec![if c.remote_address.ip().is_unspecified() {
                         SocketAddr::new(address.ip(), c.remote_address.port())
-                    } else { c.remote_address }],
+                    } else {
+                        c.remote_address
+                    }],
                     protocol_version: VERSION,
                     last_seen_unix: now(),
                 };
                 node.routing.write().await.insert(remote.clone());
-                { let mut peers = node.peers.write().await; insert_peer_bounded(&mut peers, remote); }
-
-                let _ = c.send(&Control::FindNode {
-                    target: *node.identity.public.awe_id.as_bytes(),
-                }).await;
-                let mut discovered = 0usize;
-                if let Ok(Ok(Control::Nodes { records })) =
-                    timeout(HELLO_TIMEOUT, c.recv()).await
                 {
+                    let mut peers = node.peers.write().await;
+                    insert_peer_bounded(&mut peers, remote);
+                }
+
+                let _ = c
+                    .send(&Control::FindNode {
+                        target: *node.identity.public.awe_id.as_bytes(),
+                    })
+                    .await;
+                let mut discovered = 0usize;
+                if let Ok(Ok(Control::Nodes { records })) = timeout(HELLO_TIMEOUT, c.recv()).await {
                     let mut routing = node.routing.write().await;
                     let mut peers = node.peers.write().await;
                     for x in records {
-                        if x.awe_id == *node.identity.public.awe_id.as_bytes() { continue; }
+                        if x.awe_id == *node.identity.public.awe_id.as_bytes() {
+                            continue;
+                        }
                         routing.insert(x.clone());
                         insert_peer_bounded(&mut peers, x);
                         discovered += 1;
@@ -1079,7 +1115,9 @@ impl Node {
                 tokio::spawn(async move {
                     loop {
                         tokio::time::sleep(HEARTBEAT).await;
-                        let Ok(mut connection) = shared.try_lock() else { continue; };
+                        let Ok(mut connection) = shared.try_lock() else {
+                            continue;
+                        };
                         if connection.ping_roundtrip(now()).await.is_err() {
                             drop(connection);
                             active.write().await.remove(&remote_id);
@@ -1092,13 +1130,16 @@ impl Node {
         }
         let mut found = 0usize;
         while let Some(result) = jobs.join_next().await {
-            found += result.map_err(|e| NetworkError::Protocol(format!("bootstrap task failed: {e}")))?;
+            found += result
+                .map_err(|e| NetworkError::Protocol(format!("bootstrap task failed: {e}")))?;
         }
 
         // Expand beyond the initial seeds. This is bounded Kademlia-style
         // discovery rather than a single-hop bootstrap response.
         let target = *self.identity.public.awe_id.as_bytes();
-        let discovered = self.find_nodes_iterative(&target, DISCOVERY_ALPHA, DISCOVERY_ROUNDS).await?;
+        let discovered = self
+            .find_nodes_iterative(&target, DISCOVERY_ALPHA, DISCOVERY_ROUNDS)
+            .await?;
         Ok(found.saturating_add(discovered.len()))
     }
 
@@ -1112,9 +1153,11 @@ impl Node {
                 tick.tick().await;
                 let mut candidates = seeds.clone();
                 candidates.extend(
-                    node.peers().await.into_iter()
+                    node.peers()
+                        .await
+                        .into_iter()
                         .flat_map(|p| p.addresses)
-                        .take(32)
+                        .take(32),
                 );
                 candidates.sort_unstable();
                 candidates.dedup();
@@ -1131,7 +1174,10 @@ impl Node {
         stream: u32,
         payload: Vec<u8>,
     ) -> Result<std::time::Duration, NetworkError> {
-        let _outbound_permit = self.outbound_limit.acquire().await
+        let _outbound_permit = self
+            .outbound_limit
+            .acquire()
+            .await
             .map_err(|_| NetworkError::Protocol("outbound limiter closed".into()))?;
         let connection = if let Some(connection) = self.active.read().await.get(peer_id).cloned() {
             connection
@@ -1171,7 +1217,10 @@ impl Node {
         stream: u32,
         payload: Vec<u8>,
     ) -> Result<std::time::Duration, NetworkError> {
-        let _outbound_permit = self.outbound_limit.acquire().await
+        let _outbound_permit = self
+            .outbound_limit
+            .acquire()
+            .await
             .map_err(|_| NetworkError::Protocol("outbound limiter closed".into()))?;
         let address = self
             .peers
@@ -1280,7 +1329,10 @@ impl Node {
                         discovered = true;
                     }
                     self.routing.write().await.insert(record.clone());
-                    { let mut peers = self.peers.write().await; insert_peer_bounded(&mut peers, record); }
+                    {
+                        let mut peers = self.peers.write().await;
+                        insert_peer_bounded(&mut peers, record);
+                    }
                 }
             }
 
@@ -1550,29 +1602,31 @@ mod tests {
         assert_eq!(egress_res.request_payload, req_data);
     }
 }
-    #[test]
-    fn peer_store_is_bounded_and_evicts_oldest() {
-        let mut peers = HashMap::new();
-        for i in 0..=MAX_PEER_RECORDS {
-            let mut id = [0u8; 32];
-            id[..8].copy_from_slice(&(i as u64).to_be_bytes());
-            insert_peer_bounded(&mut peers, PeerRecord {
+#[test]
+fn peer_store_is_bounded_and_evicts_oldest() {
+    let mut peers = HashMap::new();
+    for i in 0..=MAX_PEER_RECORDS {
+        let mut id = [0u8; 32];
+        id[..8].copy_from_slice(&(i as u64).to_be_bytes());
+        insert_peer_bounded(
+            &mut peers,
+            PeerRecord {
                 awe_id: id,
                 public_key: id,
                 addresses: vec![],
                 protocol_version: VERSION,
                 last_seen_unix: i as u64,
-            });
-        }
-        assert_eq!(peers.len(), MAX_PEER_RECORDS);
-        let mut oldest = [0u8; 32];
-        oldest[..8].copy_from_slice(&0u64.to_be_bytes());
-        assert!(!peers.contains_key(&oldest));
+            },
+        );
     }
+    assert_eq!(peers.len(), MAX_PEER_RECORDS);
+    let mut oldest = [0u8; 32];
+    oldest[..8].copy_from_slice(&0u64.to_be_bytes());
+    assert!(!peers.contains_key(&oldest));
+}
 
-    #[test]
-    fn inbox_limits_are_finite() {
-        assert!(MAX_INBOX_MESSAGES < 10_000);
-        assert!(MAX_INBOX_BYTES <= 64 * 1024 * 1024);
-    }
-
+#[test]
+fn inbox_limits_are_finite() {
+    assert!(MAX_INBOX_MESSAGES < 10_000);
+    assert!(MAX_INBOX_BYTES <= 64 * 1024 * 1024);
+}

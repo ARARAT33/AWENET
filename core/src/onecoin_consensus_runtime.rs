@@ -5,7 +5,9 @@
 //! when its configured validator set contains its AWEID and public key.
 
 use crate::identity::{AweId, Identity};
-use crate::onecoin_consensus::{OnecoinBlock, OnecoinFinalizedState, QuorumCertificate, SignedBlockVote};
+use crate::onecoin_consensus::{
+    OnecoinBlock, OnecoinFinalizedState, QuorumCertificate, SignedBlockVote,
+};
 use crate::onecoin_store::PersistentOnecoinState;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
@@ -63,7 +65,12 @@ impl OnecoinConsensusRuntime {
                 return Err("ONECOIN validator AWEID/public-key mismatch".into());
             }
         }
-        Ok(Self { state, validators, pending: HashMap::new(), votes: HashMap::new() })
+        Ok(Self {
+            state,
+            validators,
+            pending: HashMap::new(),
+            votes: HashMap::new(),
+        })
     }
 
     pub fn local_is_validator(&self, identity: &Identity) -> bool {
@@ -77,7 +84,7 @@ impl OnecoinConsensusRuntime {
         sender: [u8; 32],
         identity: &Identity,
         message: OnecoinConsensusMessage,
-    ) -> Result<Vec<( [u8; 32], OnecoinConsensusMessage)>, String> {
+    ) -> Result<Vec<([u8; 32], OnecoinConsensusMessage)>, String> {
         let sender_id = AweId::from_public_key(&sender).to_hex();
         if self.validators.get(&sender_id) != Some(&sender) {
             return Err("consensus sender is not a validator".into());
@@ -101,7 +108,8 @@ impl OnecoinConsensusRuntime {
         if block.header.proposer != AweId::from_public_key(&sender) {
             return Err("proposal sender does not match block proposer".into());
         }
-        let proposer_key = self.validators
+        let proposer_key = self
+            .validators
             .get(&block.header.proposer.to_hex())
             .ok_or("proposal proposer is not a validator")?;
         if !block.verify_proposer(proposer_key) {
@@ -134,11 +142,17 @@ impl OnecoinConsensusRuntime {
         if vote.voter != AweId::from_public_key(&sender) {
             return Err("vote sender does not match voter".into());
         }
-        let key = self.validators.get(&vote.voter.to_hex()).ok_or("vote voter is not a validator")?;
+        let key = self
+            .validators
+            .get(&vote.voter.to_hex())
+            .ok_or("vote voter is not a validator")?;
         if !vote.verify(key) {
             return Err("invalid vote signature".into());
         }
-        let block = self.pending.get(&vote.block_hash).ok_or("vote references unknown block")?;
+        let block = self
+            .pending
+            .get(&vote.block_hash)
+            .ok_or("vote references unknown block")?;
         if block.header.height != vote.height {
             return Err("vote height mismatch".into());
         }
@@ -155,11 +169,17 @@ impl OnecoinConsensusRuntime {
             height: block.header.height,
             votes: entry.values().cloned().collect(),
         };
-        if cert.verify(&self.validators, block.hash(), block.header.height).is_ok() {
+        if cert
+            .verify(&self.validators, block.hash(), block.header.height)
+            .is_ok()
+        {
             self.state.finalize(block, &cert, &self.validators)?;
             self.pending.remove(&vote.block_hash);
             self.votes.remove(&vote.block_hash);
-            return Ok(self.validators.values().copied()
+            return Ok(self
+                .validators
+                .values()
+                .copied()
                 .map(|peer| (peer, OnecoinConsensusMessage::Certificate(cert.clone())))
                 .collect());
         }
@@ -170,7 +190,11 @@ impl OnecoinConsensusRuntime {
         &mut self,
         cert: QuorumCertificate,
     ) -> Result<Vec<([u8; 32], OnecoinConsensusMessage)>, String> {
-        let block = self.pending.get(&cert.block_hash).ok_or("certificate references unknown block")?.clone();
+        let block = self
+            .pending
+            .get(&cert.block_hash)
+            .ok_or("certificate references unknown block")?
+            .clone();
         self.state.finalize(&block, &cert, &self.validators)?;
         self.pending.remove(&cert.block_hash);
         self.votes.remove(&cert.block_hash);

@@ -25,10 +25,18 @@ pub const MAX_TRANSACTION_MEMO: usize = 256;
 pub struct OnecoinAmount(pub u128);
 
 impl OnecoinAmount {
-    pub fn zero() -> Self { Self(0) }
-    pub fn coins(coins: u128) -> Self { Self(coins.saturating_mul(ATOMS_PER_COIN)) }
-    pub fn as_atoms(&self) -> u128 { self.0 }
-    pub fn whole_coins(&self) -> u128 { self.0 / ATOMS_PER_COIN }
+    pub fn zero() -> Self {
+        Self(0)
+    }
+    pub fn coins(coins: u128) -> Self {
+        Self(coins.saturating_mul(ATOMS_PER_COIN))
+    }
+    pub fn as_atoms(&self) -> u128 {
+        self.0
+    }
+    pub fn whole_coins(&self) -> u128 {
+        self.0 / ATOMS_PER_COIN
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -71,12 +79,23 @@ impl OnecoinTransaction {
     }
 
     pub fn id(&self) -> [u8; 32] {
-        *blake3::hash(&serde_json::to_vec(self).expect("ONECOIN transaction serialization")).as_bytes()
+        *blake3::hash(&serde_json::to_vec(self).expect("ONECOIN transaction serialization"))
+            .as_bytes()
     }
 
     pub fn verify(&self, sender_public_key: &[u8; 32]) -> bool {
-        if self.version != 1 || self.amount_atoms == 0 || self.memo.as_ref().is_some_and(|m| m.len() > MAX_TRANSACTION_MEMO) { return false; }
-        let Ok(key) = VerifyingKey::from_bytes(sender_public_key) else { return false; };
+        if self.version != 1
+            || self.amount_atoms == 0
+            || self
+                .memo
+                .as_ref()
+                .is_some_and(|m| m.len() > MAX_TRANSACTION_MEMO)
+        {
+            return false;
+        }
+        let Ok(key) = VerifyingKey::from_bytes(sender_public_key) else {
+            return false;
+        };
         let signature = Signature::from_bytes(&self.signature);
         key.verify(&self.signing_bytes(), &signature).is_ok()
     }
@@ -97,7 +116,10 @@ pub struct ContributionRewardPolicy {
 
 impl Default for ContributionRewardPolicy {
     fn default() -> Self {
-        Self { atoms_per_score: 1, max_reward_atoms: 100 * ATOMS_PER_COIN }
+        Self {
+            atoms_per_score: 1,
+            max_reward_atoms: 100 * ATOMS_PER_COIN,
+        }
     }
 }
 
@@ -110,7 +132,9 @@ impl ContributionRewardPolicy {
         if score == 0 {
             return Err("empty contribution cannot earn ONECOIN".into());
         }
-        Ok(score.saturating_mul(self.atoms_per_score).min(self.max_reward_atoms))
+        Ok(score
+            .saturating_mul(self.atoms_per_score)
+            .min(self.max_reward_atoms))
     }
 }
 
@@ -140,11 +164,16 @@ impl SignedContributionReceipt {
     }
 
     pub fn verify(&self) -> bool {
-        Identity::verify(&self.verifier_public_key, &self.signing_bytes(), &self.signature)
+        Identity::verify(
+            &self.verifier_public_key,
+            &self.signing_bytes(),
+            &self.signature,
+        )
     }
 
     pub fn hash(&self) -> [u8; 32] {
-        *blake3::hash(&serde_json::to_vec(self).expect("signed contribution receipt serialization")).as_bytes()
+        *blake3::hash(&serde_json::to_vec(self).expect("signed contribution receipt serialization"))
+            .as_bytes()
     }
 }
 
@@ -194,14 +223,18 @@ impl OnecoinPricePolicy {
     /// Raises the protocol floor by $20 whenever the observed reference price
     /// crosses another $100 band. The floor never decreases through this path.
     pub fn observe_reference_price_usd_cents(&mut self, price_usd_cents: u64) {
-        if price_usd_cents < INITIAL_PRICE_USD_CENTS { return; }
+        if price_usd_cents < INITIAL_PRICE_USD_CENTS {
+            return;
+        }
         let band = price_usd_cents / PRICE_BAND_USD_CENTS;
-        if band <= self.highest_band_reached { return; }
+        if band <= self.highest_band_reached {
+            return;
+        }
         let bands_crossed = band - self.highest_band_reached;
         self.highest_band_reached = band;
-        self.floor_usd_cents = self.floor_usd_cents.saturating_add(
-            bands_crossed.saturating_mul(PRICE_FLOOR_STEP_USD_CENTS)
-        );
+        self.floor_usd_cents = self
+            .floor_usd_cents
+            .saturating_add(bands_crossed.saturating_mul(PRICE_FLOOR_STEP_USD_CENTS));
     }
 }
 
@@ -237,27 +270,39 @@ impl Default for OnecoinLedger {
 }
 
 impl OnecoinLedger {
-    fn key(id: &AweId) -> String { id.to_hex() }
+    fn key(id: &AweId) -> String {
+        id.to_hex()
+    }
 
     pub fn balance_atoms(&self, id: &AweId) -> u128 {
         self.balances.get(&Self::key(id)).copied().unwrap_or(0)
     }
 
-    pub fn member_count(&self) -> u64 { self.members.len() as u64 }
+    pub fn member_count(&self) -> u64 {
+        self.members.len() as u64
+    }
 
     /// Genesis allocation: each identity in the initial set receives exactly 10 ONECOIN.
     /// This operation is intended for a single deterministic genesis event.
     pub fn initialize_genesis(&mut self, members: &[AweId]) -> Result<(), String> {
-        if members.is_empty() { return Err("genesis member set cannot be empty".into()); }
-        if !self.members.is_empty() { return Err("genesis is already initialized".into()); }
+        if members.is_empty() {
+            return Err("genesis member set cannot be empty".into());
+        }
+        if !self.members.is_empty() {
+            return Err("genesis is already initialized".into());
+        }
         let mut unique = BTreeMap::new();
-        for id in members { unique.insert(Self::key(id), *id.as_bytes()); }
+        for id in members {
+            unique.insert(Self::key(id), *id.as_bytes());
+        }
         for (key, raw) in unique {
             self.members.insert(key.clone(), raw);
-            self.balances.insert(key.clone(), INITIAL_GENESIS_ALLOCATION);
+            self.balances
+                .insert(key.clone(), INITIAL_GENESIS_ALLOCATION);
             self.nonces.insert(key, 0);
         }
-        self.total_issued_atoms = INITIAL_GENESIS_ALLOCATION.saturating_mul(self.members.len() as u128);
+        self.total_issued_atoms =
+            INITIAL_GENESIS_ALLOCATION.saturating_mul(self.members.len() as u128);
         Ok(())
     }
 
@@ -284,14 +329,18 @@ impl OnecoinLedger {
         new_verifier_public_key: [u8; 32],
     ) -> Result<(), String> {
         let authorizer_id = AweId::from_public_key(authorizer_public_key);
-        if !self.reward_verifiers.contains_key(&Self::key(&authorizer_id)) {
+        if !self
+            .reward_verifiers
+            .contains_key(&Self::key(&authorizer_id))
+        {
             return Err("caller is not an authorized reward verifier".into());
         }
         let id = AweId::from_public_key(&new_verifier_public_key);
         if !self.members.contains_key(&Self::key(&id)) {
             return Err("reward verifier must be a network member".into());
         }
-        self.reward_verifiers.insert(Self::key(&id), new_verifier_public_key);
+        self.reward_verifiers
+            .insert(Self::key(&id), new_verifier_public_key);
         Ok(())
     }
 
@@ -300,7 +349,9 @@ impl OnecoinLedger {
     /// Once the atomic share would be zero, this distribution permanently stops.
     pub fn register_member(&mut self, id: &AweId) -> Result<JoinDistribution, String> {
         let key = Self::key(id);
-        if self.members.contains_key(&key) { return Err("member already exists".into()); }
+        if self.members.contains_key(&key) {
+            return Err("member already exists".into());
+        }
         self.members.insert(key.clone(), *id.as_bytes());
         self.balances.entry(key.clone()).or_insert(0);
         self.nonces.entry(key).or_insert(0);
@@ -312,8 +363,12 @@ impl OnecoinLedger {
                 let balance = self.balances.entry(member_key).or_insert(0);
                 *balance = balance.saturating_add(share);
             }
-            self.total_issued_atoms = self.total_issued_atoms.saturating_add(distribution.distributed_atoms);
-            self.join_remainder_atoms = self.join_remainder_atoms.saturating_add(distribution.remainder_atoms);
+            self.total_issued_atoms = self
+                .total_issued_atoms
+                .saturating_add(distribution.distributed_atoms);
+            self.join_remainder_atoms = self
+                .join_remainder_atoms
+                .saturating_add(distribution.remainder_atoms);
         } else {
             self.join_distribution_active = false;
         }
@@ -330,9 +385,7 @@ impl OnecoinLedger {
         }
         let verifier_id = AweId::from_public_key(&signed_receipt.verifier_public_key);
         let verifier_key = Self::key(&verifier_id);
-        if self.reward_verifiers.get(&verifier_key)
-            != Some(&signed_receipt.verifier_public_key)
-        {
+        if self.reward_verifiers.get(&verifier_key) != Some(&signed_receipt.verifier_public_key) {
             return Err("receipt signer is not an authorized reward verifier".into());
         }
         if self.rewarded_receipts.contains_key(&receipt_key) {
@@ -365,17 +418,26 @@ impl OnecoinLedger {
             return Err("sender and recipient must be network members".into());
         }
         let expected_nonce = self.nonces.get(&sender_key).copied().unwrap_or(0);
-        if tx.nonce != expected_nonce { return Err("invalid transaction nonce".into()); }
+        if tx.nonce != expected_nonce {
+            return Err("invalid transaction nonce".into());
+        }
         if tx.sender != *AweId::from_public_key(sender_public_key).as_bytes() {
             return Err("sender public key does not match AWEID".into());
         }
-        if !tx.verify(sender_public_key) { return Err("invalid ONECOIN signature".into()); }
+        if !tx.verify(sender_public_key) {
+            return Err("invalid ONECOIN signature".into());
+        }
         let sender_balance = self.balances.get(&sender_key).copied().unwrap_or(0);
-        if sender_balance < tx.amount_atoms { return Err("insufficient ONECOIN balance".into()); }
+        if sender_balance < tx.amount_atoms {
+            return Err("insufficient ONECOIN balance".into());
+        }
         let sender_after = sender_balance - tx.amount_atoms;
         self.balances.insert(sender_key.clone(), sender_after);
         let recipient_balance = self.balances.get(&recipient_key).copied().unwrap_or(0);
-        self.balances.insert(recipient_key, recipient_balance.saturating_add(tx.amount_atoms));
+        self.balances.insert(
+            recipient_key,
+            recipient_balance.saturating_add(tx.amount_atoms),
+        );
         self.nonces.insert(sender_key, expected_nonce + 1);
         Ok(tx.id())
     }
@@ -396,9 +458,16 @@ mod tests {
         let a = id("a");
         let b = id("b");
         let mut l = OnecoinLedger::default();
-        l.initialize_genesis(&[a.public.awe_id.clone(), b.public.awe_id.clone()]).unwrap();
-        assert_eq!(l.balance_atoms(&a.public.awe_id), INITIAL_GENESIS_ALLOCATION);
-        assert_eq!(l.balance_atoms(&b.public.awe_id), INITIAL_GENESIS_ALLOCATION);
+        l.initialize_genesis(&[a.public.awe_id.clone(), b.public.awe_id.clone()])
+            .unwrap();
+        assert_eq!(
+            l.balance_atoms(&a.public.awe_id),
+            INITIAL_GENESIS_ALLOCATION
+        );
+        assert_eq!(
+            l.balance_atoms(&b.public.awe_id),
+            INITIAL_GENESIS_ALLOCATION
+        );
     }
 
     #[test]
@@ -410,16 +479,16 @@ mod tests {
         let event = l.register_member(&b.public.awe_id).unwrap();
         assert_eq!(event.eligible_members, 2);
         assert_eq!(event.per_member_atoms, ATOMS_PER_COIN / 2);
-        assert_eq!(l.balance_atoms(&a.public.awe_id), INITIAL_GENESIS_ALLOCATION + ATOMS_PER_COIN / 2);
+        assert_eq!(
+            l.balance_atoms(&a.public.awe_id),
+            INITIAL_GENESIS_ALLOCATION + ATOMS_PER_COIN / 2
+        );
         assert_eq!(l.balance_atoms(&b.public.awe_id), ATOMS_PER_COIN / 2);
     }
 
     #[test]
     fn join_distribution_eventually_stops_at_atomic_zero() {
-        let event = JoinDistribution::calculate(
-            id("a").public.awe_id,
-            (ATOMS_PER_COIN + 1) as u64,
-        );
+        let event = JoinDistribution::calculate(id("a").public.awe_id, (ATOMS_PER_COIN + 1) as u64);
         assert!(!event.active);
         assert_eq!(event.per_member_atoms, 0);
     }
@@ -432,7 +501,8 @@ mod tests {
         l.initialize_genesis_with_verifiers(
             &[a.public.awe_id.clone(), verifier.public.awe_id.clone()],
             &[verifier.public.public_key],
-        ).unwrap();
+        )
+        .unwrap();
         let r = ContributionReceipt {
             node: a.public.awe_id.clone(),
             storage_byte_hours: 100,
@@ -456,10 +526,14 @@ mod tests {
         let a = id("a");
         let b = id("b");
         let mut l = OnecoinLedger::default();
-        l.initialize_genesis(&[a.public.awe_id.clone(), b.public.awe_id.clone()]).unwrap();
+        l.initialize_genesis(&[a.public.awe_id.clone(), b.public.awe_id.clone()])
+            .unwrap();
         let tx = OnecoinTransaction::new(&a, 0, &b.public.awe_id, ATOMS_PER_COIN, None);
         l.apply_transfer(&tx, &a.public.public_key).unwrap();
-        assert_eq!(l.balance_atoms(&a.public.awe_id), INITIAL_GENESIS_ALLOCATION - ATOMS_PER_COIN);
+        assert_eq!(
+            l.balance_atoms(&a.public.awe_id),
+            INITIAL_GENESIS_ALLOCATION - ATOMS_PER_COIN
+        );
         assert_eq!(l.nonces[&a.public.awe_id.to_hex()], 1);
     }
 

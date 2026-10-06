@@ -102,7 +102,8 @@ fn valid_version(v: &str) -> bool {
 fn valid_app_id(v: &str) -> bool {
     !v.is_empty()
         && v.len() <= 128
-        && v.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+        && v.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
         && !v.starts_with('/')
         && !v.contains("..")
 }
@@ -143,10 +144,7 @@ fn read_leb(b: &[u8]) -> Result<(u64, usize), &'static str> {
 
 impl AppManifest {
     pub fn verify(&self) -> Result<(), &'static str> {
-        if !valid_app_id(&self.id)
-            || !valid_version(&self.version)
-            || self.protocol_version != 1
-        {
+        if !valid_app_id(&self.id) || !valid_version(&self.version) || self.protocol_version != 1 {
             return Err("invalid manifest");
         };
         if self.entry.is_empty() || !validate_path(&self.entry) {
@@ -160,10 +158,15 @@ impl AppManifest {
 }
 impl AWEPackage {
     /// Set or replace the app's ONECOIN price and re-sign the manifest.
-    pub fn set_price_onecoin(&mut self, identity: &Identity, price_atoms: Option<u128>) -> Result<(), &'static str> {
+    pub fn set_price_onecoin(
+        &mut self,
+        identity: &Identity,
+        price_atoms: Option<u128>,
+    ) -> Result<(), &'static str> {
         let manifest = &mut self.manifest.manifest;
         if identity.public.awe_id.as_bytes() != &manifest.developer_awe_id
-            || identity.public.public_key != manifest.developer_public_key {
+            || identity.public.public_key != manifest.developer_public_key
+        {
             return Err("only the app developer can change its price");
         }
         if price_atoms == Some(0) {
@@ -399,7 +402,18 @@ mod tests {
         let other = Identity::generate(Username::new("other").unwrap());
         let mut f = BTreeMap::new();
         f.insert("/app.wasm".into(), b"\\0asm\\x01\\0\\0\\0".to_vec());
-        let mut p = AWEPackage::new(&i, "org_awe_test", "Test", "1.0.0", AppKind::Wasm, "/app.wasm", f, vec![], vec![]).unwrap();
+        let mut p = AWEPackage::new(
+            &i,
+            "org_awe_test",
+            "Test",
+            "1.0.0",
+            AppKind::Wasm,
+            "/app.wasm",
+            f,
+            vec![],
+            vec![],
+        )
+        .unwrap();
         p.manifest.manifest.developer_awe_id = *other.public.awe_id.as_bytes();
         assert!(p.verify().is_err());
     }
@@ -450,9 +464,24 @@ mod tests {
         let i = Identity::generate(Username::new("dev").unwrap());
         let mut f = BTreeMap::new();
         f.insert("/app.wasm".into(), b"\0asm\x01\0\0\0".to_vec());
-        let mut p = AWEPackage::new(&i, "paid", "Paid", "1", AppKind::Wasm, "/app.wasm", f, vec![], vec![]).unwrap();
-        p.set_price_onecoin(&i, Some(crate::onecoin::ATOMS_PER_COIN * 5)).unwrap();
-        assert_eq!(p.manifest.manifest.price_onecoin_atoms, Some(crate::onecoin::ATOMS_PER_COIN * 5));
+        let mut p = AWEPackage::new(
+            &i,
+            "paid",
+            "Paid",
+            "1",
+            AppKind::Wasm,
+            "/app.wasm",
+            f,
+            vec![],
+            vec![],
+        )
+        .unwrap();
+        p.set_price_onecoin(&i, Some(crate::onecoin::ATOMS_PER_COIN * 5))
+            .unwrap();
+        assert_eq!(
+            p.manifest.manifest.price_onecoin_atoms,
+            Some(crate::onecoin::ATOMS_PER_COIN * 5)
+        );
         assert!(p.verify().is_ok());
     }
 

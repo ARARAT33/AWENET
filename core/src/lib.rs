@@ -14,7 +14,10 @@ pub mod serde_bytes_64 {
     {
         let bytes = Vec::<u8>::deserialize(deserializer)?;
         if bytes.len() != 64 {
-            return Err(serde::de::Error::invalid_length(bytes.len(), &"64-byte signature"));
+            return Err(serde::de::Error::invalid_length(
+                bytes.len(),
+                &"64-byte signature",
+            ));
         }
         let mut value = [0u8; 64];
         value.copy_from_slice(&bytes);
@@ -22,11 +25,11 @@ pub mod serde_bytes_64 {
     }
 }
 
+pub mod access;
+pub mod awenet;
 pub mod calls;
 pub mod canonical;
 pub mod crypto;
-pub mod access;
-pub mod awenet;
 pub mod data_plane;
 pub mod defense;
 pub mod diagnostics;
@@ -43,13 +46,13 @@ pub mod messenger_runtime;
 pub mod namespace;
 pub mod network;
 pub mod network_topology;
+pub mod node;
 pub mod onecoin;
-pub mod onecoin_store;
-pub mod onecoin_payment;
-pub mod onecoin_governance;
 pub mod onecoin_consensus;
 pub mod onecoin_consensus_runtime;
-pub mod node;
+pub mod onecoin_governance;
+pub mod onecoin_payment;
+pub mod onecoin_store;
 pub mod permissions;
 pub mod policy;
 pub mod product;

@@ -1,5 +1,8 @@
 //! Native AWENET payment requests used by AWESTORE and services.
-use crate::{identity::{AweId, Identity}, onecoin::{OnecoinLedger, OnecoinTransaction}};
+use crate::{
+    identity::{AweId, Identity},
+    onecoin::{OnecoinLedger, OnecoinTransaction},
+};
 use serde::{Deserialize, Serialize};
 
 const PAYMENT_VERSION: u16 = 1;
@@ -29,8 +32,12 @@ impl OnecoinPaymentRequest {
         expires_at_unix: u64,
         memo: Option<String>,
     ) -> Result<Self, String> {
-        if amount_atoms == 0 { return Err("payment amount must be positive".into()); }
-        if memo.as_ref().is_some_and(|m| m.len() > MAX_MEMO) { return Err("payment memo too long".into()); }
+        if amount_atoms == 0 {
+            return Err("payment amount must be positive".into());
+        }
+        if memo.as_ref().is_some_and(|m| m.len() > MAX_MEMO) {
+            return Err("payment memo too long".into());
+        }
         let mut request = Self {
             version: PAYMENT_VERSION,
             invoice_id,
@@ -61,16 +68,45 @@ impl OnecoinPaymentRequest {
             && Identity::verify(seller_public_key, &self.signing_bytes(), &self.signature)
     }
 
-    pub fn payment_transaction(&self, buyer: &Identity, nonce: u64, memo: Option<String>) -> Result<OnecoinTransaction, String> {
-        if buyer.public.awe_id != self.buyer { return Err("buyer identity does not match invoice".into()); }
-        Ok(OnecoinTransaction::new(buyer, nonce, &self.seller, self.amount_atoms, memo.or_else(|| self.memo.clone())))
+    pub fn payment_transaction(
+        &self,
+        buyer: &Identity,
+        nonce: u64,
+        memo: Option<String>,
+    ) -> Result<OnecoinTransaction, String> {
+        if buyer.public.awe_id != self.buyer {
+            return Err("buyer identity does not match invoice".into());
+        }
+        Ok(OnecoinTransaction::new(
+            buyer,
+            nonce,
+            &self.seller,
+            self.amount_atoms,
+            memo.or_else(|| self.memo.clone()),
+        ))
     }
 
-    pub fn settle(&self, ledger: &mut OnecoinLedger, tx: &OnecoinTransaction, buyer_public_key: &[u8; 32], now_unix: u64) -> Result<[u8; 32], String> {
-        if !self.verify(&ledger.members.get(&self.seller.to_hex()).copied().ok_or("seller is not a member")?, now_unix) {
+    pub fn settle(
+        &self,
+        ledger: &mut OnecoinLedger,
+        tx: &OnecoinTransaction,
+        buyer_public_key: &[u8; 32],
+        now_unix: u64,
+    ) -> Result<[u8; 32], String> {
+        if !self.verify(
+            &ledger
+                .members
+                .get(&self.seller.to_hex())
+                .copied()
+                .ok_or("seller is not a member")?,
+            now_unix,
+        ) {
             return Err("invalid or expired payment request".into());
         }
-        if tx.recipient != *self.seller.as_bytes() || tx.sender != *self.buyer.as_bytes() || tx.amount_atoms != self.amount_atoms {
+        if tx.recipient != *self.seller.as_bytes()
+            || tx.sender != *self.buyer.as_bytes()
+            || tx.amount_atoms != self.amount_atoms
+        {
             return Err("transaction does not match payment request".into());
         }
         ledger.apply_transfer(tx, buyer_public_key)
@@ -87,8 +123,15 @@ mod tests {
         let seller = Identity::generate(Username::new("seller").unwrap());
         let buyer = Identity::generate(Username::new("buyer").unwrap());
         let request = OnecoinPaymentRequest::new(
-            &seller, [9; 32], &buyer.public.awe_id, [8; 32], 123, 2_000, Some("app".into())
-        ).unwrap();
+            &seller,
+            [9; 32],
+            &buyer.public.awe_id,
+            [8; 32],
+            123,
+            2_000,
+            Some("app".into()),
+        )
+        .unwrap();
         assert!(request.verify(&seller.public.public_key, 1_000));
         let tx = request.payment_transaction(&buyer, 0, None).unwrap();
         assert_eq!(tx.amount_atoms, 123);

@@ -296,7 +296,10 @@ pub fn encode_shards(data: &[u8], policy: &StoragePolicy) -> io::Result<Vec<Vec<
         ));
     }
     if data.is_empty() {
-        return Ok(vec![vec![0u8; 1]; policy.data_shards + policy.parity_shards]);
+        return Ok(vec![
+            vec![0u8; 1];
+            policy.data_shards + policy.parity_shards
+        ]);
     }
     let shard_len = data.len().div_ceil(policy.data_shards);
     let mut shards = vec![vec![0u8; shard_len]; policy.data_shards + policy.parity_shards];

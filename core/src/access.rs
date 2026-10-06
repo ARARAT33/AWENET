@@ -39,15 +39,25 @@ impl AccessMap {
         let mut capability = [0u8; 32];
         OsRng.fill_bytes(&mut capability);
         let commitment = Self::commitment(&resource_id, &capability);
-        Self { version: Self::VERSION, resource_id, mode, capability, commitment }
+        Self {
+            version: Self::VERSION,
+            resource_id,
+            mode,
+            capability,
+            commitment,
+        }
     }
 
     pub fn commitment(resource_id: &[u8; 32], capability: &[u8; 32]) -> [u8; 32] {
-        *blake3::hash(&[
-            b"AWE/ACCESS-MAP/v1".as_slice(),
-            resource_id.as_slice(),
-            capability.as_slice(),
-        ].concat()).as_bytes()
+        *blake3::hash(
+            &[
+                b"AWE/ACCESS-MAP/v1".as_slice(),
+                resource_id.as_slice(),
+                capability.as_slice(),
+            ]
+            .concat(),
+        )
+        .as_bytes()
     }
 
     pub fn verify(&self, resource_id: &[u8; 32], published_commitment: &[u8; 32]) -> bool {
@@ -73,16 +83,25 @@ pub struct AccessDescriptor {
 }
 
 impl AccessDescriptor {
-    pub fn open() -> Self { Self { mode: AccessMode::Open, commitment: None } }
+    pub fn open() -> Self {
+        Self {
+            mode: AccessMode::Open,
+            commitment: None,
+        }
+    }
 
     pub fn secret(map: &AccessMap) -> Self {
-        Self { mode: AccessMode::Secret, commitment: Some(map.commitment) }
+        Self {
+            mode: AccessMode::Secret,
+            commitment: Some(map.commitment),
+        }
     }
 
     pub fn authorize(&self, map: Option<&AccessMap>, resource_id: &[u8; 32]) -> bool {
         match self.mode {
             AccessMode::Open => true,
-            AccessMode::Secret => self.commitment
+            AccessMode::Secret => self
+                .commitment
                 .as_ref()
                 .zip(map)
                 .map(|(commitment, map)| map.verify(resource_id, commitment))

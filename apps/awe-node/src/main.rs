@@ -10,7 +10,9 @@ use awep2p_core::identity::{AweId, AweSecret, Identity, LocalVault, Username};
 use awep2p_core::lan_mesh::LanPeerBeacon;
 use awep2p_core::messenger::format_uid;
 use awep2p_core::network::{format_node_descriptor, Node};
-use awep2p_core::onecoin_consensus_runtime::{OnecoinConsensusMessage, OnecoinConsensusRuntime, ONECOIN_CONSENSUS_STREAM};
+use awep2p_core::onecoin_consensus_runtime::{
+    OnecoinConsensusMessage, OnecoinConsensusRuntime, ONECOIN_CONSENSUS_STREAM,
+};
 use awep2p_core::policy::{self, NetworkPolicy};
 use awep2p_core::reputation::NodeReputation;
 use awep2p_core::storage::{encode_shards, recover_shards, LocalNodeStore, StoragePolicy};
@@ -39,8 +41,14 @@ type PolicyState = Arc<Mutex<NetworkPolicy>>;
 type CommunityState = Arc<Mutex<serde_json::Value>>;
 type ConsensusState = Arc<Mutex<Option<OnecoinConsensusRuntime>>>;
 
-async fn build_onecoin_validators(node: &Node, configured: &[String]) -> BTreeMap<String, [u8; 32]> {
-    let wanted = configured.iter().map(|v| v.to_lowercase()).collect::<std::collections::BTreeSet<_>>();
+async fn build_onecoin_validators(
+    node: &Node,
+    configured: &[String],
+) -> BTreeMap<String, [u8; 32]> {
+    let wanted = configured
+        .iter()
+        .map(|v| v.to_lowercase())
+        .collect::<std::collections::BTreeSet<_>>();
     let mut validators = BTreeMap::new();
     let local_id = node.identity.public.awe_id.to_hex().to_lowercase();
     if wanted.contains(&local_id) {
@@ -1513,32 +1521,43 @@ async fn run_product() -> Result<()> {
             Arc::new(Mutex::new(None))
         } else {
             let validators = build_onecoin_validators(&node, &configured).await;
-            if validators.len() != configured.iter().collect::<std::collections::BTreeSet<_>>().len() {
-                eprintln!("ONECOIN consensus waiting: not all configured validators are discovered");
+            if validators.len()
+                != configured
+                    .iter()
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len()
+            {
+                eprintln!(
+                    "ONECOIN consensus waiting: not all configured validators are discovered"
+                );
                 Arc::new(Mutex::new(None))
             } else {
                 let state_path = data_dir.join("onecoin-consensus.json");
                 match OnecoinConsensusRuntime::open(&state_path, validators) {
-                Ok(mut runtime) => {
-                    if runtime.state.state.ledger.members.is_empty() {
-                        let members = runtime.validators.values()
-                            .map(|key| AweId::from_public_key(key))
-                            .collect::<Vec<_>>();
-                        if !members.is_empty() {
-                            if let Err(error) = runtime.state.state.ledger.initialize_genesis(&members) {
-                                eprintln!("ONECOIN genesis initialization failed: {error}");
-                            } else if let Err(error) = runtime.state.save() {
-                                eprintln!("ONECOIN genesis persistence failed: {error}");
+                    Ok(mut runtime) => {
+                        if runtime.state.state.ledger.members.is_empty() {
+                            let members = runtime
+                                .validators
+                                .values()
+                                .map(|key| AweId::from_public_key(key))
+                                .collect::<Vec<_>>();
+                            if !members.is_empty() {
+                                if let Err(error) =
+                                    runtime.state.state.ledger.initialize_genesis(&members)
+                                {
+                                    eprintln!("ONECOIN genesis initialization failed: {error}");
+                                } else if let Err(error) = runtime.state.save() {
+                                    eprintln!("ONECOIN genesis persistence failed: {error}");
+                                }
                             }
                         }
+                        Arc::new(Mutex::new(Some(runtime)))
                     }
-                    Arc::new(Mutex::new(Some(runtime)))
+                    Err(error) => {
+                        eprintln!("ONECOIN consensus disabled: {error}");
+                        Arc::new(Mutex::new(None))
+                    }
                 }
-                Err(error) => {
-                    eprintln!("ONECOIN consensus disabled: {error}");
-                    Arc::new(Mutex::new(None))
-                }
-            }
             }
         }
     };
@@ -1565,7 +1584,9 @@ async fn run_product() -> Result<()> {
                         let mut guard = dispatcher_consensus.lock().ok();
                         match guard.as_mut().and_then(|g| g.as_mut()) {
                             Some(runtime) => match OnecoinConsensusMessage::decode(&payload) {
-                                Ok(message) => runtime.handle(sender, &dispatcher_node.identity, message),
+                                Ok(message) => {
+                                    runtime.handle(sender, &dispatcher_node.identity, message)
+                                }
                                 Err(error) => Err(error),
                             },
                             None => Ok(Vec::new()),
@@ -1574,7 +1595,9 @@ async fn run_product() -> Result<()> {
                     if let Ok(outbound) = result {
                         for (peer, message) in outbound {
                             if let Ok(bytes) = message.encode() {
-                                let _ = dispatcher_node.send_to_peer(&peer, ONECOIN_CONSENSUS_STREAM, bytes).await;
+                                let _ = dispatcher_node
+                                    .send_to_peer(&peer, ONECOIN_CONSENSUS_STREAM, bytes)
+                                    .await;
                             }
                         }
                     }
