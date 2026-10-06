@@ -81,3 +81,10 @@ The ledger is no longer only an in-memory protocol object: PersistentOnecoinLedg
 AWESTORE and AWENET services can use `OnecoinPaymentRequest` instead of inventing application-specific payment formats. A signed invoice binds seller AWEID, buyer AWEID, resource ID, amount and expiry; the buyer's normal nonce-protected ONECOIN transaction must match that invoice before settlement.
 
 A price-floor reduction is not unilateral. `PriceFloorGovernance` requires a verified supermajority of eligible network members (at least 66.67% by protocol basis points) for an explicit reduction proposal. Normal price-band increases remain monotonic and do not require a vote.
+
+
+## ONECOIN distributed finality
+
+A local ONECOIN ledger is not treated as network truth. Finalized transfers are grouped into canonical blocks ordered by `(sender, nonce, transaction-id)`, chained by the previous finalized block hash, signed by a validator proposer, and accepted only with a verified validator quorum of at least 66.67%. Nodes execute a candidate block against a cloned ledger before committing it, so a failed transaction cannot partially mutate finalized state.
+
+`OnecoinFinalizedState` is the deterministic state machine boundary. `PersistentOnecoinState` stores that finalized state atomically so a restart does not silently reset the consensus height or tip. This still requires the live network to agree on the validator set and transport proposals/votes; those are network-control-plane responsibilities, not a reason to fall back to unsafe local acceptance.
