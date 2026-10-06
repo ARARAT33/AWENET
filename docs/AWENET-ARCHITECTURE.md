@@ -74,3 +74,10 @@ These controls are failure-containment mechanisms, not a claim of absolute immun
 ## Durable ONECOIN boundary
 
 The ledger is no longer only an in-memory protocol object: PersistentOnecoinLedger provides an atomic on-disk state boundary and reload validation. Transfers are persisted only after the signed transaction passes membership, nonce, signature and balance checks. Distributed ordering/consensus is still a separate network layer; local persistence alone cannot solve Byzantine double-spending across independent nodes.
+
+
+## Native payments and monetary governance
+
+AWESTORE and AWENET services can use `OnecoinPaymentRequest` instead of inventing application-specific payment formats. A signed invoice binds seller AWEID, buyer AWEID, resource ID, amount and expiry; the buyer's normal nonce-protected ONECOIN transaction must match that invoice before settlement.
+
+A price-floor reduction is not unilateral. `PriceFloorGovernance` requires a verified supermajority of eligible network members (at least 66.67% by protocol basis points) for an explicit reduction proposal. Normal price-band increases remain monotonic and do not require a vote.
