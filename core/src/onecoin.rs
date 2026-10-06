@@ -118,6 +118,7 @@ impl ContributionRewardPolicy {
 pub struct SignedContributionReceipt {
     pub receipt: ContributionReceipt,
     pub verifier_public_key: [u8; 32],
+    #[serde(with = "crate::serde_bytes_64")]
     pub signature: [u8; 64],
 }
 
