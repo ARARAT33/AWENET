@@ -113,7 +113,7 @@ impl SignedBlockVote {
         let mut vote = Self {
             block_hash: block.hash(),
             height: block.header.height,
-            voter: identity.public.awe_id.clone()
+            voter: identity.public.awe_id.clone(),
             approve,
             signature: [0; 64],
         };
