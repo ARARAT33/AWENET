@@ -146,10 +146,12 @@ impl OnecoinConsensusRuntime {
         if entry.len() >= MAX_VOTES_PER_BLOCK && !entry.contains_key(&vote.voter.to_hex()) {
             return Err("too many votes for pending block".into());
         }
-        entry.insert(vote.voter.to_hex(), vote);
+        let vote_hash = vote.block_hash;
+        let vote_id = vote.voter.to_hex();
+        entry.insert(vote_id, vote.clone());
 
         let cert = QuorumCertificate {
-            block_hash: vote.block_hash,
+            block_hash: vote_hash,
             height: block.header.height,
             votes: entry.values().cloned().collect(),
         };
