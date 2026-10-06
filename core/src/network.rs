@@ -881,7 +881,7 @@ impl Node {
             last_seen_unix: now(),
         };
         routing.write().await.insert(r.clone());
-        insert_peer_bounded(&mut peers.write().await, r);
+        { let mut peers = peers.write().await; insert_peer_bounded(&mut peers, r); }
         let mut seq = 0u64;
         loop {
             match timeout(HEARTBEAT, c.recv()).await {
@@ -1044,7 +1044,7 @@ impl Node {
                     last_seen_unix: now(),
                 };
                 node.routing.write().await.insert(remote.clone());
-                insert_peer_bounded(&mut node.peers.write().await, remote);
+                { let mut peers = node.peers.write().await; insert_peer_bounded(&mut peers, remote); }
 
                 let _ = c.send(&Control::FindNode {
                     target: *node.identity.public.awe_id.as_bytes(),
@@ -1280,7 +1280,7 @@ impl Node {
                         discovered = true;
                     }
                     self.routing.write().await.insert(record.clone());
-                    insert_peer_bounded(&mut self.peers.write().await, record);
+                    { let mut peers = self.peers.write().await; insert_peer_bounded(&mut peers, record); }
                 }
             }
 
