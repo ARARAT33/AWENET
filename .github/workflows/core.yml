@@ -2,7 +2,7 @@ name: AWEp2P Workspace CI
 
 on:
   push:
-    branches: [main, 'fix/ci-rustfmt-ebc151f']
+    branches: [main]
     paths:
       - 'Cargo.toml'
       - 'Cargo.lock'
