@@ -412,7 +412,7 @@ impl OnecoinLedger {
         tx: &OnecoinTransaction,
         sender_public_key: &[u8; 32],
     ) -> Result<[u8; 32], String> {
-        let sender_key = hex::encode(tx.sender);
+        let sender_key = AweId::from_public_key(sender_public_key).to_hex();
         let recipient_key = hex::encode(tx.recipient);
         if !self.members.contains_key(&sender_key) || !self.members.contains_key(&recipient_key) {
             return Err("sender and recipient must be network members".into());
