@@ -811,7 +811,14 @@ async fn serve_ui(
                                         serde_json::to_vec_pretty(&manifest).unwrap_or_default(),
                                     );
 
-                                    let status = if failed.is_empty() { "stored" } else { "partial" };
+                                    let status = if failed
+                                        .iter()
+                                        .all(|entry| entry.get("error").is_none())
+                                    {
+                                        "stored"
+                                    } else {
+                                        "partial"
+                                    };
                                     ("200 OK", "application/json; charset=utf-8",
                                         serde_json::json!({
                                             "status": status,
