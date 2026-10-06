@@ -58,37 +58,6 @@ impl PersistentOnecoinLedger {
         }
     }
 
-    fn validate_state(state: &OnecoinFinalizedState) -> io::Result<()> {
-        let ledger = &state.ledger;
-        if ledger.members.len() != ledger.balances.len()
-            || ledger.members.len() != ledger.nonces.len()
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "ONECOIN state member invariant violated",
-            ));
-        }
-        let computed = ledger
-            .balances
-            .values()
-            .copied()
-            .fold(0u128, u128::saturating_add);
-        if computed > ledger.total_issued_atoms {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "ONECOIN state supply invariant violated",
-            ));
-        }
-        for (id, public_key) in &ledger.members {
-            if AweId::from_public_key(public_key).to_hex() != *id {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "ONECOIN state AWEID/public-key mismatch",
-                ));
-            }
-        }
-        Ok(())
-    }
 
     pub fn save(&self) -> io::Result<()> { save_json(&self.path, &self.ledger) }
 
@@ -147,6 +116,38 @@ pub struct PersistentOnecoinState {
 }
 
 impl PersistentOnecoinState {
+    fn validate_state(state: &OnecoinFinalizedState) -> io::Result<()> {
+        let ledger = &state.ledger;
+        if ledger.members.len() != ledger.balances.len()
+            || ledger.members.len() != ledger.nonces.len()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "ONECOIN state member invariant violated",
+            ));
+        }
+        let computed = ledger
+            .balances
+            .values()
+            .copied()
+            .fold(0u128, u128::saturating_add);
+        if computed > ledger.total_issued_atoms {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "ONECOIN state supply invariant violated",
+            ));
+        }
+        for (id, public_key) in &ledger.members {
+            if AweId::from_public_key(public_key).to_hex() != *id {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "ONECOIN state AWEID/public-key mismatch",
+                ));
+            }
+        }
+        Ok(())
+    }
+
     pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
         let path = path.as_ref().to_path_buf();
         if let Some(parent) = path.parent() {
@@ -170,6 +171,7 @@ impl PersistentOnecoinState {
     }
 
     pub fn save(&self) -> io::Result<()> {
+        Self::validate_state(&self.state)?;
         let body = serde_json::to_vec(&self.state)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "ONECOIN state serialization failed"))?;
         if body.len() > MAX_LEDGER_BYTES - STATE_MAGIC.len() {
@@ -214,7 +216,9 @@ mod finalized_state_tests {
         let c = Identity::generate(Username::new("state-c").unwrap());
         let mut persistent = PersistentOnecoinState::open(&path).unwrap();
         persistent.state.ledger.initialize_genesis(&[
-            a.public.awe_id, b.public.awe_id, c.public.awe_id,
+            a.public.awe_id.clone(),
+            b.public.awe_id.clone(),
+            c.public.awe_id.clone(),
         ]).unwrap();
 
         let validators = BTreeMap::from([
