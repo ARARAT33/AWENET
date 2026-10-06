@@ -401,7 +401,7 @@ mod tests {
         let i = Identity::generate(Username::new("dev").unwrap());
         let other = Identity::generate(Username::new("other").unwrap());
         let mut f = BTreeMap::new();
-        f.insert("/app.wasm".into(), b"\\0asm\\x01\\0\\0\\0".to_vec());
+        f.insert("/app.wasm".into(), b"\0asm\x01\0\0\0".to_vec());
         let mut p = AWEPackage::new(
             &i,
             "org_awe_test",
