@@ -167,7 +167,8 @@ impl QuorumCertificate {
         }
         let approvals = unique.len() as u64;
         let total = validators.len() as u64;
-        if total == 0 || approvals.saturating_mul(10_000) < total.saturating_mul(QUORUM_BPS) {
+        let required = total.saturating_mul(QUORUM_BPS).div_ceil(10_000);
+        if total == 0 || approvals < required {
             return Err("validator quorum not reached".into());
         }
         Ok(())
