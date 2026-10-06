@@ -303,7 +303,7 @@ impl OnecoinLedger {
         self.balances.entry(key.clone()).or_insert(0);
         self.nonces.entry(key).or_insert(0);
 
-        let distribution = JoinDistribution::calculate(*id, self.member_count());
+        let distribution = JoinDistribution::calculate(id.clone(), self.member_count());
         if self.join_distribution_active && distribution.active {
             let share = distribution.per_member_atoms;
             for member_key in self.members.keys().cloned().collect::<Vec<_>>() {
