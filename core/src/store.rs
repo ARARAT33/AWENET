@@ -144,15 +144,15 @@ fn read_leb(b: &[u8]) -> Result<(u64, usize), &'static str> {
 impl AppManifest {
     /// Set or replace the app's ONECOIN price and re-sign the manifest.
     pub fn set_price_onecoin(&mut self, identity: &Identity, price_atoms: Option<u128>) -> Result<(), &'static str> {
-        if identity.public.awe_id.as_bytes() != &self.manifest.manifest.developer_awe_id
-            || identity.public.public_key != self.manifest.manifest.developer_public_key {
+        if identity.public.awe_id.as_bytes() != &self.developer_awe_id
+            || identity.public.public_key != self.developer_public_key {
             return Err("only the app developer can change its price");
         }
         if price_atoms == Some(0) {
             return Err("ONECOIN price must be positive or omitted");
         }
-        self.manifest.manifest.price_onecoin_atoms = price_atoms;
-        self.manifest.signature = identity.sign(&canonical_manifest(&self.manifest.manifest)).to_vec();
+        self.price_onecoin_atoms = price_atoms;
+        self.manifest.signature = identity.sign(&canonical_manifest(self)).to_vec();
         Ok(())
     }
     pub fn verify(&self) -> Result<(), &'static str> {
