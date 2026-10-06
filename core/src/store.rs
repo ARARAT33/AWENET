@@ -102,7 +102,7 @@ fn valid_version(v: &str) -> bool {
 fn valid_app_id(v: &str) -> bool {
     !v.is_empty()
         && v.len() <= 128
-        && v.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '/'))
+        && v.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
         && !v.starts_with('/')
         && !v.contains("..")
 }
