@@ -28,7 +28,8 @@ pub struct OnecoinBlockHeader {
 pub struct OnecoinBlock {
     pub header: OnecoinBlockHeader,
     pub transactions: Vec<OnecoinTransaction>,
-    #[serde(with = "crate::serde_bytes_64")]\n    pub proposer_signature: [u8; 64],
+    #[serde(with = "crate::serde_bytes_64")]
+    pub proposer_signature: [u8; 64],
 }
 
 impl OnecoinBlock {
@@ -103,7 +104,8 @@ pub struct SignedBlockVote {
     pub height: u64,
     pub voter: AweId,
     pub approve: bool,
-    #[serde(with = "crate::serde_bytes_64")]\n    pub signature: [u8; 64],
+    #[serde(with = "crate::serde_bytes_64")]
+    pub signature: [u8; 64],
 }
 
 impl SignedBlockVote {
