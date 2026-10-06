@@ -52,7 +52,7 @@ impl OnecoinBlock {
                 height,
                 previous_hash,
                 transactions_hash,
-                proposer: proposer.public.awe_id,
+                proposer: proposer.public.awe_id.clone(),
                 timestamp_unix,
             },
             transactions,
@@ -111,7 +111,7 @@ impl SignedBlockVote {
         let mut vote = Self {
             block_hash: block.hash(),
             height: block.header.height,
-            voter: identity.public.awe_id,
+            voter: identity.public.awe_id.clone()
             approve,
             signature: [0; 64],
         };
