@@ -21,7 +21,7 @@ pub struct SignedFloorVote {
     pub proposal_id: [u8; 32],
     pub voter: AweId,
     pub approve: bool,
-    pub signature: [u8; 64],
+    #[serde(with = "crate::serde_bytes_64")]\n    pub signature: [u8; 64],
 }
 
 impl SignedFloorVote {
