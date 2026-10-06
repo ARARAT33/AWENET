@@ -62,7 +62,7 @@ impl OnecoinTransaction {
         let mut tx = Self {
             version: 1,
             nonce,
-            sender: *identity.public.awe_id.as_bytes(),
+            sender: identity.public.public_key,
             recipient: *recipient.as_bytes(),
             amount_atoms,
             memo,
@@ -421,8 +421,8 @@ impl OnecoinLedger {
         if tx.nonce != expected_nonce {
             return Err("invalid transaction nonce".into());
         }
-        if tx.sender != *AweId::from_public_key(sender_public_key).as_bytes() {
-            return Err("sender public key does not match AWEID".into());
+        if tx.sender != *sender_public_key {
+            return Err("sender public key does not match transaction sender".into());
         }
         if !tx.verify(sender_public_key) {
             return Err("invalid ONECOIN signature".into());
