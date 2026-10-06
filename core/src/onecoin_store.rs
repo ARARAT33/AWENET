@@ -171,7 +171,7 @@ mod finalized_state_tests {
     use super::*;
     use crate::identity::{Identity, Username};
     use crate::onecoin::{OnecoinTransaction, INITIAL_GENESIS_ALLOCATION};
-    use crate::onecoin_consensus::{OnecoinBlock, QuorumCertificate, SignedBlockVote, OnecoinFinalizedState};
+    use crate::onecoin_consensus::{OnecoinBlock, QuorumCertificate, SignedBlockVote};
     use std::collections::BTreeMap;
 
     #[test]
