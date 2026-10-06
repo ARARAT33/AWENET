@@ -783,9 +783,7 @@ impl RoutingTable {
     }
 }
 fn insert_peer_bounded(peers: &mut HashMap<[u8; 32], PeerRecord>, record: PeerRecord) {
-    if let std::collections::hash_map::Entry::Occupied(mut entry) =
-        peers.entry(record.awe_id)
-    {
+    if let std::collections::hash_map::Entry::Occupied(mut entry) = peers.entry(record.awe_id) {
         entry.insert(record);
         return;
     }
