@@ -1,5 +1,10 @@
 name: Security Audit
 
+
+concurrency:
+  group: awe-security-audit-${{ github.ref }}
+  cancel-in-progress: true
+
 on:
   push:
     branches: [main]
