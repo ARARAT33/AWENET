@@ -19,6 +19,7 @@ pub const MIN_JOIN_SHARE: u128 = 1;
 pub const INITIAL_PRICE_USD_CENTS: u64 = 100;
 pub const PRICE_BAND_USD_CENTS: u64 = 10_000;
 pub const PRICE_FLOOR_STEP_USD_CENTS: u64 = 2_000;
+pub const MAX_TRANSACTION_MEMO: usize = 256;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OnecoinAmount(pub u128);
@@ -73,7 +74,7 @@ impl OnecoinTransaction {
     }
 
     pub fn verify(&self, sender_public_key: &[u8; 32]) -> bool {
-        if self.version != 1 || self.amount_atoms == 0 { return false; }
+        if self.version != 1 || self.amount_atoms == 0 || self.memo.as_ref().is_some_and(|m| m.len() > MAX_TRANSACTION_MEMO) { return false; }
         let Ok(key) = VerifyingKey::from_bytes(sender_public_key) else { return false; };
         let signature = Signature::from_bytes(&self.signature);
         key.verify(&self.signing_bytes(), &signature).is_ok()
