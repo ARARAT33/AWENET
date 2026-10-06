@@ -88,6 +88,64 @@ pub struct ContributionReward {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContributionRewardPolicy {
+    pub atoms_per_score: u128,
+    pub max_reward_atoms: u128,
+}
+
+impl Default for ContributionRewardPolicy {
+    fn default() -> Self {
+        Self { atoms_per_score: 1, max_reward_atoms: 100 * ATOMS_PER_COIN }
+    }
+}
+
+impl ContributionRewardPolicy {
+    pub fn reward_for(&self, receipt: &ContributionReceipt) -> Result<u128, String> {
+        if receipt.period_end_unix <= receipt.period_start_unix {
+            return Err("invalid contribution period".into());
+        }
+        let score = receipt.score();
+        if score == 0 {
+            return Err("empty contribution cannot earn ONECOIN".into());
+        }
+        Ok(score.saturating_mul(self.atoms_per_score).min(self.max_reward_atoms))
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SignedContributionReceipt {
+    pub receipt: ContributionReceipt,
+    pub verifier_public_key: [u8; 32],
+    pub signature: [u8; 64],
+}
+
+impl SignedContributionReceipt {
+    pub fn new(verifier: &Identity, receipt: ContributionReceipt) -> Self {
+        let mut signed = Self {
+            receipt,
+            verifier_public_key: verifier.public.public_key,
+            signature: [0u8; 64],
+        };
+        signed.signature = verifier.sign(&signed.signing_bytes());
+        signed
+    }
+
+    pub fn signing_bytes(&self) -> Vec<u8> {
+        let mut unsigned = self.clone();
+        unsigned.signature = [0u8; 64];
+        serde_json::to_vec(&unsigned).expect("signed contribution receipt serialization")
+    }
+
+    pub fn verify(&self) -> bool {
+        Identity::verify(&self.verifier_public_key, &self.signing_bytes(), &self.signature)
+    }
+
+    pub fn hash(&self) -> [u8; 32] {
+        *blake3::hash(&serde_json::to_vec(self).expect("signed contribution receipt serialization")).as_bytes()
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct JoinDistribution {
     pub new_member: AweId,
     pub eligible_members: u64,
@@ -153,6 +211,9 @@ pub struct OnecoinLedger {
     pub join_remainder_atoms: u128,
     pub join_distribution_active: bool,
     pub price: OnecoinPricePolicy,
+    pub reward_policy: ContributionRewardPolicy,
+    pub reward_verifiers: BTreeMap<String, [u8; 32]>,
+    pub rewarded_receipts: BTreeMap<[u8; 32], u128>,
 }
 
 impl Default for OnecoinLedger {
@@ -165,6 +226,9 @@ impl Default for OnecoinLedger {
             join_remainder_atoms: 0,
             join_distribution_active: true,
             price: OnecoinPricePolicy::default(),
+            reward_policy: ContributionRewardPolicy::default(),
+            reward_verifiers: BTreeMap::new(),
+            rewarded_receipts: BTreeMap::new(),
         }
     }
 }
@@ -194,6 +258,40 @@ impl OnecoinLedger {
         Ok(())
     }
 
+    pub fn initialize_genesis_with_verifiers(
+        &mut self,
+        members: &[AweId],
+        verifiers: &[[u8; 32]],
+    ) -> Result<(), String> {
+        self.initialize_genesis(members)?;
+        for public_key in verifiers {
+            let id = AweId::from_public_key(public_key);
+            let key = Self::key(&id);
+            if !self.members.contains_key(&key) {
+                return Err("reward verifier must be a genesis member".into());
+            }
+            self.reward_verifiers.insert(key, *public_key);
+        }
+        Ok(())
+    }
+
+    pub fn authorize_reward_verifier(
+        &mut self,
+        authorizer_public_key: &[u8; 32],
+        new_verifier_public_key: [u8; 32],
+    ) -> Result<(), String> {
+        let authorizer_id = AweId::from_public_key(authorizer_public_key);
+        if !self.reward_verifiers.contains_key(&Self::key(&authorizer_id)) {
+            return Err("caller is not an authorized reward verifier".into());
+        }
+        let id = AweId::from_public_key(&new_verifier_public_key);
+        if !self.members.contains_key(&Self::key(&id)) {
+            return Err("reward verifier must be a network member".into());
+        }
+        self.reward_verifiers.insert(Self::key(&id), new_verifier_public_key);
+        Ok(())
+    }
+
     /// Register a new member. One ONECOIN is created for the join-dividend
     /// and divided equally among all members after the join, including the new member.
     /// Once the atomic share would be zero, this distribution permanently stops.
@@ -219,27 +317,38 @@ impl OnecoinLedger {
         Ok(distribution)
     }
 
-    /// Mint reward only from an authenticated, measured contribution receipt.
-    /// Reward conversion is intentionally explicit so the scheduler can later
-    /// supply a network-approved rate without changing the ledger.
-    pub fn mint_contribution_reward(
+    pub fn mint_verified_contribution_reward(
         &mut self,
-        receipt: &ContributionReceipt,
-        reward_atoms: u128,
+        signed_receipt: &SignedContributionReceipt,
     ) -> Result<ContributionReward, String> {
-        let key = Self::key(&receipt.node);
-        if !self.members.contains_key(&key) { return Err("reward recipient is not a member".into()); }
-        if receipt.period_end_unix <= receipt.period_start_unix {
-            return Err("invalid contribution period".into());
+        let receipt_key = signed_receipt.hash();
+        if !signed_receipt.verify() {
+            return Err("invalid contribution receipt signature".into());
         }
-        if receipt.score() == 0 || reward_atoms == 0 { return Err("empty contribution cannot earn ONECOIN".into()); }
-        let hash = *blake3::hash(
-            &serde_json::to_vec(receipt).map_err(|_| "failed to hash receipt")?
-        ).as_bytes();
-        let balance = self.balances.entry(key).or_insert(0);
+        let verifier_id = AweId::from_public_key(&signed_receipt.verifier_public_key);
+        let verifier_key = Self::key(&verifier_id);
+        if self.reward_verifiers.get(&verifier_key)
+            != Some(&signed_receipt.verifier_public_key)
+        {
+            return Err("receipt signer is not an authorized reward verifier".into());
+        }
+        if self.rewarded_receipts.contains_key(&receipt_key) {
+            return Err("contribution receipt was already rewarded".into());
+        }
+        let node_key = Self::key(&signed_receipt.receipt.node);
+        if !self.members.contains_key(&node_key) {
+            return Err("reward recipient is not a member".into());
+        }
+        let reward_atoms = self.reward_policy.reward_for(&signed_receipt.receipt)?;
+        let balance = self.balances.entry(node_key).or_insert(0);
         *balance = balance.saturating_add(reward_atoms);
         self.total_issued_atoms = self.total_issued_atoms.saturating_add(reward_atoms);
-        Ok(ContributionReward { node: receipt.node.clone(), receipt_hash: hash, reward_atoms })
+        self.rewarded_receipts.insert(receipt_key, reward_atoms);
+        Ok(ContributionReward {
+            node: signed_receipt.receipt.node.clone(),
+            receipt_hash: receipt_key,
+            reward_atoms,
+        })
     }
 
     pub fn apply_transfer(
@@ -313,10 +422,14 @@ mod tests {
     }
 
     #[test]
-    fn contribution_mints_only_for_real_receipt() {
+    fn contribution_reward_is_deterministic_and_requires_verifier() {
         let a = id("a");
+        let verifier = id("verifier");
         let mut l = OnecoinLedger::default();
-        l.initialize_genesis(&[a.public.awe_id.clone()]).unwrap();
+        l.initialize_genesis_with_verifiers(
+            &[a.public.awe_id.clone(), verifier.public.awe_id.clone()],
+            &[verifier.public.public_key],
+        ).unwrap();
         let r = ContributionReceipt {
             node: a.public.awe_id.clone(),
             storage_byte_hours: 100,
@@ -327,9 +440,12 @@ mod tests {
             period_start_unix: 1,
             period_end_unix: 2,
         };
+        let signed = SignedContributionReceipt::new(&verifier, r.clone());
+        let expected = l.reward_policy.reward_for(&r).unwrap();
         let before = l.balance_atoms(&a.public.awe_id);
-        l.mint_contribution_reward(&r, ATOMS_PER_COIN).unwrap();
-        assert_eq!(l.balance_atoms(&a.public.awe_id), before + ATOMS_PER_COIN);
+        l.mint_verified_contribution_reward(&signed).unwrap();
+        assert_eq!(l.balance_atoms(&a.public.awe_id), before + expected);
+        assert!(l.mint_verified_contribution_reward(&signed).is_err());
     }
 
     #[test]
@@ -342,6 +458,25 @@ mod tests {
         l.apply_transfer(&tx, &a.public.public_key).unwrap();
         assert_eq!(l.balance_atoms(&a.public.awe_id), INITIAL_GENESIS_ALLOCATION - ATOMS_PER_COIN);
         assert_eq!(l.nonces[&a.public.awe_id.to_hex()], 1);
+    }
+
+    #[test]
+    fn reward_policy_caps_issuance() {
+        let policy = ContributionRewardPolicy {
+            atoms_per_score: ATOMS_PER_COIN,
+            max_reward_atoms: 2 * ATOMS_PER_COIN,
+        };
+        let r = ContributionReceipt {
+            node: id("a").public.awe_id,
+            storage_byte_hours: 10,
+            relay_bytes: 0,
+            bandwidth_bytes: 0,
+            compute_units: 0,
+            uptime_minutes: 10,
+            period_start_unix: 1,
+            period_end_unix: 2,
+        };
+        assert_eq!(policy.reward_for(&r).unwrap(), 2 * ATOMS_PER_COIN);
     }
 
     #[test]
