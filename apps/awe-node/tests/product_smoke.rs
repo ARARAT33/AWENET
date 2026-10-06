@@ -312,7 +312,7 @@ fn three_node_product_smoke() {
         }
 
         let ui = get("127.0.0.1:46201", "/");
-        assert!(ui.contains("<title>AWEp2P</title>"), "desktop UI: {ui}");
+        assert!(ui.contains("<title>AWENET</title>"), "desktop UI: {ui}");
         let store = get("127.0.0.1:46201", "/api/store/catalog");
         assert!(store.contains(r#""status":"ok""#), "store API: {store}");
 
