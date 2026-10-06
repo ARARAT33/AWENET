@@ -80,7 +80,8 @@ impl PriceFloorGovernance {
         }
         let total = members.len() as u64;
         let approvals = self.votes.values().filter(|v| **v).count() as u64;
-        Ok(total > 0 && approvals.saturating_mul(10_000) >= total.saturating_mul(APPROVAL_BPS))
+        let required = total.saturating_mul(APPROVAL_BPS).div_ceil(10_000);
+        Ok(total > 0 && approvals >= required)
     }
 }
 
