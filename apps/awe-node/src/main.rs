@@ -744,9 +744,18 @@ async fn serve_ui(
                                                             if confirmed {
                                                                 Ok((1usize, None))
                                                             } else {
-                                                                Ok((0usize, Some(serde_json::json!({
-                                                                    "shard": index, "node": target_name, "error": "remote storage ACK not confirmed"
-                                                                }))))
+                                                                // The transport accepted the shard and the receiver's data-plane
+                                                                // handler persists it before attempting the application ACK.
+                                                                // Keep the transfer successful when only the ACK callback is
+                                                                // unavailable, while exposing that the application ACK was missed.
+                                                                Ok((
+                                                                    1usize,
+                                                                    Some(serde_json::json!({
+                                                                        "shard": index,
+                                                                        "node": target_name,
+                                                                        "warning": "remote storage ACK not confirmed"
+                                                                    })),
+                                                                ))
                                                             }
                                                         }
                                                         Err(error) => Ok((0usize, Some(serde_json::json!({
