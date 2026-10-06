@@ -2,6 +2,7 @@ use crate::{
     crypto::hash,
     identity::Identity,
     limits::{IpAdmission, PeerAdmission},
+    defense::{DefenseDecision, PeerDefense},
     replay::ReplayGuard,
 };
 use chacha20poly1305::{
@@ -809,6 +810,7 @@ pub struct Node {
     peers: Arc<RwLock<HashMap<[u8; 32], PeerRecord>>>,
     admission: Arc<Mutex<PeerAdmission>>,
     preauth: Arc<Mutex<IpAdmission>>,
+    defense: Arc<Mutex<PeerDefense>>,
     active: ActiveConnections,
     inbox: InboxQueue,
     inbox_bytes: Arc<Mutex<usize>>,
@@ -831,6 +833,7 @@ impl Node {
                 PREAUTH_RATE_CAPACITY,
                 PREAUTH_RATE_REFILL_PER_SECOND,
             ))),
+            defense: Arc::new(Mutex::new(PeerDefense::default())),
             active: Arc::new(RwLock::new(HashMap::new())),
             inbox: Arc::new(Mutex::new(Vec::new())),
             inbox_bytes: Arc::new(Mutex::new(0)),
@@ -848,6 +851,7 @@ impl Node {
         routing: Arc<RwLock<RoutingTable>>,
         peers: Arc<RwLock<HashMap<[u8; 32], PeerRecord>>>,
         admission: Arc<Mutex<PeerAdmission>>,
+        defense: Arc<Mutex<PeerDefense>>,
         inbox: InboxQueue,
         inbox_bytes: Arc<Mutex<usize>>,
     ) {
@@ -859,6 +863,10 @@ impl Node {
             .expect("admission lock poisoned")
             .allow(c.remote_id, 1, now())
         {
+            let _ = defense.lock().expect("defense lock poisoned").strike(c.remote_id, now());
+            return;
+        }
+        if matches!(defense.lock().expect("defense lock poisoned").check(c.remote_id, now()), DefenseDecision::Banned | DefenseDecision::Quarantined) {
             return;
         }
         let r = PeerRecord {
@@ -891,6 +899,7 @@ impl Node {
                         cost,
                         now(),
                     ) {
+                        let _ = defense.lock().expect("defense lock poisoned").strike(c.remote_id, now());
                         break;
                     }
                     match message {
@@ -947,7 +956,10 @@ impl Node {
                         Control::Nodes { .. } | Control::Hello { .. } => break,
                     }
                 }
-                Ok(Err(_)) => break,
+                Ok(Err(_)) => {
+                    let _ = defense.lock().expect("defense lock poisoned").strike(c.remote_id, now());
+                    break;
+                }
                 Err(_) => {
                     if c.is_idle() || c.ping(seq).await.is_err() {
                         break;
@@ -984,6 +996,7 @@ impl Node {
             let routing = Arc::clone(&self.routing);
             let peers = Arc::clone(&self.peers);
             let admission = Arc::clone(&self.admission);
+            let defense = Arc::clone(&self.defense);
             let inbox = Arc::clone(&self.inbox);
             let inbox_bytes = Arc::clone(&self.inbox_bytes);
             let listen_addr = self.listen_addr;
@@ -996,6 +1009,7 @@ impl Node {
                     routing,
                     peers,
                     admission,
+                    defense,
                     inbox,
                     inbox_bytes,
                 )
