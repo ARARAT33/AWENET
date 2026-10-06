@@ -1513,8 +1513,12 @@ async fn run_product() -> Result<()> {
             Arc::new(Mutex::new(None))
         } else {
             let validators = build_onecoin_validators(&node, &configured).await;
-            let state_path = data_dir.join("onecoin-consensus.json");
-            match OnecoinConsensusRuntime::open(&state_path, validators) {
+            if validators.len() != configured.iter().collect::<std::collections::BTreeSet<_>>().len() {
+                eprintln!("ONECOIN consensus waiting: not all configured validators are discovered");
+                Arc::new(Mutex::new(None))
+            } else {
+                let state_path = data_dir.join("onecoin-consensus.json");
+                match OnecoinConsensusRuntime::open(&state_path, validators) {
                 Ok(mut runtime) => {
                     if runtime.state.state.ledger.members.is_empty() {
                         let members = runtime.validators.values()
@@ -1534,6 +1538,7 @@ async fn run_product() -> Result<()> {
                     eprintln!("ONECOIN consensus disabled: {error}");
                     Arc::new(Mutex::new(None))
                 }
+            }
             }
         }
     };
