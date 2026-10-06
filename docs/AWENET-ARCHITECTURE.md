@@ -54,3 +54,23 @@ The reference implementation records a non-decreasing protocol floor. The floor 
 ### AWESTORE and services
 
 ONECOIN is intended to be usable by AWESTORE and future AWENET services as a native payment unit. Applications should consume the signed transaction/ledger primitives instead of inventing independent currencies.
+
+
+## Security and failure containment
+
+The reference node now applies defense-in-depth at several independent boundaries:
+
+- authenticated encrypted sessions with replay windows and sequence-bound AEAD;
+- bounded frame, peer, routing, inbox, connection and discovery state to prevent memory amplification;
+- pre-authentication IP admission plus authenticated-peer token buckets;
+- per-peer quarantine/strike escalation with a bounded defense table, ending in a local ban after repeated protocol abuse;
+- circuit-breaker primitives for expensive subsystems so repeated failures can temporarily isolate a workload;
+- content-addressed storage integrity checks and atomic manifest writes so interrupted writes do not replace valid state with partial files;
+- signed application manifests bind the developer AWEID to the developer public key and reject unsafe application IDs/path traversal;
+- persistent ONECOIN state is written atomically and validated on reload, including member/AWEID consistency and supply invariants.
+
+These controls are failure-containment mechanisms, not a claim of absolute immunity. A compatible implementation must preserve the same protocol invariants and must not silently weaken authentication, bounds, replay protection or resource accounting.
+
+## Durable ONECOIN boundary
+
+The ledger is no longer only an in-memory protocol object: PersistentOnecoinLedger provides an atomic on-disk state boundary and reload validation. Transfers are persisted only after the signed transaction passes membership, nonce, signature and balance checks. Distributed ordering/consensus is still a separate network layer; local persistence alone cannot solve Byzantine double-spending across independent nodes.
