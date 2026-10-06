@@ -42,6 +42,9 @@ pub struct PersistentOnecoinLedger {
 impl PersistentOnecoinLedger {
     pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
         let path = path.as_ref().to_path_buf();
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() { fs::create_dir_all(parent)?; }
+        }
         if path.exists() {
             let ledger: OnecoinLedger = load_json(&path)?;
             Self::validate(&ledger)?;
@@ -65,7 +68,7 @@ impl PersistentOnecoinLedger {
         if ledger.members.len() != ledger.balances.len() || ledger.members.len() != ledger.nonces.len() {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "ledger member state is inconsistent"));
         }
-        let computed: u128 = ledger.balances.values().copied().sum();
+        let computed = ledger.balances.values().copied().fold(0u128, u128::saturating_add);
         if computed > ledger.total_issued_atoms {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "ledger supply invariant violated"));
         }
