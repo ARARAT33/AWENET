@@ -57,16 +57,16 @@ pub struct HostHealth {
     pub last_check_unix: u64,
     pub latency_ms: u64,
 }
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 fn default_host_access() -> AccessDescriptor { AccessDescriptor::open() }
 
 impl SiteManifest {
     pub fn open(&self) -> bool { self.access.mode == crate::access::AccessMode::Open }
     pub fn authorize(&self, map: Option<&AccessMap>) -> bool {
-        self.access.authorize(map, self.root_hash)
+        self.access.authorize(map, &self.root_hash)
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HostRecord {
     pub node_id: [u8; 32],
     pub domain: String,
