@@ -1,7 +1,6 @@
 //! Durable ONECOIN ledger storage and transaction admission helpers.
 use crate::{
-    identity::AweId,
-    onecoin::{OnecoinLedger, OnecoinTransaction},
+        onecoin::{OnecoinLedger, OnecoinTransaction},
     onecoin_consensus::{OnecoinBlock, OnecoinFinalizedState, QuorumCertificate},
 };
 use serde::{de::DeserializeOwned, Serialize};
