@@ -1,5 +1,5 @@
 //! AWE Store: signed, content-addressed, P2P-distributable application packages.
-use crate::identity::Identity;
+use crate::identity::{AweId, Identity};
 use blake3::Hasher;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -99,6 +99,13 @@ fn valid_version(v: &str) -> bool {
         && v.chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+'))
 }
+fn valid_app_id(v: &str) -> bool {
+    !v.is_empty()
+        && v.len() <= 128
+        && v.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '/'))
+        && !v.starts_with('/')
+        && !v.contains("..")
+}
 
 pub fn validate_wasm(bytes: &[u8]) -> Result<(), &'static str> {
     if bytes.len() < 8 || &bytes[..4] != b"\0asm" || bytes[4..8] != [1, 0, 0, 0] {
@@ -149,8 +156,7 @@ impl AppManifest {
         Ok(())
     }
     pub fn verify(&self) -> Result<(), &'static str> {
-        if self.id.is_empty()
-            || self.id.len() > 128
+        if !valid_app_id(&self.id)
             || !valid_version(&self.version)
             || self.protocol_version != 1
         {
@@ -173,6 +179,11 @@ impl SignedManifest {
             .as_slice()
             .try_into()
             .map_err(|_| "invalid signature length")?;
+        if AweId::from_public_key(&self.manifest.developer_public_key).as_bytes()
+            != &self.manifest.developer_awe_id
+        {
+            return Err("developer AWEID does not match public key");
+        }
         if !Identity::verify(
             &self.manifest.developer_public_key,
             &canonical_manifest(&self.manifest),
