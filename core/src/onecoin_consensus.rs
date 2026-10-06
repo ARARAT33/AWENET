@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 
 pub const CONSENSUS_VERSION: u16 = 1;
 pub const MAX_BLOCK_TRANSACTIONS: usize = 4096;
-pub const QUORUM_BPS: u64 = 6_667;
+pub const QUORUM_BPS: u64 = 6_666;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OnecoinBlockHeader {
