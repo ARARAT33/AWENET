@@ -41,11 +41,11 @@ ONECOIN is the native economic unit of AWENET. It is not mined.
 
 ### Contribution rewards
 
-ONECOIN can also be minted as a reward for verified AWENET contribution. A reward must reference a measured ContributionReceipt; a node cannot mint coins merely by claiming capacity. The scheduler is responsible for determining an approved reward amount from verified work.
+ONECOIN can also be minted as a reward for verified AWENET contribution. A reward must reference a measured ContributionReceipt signed by an explicitly authorized reward verifier; a node cannot mint coins merely by claiming capacity. The reward amount is deterministic from the network ContributionRewardPolicy and is capped per accounting period. The same signed receipt cannot be rewarded twice. Reward verifier authority is initialized explicitly at genesis and can be delegated only by an existing authorized verifier.
 
 ### Transfers and privacy boundary
 
-Transfers are signed by the sender's AWEID key, use a per-account nonce to prevent replay/double-spend within the ledger state, and carry no human-readable username. AWEIDs are cryptographic identities; privacy-preserving transport and regulated exchange gateways are separate layers.
+Transfers are signed by the sender's AWEID key, use a per-account nonce to prevent replay within an ordered ledger state, and carry no human-readable username. AWEIDs are cryptographic identities; this is pseudonymous addressing, not absolute anonymity. Stronger privacy and regulated exchange gateways are separate layers.
 
 ### Price policy
 
