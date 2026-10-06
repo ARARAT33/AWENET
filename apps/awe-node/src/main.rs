@@ -1975,7 +1975,9 @@ async fn run_product() -> Result<()> {
                     object_id,
                 );
                 if let Ok(bytes) = serde_json::to_vec(&ack) {
-                    let _ = dispatcher_node.send_to_peer(&sender, STORAGE_STREAM, bytes).await;
+                    let _ = dispatcher_node
+                        .send_to_peer(&sender, STORAGE_STREAM, bytes)
+                        .await;
                 }
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
