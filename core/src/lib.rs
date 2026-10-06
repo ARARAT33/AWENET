@@ -1,5 +1,5 @@
 pub mod serde_bytes_64 {
-    use serde::{Deserializer, Serializer};
+    use serde::{Deserialize, Deserializer, Serializer};
 
     pub fn serialize<S>(value: &[u8; 64], serializer: S) -> Result<S::Ok, S::Error>
     where
