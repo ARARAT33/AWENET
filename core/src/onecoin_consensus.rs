@@ -245,10 +245,12 @@ trait LedgerSenderKey {
 
 impl LedgerSenderKey for OnecoinLedger {
     fn ledger_sender_key(&self, tx: &OnecoinTransaction) -> Result<[u8; 32], String> {
-        self.members
-            .get(&AweId::from_public_key(&tx.sender).to_hex())
-            .copied()
-            .ok_or_else(|| "transaction sender is not a member".into())
+        let sender_id = AweId::from_public_key(&tx.sender);
+        if self.members.contains_key(&sender_id.to_hex()) {
+            Ok(tx.sender)
+        } else {
+            Err("transaction sender is not a member".into())
+        }
     }
 }
 
