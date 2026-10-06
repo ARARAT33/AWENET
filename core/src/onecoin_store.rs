@@ -8,7 +8,10 @@ const MAX_LEDGER_BYTES: usize = 64 * 1024 * 1024;
 
 fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let tmp = path.with_extension("part");
-    fs::write(&tmp, bytes)?;
+    use std::io::Write;
+    let mut file = fs::File::create(&tmp)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
     fs::rename(tmp, path)
 }
 
