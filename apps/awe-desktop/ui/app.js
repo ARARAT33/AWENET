@@ -170,8 +170,9 @@ function render(k){
  bind(k);
 }
 function bind(k){
- const bg=document.getElementById("browserGo");if(bg)bg.onclick=()=>{let u=document.getElementById("browserUrl").value.trim();if(!u)return;if(u.startsWith("awe://")){u="https://"+u.slice(6)}if(!/^https?:\\/\\//i.test(u))u="https://"+u;document.getElementById("browserUrl").value=u;document.getElementById("browserFrame").src=u};
- const be=document.getElementById("browserExternal");if(be)be.onclick=()=>{let u=document.getElementById("browserUrl").value.trim();if(u.startsWith("awe://"))u="https://"+u.slice(6);if(!/^https?:\\/\\//i.test(u))u="https://"+u;window.open(u,"_blank","noopener,noreferrer")};
+ const openBrowser=async()=>{const input=document.getElementById("browserUrl").value.trim();const frame=document.getElementById("browserFrame");if(!input)return;const awe=input.match(/^awe:\/\/fid-([0-9a-f]{64})$/i);if(awe){try{const r=await api("/api/storage/get?file_id="+encodeURIComponent(awe[1]));const raw=r.data_hex||"";const bytes=new Uint8Array(raw.length/2);for(let i=0;i<bytes.length;i++)bytes[i]=parseInt(raw.slice(i*2,i*2+2),16);const type=/\.(html?|svg)$/i.test(r.filename||"")?"text/html":/\.json$/i.test(r.filename||"")?"application/json":"text/plain";frame.src=URL.createObjectURL(new Blob([bytes],{type}));return}catch(e){toast("AWE resource unavailable: "+e.message);return}}if(/^https?:\/\//i.test(input)){frame.src=input;return}if(input.startsWith("awe://")){frame.srcdoc='<h2>AWENET resource</h2><p>Resolved address: '+esc(input)+'</p><p>Use an <b>awe://fid-&lt;64hex&gt;</b> resource ID for a network-native stored object.</p>';return}frame.src="https://"+input};
+ const bg=document.getElementById("browserGo");if(bg)bg.onclick=openBrowser;
+ const be=document.getElementById("browserExternal");if(be)be.onclick=()=>{let u=document.getElementById("browserUrl").value.trim();if(u.startsWith("awe://"))return openBrowser();if(!/^https?:\/\//i.test(u))u="https://"+u;window.open(u,"_blank","noopener,noreferrer")};
  const bu=document.getElementById("browserUrl");if(bu)bu.addEventListener("keydown",e=>{if(e.key==="Enter")bg?.click()});
  const r=document.getElementById("refreshBtn");if(r)r.onclick=async()=>{await refresh();render(k)};
  const g=document.getElementById("goNetwork");if(g)g.onclick=()=>render("network");
