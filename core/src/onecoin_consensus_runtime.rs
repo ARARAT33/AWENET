@@ -78,7 +78,8 @@ impl OnecoinConsensusRuntime {
         identity: &Identity,
         message: OnecoinConsensusMessage,
     ) -> Result<Vec<( [u8; 32], OnecoinConsensusMessage)>, String> {
-        if self.validators.get(&AweId::from_public_key(&sender).to_hex()) != Some(&sender) {
+        let sender_id = AweId::from_public_key(&sender).to_hex();
+        if self.validators.get(&sender_id) != Some(&sender) {
             return Err("consensus sender is not a validator".into());
         }
         match message {
@@ -156,14 +157,11 @@ impl OnecoinConsensusRuntime {
             self.state.finalize(block, &cert, &self.validators)?;
             self.pending.remove(&vote.block_hash);
             self.votes.remove(&vote.block_hash);
-            return Ok(self.validators.keys().filter_map(|id| {
-                let key = self.validators.get(id)?;
-                let peer = *key;
-                if peer == block.header.proposer.as_bytes().try_into().ok()? { None }
-                else { Some((peer, OnecoinConsensusMessage::Certificate(cert.clone()))) }
-            }).collect());
+            return Ok(self.validators.values().copied()
+                .map(|peer| (peer, OnecoinConsensusMessage::Certificate(cert.clone())))
+                .collect());
         }
-        Ok(vec![(block.header.proposer.as_bytes().try_into().unwrap_or(sender), OnecoinConsensusMessage::Vote(vote))])
+        Ok(Vec::new())
     }
 
     fn handle_certificate(
