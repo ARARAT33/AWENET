@@ -783,8 +783,10 @@ impl RoutingTable {
     }
 }
 fn insert_peer_bounded(peers: &mut HashMap<[u8; 32], PeerRecord>, record: PeerRecord) {
-    if peers.contains_key(&record.awe_id) {
-        peers.insert(record.awe_id, record);
+    if let std::collections::hash_map::Entry::Occupied(mut entry) =
+        peers.entry(record.awe_id)
+    {
+        entry.insert(record);
         return;
     }
     if peers.len() >= MAX_PEER_RECORDS {
@@ -1627,6 +1629,8 @@ fn peer_store_is_bounded_and_evicts_oldest() {
 
 #[test]
 fn inbox_limits_are_finite() {
-    assert!(MAX_INBOX_MESSAGES < 10_000);
-    assert!(MAX_INBOX_BYTES <= 64 * 1024 * 1024);
+    const {
+        assert!(MAX_INBOX_MESSAGES < 10_000);
+        assert!(MAX_INBOX_BYTES <= 64 * 1024 * 1024);
+    }
 }
