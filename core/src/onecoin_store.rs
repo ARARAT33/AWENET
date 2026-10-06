@@ -1,5 +1,5 @@
 //! Durable ONECOIN ledger storage and transaction admission helpers.
-use crate::{onecoin::{OnecoinLedger, OnecoinTransaction}, onecoin_consensus::{OnecoinBlock, OnecoinFinalizedState, QuorumCertificate}};
+use crate::{identity::AweId, onecoin::{OnecoinLedger, OnecoinTransaction}, onecoin_consensus::{OnecoinBlock, OnecoinFinalizedState, QuorumCertificate}};
 use serde::{de::DeserializeOwned, Serialize};
 use std::{collections::BTreeMap, fs, io, path::{Path, PathBuf}};
 
@@ -162,5 +162,63 @@ impl PersistentOnecoinState {
         let hash = self.state.finalize(block, certificate, validators)?;
         self.save().map_err(|e| format!("failed to persist finalized ONECOIN state: {e}"))?;
         Ok(hash)
+    }
+}
+
+
+#[cfg(test)]
+mod finalized_state_tests {
+    use super::*;
+    use crate::identity::{Identity, Username};
+    use crate::onecoin::{OnecoinTransaction, INITIAL_GENESIS_ALLOCATION};
+    use crate::onecoin_consensus::{OnecoinBlock, QuorumCertificate, SignedBlockVote, OnecoinFinalizedState};
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn finalized_state_round_trips_and_reloads() {
+        let dir = std::env::temp_dir().join(format!("awe-onecoin-state-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+
+        let a = Identity::generate(Username::new("state-a").unwrap());
+        let b = Identity::generate(Username::new("state-b").unwrap());
+        let c = Identity::generate(Username::new("state-c").unwrap());
+        let mut persistent = PersistentOnecoinState::open(&path).unwrap();
+        persistent.state.ledger.initialize_genesis(&[
+            a.public.awe_id, b.public.awe_id, c.public.awe_id,
+        ]).unwrap();
+
+        let validators = BTreeMap::from([
+            (a.public.awe_id.to_hex(), a.public.public_key),
+            (b.public.awe_id.to_hex(), b.public.public_key),
+            (c.public.awe_id.to_hex(), c.public.public_key),
+        ]);
+        let tx = OnecoinTransaction::new(&a, 0, &b.public.awe_id, 1, None);
+        let block = OnecoinBlock::new(&a, 1, [0; 32], vec![tx], 1).unwrap();
+        let certificate = QuorumCertificate {
+            block_hash: block.hash(),
+            height: 1,
+            votes: vec![
+                SignedBlockVote::new(&a, &block, true),
+                SignedBlockVote::new(&b, &block, true),
+            ],
+        };
+
+        persistent.finalize(&block, &certificate, &validators).unwrap();
+        assert_eq!(
+            persistent.state.ledger.balance_atoms(&a.public.awe_id),
+            INITIAL_GENESIS_ALLOCATION - 1
+        );
+
+        let reloaded = PersistentOnecoinState::open(&path).unwrap();
+        assert_eq!(reloaded.state.height, 1);
+        assert_eq!(reloaded.state.tip_hash, block.hash());
+        assert_eq!(
+            reloaded.state.ledger.balance_atoms(&a.public.awe_id),
+            INITIAL_GENESIS_ALLOCATION - 1
+        );
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }
