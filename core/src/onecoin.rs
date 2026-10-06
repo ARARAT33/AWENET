@@ -39,7 +39,7 @@ pub struct OnecoinTransaction {
     pub recipient: [u8; 32],
     pub amount_atoms: u128,
     pub memo: Option<String>,
-    pub signature: [u8; 64],
+    #[serde(with = "crate::serde_bytes_64")]\n    pub signature: [u8; 64],
 }
 
 impl OnecoinTransaction {
