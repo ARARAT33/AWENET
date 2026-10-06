@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 pub const GOVERNANCE_VERSION: u16 = 1;
-pub const APPROVAL_BPS: u64 = 6_667;
+pub const APPROVAL_BPS: u64 = 6_666;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PriceFloorProposal {
