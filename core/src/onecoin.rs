@@ -475,7 +475,7 @@ mod tests {
         let a = id("a");
         let b = id("b");
         let mut l = OnecoinLedger::default();
-        l.initialize_genesis(&[a.public.awe_id.clone()]).unwrap();
+        l.initialize_genesis(std::slice::from_ref(&a.public.awe_id)).unwrap();
         let event = l.register_member(&b.public.awe_id).unwrap();
         assert_eq!(event.eligible_members, 2);
         assert_eq!(event.per_member_atoms, ATOMS_PER_COIN / 2);
