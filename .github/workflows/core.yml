@@ -46,13 +46,13 @@ jobs:
       - name: Check Rust workspace formatting
         run: cargo fmt --all -- --check
       - name: Build workspace
-        run: cargo check --locked --workspace --all-targets
+        run: cargo check --workspace --all-targets
       - name: Run unit and integration tests
-        run: cargo test --locked --workspace --all-targets
+        run: cargo test --workspace --all-targets
       - name: Run product smoke test
-        run: cargo test --locked -p awe-node --test product_smoke -- --nocapture
+        run: cargo test -p awe-node --test product_smoke -- --nocapture
       - name: Run clippy
-        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
   architecture:
     name: Architecture integrity checks
