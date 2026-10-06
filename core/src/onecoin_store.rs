@@ -1,10 +1,11 @@
 //! Durable ONECOIN ledger storage and transaction admission helpers.
-use crate::onecoin::{OnecoinLedger, OnecoinTransaction};
+use crate::{onecoin::{OnecoinLedger, OnecoinTransaction}, onecoin_consensus::{OnecoinBlock, OnecoinFinalizedState, QuorumCertificate}};
 use serde::{de::DeserializeOwned, Serialize};
-use std::{fs, io, path::{Path, PathBuf}};
+use std::{collections::BTreeMap, fs, io, path::{Path, PathBuf}};
 
 const MAGIC: &[u8] = b"AWENET-ONECOIN-LEDGER-V1\0";
 const MAX_LEDGER_BYTES: usize = 64 * 1024 * 1024;
+const STATE_MAGIC: &[u8] = b"AWENET-ONECOIN-STATE-V1\0";
 
 fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let tmp = path.with_extension("part");
@@ -103,5 +104,63 @@ mod tests {
         let q = PersistentOnecoinLedger::open(&path).unwrap();
         assert_eq!(q.ledger.balance_atoms(&a.public.awe_id), crate::onecoin::INITIAL_GENESIS_ALLOCATION);
         let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+
+#[derive(Clone, Debug)]
+pub struct PersistentOnecoinState {
+    path: PathBuf,
+    pub state: OnecoinFinalizedState,
+}
+
+impl PersistentOnecoinState {
+    pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
+        let path = path.as_ref().to_path_buf();
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() { fs::create_dir_all(parent)?; }
+        }
+        if path.exists() {
+            let bytes = fs::read(&path)?;
+            if bytes.len() > MAX_LEDGER_BYTES
+                || bytes.len() < STATE_MAGIC.len()
+                || &bytes[..STATE_MAGIC.len()] != STATE_MAGIC
+            {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid AWENET ONECOIN state file"));
+            }
+            let state: OnecoinFinalizedState = serde_json::from_slice(&bytes[STATE_MAGIC.len()..])
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "corrupt AWENET ONECOIN state"))?;
+            if state.ledger.members.len() != state.ledger.balances.len()
+                || state.ledger.members.len() != state.ledger.nonces.len()
+            {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "ONECOIN state member invariant violated"));
+            }
+            Ok(Self { path, state })
+        } else {
+            Ok(Self { path, state: OnecoinFinalizedState::default() })
+        }
+    }
+
+    pub fn save(&self) -> io::Result<()> {
+        let body = serde_json::to_vec(&self.state)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "ONECOIN state serialization failed"))?;
+        if body.len() > MAX_LEDGER_BYTES - STATE_MAGIC.len() {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "ONECOIN state too large"));
+        }
+        let mut bytes = Vec::with_capacity(STATE_MAGIC.len() + body.len());
+        bytes.extend_from_slice(STATE_MAGIC);
+        bytes.extend_from_slice(&body);
+        atomic_write(&self.path, &bytes)
+    }
+
+    pub fn finalize(
+        &mut self,
+        block: &OnecoinBlock,
+        certificate: &QuorumCertificate,
+        validators: &BTreeMap<String, [u8; 32]>,
+    ) -> Result<[u8; 32], String> {
+        let hash = self.state.finalize(block, certificate, validators)?;
+        self.save().map_err(|e| format!("failed to persist finalized ONECOIN state: {e}"))?;
+        Ok(hash)
     }
 }
