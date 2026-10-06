@@ -6,7 +6,7 @@ use awep2p_core::diagnostics::{NodeDiagnostics, NodeMetrics};
 use awep2p_core::federation::{
     self, AweNetConfig, AweNodeConfig, DataCentreConfig, DataGroupConfig,
 };
-use awep2p_core::identity::{AweSecret, Identity, LocalVault, Username};
+use awep2p_core::identity::{AweId, AweSecret, Identity, LocalVault, Username};
 use awep2p_core::lan_mesh::LanPeerBeacon;
 use awep2p_core::messenger::format_uid;
 use awep2p_core::network::{format_node_descriptor, Node};
@@ -1517,10 +1517,9 @@ async fn run_product() -> Result<()> {
             match OnecoinConsensusRuntime::open(&state_path, validators) {
                 Ok(mut runtime) => {
                     if runtime.state.state.ledger.members.is_empty() {
-                        let members = runtime.validators.keys()
-                            .filter_map(|id| hex::decode(id).ok())
-                            .filter_map(|bytes| bytes.try_into().ok())
-                            .collect::<Vec<[u8; 32]>>();
+                        let members = runtime.validators.values()
+                            .map(|key| AweId::from_public_key(key))
+                            .collect::<Vec<_>>();
                         if !members.is_empty() {
                             if let Err(error) = runtime.state.state.ledger.initialize_genesis(&members) {
                                 eprintln!("ONECOIN genesis initialization failed: {error}");
