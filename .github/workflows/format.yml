@@ -1,5 +1,10 @@
 name: Rust Format Check
 
+
+concurrency:
+  group: awe-format-${{ github.ref }}
+  cancel-in-progress: true
+
 on:
   push:
     branches: [main]
