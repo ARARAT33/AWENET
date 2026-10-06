@@ -261,7 +261,10 @@ mod tests {
         let recipient = id("recipient");
         let mut state = OnecoinFinalizedState::default();
         state.ledger.initialize_genesis(&[
-            a.public.awe_id, b.public.awe_id, c.public.awe_id, recipient.public.awe_id
+            a.public.awe_id.clone(),
+            b.public.awe_id.clone(),
+            c.public.awe_id.clone(),
+            recipient.public.awe_id.clone(),
         ]).unwrap();
         let validators = BTreeMap::from([
             (a.public.awe_id.to_hex(), a.public.public_key),
