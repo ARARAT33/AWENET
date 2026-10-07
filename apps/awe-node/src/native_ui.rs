@@ -122,13 +122,11 @@ impl AweNetDesktop {
     }
 
     fn send_onecoin(&mut self) {
-        let amount = match self.amount.trim().parse::<f64>() {
-            Ok(value) if value > 0.0 => value,
-            _ => {
-                self.message = "Enter a valid positive ONECOIN amount.".into();
-                return;
-            }
-        };
+        let amount = self.amount.trim();
+        if amount.is_empty() || amount.starts_with('-') {
+            self.message = "Enter a valid positive ONECOIN amount.".into();
+            return;
+        }
         let recipient = self.recipient.trim();
         if recipient.len() != 64 {
             self.message = "Recipient must be a 64-character AWEID.".into();
@@ -242,8 +240,8 @@ impl AweNetDesktop {
             "Balance: {} ONECOIN",
             self.wallet
                 .get("balance_coins")
-                .and_then(Value::as_f64)
-                .unwrap_or(0.0)
+                .map(ToString::to_string)
+                .unwrap_or_else(|| "0".into())
         ));
         ui.label(format!(
             "Tier: {}",
