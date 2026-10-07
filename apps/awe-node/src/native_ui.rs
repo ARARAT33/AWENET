@@ -351,47 +351,56 @@ impl AweNetDesktop {
 }
 
 impl eframe::App for AweNetDesktop {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.refresh();
-        egui::SidePanel::left("navigation")
-            .min_width(220.0)
-            .show(ctx, |ui| {
-                ui.heading("AWENET");
-                ui.add_space(12.0);
-                self.nav(ui, Page::Home, "Home");
-                self.nav(ui, Page::Network, "Network");
-                self.nav(ui, Page::Wallet, "ONECOIN");
-                self.nav(ui, Page::Messenger, "Messenger");
-                self.nav(ui, Page::Browser, "AWENET Browser");
-                self.nav(ui, Page::Node, "Node");
-                self.nav(ui, Page::Settings, "Settings");
-                ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                    ui.small(format!("Backend {}", self.addr));
-                    ui.small("Native desktop mode");
-                });
-            });
-        egui::TopBottomPanel::top("header").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.heading(self.page.title());
+
+        ui.horizontal(|ui| {
+            ui.heading("AWENET");
+            ui.separator();
+            ui.label(self.page.title());
+            if ui.button("Refresh").clicked() {
+                self.last_refresh = Instant::now() - Duration::from_secs(2);
+                self.refresh();
+            }
+            if !self.message.is_empty() {
                 ui.separator();
-                if ui.button("Refresh").clicked() {
-                    self.last_refresh = Instant::now() - Duration::from_secs(2);
-                    self.refresh();
-                }
-                if !self.message.is_empty() {
-                    ui.label(&self.message);
-                }
-            });
+                ui.label(&self.message);
+            }
         });
-        egui::CentralPanel::default().show(ctx, |ui| match self.page {
-            Page::Home => self.home(ui),
-            Page::Network => self.network(ui),
-            Page::Wallet => self.wallet(ui),
-            Page::Messenger => self.messenger(ui),
-            Page::Browser => self.browser(ui),
-            Page::Node => self.node(ui),
-            Page::Settings => self.settings(ui),
+        ui.separator();
+
+        ui.horizontal(|ui| {
+            for (page, label) in [
+                (Page::Home, "Home"),
+                (Page::Network, "Network"),
+                (Page::Wallet, "ONECOIN"),
+                (Page::Messenger, "Messenger"),
+                (Page::Browser, "AWENET Browser"),
+                (Page::Node, "Node"),
+                (Page::Settings, "Settings"),
+            ] {
+                if ui.selectable_label(self.page == page, label).clicked() {
+                    self.page = page;
+                    self.message.clear();
+                }
+            }
         });
-        ctx.request_repaint_after(Duration::from_millis(500));
+        ui.separator();
+
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            match self.page {
+                Page::Home => self.home(ui),
+                Page::Network => self.network(ui),
+                Page::Wallet => self.wallet(ui),
+                Page::Messenger => self.messenger(ui),
+                Page::Browser => self.browser(ui),
+                Page::Node => self.node(ui),
+                Page::Settings => self.settings(ui),
+            }
+        });
+
+        ui.separator();
+        ui.small(format!("Native desktop mode • backend {}", self.addr));
+        ui.ctx().request_repaint_after(Duration::from_millis(500));
     }
 }
