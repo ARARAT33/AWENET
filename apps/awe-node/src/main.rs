@@ -11,6 +11,7 @@ use awep2p_core::lan_mesh::LanPeerBeacon;
 use awep2p_core::messenger::format_uid;
 use awep2p_core::network::{format_node_descriptor, Node};
 use awep2p_core::onecoin::{OnecoinLedger, OnecoinTransaction, ATOMS_PER_COIN};
+use awep2p_core::onebank::{classify_tier, ResourceContribution};
 use awep2p_core::onecoin_consensus_runtime::{
     OnecoinConsensusMessage, OnecoinConsensusRuntime, ONECOIN_CONSENSUS_STREAM,
 };
@@ -45,6 +46,7 @@ type PolicyState = Arc<Mutex<NetworkPolicy>>;
 type CommunityState = Arc<Mutex<serde_json::Value>>;
 type ConsensusState = Arc<Mutex<Option<OnecoinConsensusRuntime>>>;
 type OnecoinLedgerState = Arc<Mutex<OnecoinLedger>>;
+type ContributionState = Arc<Mutex<ResourceContribution>>;
 
 async fn build_onecoin_validators(
     node: &Node,
@@ -216,6 +218,8 @@ async fn serve_ui(
     onecoin_ledger: OnecoinLedgerState,
     onecoin_path: PathBuf,
     onecoin_offers_path: PathBuf,
+    contribution: ContributionState,
+    contribution_path: PathBuf,
 ) -> Result<()> {
     let request = read_http_request(&mut stream).await?;
     let request_line = request.lines().next().unwrap_or("");
@@ -233,17 +237,60 @@ async fn serve_ui(
             let ledger = onecoin_ledger.lock().map(|l| l.clone()).unwrap_or_default();
             let id = node.identity.public.awe_id.clone();
             let balance_atoms = ledger.balance_atoms(&id);
-            let tier = if balance_atoms > 0 { "BASIC" } else { "FREE" };
+            let contribution_snapshot = contribution.lock().map(|r| r.clone()).unwrap_or_default();
+            let tier = classify_tier(&contribution_snapshot).wire_name();
             ("200 OK", "application/json; charset=utf-8", serde_json::json!({
                 "awe_id": id.to_hex(),
                 "balance_atoms": balance_atoms,
                 "balance_coins": balance_atoms / ATOMS_PER_COIN,
                 "tier": tier,
                 "fee_bps": 100,
-                "resource_score": 0,
+                "resource_score": contribution_snapshot.score(),
+                "resource": contribution_snapshot,
+                "resource_verified": false,
                 "exchange": "P2P_ONECOIN_ONLY",
                 "fiat_settlement": "EXTERNAL_PERSON_TO_PERSON"
             }).to_string())
+        },
+        "/api/onebank/contribution" if method == "GET" => {
+            let r = contribution.lock().map(|v| v.clone()).unwrap_or_default();
+            ("200 OK", "application/json; charset=utf-8", serde_json::json!({
+                "resource": r,
+                "tier": classify_tier(&r).wire_name(),
+                "verified": false,
+                "reward_status": "requires_signed_usage_receipt"
+            }).to_string())
+        },
+        "/api/onebank/contribution" if method == "POST" => {
+            let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+            let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+            let r = ResourceContribution {
+                storage_bytes: parsed.get("storage_bytes").and_then(|v| v.as_u64()).unwrap_or(0),
+                cpu_cores: parsed.get("cpu_cores").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+                ram_bytes: parsed.get("ram_bytes").and_then(|v| v.as_u64()).unwrap_or(0),
+                gpu_units: parsed.get("gpu_units").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+                bandwidth_bytes: parsed.get("bandwidth_bytes").and_then(|v| v.as_u64()).unwrap_or(0),
+                online_hours: parsed.get("online_hours").and_then(|v| v.as_u64()).unwrap_or(0) as u16,
+                node_count: parsed.get("node_count").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+                server_count: parsed.get("server_count").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+                uptime_bps: parsed.get("uptime_bps").and_then(|v| v.as_u64()).unwrap_or(0) as u16,
+                utilization_bps: parsed.get("utilization_bps").and_then(|v| v.as_u64()).unwrap_or(0) as u16,
+            };
+            match r.validate() {
+                Ok(()) => {
+                    if let Ok(mut guard) = contribution.lock() { *guard = r.clone(); }
+                    match fs::write(&contribution_path, serde_json::to_vec_pretty(&r).unwrap_or_default()) {
+                        Ok(()) => ("200 OK", "application/json; charset=utf-8", serde_json::json!({
+                            "status":"accepted_for_verification",
+                            "tier": classify_tier(&r).wire_name(),
+                            "verified":false,
+                            "reward_status":"requires_signed_usage_receipt"
+                        }).to_string()),
+                        Err(e) => ("500 Internal Server Error", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":e.to_string()}).to_string())
+                    }
+                },
+                Err(error) => ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":error}).to_string())
+            }
         },
         "/api/onebank/wallet/send" if method == "POST" => {
             let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
@@ -1645,6 +1692,13 @@ async fn run_product() -> Result<()> {
         }
     }
     let onecoin_offers_path = data_dir.join("onecoin-exchange-offers.json");
+    let contribution_path = data_dir.join("resource-contribution.json");
+    let contribution: ContributionState = Arc::new(Mutex::new(
+        fs::read(&contribution_path)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<ResourceContribution>(&b).ok())
+            .unwrap_or_default()
+    ));
 
     let consensus_state: ConsensusState = {
         let configured = env::var("AWE_ONECOIN_VALIDATORS")
@@ -2163,6 +2217,8 @@ async fn run_product() -> Result<()> {
         let api_onecoin_ledger = onecoin_ledger.clone();
         let api_onecoin_path = onecoin_path.clone();
         let api_onecoin_offers_path = onecoin_offers_path.clone();
+        let api_contribution = contribution.clone();
+        let api_contribution_path = contribution_path.clone();
         tokio::spawn(async move {
             if let Err(e) = serve_ui(
                 stream,
@@ -2178,6 +2234,8 @@ async fn run_product() -> Result<()> {
                 api_onecoin_ledger,
                 api_onecoin_path,
                 api_onecoin_offers_path,
+                api_contribution,
+                api_contribution_path,
             )
             .await
             {
