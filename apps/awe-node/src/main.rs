@@ -36,7 +36,6 @@ const ONECOIN_JS: &str = include_str!("../../awe-desktop/ui/onecoin.js");
 const ONECOIN_CSS: &str = include_str!("../../awe-desktop/ui/onecoin.css");
 const QR_JS: &str = include_str!("../../awe-desktop/ui/vendor/qrcode.js");
 const DEFAULT_UI_ADDR: &str = "127.0.0.1:41800";
-const ONECOIN_TRANSFER_STREAM: u32 = 201;
 
 type MessengerLog = Arc<Mutex<Vec<serde_json::Value>>>;
 type FederationState = Arc<Mutex<AweNetConfig>>;
@@ -332,7 +331,7 @@ async fn serve_ui(
                 Ok((hex::encode(tx_id), fee_atoms, tx))
             })();
             match result {
-                Ok((tx_id, fee_atoms, tx)) => { let recipient_id = <[u8; 32]>::try_from(tx.recipient).unwrap_or([0; 32]); let delivered = if node.peers().await.into_iter().any(|p| p.awe_id == recipient_id) { match serde_json::to_vec(&tx) { Ok(bytes) => node.send_to_peer(&recipient_id, ONECOIN_TRANSFER_STREAM, bytes).await.is_ok(), Err(_) => false } } else { false }; ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"accepted","tx_id":tx_id,"fee_atoms":fee_atoms,"fee_bps":100,"recipient_delivered":delivered,"recipient_pending":!delivered}).to_string()) },
+                Ok((tx_id, fee_atoms, tx)) => { let recipient_id = <[u8; 32]>::try_from(tx.recipient).unwrap_or([0; 32]); let delivered = if node.peers().await.into_iter().any(|p| p.awe_id == recipient_id) { match serde_json::to_vec(&tx) { Ok(bytes) => node.send_to_peer(&recipient_id, policy::ONECOIN_TRANSFER_STREAM, bytes).await.is_ok(), Err(_) => false } } else { false }; ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"accepted","tx_id":tx_id,"fee_atoms":fee_atoms,"fee_bps":100,"recipient_delivered":delivered,"recipient_pending":!delivered}).to_string()) },
                 Err(error) => ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"rejected","error":error}).to_string())
             }
         },
@@ -1799,7 +1798,7 @@ async fn run_product() -> Result<()> {
                     }
                     continue;
                 }
-                if stream == ONECOIN_TRANSFER_STREAM {
+                if stream == policy::ONECOIN_TRANSFER_STREAM {
                     if let Ok(tx) = serde_json::from_slice::<OnecoinTransaction>(&payload) {
                         if tx.recipient == *dispatcher_node.identity.public.awe_id.as_bytes() {
                             if let Ok(mut ledger) = dispatcher_onecoin_ledger.lock() {
