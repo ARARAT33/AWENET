@@ -9,6 +9,7 @@ use std::{fs, io, path::Path};
 
 pub const POLICY_VERSION: u16 = 1;
 pub const MESSENGER_STREAM: u32 = 100;
+pub const ONECOIN_TRANSFER_STREAM: u32 = 201;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NetworkPolicy {
@@ -34,7 +35,7 @@ impl Default for NetworkPolicy {
             max_message_bytes: 64 * 1024,
             max_shard_bytes: 4 * 1024 * 1024,
             max_bootstrap_peers: 64,
-            allowed_streams: vec![MESSENGER_STREAM, crate::data_plane::STORAGE_STREAM],
+            allowed_streams: vec![MESSENGER_STREAM, crate::data_plane::STORAGE_STREAM, ONECOIN_TRANSFER_STREAM],
         }
     }
 }
@@ -124,6 +125,7 @@ mod tests {
         policy.validate().unwrap();
         assert!(policy.allows_stream(MESSENGER_STREAM));
         assert!(policy.allows_stream(crate::data_plane::STORAGE_STREAM));
+        assert!(policy.allows_stream(ONECOIN_TRANSFER_STREAM));
         assert!(!policy.allows_stream(999_999));
     }
 
