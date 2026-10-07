@@ -244,6 +244,8 @@ pub struct OnecoinLedger {
     pub nonces: BTreeMap<String, u64>,
     pub members: BTreeMap<String, [u8; 32]>,
     pub total_issued_atoms: u128,
+    #[serde(default)]
+    pub collected_fee_atoms: u128,
     pub join_remainder_atoms: u128,
     pub join_distribution_active: bool,
     pub price: OnecoinPricePolicy,
@@ -259,6 +261,7 @@ impl Default for OnecoinLedger {
             nonces: BTreeMap::new(),
             members: BTreeMap::new(),
             total_issued_atoms: 0,
+            collected_fee_atoms: 0,
             join_remainder_atoms: 0,
             join_distribution_active: true,
             price: OnecoinPricePolicy::default(),
@@ -407,6 +410,44 @@ impl OnecoinLedger {
         })
     }
 
+    pub fn apply_transfer_with_fee(
+        &mut self,
+        tx: &OnecoinTransaction,
+        sender_public_key: &[u8; 32],
+        fee_bps: u16,
+    ) -> Result<([u8; 32], u128), String> {
+        if fee_bps > 500 {
+            return Err("ONEBANK fee cannot exceed 5%".into());
+        }
+        let fee = tx
+            .amount_atoms
+            .saturating_mul(fee_bps as u128)
+            .saturating_div(10_000);
+        let sender_key = AweId::from_public_key(sender_public_key).to_hex();
+        let recipient_key = hex::encode(tx.recipient);
+        if !self.members.contains_key(&sender_key) || !self.members.contains_key(&recipient_key) {
+            return Err("sender and recipient must be network members".into());
+        }
+        let expected_nonce = self.nonces.get(&sender_key).copied().unwrap_or(0);
+        if tx.nonce != expected_nonce {
+            return Err("invalid transaction nonce".into());
+        }
+        if tx.sender != *sender_public_key || !tx.verify(sender_public_key) {
+            return Err("invalid ONECOIN signature".into());
+        }
+        let sender_balance = self.balances.get(&sender_key).copied().unwrap_or(0);
+        let total = tx.amount_atoms.saturating_add(fee);
+        if sender_balance < total {
+            return Err("insufficient ONECOIN balance including ONEBANK fee".into());
+        }
+        self.balances.insert(sender_key.clone(), sender_balance - total);
+        let recipient_balance = self.balances.get(&recipient_key).copied().unwrap_or(0);
+        self.balances.insert(recipient_key, recipient_balance.saturating_add(tx.amount_atoms));
+        self.collected_fee_atoms = self.collected_fee_atoms.saturating_add(fee);
+        self.nonces.insert(sender_key, expected_nonce + 1);
+        Ok((tx.id(), fee))
+    }
+
     pub fn apply_transfer(
         &mut self,
         tx: &OnecoinTransaction,
@@ -485,6 +526,21 @@ mod tests {
             INITIAL_GENESIS_ALLOCATION + ATOMS_PER_COIN / 2
         );
         assert_eq!(l.balance_atoms(&b.public.awe_id), ATOMS_PER_COIN / 2);
+    }
+
+    #[test]
+    fn onebank_fee_is_charged_without_reducing_recipient_amount() {
+        let a = id("fee-a");
+        let b = id("fee-b");
+        let mut l = OnecoinLedger::default();
+        l.initialize_genesis(&[a.public.awe_id.clone(), b.public.awe_id.clone()]).unwrap();
+        let amount = ATOMS_PER_COIN;
+        let tx = OnecoinTransaction::new(&a, 0, &b.public.awe_id, amount, None);
+        let (_, fee) = l.apply_transfer_with_fee(&tx, &a.public.public_key, 100).unwrap();
+        assert_eq!(fee, ATOMS_PER_COIN / 100);
+        assert_eq!(l.balance_atoms(&b.public.awe_id), INITIAL_GENESIS_ALLOCATION + amount);
+        assert_eq!(l.balance_atoms(&a.public.awe_id), INITIAL_GENESIS_ALLOCATION - amount - fee);
+        assert_eq!(l.collected_fee_atoms, fee);
     }
 
     #[test]
