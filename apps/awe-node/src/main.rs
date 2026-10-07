@@ -672,7 +672,7 @@ async fn serve_ui(
             ("200 OK","application/json; charset=utf-8",serde_json::json!({"status":"ok","channels":channels}).to_string())
         },
         "/api/channels/create" if method == "POST" => {
-            let body=request.split("\r\n\r\n").nth(1).unwrap_or(""); let p:serde_json::Value=serde_json::from_str(body).unwrap_or_default(); let title=p.get("title").and_then(|v|v.as_str()).unwrap_or("").trim().to_string(); let local=format_uid(node.identity.public.awe_id.as_bytes());
+            let body=request.split("\r\n\r\n").nth(1).unwrap_or(""); let p:serde_json::Value=serde_json::from_str(body).unwrap_or_default(); let title=p.get("title").and_then(|v|v.as_str()).unwrap_or("").trim().to_string(); let local=node.identity.public.awe_id.to_hex();
             if title.is_empty(){("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"title is required"}).to_string())}else{
                 let id=format!("cid-{}",hex::encode(&blake3::hash(format!("{}:{}:{}",local,title,now_unix()).as_bytes()).as_bytes()[..12])); let channel=serde_json::json!({"id":id,"title":title,"owner":local,"subscribers":[local],"created_at":now_unix(),"messages":[]});
                 if let Ok(mut st)=community.lock(){if let Some(a)=st.get_mut("channels").and_then(|v|v.as_array_mut()){a.push(channel.clone());}}
@@ -685,7 +685,7 @@ async fn serve_ui(
             let body=request.split("\r\n\r\n").nth(1).unwrap_or("");
             let p:serde_json::Value=serde_json::from_str(body).unwrap_or_default();
             let cid=p.get("channel_id").and_then(|v|v.as_str()).unwrap_or("").trim();
-            let local=format_uid(node.identity.public.awe_id.as_bytes());
+            let local=node.identity.public.awe_id.to_hex();
             let channel=community.lock().ok().and_then(|s|s.get("channels").and_then(|v|v.as_array()).and_then(|a|a.iter().find(|c|c.get("id").and_then(|v|v.as_str())==Some(cid)).cloned()));
             match channel {
                 None if cid.is_empty()=>("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"channel_id is required"}).to_string()),
@@ -705,7 +705,7 @@ async fn serve_ui(
             }
         },
         "/api/channels/publish" if method == "POST" => {
-            let body=request.split("\r\n\r\n").nth(1).unwrap_or(""); let p:serde_json::Value=serde_json::from_str(body).unwrap_or_default(); let cid=p.get("channel_id").and_then(|v|v.as_str()).unwrap_or("").trim(); let text=p.get("text").and_then(|v|v.as_str()).unwrap_or("").trim(); let local=format_uid(node.identity.public.awe_id.as_bytes());
+            let body=request.split("\r\n\r\n").nth(1).unwrap_or(""); let p:serde_json::Value=serde_json::from_str(body).unwrap_or_default(); let cid=p.get("channel_id").and_then(|v|v.as_str()).unwrap_or("").trim(); let text=p.get("text").and_then(|v|v.as_str()).unwrap_or("").trim(); let local=node.identity.public.awe_id.to_hex();
             let channel=community.lock().ok().and_then(|s|s.get("channels").and_then(|v|v.as_array()).and_then(|a|a.iter().find(|c|c.get("id").and_then(|v|v.as_str())==Some(cid)).cloned()));
             match channel{
                 None=>("404 Not Found","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"channel not found"}).to_string()),
@@ -1998,7 +1998,7 @@ async fn run_product() -> Result<()> {
                         }
                         if message.get("kind").and_then(|v| v.as_str()) == Some("awe.channel.v1") {
                             let event = message.get("event").and_then(|v| v.as_str()).unwrap_or("");
-                            let sender_uid = format_uid(&sender);
+                            let sender_uid = hex::encode(sender);
                             let mut sync: Option<(String, Vec<u8>)> = None;
                             if let Ok(mut state) = dispatcher_community.lock() {
                                 if event == "upsert" {
@@ -2117,7 +2117,7 @@ async fn run_product() -> Result<()> {
                                 tokio::spawn(async move {
                                     let peers = sync_node.active_peers().await;
                                     if let Some(target) =
-                                        peers.into_iter().find(|p| format_uid(p) == target_uid)
+                                        peers.into_iter().find(|p| hex::encode(*p) == target_uid)
                                     {
                                         let _ = sync_node.send_to_peer(&target, 100, bytes).await;
                                     }
