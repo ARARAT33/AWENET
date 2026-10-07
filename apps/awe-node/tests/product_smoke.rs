@@ -178,6 +178,27 @@ fn three_node_product_smoke() {
             .get("node_id")
             .and_then(|v| v.as_str())
             .expect("node2 id");
+        let wallet_before: serde_json::Value =
+            serde_json::from_str(&get("127.0.0.1:46201", "/api/onebank/wallet")).expect("wallet before json");
+        let node2_wallet_before: serde_json::Value =
+            serde_json::from_str(&get("127.0.0.1:46202", "/api/onebank/wallet")).expect("node2 wallet before json");
+        let onecoin_send = post(
+            "127.0.0.1:46201",
+            "/api/onebank/wallet/send",
+            &format!(r#"{{"recipient":"{node2_id}","amount_coins":1,"memo":"E2E fee test"}}"#),
+        );
+        assert!(onecoin_send.contains(r#""status":"accepted""#), "ONECOIN send: {onecoin_send}");
+        assert!(onecoin_send.contains(r#""fee_bps":100"#), "ONEBANK fee: {onecoin_send}");
+        let wallet_after: serde_json::Value =
+            serde_json::from_str(&get("127.0.0.1:46201", "/api/onebank/wallet")).expect("wallet after json");
+        let node2_wallet_after: serde_json::Value =
+            serde_json::from_str(&get("127.0.0.1:46202", "/api/onebank/wallet")).expect("node2 wallet after json");
+        let before = wallet_before.get("balance_atoms").and_then(|v| v.as_u64()).expect("sender balance");
+        let after = wallet_after.get("balance_atoms").and_then(|v| v.as_u64()).expect("sender after");
+        let receiver_before = node2_wallet_before.get("balance_atoms").and_then(|v| v.as_u64()).expect("receiver balance");
+        let receiver_after = node2_wallet_after.get("balance_atoms").and_then(|v| v.as_u64()).expect("receiver after");
+        assert_eq!(before - after, 1_010_000_000_000_000_000u64, "sender pays amount plus 1% fee");
+        assert_eq!(receiver_after - receiver_before, 1_000_000_000_000_000_000u64, "receiver gets exact amount");
         let message = post(
             "127.0.0.1:46201",
             "/api/messenger/send",
