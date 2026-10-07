@@ -246,6 +246,9 @@ pub struct OnecoinLedger {
     pub total_issued_atoms: u128,
     #[serde(default)]
     pub collected_fee_atoms: u128,
+    /// Transaction IDs already accepted as replicated incoming transfers.
+    #[serde(default)]
+    pub received_transactions: BTreeMap<[u8; 32], u128>,
     pub join_remainder_atoms: u128,
     pub join_distribution_active: bool,
     pub price: OnecoinPricePolicy,
@@ -262,6 +265,7 @@ impl Default for OnecoinLedger {
             members: BTreeMap::new(),
             total_issued_atoms: 0,
             collected_fee_atoms: 0,
+            received_transactions: BTreeMap::new(),
             join_remainder_atoms: 0,
             join_distribution_active: true,
             price: OnecoinPricePolicy::default(),
@@ -459,6 +463,35 @@ impl OnecoinLedger {
         self.collected_fee_atoms = self.collected_fee_atoms.saturating_add(fee);
         self.nonces.insert(sender_key, expected_nonce + 1);
         Ok((tx.id(), fee))
+    }
+
+    /// Apply a transaction replicated from its sender to this recipient node.
+    /// The receiver verifies the signature and credits only its own wallet; it does
+    /// not debit the sender a second time. Transaction IDs make delivery idempotent.
+    pub fn receive_transfer(
+        &mut self,
+        tx: &OnecoinTransaction,
+        sender_public_key: &[u8; 32],
+        recipient: &AweId,
+    ) -> Result<bool, String> {
+        if tx.recipient != *recipient.as_bytes() {
+            return Err("ONECOIN transfer recipient does not match this wallet".into());
+        }
+        if tx.sender != *sender_public_key || !tx.verify(sender_public_key) {
+            return Err("invalid replicated ONECOIN signature".into());
+        }
+        let sender_id = AweId::from_public_key(sender_public_key);
+        self.ensure_member(&sender_id);
+        self.ensure_member(recipient);
+        let tx_id = tx.id();
+        if self.received_transactions.contains_key(&tx_id) {
+            return Ok(false);
+        }
+        let recipient_key = Self::key(recipient);
+        let balance = self.balances.get(&recipient_key).copied().unwrap_or(0);
+        self.balances.insert(recipient_key, balance.saturating_add(tx.amount_atoms));
+        self.received_transactions.insert(tx_id, tx.amount_atoms);
+        Ok(true)
     }
 
     pub fn apply_transfer(
