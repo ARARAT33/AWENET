@@ -7,7 +7,7 @@
 
 use crate::{
     identity::{AweId, Identity},
-    onecoin::{OnecoinAmount, OnecoinLedger, OnecoinTransaction, ATOMS_PER_COIN},
+    onecoin::{OnecoinAmount, OnecoinLedger, ATOMS_PER_COIN},
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
