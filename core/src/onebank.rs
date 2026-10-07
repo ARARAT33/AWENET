@@ -236,7 +236,17 @@ pub fn classify_tier(r: &ResourceContribution) -> UserTier {
     {
         return UserTier::NetPlus;
     }
-    if r.score() > 0 {
+    if r.storage_bytes > 0
+        || r.cpu_cores > 0
+        || r.ram_bytes > 0
+        || r.gpu_units > 0
+        || r.bandwidth_bytes > 0
+        || r.online_hours > 0
+        || r.node_count > 0
+        || r.server_count > 0
+        || r.uptime_bps > 0
+        || r.utilization_bps > 0
+    {
         return UserTier::Basic;
     }
     UserTier::Free
