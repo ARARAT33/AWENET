@@ -27,6 +27,16 @@ impl AweId {
     pub fn to_hex(&self) -> String {
         hex::encode(self.0)
     }
+
+    pub fn from_hex(value: &str) -> Result<Self, String> {
+        let bytes = hex::decode(value).map_err(|_| "invalid AWE-ID hex".to_string())?;
+        if bytes.len() != 32 {
+            return Err("AWE-ID must contain exactly 32 bytes".into());
+        }
+        let mut id = [0u8; 32];
+        id.copy_from_slice(&bytes);
+        Ok(Self(id))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
