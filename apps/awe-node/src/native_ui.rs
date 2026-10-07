@@ -387,16 +387,14 @@ impl eframe::App for AweNetDesktop {
         });
         ui.separator();
 
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            match self.page {
-                Page::Home => self.home(ui),
-                Page::Network => self.network(ui),
-                Page::Wallet => self.wallet(ui),
-                Page::Messenger => self.messenger(ui),
-                Page::Browser => self.browser(ui),
-                Page::Node => self.node(ui),
-                Page::Settings => self.settings(ui),
-            }
+        egui::ScrollArea::vertical().show(ui, |ui| match self.page {
+            Page::Home => self.home(ui),
+            Page::Network => self.network(ui),
+            Page::Wallet => self.wallet(ui),
+            Page::Messenger => self.messenger(ui),
+            Page::Browser => self.browser(ui),
+            Page::Node => self.node(ui),
+            Page::Settings => self.settings(ui),
         });
 
         ui.separator();
