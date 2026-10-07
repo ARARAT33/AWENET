@@ -333,14 +333,27 @@ async fn serve_ui(
             match result {
                 Ok((tx_id, fee_atoms, tx)) => { let recipient_id = <[u8; 32]>::try_from(tx.recipient).unwrap_or([0; 32]); let delivered = if node.peers().await.into_iter().any(|p| p.awe_id == recipient_id) {
                         match serde_json::to_vec(&tx) {
-                            Ok(bytes) => node
-                                .send_to_peer_confirmed(&recipient_id, policy::ONECOIN_TRANSFER_STREAM, bytes.clone())
-                                .await
-                                .or_else(|_| async {
-                                    node.send_to_peer(&recipient_id, policy::ONECOIN_TRANSFER_STREAM, bytes).await
-                                })
-                                .await
-                                .is_ok(),
+                            Ok(bytes) => {
+                                if node
+                                    .send_to_peer_confirmed(
+                                        &recipient_id,
+                                        policy::ONECOIN_TRANSFER_STREAM,
+                                        bytes.clone(),
+                                    )
+                                    .await
+                                    .is_ok()
+                                {
+                                    true
+                                } else {
+                                    node.send_to_peer(
+                                        &recipient_id,
+                                        policy::ONECOIN_TRANSFER_STREAM,
+                                        bytes,
+                                    )
+                                    .await
+                                    .is_ok()
+                                }
+                            },
                             Err(_) => false,
                         }
                     } else {
