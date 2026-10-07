@@ -333,7 +333,7 @@ async fn serve_ui(
                 Ok(serde_json::json!({"tx_id":hex::encode(tx_id),"fee_atoms":fee_atoms,"fee_bps":100}).to_string())
             })();
             match result {
-                Ok(details) => ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"accepted","transfer":serde_json::from_str::<serde_json::Value>(&details).unwrap_or_else(|_| serde_json::json!({"tx_id":details}))}).to_string()),
+                Ok(details) => { let transfer = serde_json::from_str::<serde_json::Value>(&details).unwrap_or_else(|_| serde_json::json!({"tx_id":details})); ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"accepted","tx_id":transfer.get("tx_id").cloned().unwrap_or_default(),"fee_atoms":transfer.get("fee_atoms").cloned().unwrap_or_default(),"fee_bps":transfer.get("fee_bps").cloned().unwrap_or(100)}).to_string()) },
                 Err(error) => ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"rejected","error":error}).to_string())
             }
         },
