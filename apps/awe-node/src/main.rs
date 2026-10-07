@@ -2242,25 +2242,7 @@ async fn run_product() -> Result<()> {
     println!("AWEp2P is running.");
     println!("Node: {node_id}");
     println!("Node transport: {listen}");
-    println!("UI: http://{ui_addr}");
-
-    let url = format!("http://{ui_addr}/");
-    if env::var_os("AWE_NO_BROWSER").is_none() {
-        #[cfg(target_os = "windows")]
-        {
-            let _ = std::process::Command::new("cmd")
-                .args(["/C", "start", "", &url])
-                .spawn();
-        }
-        #[cfg(target_os = "macos")]
-        {
-            let _ = std::process::Command::new("open").arg(&url).spawn();
-        }
-        #[cfg(all(unix, not(target_os = "macos")))]
-        {
-            let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
-        }
-    }
+    println!("Native UI: AWENET desktop window");
 
     let native_ui_addr = ui_addr;
     tokio::spawn(async move {
