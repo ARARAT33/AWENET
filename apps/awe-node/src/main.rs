@@ -33,6 +33,7 @@ const UI_CSS: &str = include_str!("../../awe-desktop/ui/style.css");
 const UI_JS: &str = include_str!("../../awe-desktop/ui/app.js");
 const ONECOIN_JS: &str = include_str!("../../awe-desktop/ui/onecoin.js");
 const ONECOIN_CSS: &str = include_str!("../../awe-desktop/ui/onecoin.css");
+const QR_JS: &str = include_str!("../../awe-desktop/ui/vendor/qrcode.js");
 const DEFAULT_UI_ADDR: &str = "127.0.0.1:41800";
 
 type MessengerLog = Arc<Mutex<Vec<serde_json::Value>>>;
@@ -227,6 +228,7 @@ async fn serve_ui(
         "/app.js" => ("200 OK", "application/javascript; charset=utf-8", UI_JS.to_string()),
         "/onecoin.js" => ("200 OK", "application/javascript; charset=utf-8", ONECOIN_JS.to_string()),
         "/onecoin.css" => ("200 OK", "text/css; charset=utf-8", ONECOIN_CSS.to_string()),
+        "/vendor/qrcode.js" => ("200 OK", "application/javascript; charset=utf-8", QR_JS.to_string()),
         "/api/onebank/wallet" if method == "GET" => {
             let ledger = onecoin_ledger.lock().map(|l| l.clone()).unwrap_or_default();
             let id = node.identity.public.awe_id.clone();
