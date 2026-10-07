@@ -1629,12 +1629,15 @@ async fn run_product() -> Result<()> {
         fs::read(&onecoin_path)
             .ok()
             .and_then(|b| serde_json::from_slice::<OnecoinLedger>(&b).ok())
-            .unwrap_or_default()
+            .unwrap_or_default(),
     ));
     {
-        let mut ledger = onecoin_ledger.lock().map_err(|_| anyhow::anyhow!("ONECOIN ledger lock failed"))?;
+        let mut ledger = onecoin_ledger
+            .lock()
+            .map_err(|_| anyhow::anyhow!("ONECOIN ledger lock failed"))?;
         if ledger.members.is_empty() {
-            ledger.initialize_genesis(std::slice::from_ref(&node.identity.public.awe_id))
+            ledger
+                .initialize_genesis(std::slice::from_ref(&node.identity.public.awe_id))
                 .map_err(anyhow::Error::msg)?;
             fs::write(&onecoin_path, serde_json::to_vec_pretty(&*ledger)?)?;
         }

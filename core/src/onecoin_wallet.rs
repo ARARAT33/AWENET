@@ -33,18 +33,33 @@ pub struct OnecoinWallet {
 impl OnecoinWallet {
     pub fn open(owner: AweId) -> Self {
         Self {
-            state: WalletState { owner: Some(owner), ..Default::default() },
+            state: WalletState {
+                owner: Some(owner),
+                ..Default::default()
+            },
         }
     }
 
-    pub fn snapshot(&self, ledger: &OnecoinLedger, tier: UserTier) -> Result<WalletSnapshot, String> {
-        let owner = self.state.owner.clone().ok_or("wallet is not initialized")?;
+    pub fn snapshot(
+        &self,
+        ledger: &OnecoinLedger,
+        tier: UserTier,
+    ) -> Result<WalletSnapshot, String> {
+        let owner = self
+            .state
+            .owner
+            .clone()
+            .ok_or("wallet is not initialized")?;
         let balance = WalletBalance::from_ledger(ledger, &owner);
         Ok(WalletSnapshot {
             owner,
             balance_atoms: balance.available_atoms,
             balance_coins: balance.available_atoms / ATOMS_PER_COIN,
-            nonce: ledger.nonces.get(&balance.awe_id.to_hex()).copied().unwrap_or(0),
+            nonce: ledger
+                .nonces
+                .get(&balance.awe_id.to_hex())
+                .copied()
+                .unwrap_or(0),
             tier,
             transactions: self.state.transaction_ids.clone(),
         })
@@ -58,10 +73,20 @@ impl OnecoinWallet {
         amount_atoms: u128,
         memo: Option<String>,
     ) -> Result<OnecoinTransaction, String> {
-        let owner = self.state.owner.clone().ok_or("wallet is not initialized")?;
-        if owner != identity.public.awe_id { return Err("wallet owner does not match identity".into()); }
-        if amount_atoms == 0 { return Err("transfer amount must be positive".into()); }
-        if ledger.balance_atoms(&owner) < amount_atoms { return Err("insufficient ONECOIN balance".into()); }
+        let owner = self
+            .state
+            .owner
+            .clone()
+            .ok_or("wallet is not initialized")?;
+        if owner != identity.public.awe_id {
+            return Err("wallet owner does not match identity".into());
+        }
+        if amount_atoms == 0 {
+            return Err("transfer amount must be positive".into());
+        }
+        if ledger.balance_atoms(&owner) < amount_atoms {
+            return Err("insufficient ONECOIN balance".into());
+        }
         let nonce = ledger.nonces.get(&owner.to_hex()).copied().unwrap_or(0);
         let tx = OnecoinTransaction::new(identity, nonce, recipient, amount_atoms, memo);
         self.state.last_seen_nonce = nonce;
@@ -77,17 +102,39 @@ impl OnecoinWallet {
         coins: u128,
         memo: Option<String>,
     ) -> Result<OnecoinTransaction, String> {
-        self.build_transfer(identity, ledger, recipient, coins.saturating_mul(ATOMS_PER_COIN), memo)
+        self.build_transfer(
+            identity,
+            ledger,
+            recipient,
+            coins.saturating_mul(ATOMS_PER_COIN),
+            memo,
+        )
     }
 
-    pub fn apply(&mut self, ledger: &mut OnecoinLedger, tx: &OnecoinTransaction, identity: &Identity) -> Result<[u8; 32], String> {
+    pub fn apply(
+        &mut self,
+        ledger: &mut OnecoinLedger,
+        tx: &OnecoinTransaction,
+        identity: &Identity,
+    ) -> Result<[u8; 32], String> {
         let id = ledger.apply_transfer(tx, &identity.public.public_key)?;
-        if !self.state.transaction_ids.contains(&id) { self.state.transaction_ids.push(id); }
-        self.state.last_seen_nonce = ledger.nonces.get(&identity.public.awe_id.to_hex()).copied().unwrap_or(0);
+        if !self.state.transaction_ids.contains(&id) {
+            self.state.transaction_ids.push(id);
+        }
+        self.state.last_seen_nonce = ledger
+            .nonces
+            .get(&identity.public.awe_id.to_hex())
+            .copied()
+            .unwrap_or(0);
         Ok(id)
     }
 
-    pub fn verify_exchange_offer(&self, offer: &P2POffer, owner_public_key: &[u8; 32], now_unix: u64) -> bool {
+    pub fn verify_exchange_offer(
+        &self,
+        offer: &P2POffer,
+        owner_public_key: &[u8; 32],
+        now_unix: u64,
+    ) -> bool {
         offer.verify(owner_public_key, now_unix)
     }
 
@@ -114,9 +161,13 @@ mod tests {
         let a = Identity::generate(Username::new("wallet-a").unwrap());
         let b = Identity::generate(Username::new("wallet-b").unwrap());
         let mut ledger = OnecoinLedger::default();
-        ledger.initialize_genesis(&[a.public.awe_id.clone(), b.public.awe_id.clone()]).unwrap();
+        ledger
+            .initialize_genesis(&[a.public.awe_id.clone(), b.public.awe_id.clone()])
+            .unwrap();
         let mut wallet = OnecoinWallet::open(a.public.awe_id.clone());
-        let tx = wallet.build_coin_transfer(&a, &ledger, &b.public.awe_id, 1, None).unwrap();
+        let tx = wallet
+            .build_coin_transfer(&a, &ledger, &b.public.awe_id, 1, None)
+            .unwrap();
         wallet.apply(&mut ledger, &tx, &a).unwrap();
         assert_eq!(ledger.balance_atoms(&b.public.awe_id), 11 * ATOMS_PER_COIN);
     }

@@ -98,62 +98,111 @@ impl TierBenefits {
         let gb = 1024u64 * 1024 * 1024;
         match tier {
             UserTier::Free => Self {
-                tier, bonus_storage_bytes: 20 * gb, vps_cpu: 1, vps_ram_bytes: gb,
-                vps_24_7: false, node_server_management: false, data_centre_management: false,
-                data_group_management: false, centre_group_management: false,
+                tier,
+                bonus_storage_bytes: 20 * gb,
+                vps_cpu: 1,
+                vps_ram_bytes: gb,
+                vps_24_7: false,
+                node_server_management: false,
+                data_centre_management: false,
+                data_group_management: false,
+                centre_group_management: false,
                 minimum_monthly_atoms: 0,
             },
             UserTier::Basic => Self {
-                tier, bonus_storage_bytes: 20 * gb, vps_cpu: 2, vps_ram_bytes: 4 * gb,
-                vps_24_7: true, node_server_management: false, data_centre_management: false,
-                data_group_management: false, centre_group_management: false,
+                tier,
+                bonus_storage_bytes: 20 * gb,
+                vps_cpu: 2,
+                vps_ram_bytes: 4 * gb,
+                vps_24_7: true,
+                node_server_management: false,
+                data_centre_management: false,
+                data_group_management: false,
+                centre_group_management: false,
                 minimum_monthly_atoms: 10 * ATOMS_PER_COIN,
             },
             UserTier::NetPlus => Self {
-                tier, bonus_storage_bytes: 30 * gb, vps_cpu: 2, vps_ram_bytes: 8 * gb,
-                vps_24_7: true, node_server_management: true, data_centre_management: false,
-                data_group_management: false, centre_group_management: false,
+                tier,
+                bonus_storage_bytes: 30 * gb,
+                vps_cpu: 2,
+                vps_ram_bytes: 8 * gb,
+                vps_24_7: true,
+                node_server_management: true,
+                data_centre_management: false,
+                data_group_management: false,
+                centre_group_management: false,
                 minimum_monthly_atoms: 40 * ATOMS_PER_COIN,
             },
             UserTier::NetPro => Self {
-                tier, bonus_storage_bytes: contribution.storage_bytes, vps_cpu: 0,
-                vps_ram_bytes: contribution.ram_bytes, vps_24_7: true,
-                node_server_management: true, data_centre_management: false,
-                data_group_management: false, centre_group_management: false,
+                tier,
+                bonus_storage_bytes: contribution.storage_bytes,
+                vps_cpu: 0,
+                vps_ram_bytes: contribution.ram_bytes,
+                vps_24_7: true,
+                node_server_management: true,
+                data_centre_management: false,
+                data_group_management: false,
+                centre_group_management: false,
                 minimum_monthly_atoms: 0,
             },
             UserTier::NetUltra => Self {
-                tier, bonus_storage_bytes: contribution.storage_bytes, vps_cpu: 0,
-                vps_ram_bytes: contribution.ram_bytes, vps_24_7: true,
-                node_server_management: true, data_centre_management: true,
-                data_group_management: false, centre_group_management: false,
+                tier,
+                bonus_storage_bytes: contribution.storage_bytes,
+                vps_cpu: 0,
+                vps_ram_bytes: contribution.ram_bytes,
+                vps_24_7: true,
+                node_server_management: true,
+                data_centre_management: true,
+                data_group_management: false,
+                centre_group_management: false,
                 minimum_monthly_atoms: 0,
             },
             UserTier::Pro => Self {
-                tier, bonus_storage_bytes: contribution.storage_bytes, vps_cpu: 0,
-                vps_ram_bytes: contribution.ram_bytes, vps_24_7: true,
-                node_server_management: true, data_centre_management: true,
-                data_group_management: true, centre_group_management: false,
+                tier,
+                bonus_storage_bytes: contribution.storage_bytes,
+                vps_cpu: 0,
+                vps_ram_bytes: contribution.ram_bytes,
+                vps_24_7: true,
+                node_server_management: true,
+                data_centre_management: true,
+                data_group_management: true,
+                centre_group_management: false,
                 minimum_monthly_atoms: 0,
             },
             UserTier::DataGroup => Self {
-                tier, bonus_storage_bytes: contribution.storage_bytes, vps_cpu: 0,
-                vps_ram_bytes: contribution.ram_bytes, vps_24_7: true,
-                node_server_management: true, data_centre_management: true,
-                data_group_management: true, centre_group_management: false,
+                tier,
+                bonus_storage_bytes: contribution.storage_bytes,
+                vps_cpu: 0,
+                vps_ram_bytes: contribution.ram_bytes,
+                vps_24_7: true,
+                node_server_management: true,
+                data_centre_management: true,
+                data_group_management: true,
+                centre_group_management: false,
                 minimum_monthly_atoms: 0,
             },
             UserTier::CentreGroup => Self {
-                tier, bonus_storage_bytes: contribution.storage_bytes, vps_cpu: 0,
-                vps_ram_bytes: contribution.ram_bytes, vps_24_7: true,
-                node_server_management: true, data_centre_management: true,
-                data_group_management: true, centre_group_management: true,
+                tier,
+                bonus_storage_bytes: contribution.storage_bytes,
+                vps_cpu: 0,
+                vps_ram_bytes: contribution.ram_bytes,
+                vps_24_7: true,
+                node_server_management: true,
+                data_centre_management: true,
+                data_group_management: true,
+                centre_group_management: true,
                 minimum_monthly_atoms: 0,
             },
             UserTier::AwenetUser => Self {
-                tier, bonus_storage_bytes: 0, vps_cpu: 0, vps_ram_bytes: 0,
-                vps_24_7: true, node_server_management: true, data_centre_management: true,
-                data_group_management: true, centre_group_management: true,
+                tier,
+                bonus_storage_bytes: 0,
+                vps_cpu: 0,
+                vps_ram_bytes: 0,
+                vps_24_7: true,
+                node_server_management: true,
+                data_centre_management: true,
+                data_group_management: true,
+                centre_group_management: true,
                 minimum_monthly_atoms: 0,
             },
         }
@@ -161,18 +210,35 @@ impl TierBenefits {
 }
 
 pub fn classify_tier(r: &ResourceContribution) -> UserTier {
-    if r.server_count >= 1_000_000 { return UserTier::CentreGroup; }
-    if r.server_count >= 100_000 { return UserTier::DataGroup; }
-    if r.server_count >= 100 { return UserTier::Pro; }
-    if r.node_count >= 2 || r.server_count >= 2 { return UserTier::NetUltra; }
+    if r.server_count >= 1_000_000 {
+        return UserTier::CentreGroup;
+    }
+    if r.server_count >= 100_000 {
+        return UserTier::DataGroup;
+    }
+    if r.server_count >= 100 {
+        return UserTier::Pro;
+    }
+    if r.node_count >= 2 || r.server_count >= 2 {
+        return UserTier::NetUltra;
+    }
     if r.storage_bytes >= 1_000_000_000_000
-        && r.cpu_cores >= 8 && r.ram_bytes >= 16 * 1024 * 1024 * 1024 && r.gpu_units >= 1
-    { return UserTier::NetPro; }
+        && r.cpu_cores >= 8
+        && r.ram_bytes >= 16 * 1024 * 1024 * 1024
+        && r.gpu_units >= 1
+    {
+        return UserTier::NetPro;
+    }
     if r.storage_bytes >= 100 * 1024 * 1024 * 1024
-        && r.cpu_cores >= 4 && r.ram_bytes >= 8 * 1024 * 1024 * 1024
+        && r.cpu_cores >= 4
+        && r.ram_bytes >= 8 * 1024 * 1024 * 1024
         && r.bandwidth_bytes >= 1_000_000_000_000
-    { return UserTier::NetPlus; }
-    if r.score() > 0 { return UserTier::Basic; }
+    {
+        return UserTier::NetPlus;
+    }
+    if r.score() > 0 {
+        return UserTier::Basic;
+    }
     UserTier::Free
 }
 
@@ -204,11 +270,22 @@ impl RewardPolicy {
         }
     }
 
-    pub fn reward(&self, tier: UserTier, contribution: &ResourceContribution, usage_bps: u16) -> u128 {
+    pub fn reward(
+        &self,
+        tier: UserTier,
+        contribution: &ResourceContribution,
+        usage_bps: u16,
+    ) -> u128 {
         let minimum = self.monthly_minimum(tier);
         let score_reward = contribution.score().saturating_mul(self.atoms_per_score);
-        let usage = score_reward.saturating_mul(usage_bps as u128).saturating_div(10_000);
-        minimum.saturating_add(usage.saturating_mul(self.usage_multiplier_bps as u128).saturating_div(10_000))
+        let usage = score_reward
+            .saturating_mul(usage_bps as u128)
+            .saturating_div(10_000);
+        minimum.saturating_add(
+            usage
+                .saturating_mul(self.usage_multiplier_bps as u128)
+                .saturating_div(10_000),
+        )
     }
 }
 
@@ -231,13 +308,17 @@ impl OnebankPolicy {
     }
 
     pub fn set_fee(&mut self, bps: u16) -> Result<(), String> {
-        if bps as u64 > MAX_FEE_BPS { return Err("ONEBANK fee cannot exceed 5%".into()); }
+        if bps as u64 > MAX_FEE_BPS {
+            return Err("ONEBANK fee cannot exceed 5%".into());
+        }
         self.fee_bps = bps;
         Ok(())
     }
 
     pub fn fee_atoms(&self, amount_atoms: u128) -> u128 {
-        amount_atoms.saturating_mul(self.fee_bps as u128).saturating_div(10_000)
+        amount_atoms
+            .saturating_mul(self.fee_bps as u128)
+            .saturating_div(10_000)
     }
 
     pub fn net_after_fee(&self, amount_atoms: u128) -> u128 {
@@ -255,10 +336,16 @@ pub struct WalletBalance {
 impl WalletBalance {
     pub fn from_ledger(ledger: &OnecoinLedger, awe_id: &AweId) -> Self {
         let atoms = ledger.balance_atoms(awe_id);
-        Self { awe_id: awe_id.clone(), available_atoms: atoms, spendable_coins: atoms / ATOMS_PER_COIN }
+        Self {
+            awe_id: awe_id.clone(),
+            available_atoms: atoms,
+            spendable_coins: atoms / ATOMS_PER_COIN,
+        }
     }
 
-    pub fn amount(&self) -> OnecoinAmount { OnecoinAmount(self.available_atoms) }
+    pub fn amount(&self) -> OnecoinAmount {
+        OnecoinAmount(self.available_atoms)
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -270,7 +357,10 @@ pub enum FiatRail {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub enum ExchangeSide { Buy, Sell }
+pub enum ExchangeSide {
+    Buy,
+    Sell,
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct P2POffer {
@@ -298,13 +388,24 @@ impl P2POffer {
         payment_reference: Option<String>,
         expires_at_unix: u64,
     ) -> Result<Self, String> {
-        if amount_atoms == 0 || price_minor_per_coin == 0 { return Err("amount and price must be positive".into()); }
+        if amount_atoms == 0 || price_minor_per_coin == 0 {
+            return Err("amount and price must be positive".into());
+        }
         let mut offer = Self {
-            id: [0; 32], owner: owner.public.awe_id.clone(), side, amount_atoms,
-            price_minor_per_coin, fiat_currency, rail, payment_reference,
-            expires_at_unix, signature: [0; 64],
+            id: [0; 32],
+            owner: owner.public.awe_id.clone(),
+            side,
+            amount_atoms,
+            price_minor_per_coin,
+            fiat_currency,
+            rail,
+            payment_reference,
+            expires_at_unix,
+            signature: [0; 64],
         };
-        offer.id = *blake3::hash(&serde_json::to_vec(&offer).map_err(|_| "offer serialization failed")?).as_bytes();
+        offer.id =
+            *blake3::hash(&serde_json::to_vec(&offer).map_err(|_| "offer serialization failed")?)
+                .as_bytes();
         offer.signature = owner.sign(&offer.signing_bytes());
         Ok(offer)
     }
@@ -345,15 +446,28 @@ impl ExchangeOrder {
         fee_bps: u16,
         now_unix: u64,
     ) -> Result<Self, String> {
-        if amount_atoms == 0 || amount_atoms > offer.amount_atoms { return Err("invalid order amount".into()); }
+        if amount_atoms == 0 || amount_atoms > offer.amount_atoms {
+            return Err("invalid order amount".into());
+        }
         let coins = amount_atoms.saturating_div(ATOMS_PER_COIN);
         let fiat_minor = coins.saturating_mul(offer.price_minor_per_coin as u128);
-        let fee = amount_atoms.saturating_mul(fee_bps as u128).saturating_div(10_000);
+        let fee = amount_atoms
+            .saturating_mul(fee_bps as u128)
+            .saturating_div(10_000);
         Ok(Self {
-            id: *blake3::hash(&serde_json::to_vec(&(offer.id, &buyer, &seller, amount_atoms, now_unix)).unwrap()).as_bytes(),
-            offer_id: offer.id, buyer, seller, amount_atoms, fiat_minor,
-            onebank_fee_atoms: fee, fiat_currency: offer.fiat_currency.clone(),
-            rail: offer.rail.clone(), created_at_unix: now_unix,
+            id: *blake3::hash(
+                &serde_json::to_vec(&(offer.id, &buyer, &seller, amount_atoms, now_unix)).unwrap(),
+            )
+            .as_bytes(),
+            offer_id: offer.id,
+            buyer,
+            seller,
+            amount_atoms,
+            fiat_minor,
+            onebank_fee_atoms: fee,
+            fiat_currency: offer.fiat_currency.clone(),
+            rail: offer.rail.clone(),
+            created_at_unix: now_unix,
         })
     }
 }
@@ -363,11 +477,19 @@ mod tests {
     use super::*;
     #[test]
     fn tiers_follow_contribution() {
-        assert_eq!(classify_tier(&ResourceContribution::default()), UserTier::Free);
-        let mut r = ResourceContribution { storage_bytes: 1, ..Default::default() };
+        assert_eq!(
+            classify_tier(&ResourceContribution::default()),
+            UserTier::Free
+        );
+        let mut r = ResourceContribution {
+            storage_bytes: 1,
+            ..Default::default()
+        };
         assert_eq!(classify_tier(&r), UserTier::Basic);
         r.storage_bytes = 100 * 1024 * 1024 * 1024;
-        r.cpu_cores = 4; r.ram_bytes = 8 * 1024 * 1024 * 1024; r.bandwidth_bytes = 1_000_000_000_000;
+        r.cpu_cores = 4;
+        r.ram_bytes = 8 * 1024 * 1024 * 1024;
+        r.bandwidth_bytes = 1_000_000_000_000;
         assert_eq!(classify_tier(&r), UserTier::NetPlus);
     }
 
@@ -383,7 +505,10 @@ mod tests {
     #[test]
     fn reward_grows_with_usage() {
         let p = RewardPolicy::default();
-        let r = ResourceContribution { storage_bytes: 1024 * 1024 * 1024, ..Default::default() };
+        let r = ResourceContribution {
+            storage_bytes: 1024 * 1024 * 1024,
+            ..Default::default()
+        };
         assert!(p.reward(UserTier::Basic, &r, 10_000) > p.reward(UserTier::Basic, &r, 0));
     }
 }
