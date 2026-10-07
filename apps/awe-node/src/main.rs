@@ -637,21 +637,21 @@ async fn serve_ui(
             let p:serde_json::Value=serde_json::from_str(body).unwrap_or_default();
             let title=p.get("title").and_then(|v|v.as_str()).unwrap_or("").trim().to_string();
             let mut members=p.get("members").and_then(|v|v.as_array()).cloned().unwrap_or_default().into_iter().filter_map(|v|v.as_str().map(str::to_string)).filter(|v|!v.is_empty()).collect::<Vec<_>>();
-            let local=format_uid(node.identity.public.awe_id.as_bytes());
+            let local=node.identity.public.awe_id.to_hex();
             if title.is_empty(){("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"title is required"}).to_string())}else{
                 if !members.contains(&local){members.push(local.clone());} members.sort();members.dedup();
                 let id=format!("gid-{}",hex::encode(&blake3::hash(format!("{}:{}:{}",local,title,now_unix()).as_bytes()).as_bytes()[..12]));
                 let group=serde_json::json!({"id":id,"title":title,"owner":local,"members":members,"created_at":now_unix(),"messages":[]});
                 if let Ok(mut s)=community.lock(){if let Some(a)=s.get_mut("groups").and_then(|v|v.as_array_mut()){a.push(group.clone());}}
-                let env=serde_json::json!({"kind":"awe.group.v1","event":"upsert","group":group,"sender":format_uid(node.identity.public.awe_id.as_bytes())});
+                let env=serde_json::json!({"kind":"awe.group.v1","event":"upsert","group":group,"sender":local});
                 let members=group.get("members").and_then(|v|v.as_array()).cloned().unwrap_or_default(); let mut delivered=0usize;
-                if let Ok(payload)=serde_json::to_vec(&env){for peer in node.peers().await{let pid=format_uid(&peer.awe_id);if pid!=local&&members.iter().any(|v|v.as_str()==Some(pid.as_str()))&&node.send_to_peer(&peer.awe_id,100,payload.clone()).await.is_ok(){delivered+=1;}}}
+                if let Ok(payload)=serde_json::to_vec(&env){for peer in node.peers().await{let pid=hex::encode(peer.awe_id);if pid!=local&&members.iter().any(|v|v.as_str()==Some(pid.as_str()))&&node.send_to_peer(&peer.awe_id,100,payload.clone()).await.is_ok(){delivered+=1;}}}
                 ("200 OK","application/json; charset=utf-8",serde_json::json!({"status":"created","group":group,"delivered_members":delivered}).to_string())
             }
         },
         "/api/groups/send" if method == "POST" => {
             let body=request.split("\r\n\r\n").nth(1).unwrap_or(""); let p:serde_json::Value=serde_json::from_str(body).unwrap_or_default();
-            let gid=p.get("group_id").and_then(|v|v.as_str()).unwrap_or("").trim(); let text=p.get("text").and_then(|v|v.as_str()).unwrap_or("").trim(); let local=format_uid(node.identity.public.awe_id.as_bytes());
+            let gid=p.get("group_id").and_then(|v|v.as_str()).unwrap_or("").trim(); let text=p.get("text").and_then(|v|v.as_str()).unwrap_or("").trim(); let local=node.identity.public.awe_id.to_hex();
             if gid.is_empty()||text.is_empty(){("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"group_id and text are required"}).to_string())}else{
                 let group=community.lock().ok().and_then(|s|s.get("groups").and_then(|v|v.as_array()).and_then(|a|a.iter().find(|g|g.get("id").and_then(|v|v.as_str())==Some(gid)).cloned()));
                 match group{
@@ -1929,7 +1929,7 @@ async fn run_product() -> Result<()> {
                             if let Ok(mut state) = dispatcher_community.lock() {
                                 let event =
                                     message.get("event").and_then(|v| v.as_str()).unwrap_or("");
-                                let sender_uid = format_uid(&sender);
+                                let sender_uid = hex::encode(sender);
                                 if event == "upsert" {
                                     if let Some(group) = message.get("group").cloned() {
                                         let owner = group
