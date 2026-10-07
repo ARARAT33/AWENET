@@ -163,8 +163,16 @@ impl AweNetDesktop {
         ui.heading("AWENET");
         ui.label("One network. One native application. Shared resources.");
         ui.add_space(14.0);
-        let peers = self.status.get("active_connections").and_then(Value::as_u64).unwrap_or(0);
-        let node = self.status.get("node").and_then(Value::as_str).unwrap_or("starting");
+        let peers = self
+            .status
+            .get("active_connections")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let node = self
+            .status
+            .get("node")
+            .and_then(Value::as_str)
+            .unwrap_or("starting");
         ui.horizontal(|ui| {
             ui.group(|ui| {
                 ui.strong("Network");
@@ -178,31 +186,56 @@ impl AweNetDesktop {
                 ui.strong("ONECOIN");
                 ui.label(format!(
                     "{}",
-                    self.wallet.get("balance_coins").and_then(Value::as_f64).unwrap_or(0.0)
+                    self.wallet
+                        .get("balance_coins")
+                        .and_then(Value::as_f64)
+                        .unwrap_or(0.0)
                 ));
             });
         });
         ui.add_space(18.0);
         ui.heading("Quick actions");
         ui.horizontal_wrapped(|ui| {
-            if ui.button("Open Wallet").clicked() { self.page = Page::Wallet; }
-            if ui.button("Network").clicked() { self.page = Page::Network; }
-            if ui.button("Messenger").clicked() { self.page = Page::Messenger; }
-            if ui.button("AWENET Browser").clicked() { self.page = Page::Browser; }
-            if ui.button("Node").clicked() { self.page = Page::Node; }
+            if ui.button("Open Wallet").clicked() {
+                self.page = Page::Wallet;
+            }
+            if ui.button("Network").clicked() {
+                self.page = Page::Network;
+            }
+            if ui.button("Messenger").clicked() {
+                self.page = Page::Messenger;
+            }
+            if ui.button("AWENET Browser").clicked() {
+                self.page = Page::Browser;
+            }
+            if ui.button("Node").clicked() {
+                self.page = Page::Node;
+            }
         });
     }
 
     fn network(&mut self, ui: &mut egui::Ui) {
         ui.heading("AWENET Network");
-        let connections = self.status.get("active_connections").and_then(Value::as_u64).unwrap_or(0);
-        let peers = self.status.get("peers").and_then(Value::as_array).cloned().unwrap_or_default();
+        let connections = self
+            .status
+            .get("active_connections")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let peers = self
+            .status
+            .get("peers")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
         ui.label(format!("Active connections: {connections}"));
         ui.label(format!("Known peers: {}", peers.len()));
         ui.separator();
         for peer in peers {
             let id = peer.get("id").and_then(Value::as_str).unwrap_or("unknown");
-            let address = peer.get("address").and_then(Value::as_str).unwrap_or("private");
+            let address = peer
+                .get("address")
+                .and_then(Value::as_str)
+                .unwrap_or("private");
             ui.horizontal(|ui| {
                 ui.label(id);
                 ui.label(address);
@@ -214,11 +247,17 @@ impl AweNetDesktop {
         ui.heading("ONECOIN Wallet");
         ui.label(format!(
             "Balance: {} ONECOIN",
-            self.wallet.get("balance_coins").and_then(Value::as_f64).unwrap_or(0.0)
+            self.wallet
+                .get("balance_coins")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0)
         ));
         ui.label(format!(
             "Tier: {}",
-            self.wallet.get("tier").and_then(Value::as_str).unwrap_or("FREE")
+            self.wallet
+                .get("tier")
+                .and_then(Value::as_str)
+                .unwrap_or("FREE")
         ));
         ui.separator();
         ui.label("Recipient AWEID");
@@ -247,7 +286,9 @@ impl AweNetDesktop {
                 Err(error) => error,
             };
         }
-        if !self.message.is_empty() { ui.label(&self.message); }
+        if !self.message.is_empty() {
+            ui.label(&self.message);
+        }
     }
 
     fn browser(&mut self, ui: &mut egui::Ui) {
@@ -268,7 +309,9 @@ impl AweNetDesktop {
         ui.label("Search");
         ui.text_edit_singleline(&mut self.search);
         ui.label("Search index integration will use the native object resolver as it is enabled.");
-        if !self.message.is_empty() { ui.label(&self.message); }
+        if !self.message.is_empty() {
+            ui.label(&self.message);
+        }
     }
 
     fn node(&mut self, ui: &mut egui::Ui) {
@@ -277,15 +320,24 @@ impl AweNetDesktop {
         ui.separator();
         ui.label(format!(
             "AWEID: {}",
-            self.wallet.get("awe_id").and_then(Value::as_str).unwrap_or("loading")
+            self.wallet
+                .get("awe_id")
+                .and_then(Value::as_str)
+                .unwrap_or("loading")
         ));
         ui.label(format!(
             "Tier: {}",
-            self.wallet.get("tier").and_then(Value::as_str).unwrap_or("FREE")
+            self.wallet
+                .get("tier")
+                .and_then(Value::as_str)
+                .unwrap_or("FREE")
         ));
         ui.label(format!(
             "Resource score: {}",
-            self.wallet.get("resource_score").and_then(Value::as_u64).unwrap_or(0)
+            self.wallet
+                .get("resource_score")
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
         ));
         ui.label("Resource controls are persisted by the AWENET node; this native page is the control surface.");
     }
@@ -301,21 +353,23 @@ impl AweNetDesktop {
 impl eframe::App for AweNetDesktop {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.refresh();
-        egui::SidePanel::left("navigation").min_width(220.0).show(ctx, |ui| {
-            ui.heading("AWENET");
-            ui.add_space(12.0);
-            self.nav(ui, Page::Home, "Home");
-            self.nav(ui, Page::Network, "Network");
-            self.nav(ui, Page::Wallet, "ONECOIN");
-            self.nav(ui, Page::Messenger, "Messenger");
-            self.nav(ui, Page::Browser, "AWENET Browser");
-            self.nav(ui, Page::Node, "Node");
-            self.nav(ui, Page::Settings, "Settings");
-            ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                ui.small(format!("Backend {}", self.addr));
-                ui.small("Native desktop mode");
+        egui::SidePanel::left("navigation")
+            .min_width(220.0)
+            .show(ctx, |ui| {
+                ui.heading("AWENET");
+                ui.add_space(12.0);
+                self.nav(ui, Page::Home, "Home");
+                self.nav(ui, Page::Network, "Network");
+                self.nav(ui, Page::Wallet, "ONECOIN");
+                self.nav(ui, Page::Messenger, "Messenger");
+                self.nav(ui, Page::Browser, "AWENET Browser");
+                self.nav(ui, Page::Node, "Node");
+                self.nav(ui, Page::Settings, "Settings");
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
+                    ui.small(format!("Backend {}", self.addr));
+                    ui.small("Native desktop mode");
+                });
             });
-        });
         egui::TopBottomPanel::top("header").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.heading(self.page.title());
@@ -329,16 +383,14 @@ impl eframe::App for AweNetDesktop {
                 }
             });
         });
-        egui::CentralPanel::default().show(ctx, |ui| {
-            match self.page {
-                Page::Home => self.home(ui),
-                Page::Network => self.network(ui),
-                Page::Wallet => self.wallet(ui),
-                Page::Messenger => self.messenger(ui),
-                Page::Browser => self.browser(ui),
-                Page::Node => self.node(ui),
-                Page::Settings => self.settings(ui),
-            }
+        egui::CentralPanel::default().show(ctx, |ui| match self.page {
+            Page::Home => self.home(ui),
+            Page::Network => self.network(ui),
+            Page::Wallet => self.wallet(ui),
+            Page::Messenger => self.messenger(ui),
+            Page::Browser => self.browser(ui),
+            Page::Node => self.node(ui),
+            Page::Settings => self.settings(ui),
         });
         ctx.request_repaint_after(Duration::from_millis(500));
     }

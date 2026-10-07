@@ -489,7 +489,8 @@ impl OnecoinLedger {
         }
         let recipient_key = Self::key(recipient);
         let balance = self.balances.get(&recipient_key).copied().unwrap_or(0);
-        self.balances.insert(recipient_key, balance.saturating_add(tx.amount_atoms));
+        self.balances
+            .insert(recipient_key, balance.saturating_add(tx.amount_atoms));
         self.received_transactions.insert(tx_id, tx.amount_atoms);
         Ok(true)
     }
