@@ -10,8 +10,8 @@ use awep2p_core::identity::{AweId, AweSecret, Identity, LocalVault, Username};
 use awep2p_core::lan_mesh::LanPeerBeacon;
 use awep2p_core::messenger::format_uid;
 use awep2p_core::network::{format_node_descriptor, Node};
-use awep2p_core::onecoin::{OnecoinLedger, OnecoinTransaction, ATOMS_PER_COIN};
 use awep2p_core::onebank::{classify_tier, ResourceContribution};
+use awep2p_core::onecoin::{OnecoinLedger, OnecoinTransaction, ATOMS_PER_COIN};
 use awep2p_core::onecoin_consensus_runtime::{
     OnecoinConsensusMessage, OnecoinConsensusRuntime, ONECOIN_CONSENSUS_STREAM,
 };
@@ -1697,7 +1697,7 @@ async fn run_product() -> Result<()> {
         fs::read(&contribution_path)
             .ok()
             .and_then(|b| serde_json::from_slice::<ResourceContribution>(&b).ok())
-            .unwrap_or_default()
+            .unwrap_or_default(),
     ));
 
     let consensus_state: ConsensusState = {
