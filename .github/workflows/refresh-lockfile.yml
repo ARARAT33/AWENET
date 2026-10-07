@@ -1,0 +1,26 @@
+name: Refresh Cargo.lock
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Regenerate lockfile
+        run: cargo generate-lockfile
+      - name: Commit lockfile
+        run: |
+          if git diff --quiet -- Cargo.lock; then exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.lock
+          git commit -m "chore: refresh Cargo.lock [skip ci]"
+          git push
