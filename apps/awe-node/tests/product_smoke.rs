@@ -302,8 +302,9 @@ fn three_node_product_smoke() {
             &format!(r#"{{"group_id":"{group_id}","text":"AWEP2P-E2E-GROUP"}}"#),
         );
         assert!(
-            group_send.contains(r#""status":"sent""#),
-            "group send: {group_send}"
+            group_send.contains(r#""status":"sent""#)
+                && group_send.contains(r#""delivered_members":1"#),
+            "group send did not reach a member: {group_send}"
         );
         let group_message_deadline = Instant::now() + Duration::from_secs(5);
         loop {
