@@ -331,7 +331,21 @@ async fn serve_ui(
                 Ok((hex::encode(tx_id), fee_atoms, tx))
             })();
             match result {
-                Ok((tx_id, fee_atoms, tx)) => { let recipient_id = <[u8; 32]>::try_from(tx.recipient).unwrap_or([0; 32]); let delivered = if node.peers().await.into_iter().any(|p| p.awe_id == recipient_id) { match serde_json::to_vec(&tx) { Ok(bytes) => node.send_to_peer(&recipient_id, policy::ONECOIN_TRANSFER_STREAM, bytes).await.is_ok(), Err(_) => false } } else { false }; ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"accepted","tx_id":tx_id,"fee_atoms":fee_atoms,"fee_bps":100,"recipient_delivered":delivered,"recipient_pending":!delivered}).to_string()) },
+                Ok((tx_id, fee_atoms, tx)) => { let recipient_id = <[u8; 32]>::try_from(tx.recipient).unwrap_or([0; 32]); let delivered = if node.peers().await.into_iter().any(|p| p.awe_id == recipient_id) {
+                        match serde_json::to_vec(&tx) {
+                            Ok(bytes) => node
+                                .send_to_peer_confirmed(&recipient_id, policy::ONECOIN_TRANSFER_STREAM, bytes.clone())
+                                .await
+                                .or_else(|_| async {
+                                    node.send_to_peer(&recipient_id, policy::ONECOIN_TRANSFER_STREAM, bytes).await
+                                })
+                                .await
+                                .is_ok(),
+                            Err(_) => false,
+                        }
+                    } else {
+                        false
+                    }; ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"accepted","tx_id":tx_id,"fee_atoms":fee_atoms,"fee_bps":100,"recipient_delivered":delivered,"recipient_pending":!delivered}).to_string()) },
                 Err(error) => ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"rejected","error":error}).to_string())
             }
         },
@@ -1805,7 +1819,14 @@ async fn run_product() -> Result<()> {
                                 let sender_id = AweId::from_public_key(&tx.sender);
                                 ledger.ensure_member(&sender_id);
                                 ledger.ensure_member(&dispatcher_node.identity.public.awe_id);
-                                if ledger.apply_transfer(&tx, &tx.sender).is_ok() {
+                                if ledger
+                                    .receive_transfer(
+                                        &tx,
+                                        &tx.sender,
+                                        &dispatcher_node.identity.public.awe_id,
+                                    )
+                                    .is_ok()
+                                {
                                     let _ = fs::write(
                                         &dispatcher_onecoin_path,
                                         serde_json::to_vec_pretty(&*ledger).unwrap_or_default(),
