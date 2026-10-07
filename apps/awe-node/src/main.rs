@@ -36,6 +36,7 @@ const ONECOIN_JS: &str = include_str!("../../awe-desktop/ui/onecoin.js");
 const ONECOIN_CSS: &str = include_str!("../../awe-desktop/ui/onecoin.css");
 const QR_JS: &str = include_str!("../../awe-desktop/ui/vendor/qrcode.js");
 const DEFAULT_UI_ADDR: &str = "127.0.0.1:41800";
+const ONECOIN_TRANSFER_STREAM: u32 = 201;
 
 type MessengerLog = Arc<Mutex<Vec<serde_json::Value>>>;
 type FederationState = Arc<Mutex<AweNetConfig>>;
@@ -298,7 +299,7 @@ async fn serve_ui(
             let recipient_hex = parsed.get("recipient").and_then(|v| v.as_str()).unwrap_or("");
             let amount_coins = parsed.get("amount_coins").and_then(|v| v.as_f64()).unwrap_or(0.0);
             let memo = parsed.get("memo").and_then(|v| v.as_str()).map(str::to_owned);
-            let result: Result<String, String> = (|| {
+            let result: Result<(String, u128, OnecoinTransaction), String> = (|| {
                 if recipient_hex.len() != 64 || !recipient_hex.chars().all(|c| c.is_ascii_hexdigit()) {
                     return Err("recipient must be a 64-character AWE-ID".into());
                 }
@@ -319,9 +320,7 @@ async fn serve_ui(
                 if ledger.members.is_empty() {
                     ledger.initialize_genesis(std::slice::from_ref(&sender))?;
                 }
-                if !ledger.members.contains_key(&recipient.to_hex()) {
-                    ledger.register_member(&recipient)?;
-                }
+                ledger.ensure_member(&recipient);
                 if ledger.balance_atoms(&sender) < amount_atoms {
                     return Err("insufficient ONECOIN balance".into());
                 }
@@ -330,10 +329,10 @@ async fn serve_ui(
                 let (tx_id, fee_atoms) = ledger.apply_transfer_with_fee(&tx, &node.identity.public.public_key, 100)?;
                 fs::write(&onecoin_path, serde_json::to_vec_pretty(&*ledger).map_err(|_| "ONECOIN ledger serialization failed".to_string())?)
                     .map_err(|e| e.to_string())?;
-                Ok(serde_json::json!({"tx_id":hex::encode(tx_id),"fee_atoms":fee_atoms,"fee_bps":100}).to_string())
+                Ok((hex::encode(tx_id), fee_atoms, tx))
             })();
             match result {
-                Ok(details) => { let transfer = serde_json::from_str::<serde_json::Value>(&details).unwrap_or_else(|_| serde_json::json!({"tx_id":details})); ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"accepted","tx_id":transfer.get("tx_id").cloned().unwrap_or_default(),"fee_atoms":transfer.get("fee_atoms").cloned().unwrap_or_default(),"fee_bps":transfer.get("fee_bps").cloned().unwrap_or_else(|| serde_json::json!(100))}).to_string()) },
+                Ok((tx_id, fee_atoms, tx)) => { let recipient_id = <[u8; 32]>::try_from(tx.recipient).unwrap_or([0; 32]); let delivered = if node.peers().await.into_iter().any(|p| p.awe_id == recipient_id) { match serde_json::to_vec(&tx) { Ok(bytes) => node.send_to_peer(&recipient_id, ONECOIN_TRANSFER_STREAM, bytes).await.is_ok(), Err(_) => false } } else { false }; ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"accepted","tx_id":tx_id,"fee_atoms":fee_atoms,"fee_bps":100,"recipient_delivered":delivered,"recipient_pending":!delivered}).to_string()) },
                 Err(error) => ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"rejected","error":error}).to_string())
             }
         },
