@@ -350,6 +350,15 @@ impl OnecoinLedger {
     /// Register a new member. One ONECOIN is created for the join-dividend
     /// and divided equally among all members after the join, including the new member.
     /// Once the atomic share would be zero, this distribution permanently stops.
+    /// Add a known network member without creating a join dividend.
+    /// Membership synchronization and monetary transfers are separate concerns.
+    pub fn ensure_member(&mut self, id: &AweId) {
+        let key = Self::key(id);
+        self.members.entry(key.clone()).or_insert(*id.as_bytes());
+        self.balances.entry(key.clone()).or_insert(0);
+        self.nonces.entry(key).or_insert(0);
+    }
+
     pub fn register_member(&mut self, id: &AweId) -> Result<JoinDistribution, String> {
         let key = Self::key(id);
         if self.members.contains_key(&key) {
