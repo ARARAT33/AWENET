@@ -174,10 +174,6 @@ fn three_node_product_smoke() {
         let node2_status: serde_json::Value =
             serde_json::from_str(&get("127.0.0.1:46202", "/api/status"))
                 .expect("node2 status json");
-        let node2_uid = node2_status
-            .get("node_id")
-            .and_then(|v| v.as_str())
-            .expect("node2 id");
         let node2_wallet_before: serde_json::Value =
             serde_json::from_str(&get("127.0.0.1:46202", "/api/onebank/wallet"))
                 .expect("node2 wallet before json");
