@@ -2294,6 +2294,12 @@ async fn run_product() -> Result<()> {
         }
     });
 
+    if env::var_os("AWE_NO_NATIVE_UI").is_some() {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+        }
+    }
+
     native_ui::run(native_ui_addr).map_err(anyhow::Error::msg)?;
     Ok(())
 }
