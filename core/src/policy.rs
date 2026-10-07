@@ -35,7 +35,11 @@ impl Default for NetworkPolicy {
             max_message_bytes: 64 * 1024,
             max_shard_bytes: 4 * 1024 * 1024,
             max_bootstrap_peers: 64,
-            allowed_streams: vec![MESSENGER_STREAM, crate::data_plane::STORAGE_STREAM, ONECOIN_TRANSFER_STREAM],
+            allowed_streams: vec![
+                MESSENGER_STREAM,
+                crate::data_plane::STORAGE_STREAM,
+                ONECOIN_TRANSFER_STREAM,
+            ],
         }
     }
 }
