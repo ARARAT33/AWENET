@@ -692,7 +692,7 @@ async fn serve_ui(
             }
         },
         "/api/store/install" if method == "POST" => {
-            let body = request.split("\\r\\n\\r\\n").nth(1).unwrap_or("");
+            let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
             let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
             let hash = parsed.get("package_hash").and_then(|v| v.as_str()).unwrap_or("");
             let granted = parsed.get("granted_permissions").cloned().unwrap_or_else(|| serde_json::json!([]));
