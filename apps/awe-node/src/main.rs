@@ -205,6 +205,44 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> Result<String>
 }
 
 #[allow(clippy::too_many_arguments)]
+fn parse_onecoin_atoms(value: &serde_json::Value) -> Result<u128, String> {
+    let raw = if let Some(text) = value.as_str() {
+        text.trim().to_owned()
+    } else if value.is_number() {
+        value.to_string()
+    } else {
+        return Err("amount_coins must be a number or decimal string".into());
+    };
+    if raw.is_empty() || raw.contains('e') || raw.contains('E') {
+        return Err("amount_coins must be a plain decimal value".into());
+    }
+    let mut parts = raw.split('.');
+    let whole = parts.next().unwrap_or("");
+    let fraction = parts.next().unwrap_or("");
+    if parts.next().is_some() || whole.is_empty() || !whole.chars().all(|c| c.is_ascii_digit()) {
+        return Err("amount_coins has invalid decimal syntax".into());
+    }
+    if fraction.len() > 8 || !fraction.chars().all(|c| c.is_ascii_digit()) {
+        return Err("amount_coins supports at most 8 decimal places".into());
+    }
+    let whole_atoms = whole
+        .parse::<u128>()
+        .map_err(|_| "amount_coins is too large".to_string())?
+        .checked_mul(ATOMS_PER_COIN)
+        .ok_or_else(|| "amount_coins is too large".to_string())?;
+    let padded = format!("{fraction:0<8}");
+    let fraction_atoms = if padded.is_empty() {
+        0
+    } else {
+        padded
+            .parse::<u128>()
+            .map_err(|_| "amount_coins has invalid precision".to_string())?
+    };
+    whole_atoms
+        .checked_add(fraction_atoms)
+        .ok_or_else(|| "amount_coins is too large".to_string())
+}
+
 async fn serve_ui(
     mut stream: tokio::net::TcpStream,
     node: Node,
@@ -297,20 +335,16 @@ async fn serve_ui(
             let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
             let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
             let recipient_hex = parsed.get("recipient").and_then(|v| v.as_str()).unwrap_or("");
-            let amount_coins = parsed.get("amount_coins").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let amount_value = parsed.get("amount_coins").cloned().unwrap_or(serde_json::Value::Null);
             let memo = parsed.get("memo").and_then(|v| v.as_str()).map(str::to_owned);
             let result: Result<(String, u128, OnecoinTransaction), String> = (|| {
                 if recipient_hex.len() != 64 || !recipient_hex.chars().all(|c| c.is_ascii_hexdigit()) {
                     return Err("recipient must be a 64-character AWE-ID".into());
                 }
-                if !amount_coins.is_finite() || amount_coins <= 0.0 {
+                let amount_atoms = parse_onecoin_atoms(&amount_value)?;
+                if amount_atoms == 0 {
                     return Err("amount_coins must be positive".into());
                 }
-                let atoms_f = amount_coins * ATOMS_PER_COIN as f64;
-                if atoms_f > u128::MAX as f64 || atoms_f.fract() != 0.0 {
-                    return Err("amount has invalid precision".into());
-                }
-                let amount_atoms = atoms_f as u128;
                 let recipient = AweId::from_hex(recipient_hex)?;
                 if recipient == node.identity.public.awe_id {
                     return Err("cannot transfer ONECOIN to the same wallet".into());
