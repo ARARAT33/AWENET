@@ -10,6 +10,7 @@ use awep2p_core::identity::{AweId, AweSecret, Identity, LocalVault, Username};
 use awep2p_core::lan_mesh::LanPeerBeacon;
 use awep2p_core::messenger::format_uid;
 use awep2p_core::network::{format_node_descriptor, Node};
+use awep2p_core::onecoin::{OnecoinLedger, OnecoinTransaction, ATOMS_PER_COIN};
 use awep2p_core::onecoin_consensus_runtime::{
     OnecoinConsensusMessage, OnecoinConsensusRuntime, ONECOIN_CONSENSUS_STREAM,
 };
@@ -30,6 +31,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 const UI_HTML: &str = include_str!("../../awe-desktop/ui/index.html");
 const UI_CSS: &str = include_str!("../../awe-desktop/ui/style.css");
 const UI_JS: &str = include_str!("../../awe-desktop/ui/app.js");
+const ONECOIN_JS: &str = include_str!("../../awe-desktop/ui/onecoin.js");
+const ONECOIN_CSS: &str = include_str!("../../awe-desktop/ui/onecoin.css");
 const DEFAULT_UI_ADDR: &str = "127.0.0.1:41800";
 
 type MessengerLog = Arc<Mutex<Vec<serde_json::Value>>>;
@@ -40,6 +43,7 @@ type PendingShards = Arc<Mutex<BTreeMap<[u8; 16], StorageShardTransfer>>>;
 type PolicyState = Arc<Mutex<NetworkPolicy>>;
 type CommunityState = Arc<Mutex<serde_json::Value>>;
 type ConsensusState = Arc<Mutex<Option<OnecoinConsensusRuntime>>>;
+type OnecoinLedgerState = Arc<Mutex<OnecoinLedger>>;
 
 async fn build_onecoin_validators(
     node: &Node,
@@ -208,6 +212,9 @@ async fn serve_ui(
     pending_shards: PendingShards,
     policy_state: PolicyState,
     community: CommunityState,
+    onecoin_ledger: OnecoinLedgerState,
+    onecoin_path: PathBuf,
+    onecoin_offers_path: PathBuf,
 ) -> Result<()> {
     let request = read_http_request(&mut stream).await?;
     let request_line = request.lines().next().unwrap_or("");
@@ -218,6 +225,98 @@ async fn serve_ui(
         "/" | "/index.html" => ("200 OK", "text/html; charset=utf-8", UI_HTML.to_string()),
         "/style.css" => ("200 OK", "text/css; charset=utf-8", UI_CSS.to_string()),
         "/app.js" => ("200 OK", "application/javascript; charset=utf-8", UI_JS.to_string()),
+        "/onecoin.js" => ("200 OK", "application/javascript; charset=utf-8", ONECOIN_JS.to_string()),
+        "/onecoin.css" => ("200 OK", "text/css; charset=utf-8", ONECOIN_CSS.to_string()),
+        "/api/onebank/wallet" if method == "GET" => {
+            let ledger = onecoin_ledger.lock().map(|l| l.clone()).unwrap_or_default();
+            let id = node.identity.public.awe_id.clone();
+            let balance_atoms = ledger.balance_atoms(&id);
+            let tier = if balance_atoms > 0 { "BASIC" } else { "FREE" };
+            ("200 OK", "application/json; charset=utf-8", serde_json::json!({
+                "awe_id": id.to_hex(),
+                "balance_atoms": balance_atoms,
+                "balance_coins": balance_atoms / ATOMS_PER_COIN,
+                "tier": tier,
+                "fee_bps": 100,
+                "resource_score": 0,
+                "exchange": "P2P_ONECOIN_ONLY",
+                "fiat_settlement": "EXTERNAL_PERSON_TO_PERSON"
+            }).to_string())
+        },
+        "/api/onebank/wallet/send" if method == "POST" => {
+            let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+            let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+            let recipient_hex = parsed.get("recipient").and_then(|v| v.as_str()).unwrap_or("");
+            let amount_coins = parsed.get("amount_coins").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let memo = parsed.get("memo").and_then(|v| v.as_str()).map(str::to_owned);
+            let result: Result<String, String> = (|| {
+                if recipient_hex.len() != 64 || !recipient_hex.chars().all(|c| c.is_ascii_hexdigit()) {
+                    return Err("recipient must be a 64-character AWE-ID".into());
+                }
+                if !amount_coins.is_finite() || amount_coins <= 0.0 {
+                    return Err("amount_coins must be positive".into());
+                }
+                let atoms_f = amount_coins * ATOMS_PER_COIN as f64;
+                if atoms_f > u128::MAX as f64 || atoms_f.fract() != 0.0 {
+                    return Err("amount has invalid precision".into());
+                }
+                let amount_atoms = atoms_f as u128;
+                let recipient = AweId::from_hex(recipient_hex)?;
+                if recipient == node.identity.public.awe_id {
+                    return Err("cannot transfer ONECOIN to the same wallet".into());
+                }
+                let mut ledger = onecoin_ledger.lock().map_err(|_| "ONECOIN ledger lock failed".to_string())?;
+                let sender = node.identity.public.awe_id.clone();
+                if ledger.members.is_empty() {
+                    ledger.initialize_genesis(std::slice::from_ref(&sender))?;
+                }
+                if !ledger.members.contains_key(&recipient.to_hex()) {
+                    ledger.register_member(&recipient)?;
+                }
+                if ledger.balance_atoms(&sender) < amount_atoms {
+                    return Err("insufficient ONECOIN balance".into());
+                }
+                let nonce = ledger.nonces.get(&sender.to_hex()).copied().unwrap_or(0);
+                let tx = OnecoinTransaction::new(&node.identity, nonce, &recipient, amount_atoms, memo);
+                let tx_id = ledger.apply_transfer(&tx, &node.identity.public.public_key)?;
+                fs::write(&onecoin_path, serde_json::to_vec_pretty(&*ledger).map_err(|_| "ONECOIN ledger serialization failed".to_string())?)
+                    .map_err(|e| e.to_string())?;
+                Ok(hex::encode(tx_id))
+            })();
+            match result {
+                Ok(tx_id) => ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"accepted","tx_id":tx_id}).to_string()),
+                Err(error) => ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"rejected","error":error}).to_string())
+            }
+        },
+        "/api/onebank/exchange/offers" if method == "GET" => {
+            let offers: Vec<serde_json::Value> = fs::read(&onecoin_offers_path)
+                .ok()
+                .and_then(|b| serde_json::from_slice(&b).ok())
+                .unwrap_or_default();
+            ("200 OK", "application/json; charset=utf-8", serde_json::to_string(&offers).unwrap_or_else(|_| "[]".into()))
+        },
+        "/api/onebank/exchange/offers" if method == "POST" => {
+            let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+            let mut offer: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+            if !offer.is_object() {
+                offer = serde_json::json!({});
+            }
+            if let Some(obj) = offer.as_object_mut() {
+                obj.insert("owner".into(), serde_json::json!(node.identity.public.awe_id.to_hex()));
+                obj.insert("settlement".into(), serde_json::json!("DIRECT_PERSON_TO_PERSON"));
+                obj.insert("coin_transfer".into(), serde_json::json!("AWENET_WALLET"));
+                obj.insert("fiat_transfer".into(), serde_json::json!("OUTSIDE_AWENET"));
+                obj.insert("created_at".into(), serde_json::json!(now_unix()));
+            }
+            let mut offers: Vec<serde_json::Value> = fs::read(&onecoin_offers_path)
+                .ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+            offers.push(offer.clone());
+            let response = fs::write(&onecoin_offers_path, serde_json::to_vec_pretty(&offers).unwrap_or_default());
+            match response {
+                Ok(()) => ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"published","offer":offer,"notice":"ONECOIN transfer is handled by AWENET wallet. Fiat is exchanged directly between people outside AWENET."}).to_string()),
+                Err(error) => ("500 Internal Server Error", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":error.to_string()}).to_string())
+            }
+        },
         "/api/node" => ("200 OK", "application/json; charset=utf-8", serde_json::json!({
             "id": format_uid(node.identity.public.awe_id.as_bytes()),
             "descriptor": node.node_descriptor(),
@@ -1525,6 +1624,23 @@ async fn run_product() -> Result<()> {
         }
     });
 
+    let onecoin_path = data_dir.join("onecoin-ledger.json");
+    let onecoin_ledger: OnecoinLedgerState = Arc::new(Mutex::new(
+        fs::read(&onecoin_path)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<OnecoinLedger>(&b).ok())
+            .unwrap_or_default()
+    ));
+    {
+        let mut ledger = onecoin_ledger.lock().map_err(|_| anyhow::anyhow!("ONECOIN ledger lock failed"))?;
+        if ledger.members.is_empty() {
+            ledger.initialize_genesis(std::slice::from_ref(&node.identity.public.awe_id))
+                .map_err(anyhow::Error::msg)?;
+            fs::write(&onecoin_path, serde_json::to_vec_pretty(&*ledger)?)?;
+        }
+    }
+    let onecoin_offers_path = data_dir.join("onecoin-exchange-offers.json");
+
     let consensus_state: ConsensusState = {
         let configured = env::var("AWE_ONECOIN_VALIDATORS")
             .unwrap_or_default()
@@ -2039,6 +2155,9 @@ async fn run_product() -> Result<()> {
         let api_federation_path = federation_path.clone();
         let api_policy = policy_state.clone();
         let api_community = community.clone();
+        let api_onecoin_ledger = onecoin_ledger.clone();
+        let api_onecoin_path = onecoin_path.clone();
+        let api_onecoin_offers_path = onecoin_offers_path.clone();
         tokio::spawn(async move {
             if let Err(e) = serve_ui(
                 stream,
@@ -2051,6 +2170,9 @@ async fn run_product() -> Result<()> {
                 api_pending_shards,
                 api_policy,
                 api_community,
+                api_onecoin_ledger,
+                api_onecoin_path,
+                api_onecoin_offers_path,
             )
             .await
             {
