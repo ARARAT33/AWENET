@@ -1,3 +1,4 @@
+mod native_ui;
 use anyhow::{Context, Result};
 use awep2p_core::data_plane::{
     StorageShardAck, StorageShardRequest, StorageShardTransfer, STORAGE_STREAM,
@@ -2261,46 +2262,58 @@ async fn run_product() -> Result<()> {
         }
     }
 
-    loop {
-        let (stream, _) = listener.accept().await?;
-        let api_node = node.clone();
-        let api_messenger = messenger.clone();
-        let api_federation = federation_state.clone();
-        let api_storage = storage.clone();
-        let api_pending_acks = pending_acks.clone();
-        let api_pending_shards = pending_shards.clone();
-        let api_federation_path = federation_path.clone();
-        let api_policy = policy_state.clone();
-        let api_community = community.clone();
-        let api_onecoin_ledger = onecoin_ledger.clone();
-        let api_onecoin_path = onecoin_path.clone();
-        let api_onecoin_offers_path = onecoin_offers_path.clone();
-        let api_contribution = contribution.clone();
-        let api_contribution_path = contribution_path.clone();
-        tokio::spawn(async move {
-            if let Err(e) = serve_ui(
-                stream,
-                api_node,
-                api_messenger,
-                api_federation,
-                api_federation_path,
-                api_storage,
-                api_pending_acks,
-                api_pending_shards,
-                api_policy,
-                api_community,
-                api_onecoin_ledger,
-                api_onecoin_path,
-                api_onecoin_offers_path,
-                api_contribution,
-                api_contribution_path,
-            )
-            .await
-            {
-                eprintln!("UI request error: {e}");
-            }
-        });
-    }
+    let native_ui_addr = ui_addr;
+    tokio::spawn(async move {
+        loop {
+            let (stream, _) = match listener.accept().await {
+                Ok(value) => value,
+                Err(error) => {
+                    eprintln!("UI listener error: {error}");
+                    continue;
+                }
+            };
+            let api_node = node.clone();
+            let api_messenger = messenger.clone();
+            let api_federation = federation_state.clone();
+            let api_storage = storage.clone();
+            let api_pending_acks = pending_acks.clone();
+            let api_pending_shards = pending_shards.clone();
+            let api_federation_path = federation_path.clone();
+            let api_policy = policy_state.clone();
+            let api_community = community.clone();
+            let api_onecoin_ledger = onecoin_ledger.clone();
+            let api_onecoin_path = onecoin_path.clone();
+            let api_onecoin_offers_path = onecoin_offers_path.clone();
+            let api_contribution = contribution.clone();
+            let api_contribution_path = contribution_path.clone();
+            tokio::spawn(async move {
+                if let Err(e) = serve_ui(
+                    stream,
+                    api_node,
+                    api_messenger,
+                    api_federation,
+                    api_federation_path,
+                    api_storage,
+                    api_pending_acks,
+                    api_pending_shards,
+                    api_policy,
+                    api_community,
+                    api_onecoin_ledger,
+                    api_onecoin_path,
+                    api_onecoin_offers_path,
+                    api_contribution,
+                    api_contribution_path,
+                )
+                .await
+                {
+                    eprintln!("UI request error: {e}");
+                }
+            });
+        }
+    });
+
+    native_ui::run(native_ui_addr).map_err(anyhow::Error::msg)?;
+    Ok(())
 }
 
 async fn run_node(
