@@ -174,16 +174,21 @@ fn three_node_product_smoke() {
         let node2_status: serde_json::Value =
             serde_json::from_str(&get("127.0.0.1:46202", "/api/status"))
                 .expect("node2 status json");
-        let node2_id = node2_status
+        let node2_uid = node2_status
             .get("node_id")
             .and_then(|v| v.as_str())
             .expect("node2 id");
-        let wallet_before: serde_json::Value =
-            serde_json::from_str(&get("127.0.0.1:46201", "/api/onebank/wallet"))
-                .expect("wallet before json");
         let node2_wallet_before: serde_json::Value =
             serde_json::from_str(&get("127.0.0.1:46202", "/api/onebank/wallet"))
                 .expect("node2 wallet before json");
+        let node2_id = node2_wallet_before
+            .get("awe_id")
+            .and_then(|v| v.as_str())
+            .expect("node2 AWEID")
+            .to_string();
+        let wallet_before: serde_json::Value =
+            serde_json::from_str(&get("127.0.0.1:46201", "/api/onebank/wallet"))
+                .expect("wallet before json");
         let onecoin_send = post(
             "127.0.0.1:46201",
             "/api/onebank/wallet/send",
