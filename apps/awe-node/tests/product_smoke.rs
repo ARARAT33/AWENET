@@ -290,6 +290,17 @@ fn three_node_product_smoke() {
             subscriber_channels.contains(&format!(r#""{node2_id}""#)),
             "subscriber state: {subscriber_channels}"
         );
+        let owner_channels_deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let owner_channels = get("127.0.0.1:46201", "/api/channels");
+            if owner_channels.contains(&format!(r#""{node2_id}""#)) {
+                break;
+            }
+            if Instant::now() >= owner_channels_deadline {
+                panic!("owner did not receive subscription: {owner_channels}");
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
         let publish = post(
             "127.0.0.1:46201",
             "/api/channels/publish",
