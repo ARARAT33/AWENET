@@ -152,13 +152,6 @@ impl AweNetDesktop {
         }
     }
 
-    fn nav(&mut self, ui: &mut egui::Ui, page: Page, label: &str) {
-        if ui.selectable_label(self.page == page, label).clicked() {
-            self.page = page;
-            self.message.clear();
-        }
-    }
-
     fn home(&mut self, ui: &mut egui::Ui) {
         ui.heading("AWENET");
         ui.label("One network. One native application. Shared resources.");
