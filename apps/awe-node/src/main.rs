@@ -327,13 +327,13 @@ async fn serve_ui(
                 }
                 let nonce = ledger.nonces.get(&sender.to_hex()).copied().unwrap_or(0);
                 let tx = OnecoinTransaction::new(&node.identity, nonce, &recipient, amount_atoms, memo);
-                let tx_id = ledger.apply_transfer(&tx, &node.identity.public.public_key)?;
+                let (tx_id, fee_atoms) = ledger.apply_transfer_with_fee(&tx, &node.identity.public.public_key, 100)?;
                 fs::write(&onecoin_path, serde_json::to_vec_pretty(&*ledger).map_err(|_| "ONECOIN ledger serialization failed".to_string())?)
                     .map_err(|e| e.to_string())?;
-                Ok(hex::encode(tx_id))
+                Ok(serde_json::json!({"tx_id":hex::encode(tx_id),"fee_atoms":fee_atoms,"fee_bps":100}).to_string())
             })();
             match result {
-                Ok(tx_id) => ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"accepted","tx_id":tx_id}).to_string()),
+                Ok(details) => ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"accepted","transfer":serde_json::from_str::<serde_json::Value>(&details).unwrap_or_else(|_| serde_json::json!({"tx_id":details}))}).to_string()),
                 Err(error) => ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"rejected","error":error}).to_string())
             }
         },
