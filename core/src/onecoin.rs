@@ -440,9 +440,13 @@ impl OnecoinLedger {
         if sender_balance < total {
             return Err("insufficient ONECOIN balance including ONEBANK fee".into());
         }
-        self.balances.insert(sender_key.clone(), sender_balance - total);
+        self.balances
+            .insert(sender_key.clone(), sender_balance - total);
         let recipient_balance = self.balances.get(&recipient_key).copied().unwrap_or(0);
-        self.balances.insert(recipient_key, recipient_balance.saturating_add(tx.amount_atoms));
+        self.balances.insert(
+            recipient_key,
+            recipient_balance.saturating_add(tx.amount_atoms),
+        );
         self.collected_fee_atoms = self.collected_fee_atoms.saturating_add(fee);
         self.nonces.insert(sender_key, expected_nonce + 1);
         Ok((tx.id(), fee))
@@ -533,13 +537,22 @@ mod tests {
         let a = id("fee-a");
         let b = id("fee-b");
         let mut l = OnecoinLedger::default();
-        l.initialize_genesis(&[a.public.awe_id.clone(), b.public.awe_id.clone()]).unwrap();
+        l.initialize_genesis(&[a.public.awe_id.clone(), b.public.awe_id.clone()])
+            .unwrap();
         let amount = ATOMS_PER_COIN;
         let tx = OnecoinTransaction::new(&a, 0, &b.public.awe_id, amount, None);
-        let (_, fee) = l.apply_transfer_with_fee(&tx, &a.public.public_key, 100).unwrap();
+        let (_, fee) = l
+            .apply_transfer_with_fee(&tx, &a.public.public_key, 100)
+            .unwrap();
         assert_eq!(fee, ATOMS_PER_COIN / 100);
-        assert_eq!(l.balance_atoms(&b.public.awe_id), INITIAL_GENESIS_ALLOCATION + amount);
-        assert_eq!(l.balance_atoms(&a.public.awe_id), INITIAL_GENESIS_ALLOCATION - amount - fee);
+        assert_eq!(
+            l.balance_atoms(&b.public.awe_id),
+            INITIAL_GENESIS_ALLOCATION + amount
+        );
+        assert_eq!(
+            l.balance_atoms(&a.public.awe_id),
+            INITIAL_GENESIS_ALLOCATION - amount - fee
+        );
         assert_eq!(l.collected_fee_atoms, fee);
     }
 
