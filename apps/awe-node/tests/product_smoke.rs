@@ -93,6 +93,7 @@ fn spawn_node(bin: &PathBuf, data: &PathBuf, listen: u16, ui: u16) -> Child {
         .env("AWE_LISTEN_ADDR", format!("127.0.0.1:{listen}"))
         .env("AWE_UI_ADDR", format!("127.0.0.1:{ui}"))
         .env("AWE_NO_BROWSER", "1")
+        .env("AWE_NO_NATIVE_UI", "1")
         .spawn()
         .expect("spawn node")
 }
