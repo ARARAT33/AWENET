@@ -47,6 +47,8 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -- '*.rs' Cargo.toml Cargo.lock
           git commit -m "style: format Rust workspace"
+          git fetch origin main
+          git rebase origin/main
           git push
       - name: Verify Rust workspace formatting
         run: cargo fmt --all -- --check
