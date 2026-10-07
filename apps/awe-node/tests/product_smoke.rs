@@ -200,9 +200,27 @@ fn three_node_product_smoke() {
         let wallet_after: serde_json::Value =
             serde_json::from_str(&get("127.0.0.1:46201", "/api/onebank/wallet"))
                 .expect("wallet after json");
-        let node2_wallet_after: serde_json::Value =
-            serde_json::from_str(&get("127.0.0.1:46202", "/api/onebank/wallet"))
-                .expect("node2 wallet after json");
+        let receiver_deadline = Instant::now() + Duration::from_secs(5);
+        let node2_wallet_after: serde_json::Value = loop {
+            let current: serde_json::Value =
+                serde_json::from_str(&get("127.0.0.1:46202", "/api/onebank/wallet"))
+                    .expect("node2 wallet after json");
+            let before_balance = node2_wallet_before
+                .get("balance_atoms")
+                .and_then(|v| v.as_u64())
+                .expect("receiver balance");
+            let current_balance = current
+                .get("balance_atoms")
+                .and_then(|v| v.as_u64())
+                .expect("receiver current balance");
+            if current_balance == before_balance + 1_000_000_000_000_000_000u64 {
+                break current;
+            }
+            if Instant::now() >= receiver_deadline {
+                panic!("recipient wallet did not receive transfer: {current}");
+            }
+            thread::sleep(Duration::from_millis(100));
+        };
         let before = wallet_before
             .get("balance_atoms")
             .and_then(|v| v.as_u64())
