@@ -1,5 +1,5 @@
 name: AWEp2P Workspace CI
-# Final validation runs against the rustfmt-clean main tree.
+# Final validation runs against the rustfmt-clean main tree and native desktop runtime.
 
 
 concurrency:
