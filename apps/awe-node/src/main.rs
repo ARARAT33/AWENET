@@ -1763,6 +1763,8 @@ async fn run_product() -> Result<()> {
     let dispatcher_policy = policy_state.clone();
     let dispatcher_community = community.clone();
     let dispatcher_consensus = consensus_state.clone();
+    let dispatcher_onecoin_ledger = onecoin_ledger.clone();
+    let dispatcher_onecoin_path = onecoin_path.clone();
     tokio::spawn(async move {
         loop {
             for (sender, stream, payload) in dispatcher_node.take_inbox() {
@@ -1792,6 +1794,24 @@ async fn run_product() -> Result<()> {
                                 let _ = dispatcher_node
                                     .send_to_peer(&peer, ONECOIN_CONSENSUS_STREAM, bytes)
                                     .await;
+                            }
+                        }
+                    }
+                    continue;
+                }
+                if stream == ONECOIN_TRANSFER_STREAM {
+                    if let Ok(tx) = serde_json::from_slice::<OnecoinTransaction>(&payload) {
+                        if tx.recipient == *dispatcher_node.identity.public.awe_id.as_bytes() {
+                            if let Ok(mut ledger) = dispatcher_onecoin_ledger.lock() {
+                                let sender_id = AweId::from_public_key(&tx.sender);
+                                ledger.ensure_member(&sender_id);
+                                ledger.ensure_member(&dispatcher_node.identity.public.awe_id);
+                                if ledger.apply_transfer(&tx, &tx.sender).is_ok() {
+                                    let _ = fs::write(
+                                        &dispatcher_onecoin_path,
+                                        serde_json::to_vec_pretty(&*ledger).unwrap_or_default(),
+                                    );
+                                }
                             }
                         }
                     }
