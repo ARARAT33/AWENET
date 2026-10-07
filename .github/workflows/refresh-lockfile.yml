@@ -2,14 +2,14 @@ name: Refresh Cargo.lock
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
 
 permissions:
   contents: write
 
 jobs:
   refresh:
-    if: github.event.head_commit.message != 'chore: refresh Cargo.lock [skip ci]'
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
@@ -17,14 +17,11 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
 
       - name: Regenerate lockfile
         run: cargo generate-lockfile
 
       - name: Commit refreshed lockfile
-        shell: bash
         run: |
           if git diff --quiet -- Cargo.lock; then
             echo "Cargo.lock is already current."
