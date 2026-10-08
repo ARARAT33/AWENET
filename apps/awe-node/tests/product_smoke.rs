@@ -429,6 +429,30 @@ fn three_node_product_smoke() {
                 && downloaded.contains(&format!(r#""data_hex":"{hex}""#)),
             "storage get: {downloaded}"
         );
+
+        let site_publish = post(
+            "127.0.0.1:46201",
+            "/api/sites/publish",
+            r#"{"domain":"smoke-site","version":1,"files":[{"path":"/index.html","content_type":"text/html; charset=utf-8","content":"<!doctype html><title>AWENET site smoke</title>"}]}"#,
+        );
+        assert!(
+            site_publish.contains(r#""status":"published""#),
+            "site publish: {site_publish}"
+        );
+        let site: serde_json::Value =
+            serde_json::from_str(&site_publish).expect("site publish json");
+        let site_id = site
+            .get("site_id")
+            .and_then(|v| v.as_str())
+            .expect("published site ID");
+        let served_site = get(
+            "127.0.0.1:46201",
+            &format!("/site/{site_id}/index.html"),
+        );
+        assert!(
+            served_site.contains("AWENET site smoke"),
+            "published site content was not served: {served_site}"
+        );
     });
 
     for child in &mut children {
