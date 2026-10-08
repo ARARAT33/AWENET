@@ -2036,7 +2036,7 @@ async fn run_product() -> Result<()> {
                                         .get("subscriber")
                                         .and_then(|v| v.as_str())
                                         .unwrap_or(&sender_uid);
-                                    let local_uid = format_uid(
+                                    let local_uid = hex::encode(
                                         dispatcher_node.identity.public.awe_id.as_bytes(),
                                     );
                                     if let Some(ch) = state
