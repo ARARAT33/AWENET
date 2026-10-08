@@ -926,7 +926,15 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                 let id=format!("cid-{}",hex::encode(&blake3::hash(format!("{}:{}:{}",local,title,now_unix()).as_bytes()).as_bytes()[..12])); let channel=serde_json::json!({"id":id,"title":title,"owner":local,"subscribers":[local],"created_at":now_unix(),"messages":[]});
                 if let Ok(mut st)=community.lock(){if let Some(a)=st.get_mut("channels").and_then(|v|v.as_array_mut()){a.push(channel.clone());}}
                 let env=serde_json::json!({"kind":"awe.channel.v1","event":"upsert","channel":channel,"sender":local}); let mut delivered=0usize;
-                if let Ok(payload)=serde_json::to_vec(&env){for peer in node.peers().await{if node.send_to_peer(&peer.awe_id,100,payload.clone()).await.is_ok(){delivered+=1;}}}
+                if let Ok(payload)=serde_json::to_vec(&env) {
+                    for peer in node.peers().await {
+                        let sent = match node.send_to_peer_confirmed(&peer.awe_id,100,payload.clone()).await {
+                            Ok(_) => true,
+                            Err(_) => node.send_to_peer(&peer.awe_id,100,payload.clone()).await.is_ok(),
+                        };
+                        if sent { delivered+=1; }
+                    }
+                }
                 ("200 OK","application/json; charset=utf-8",serde_json::json!({"status":"created","channel":channel,"delivered_peers":delivered}).to_string())
             }
         },
