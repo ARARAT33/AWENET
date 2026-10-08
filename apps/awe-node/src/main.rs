@@ -2030,7 +2030,9 @@ async fn run_product() -> Result<()> {
                         }
                         if message.get("kind").and_then(|v| v.as_str()) == Some("awe.channel.v1") {
                             let event = message.get("event").and_then(|v| v.as_str()).unwrap_or("");
-                            let sender_uid = hex::encode(sender);
+                            // Inbox sender is the authenticated public key, not the AWEID bytes.
+                            // Convert it through the same identity derivation used by the API.
+                            let sender_uid = AweId::from_public_key(&sender).to_hex();
                             let mut sync: Option<(String, Vec<u8>)> = None;
                             if let Ok(mut state) = dispatcher_community.lock() {
                                 if event == "upsert" {
