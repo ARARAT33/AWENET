@@ -354,6 +354,10 @@ fn three_node_product_smoke() {
             subscribe.contains(r#""status":"subscribed""#),
             "subscribe: {subscribe}"
         );
+        assert!(
+            subscribe.contains(r#""owner_notified":true"#),
+            "owner notification was not acknowledged: {subscribe}"
+        );
         let subscriber_channels = get("127.0.0.1:46202", "/api/channels");
         assert!(
             subscriber_channels.contains(&format!(r#""{node2_id}""#)),
