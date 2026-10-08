@@ -49,6 +49,24 @@ type ConsensusState = Arc<Mutex<Option<OnecoinConsensusRuntime>>>;
 type OnecoinLedgerState = Arc<Mutex<OnecoinLedger>>;
 type ContributionState = Arc<Mutex<ResourceContribution>>;
 
+#[derive(Clone)]
+struct UiState {
+    node: Node,
+    messenger: MessengerLog,
+    federation_state: FederationState,
+    federation_path: PathBuf,
+    storage: StorageState,
+    pending_acks: PendingAcks,
+    pending_shards: PendingShards,
+    policy_state: PolicyState,
+    community: CommunityState,
+    onecoin_ledger: OnecoinLedgerState,
+    onecoin_path: PathBuf,
+    onecoin_offers_path: PathBuf,
+    contribution: ContributionState,
+    contribution_path: PathBuf,
+}
+
 async fn build_onecoin_validators(
     node: &Node,
     configured: &[String],
@@ -243,23 +261,23 @@ fn parse_onecoin_atoms(value: &serde_json::Value) -> Result<u128, String> {
         .ok_or_else(|| "amount_coins is too large".to_string())
 }
 
-async fn serve_ui(
-    mut stream: tokio::net::TcpStream,
-    node: Node,
-    messenger: MessengerLog,
-    federation_state: FederationState,
-    federation_path: PathBuf,
-    storage: StorageState,
-    pending_acks: PendingAcks,
-    pending_shards: PendingShards,
-    policy_state: PolicyState,
-    community: CommunityState,
-    onecoin_ledger: OnecoinLedgerState,
-    onecoin_path: PathBuf,
-    onecoin_offers_path: PathBuf,
-    contribution: ContributionState,
-    contribution_path: PathBuf,
-) -> Result<()> {
+async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<()> {
+    let UiState {
+        node,
+        messenger,
+        federation_state,
+        federation_path,
+        storage,
+        pending_acks,
+        pending_shards,
+        policy_state,
+        community,
+        onecoin_ledger,
+        onecoin_path,
+        onecoin_offers_path,
+        contribution,
+        contribution_path,
+    } = state;
     let request = read_http_request(&mut stream).await?;
     let request_line = request.lines().next().unwrap_or("");
     let mut parts = request_line.split_whitespace();
@@ -366,7 +384,7 @@ async fn serve_ui(
                 Ok((hex::encode(tx_id), fee_atoms, tx))
             })();
             match result {
-                Ok((tx_id, fee_atoms, tx)) => { let recipient_id = <[u8; 32]>::try_from(tx.recipient).unwrap_or([0; 32]); let delivered = if node.peers().await.into_iter().any(|p| p.awe_id == recipient_id) {
+                Ok((tx_id, fee_atoms, tx)) => { let recipient_id = tx.recipient; let delivered = if node.peers().await.into_iter().any(|p| p.awe_id == recipient_id) {
                         match serde_json::to_vec(&tx) {
                             Ok(bytes) => {
                                 if node
@@ -2325,20 +2343,22 @@ async fn run_product() -> Result<()> {
             tokio::spawn(async move {
                 if let Err(e) = serve_ui(
                     stream,
-                    api_node,
-                    api_messenger,
-                    api_federation,
-                    api_federation_path,
-                    api_storage,
-                    api_pending_acks,
-                    api_pending_shards,
-                    api_policy,
-                    api_community,
-                    api_onecoin_ledger,
-                    api_onecoin_path,
-                    api_onecoin_offers_path,
-                    api_contribution,
-                    api_contribution_path,
+                    UiState {
+                        node: api_node,
+                        messenger: api_messenger,
+                        federation_state: api_federation,
+                        federation_path: api_federation_path,
+                        storage: api_storage,
+                        pending_acks: api_pending_acks,
+                        pending_shards: api_pending_shards,
+                        policy_state: api_policy,
+                        community: api_community,
+                        onecoin_ledger: api_onecoin_ledger,
+                        onecoin_path: api_onecoin_path,
+                        onecoin_offers_path: api_onecoin_offers_path,
+                        contribution: api_contribution,
+                        contribution_path: api_contribution_path,
+                    },
                 )
                 .await
                 {
