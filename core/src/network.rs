@@ -782,9 +782,20 @@ impl RoutingTable {
         self.peers.values().cloned().collect()
     }
 }
-fn insert_peer_bounded(peers: &mut HashMap<[u8; 32], PeerRecord>, record: PeerRecord) {
-    if let std::collections::hash_map::Entry::Occupied(mut entry) = peers.entry(record.awe_id) {
-        entry.insert(record);
+fn insert_peer_bounded(peers: &mut HashMap<[u8; 32], PeerRecord>, mut record: PeerRecord) {
+    if let Some(existing) = peers.get_mut(&record.awe_id) {
+        // A routing advertisement with no endpoints must not erase the last
+        // authenticated endpoint learned from a direct connection.
+        for address in existing.addresses.iter().copied() {
+            if record.addresses.len() >= MAX_ADDRESSES_PER_PEER {
+                break;
+            }
+            if !record.addresses.contains(&address) {
+                record.addresses.push(address);
+            }
+        }
+        record.last_seen_unix = record.last_seen_unix.max(existing.last_seen_unix);
+        *existing = record;
         return;
     }
     if peers.len() >= MAX_PEER_RECORDS {
@@ -995,8 +1006,18 @@ impl Node {
                 }
             }
         }
-        routing.write().await.remove(&c.remote_id);
-        peers.write().await.remove(&c.remote_id);
+        // Keep the last authenticated peer record after disconnect. Removing it
+        // here prevents reconnect attempts precisely when a connection drops.
+        if let Ok(mut known_peers) = peers.try_write() {
+            if let Some(record) = known_peers.get_mut(&c.remote_id) {
+                record.last_seen_unix = now();
+            }
+        }
+        if let Ok(mut known_routes) = routing.try_write() {
+            if let Some(record) = known_routes.peers.get_mut(&c.remote_id) {
+                record.last_seen_unix = now();
+            }
+        }
     }
     pub async fn listen(&self) -> Result<(), NetworkError> {
         let l = TcpListener::bind(self.listen_addr).await?;
@@ -1388,6 +1409,35 @@ mod tests {
         });
         assert_eq!(r.closest(&[0; 32], 1)[0].awe_id, [1; 32]);
     }
+    #[test]
+    fn peer_refresh_preserves_last_known_endpoint() {
+        let id = [9u8; 32];
+        let address: SocketAddr = "127.0.0.1:41000".parse().unwrap();
+        let mut peers = HashMap::new();
+        insert_peer_bounded(
+            &mut peers,
+            PeerRecord {
+                awe_id: id,
+                public_key: [8; 32],
+                addresses: vec![address],
+                protocol_version: VERSION,
+                last_seen_unix: 1,
+            },
+        );
+        insert_peer_bounded(
+            &mut peers,
+            PeerRecord {
+                awe_id: id,
+                public_key: [8; 32],
+                addresses: vec![],
+                protocol_version: VERSION,
+                last_seen_unix: 2,
+            },
+        );
+        assert_eq!(peers.get(&id).unwrap().addresses, vec![address]);
+        assert_eq!(peers.get(&id).unwrap().last_seen_unix, 2);
+    }
+
     #[tokio::test]
     async fn authenticated_encrypted_transport() {
         let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
