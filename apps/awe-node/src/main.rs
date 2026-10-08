@@ -698,7 +698,7 @@ async fn serve_ui(
                     } else {
                         let owner_id=hex::decode(&owner).ok().and_then(|b|<[u8;32]>::try_from(b).ok());
                         let event=serde_json::json!({"kind":"awe.channel.v1","event":"subscribe","channel_id":cid,"subscriber":local});
-                        let sent=match owner_id {Some(id)=>match serde_json::to_vec(&event){Ok(bytes)=>node.send_to_peer(&id,100,bytes).await.is_ok(),Err(_)=>false},None=>false};
+                        let sent=match owner_id {Some(id)=>match serde_json::to_vec(&event){Ok(bytes)=>node.send_to_peer_confirmed(&id,100,bytes).await.is_ok(),Err(_)=>false},None=>false};
                         (if sent{"200 OK"}else{"202 Accepted"},"application/json; charset=utf-8",serde_json::json!({"status":"subscribed","channel_id":cid,"subscriber":local,"owner_notified":sent,"pending":!sent}).to_string())
                     }
                 }
