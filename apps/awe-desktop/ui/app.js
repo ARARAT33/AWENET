@@ -86,7 +86,8 @@ async function loadMessenger(){
   const box=document.getElementById("messageList");
   if(box)box.innerHTML='<div class="empty">Messenger is unavailable: '+esc(e.message)+'</div>';
  }
-}\nasync function refresh(){
+}
+async function refresh(){
  const results=await Promise.allSettled([
   api("/api/status"),api("/api/node"),api("/api/storage"),api("/api/security"),api("/api/federation")
  ]);
