@@ -175,17 +175,14 @@ fn allowed_ui_origin(origin: &str) -> bool {
     }
 
     let ui_addr = std::env::var("AWE_UI_ADDR").unwrap_or_else(|_| "127.0.0.1:41800".to_string());
-    let port = ui_addr.rsplit_once(':').map(|(_, port)| port).unwrap_or("41800");
-    origin == format!("http://127.0.0.1:{port}")
-        || origin == format!("http://localhost:{port}")
+    let port = ui_addr
+        .rsplit_once(':')
+        .map(|(_, port)| port)
+        .unwrap_or("41800");
+    origin == format!("http://127.0.0.1:{port}") || origin == format!("http://localhost:{port}")
 }
 
-async fn http_response(
-    status: &str,
-    content_type: &str,
-    body: &str,
-    request: &str,
-) -> Vec<u8> {
+async fn http_response(status: &str, content_type: &str, body: &str, request: &str) -> Vec<u8> {
     let origin = request.lines().find_map(|line| {
         let (name, value) = line.split_once(':')?;
         name.eq_ignore_ascii_case("origin").then_some(value.trim())
