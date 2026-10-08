@@ -1409,6 +1409,35 @@ mod tests {
         });
         assert_eq!(r.closest(&[0; 32], 1)[0].awe_id, [1; 32]);
     }
+    #[test]
+    fn peer_refresh_preserves_last_known_endpoint() {
+        let id = [9u8; 32];
+        let address: SocketAddr = "127.0.0.1:41000".parse().unwrap();
+        let mut peers = HashMap::new();
+        insert_peer_bounded(
+            &mut peers,
+            PeerRecord {
+                awe_id: id,
+                public_key: [8; 32],
+                addresses: vec![address],
+                protocol_version: VERSION,
+                last_seen_unix: 1,
+            },
+        );
+        insert_peer_bounded(
+            &mut peers,
+            PeerRecord {
+                awe_id: id,
+                public_key: [8; 32],
+                addresses: vec![],
+                protocol_version: VERSION,
+                last_seen_unix: 2,
+            },
+        );
+        assert_eq!(peers.get(&id).unwrap().addresses, vec![address]);
+        assert_eq!(peers.get(&id).unwrap().last_seen_unix, 2);
+    }
+
     #[tokio::test]
     async fn authenticated_encrypted_transport() {
         let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
