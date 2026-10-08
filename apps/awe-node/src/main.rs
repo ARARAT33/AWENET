@@ -189,16 +189,18 @@ fn valid_site_domain(value: &str) -> bool {
             && label.len() <= 63
             && !label.starts_with('-')
             && !label.ends_with('-')
-            && label.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            && label
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
     })
 }
 
 fn valid_site_content_type(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 128
-        && value.bytes().all(|b| {
-            b.is_ascii_alphanumeric() || b" /;=.+-_".contains(&b)
-        })
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b" /;=.+-_".contains(&b))
 }
 
 fn find_site_manifest(host_root: &PathBuf, site_id: &str) -> std::io::Result<SiteManifest> {
@@ -216,7 +218,9 @@ fn find_site_manifest(host_root: &PathBuf, site_id: &str) -> std::io::Result<Sit
             continue;
         }
         let Ok(bytes) = fs::read(path) else { continue };
-        let Ok(manifest) = serde_json::from_slice::<SiteManifest>(&bytes) else { continue };
+        let Ok(manifest) = serde_json::from_slice::<SiteManifest>(&bytes) else {
+            continue;
+        };
         if hex::encode(manifest.root_hash).eq_ignore_ascii_case(site_id) {
             return Ok(manifest);
         }
@@ -384,7 +388,10 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                 let content_type = manifest
                     .files
                     .iter()
-                    .find(|file| file.path == awep2p_core::host::normalize_path(&requested_path).unwrap_or_default())
+                    .find(|file| {
+                        file.path
+                            == awep2p_core::host::normalize_path(&requested_path).unwrap_or_default()
+                    })
                     .map(|file| file.content_type.clone())
                     .unwrap_or_else(|| "application/octet-stream".to_string());
                 match host.lock() {
@@ -404,7 +411,11 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                 }
             }
             Err(error) => http_response_bytes(
-                if error.kind() == std::io::ErrorKind::InvalidInput { "400 Bad Request" } else { "404 Not Found" },
+                if error.kind() == std::io::ErrorKind::InvalidInput {
+                    "400 Bad Request"
+                } else {
+                    "404 Not Found"
+                },
                 "text/plain; charset=utf-8",
                 error.to_string().as_bytes(),
             ),
