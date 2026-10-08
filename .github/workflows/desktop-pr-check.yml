@@ -1,0 +1,82 @@
+name: Desktop App PR Build
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "apps/awe-app/**"
+      - "apps/awe-desktop/ui/**"
+      - ".github/workflows/desktop-pr-check.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tauri-linux:
+    name: Build native Linux desktop package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install desktop build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils build-essential libx11-dev libxcursor-dev libxrandr-dev libxi-dev libxinerama-dev libxkbcommon-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libgl1-mesa-dev
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: lts/*
+
+      - name: Install Rust target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Build bundled node
+        run: |
+          cargo build --release -p awe-node --target x86_64-unknown-linux-gnu
+          mkdir -p apps/awe-app/src-tauri/binaries
+          cp target/x86_64-unknown-linux-gnu/release/awe-node apps/awe-app/src-tauri/binaries/awe-node-x86_64-unknown-linux-gnu
+
+      - name: Install app dependencies
+        working-directory: apps/awe-app
+        run: npm install
+
+      - name: Build native app package
+        working-directory: apps/awe-app
+        run: npx tauri build --ci
+
+  tauri-windows:
+    name: Build native Windows desktop package
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: lts/*
+
+      - name: Install Rust target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Build bundled node
+        shell: pwsh
+        run: |
+          cargo build --release -p awe-node --target x86_64-pc-windows-msvc
+          New-Item -ItemType Directory -Force -Path apps/awe-app/src-tauri/binaries | Out-Null
+          Copy-Item target/x86_64-pc-windows-msvc/release/awe-node.exe apps/awe-app/src-tauri/binaries/awe-node-x86_64-pc-windows-msvc.exe
+
+      - name: Install app dependencies
+        working-directory: apps/awe-app
+        run: npm install
+
+      - name: Build native app package
+        working-directory: apps/awe-app
+        run: npx tauri build --ci
