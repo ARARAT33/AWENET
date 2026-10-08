@@ -390,7 +390,8 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                     .iter()
                     .find(|file| {
                         file.path
-                            == awep2p_core::host::normalize_path(&requested_path).unwrap_or_default()
+                            == awep2p_core::host::normalize_path(&requested_path)
+                                .unwrap_or_default()
                     })
                     .map(|file| file.content_type.clone())
                     .unwrap_or_else(|| "application/octet-stream".to_string());
