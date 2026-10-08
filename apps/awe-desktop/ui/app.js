@@ -3,6 +3,10 @@ const pages={dashboard:["Home","Everything important in one place"],browser:["Br
 let live={status:"starting",node_id:"loading",node_address:"loading",transport:"loading",ui:"connecting",peers:[],node:{},storage:{},security:{},federation:{}};
 
 function apiBase(){
+ // Tauri's bundled asset origin is not the local Rust node API.
+ if(location.hostname==="tauri.localhost"||location.hostname.endsWith(".tauri.localhost")){
+  return "http://127.0.0.1:41800";
+ }
  if(location.protocol==="http:"||location.protocol==="https:")return location.origin;
  return "http://127.0.0.1:41800";
 }
@@ -116,7 +120,7 @@ function render(k){
   panel("Publish a site",'<div class="form-grid"><label>Site name<input id="siteDomain" placeholder="my-site"></label><label>Version<input id="siteVersion" type="number" min="1" value="1"></label></div><label class="file-picker">Choose site folder<input id="siteFolder" type="file" webkitdirectory directory multiple></label><div class="muted">Select a folder containing index.html. Files are stored by the local AWE node. Maximum upload: 24 MB per publish.</div><button class="primary" id="publishSite">Publish site</button><div id="sitePublishResult" class="notice" aria-live="polite">No site published in this session.</div>')+
   panel("Sites hosted on this node",'<div class="section-head"><span class="muted">Open sites published locally</span><button class="secondary" id="siteRefresh">Refresh</button></div><div id="siteList" class="list"><div class="empty">Loading sites…</div></div>');
  } else if(k==="dashboard"){
-  body='<div class="grid">'+card("Node status",live.status.toUpperCase())+card("Data centre",live.node?.descriptor?"Node registered":"Local node","Live node descriptor")+card("Node ID",live.node_id,"AWE identity")+card("Connected peers",live.status?.active_connections||0,"Authenticated live connections")+card("Transport",live.transport,"Node transport")+'</div>'+
+  body='<div class="grid">'+card("Node status",live.status.toUpperCase())+card("Data centre",live.node?.descriptor?"Node registered":"Local node","Live node descriptor")+card("Node ID",live.node_id,"AWE identity")+card("Connected peers",live.active_connections??0,"Authenticated live connections")+card("Transport",live.transport,"Node transport")+'</div>'+
   '<div class="section two">'+panel("Network topology",'<div class="network-map"><div class="node-point main" style="left:49%;top:47%"></div>'+live.peers.slice(0,8).map((_,i)=>{const a=i*45;return '<div class="line" style="left:51%;top:51%;width:105px;transform:rotate('+a+'deg)"></div><div class="node-point" style="left:'+(50+34*Math.cos(a*Math.PI/180))+'%;top:'+(50+34*Math.sin(a*Math.PI/180))+'%"></div>'}).join("")+'</div>'),panel("Runtime health",'<div class="big-status"><div class="big-orb">'+(live.status==="online"?"✓":"!")+'</div><div><b>'+esc(live.status==="online"?"Node operational":"Node unavailable")+'</b><div class="detail">'+esc(live.node_address)+'</div></div></div><div class="list section"><div class="list-row"><span>Core API</span><span class="status"><i></i>'+esc(live.ui)+'</span></div><div class="list-row"><span>Known peers</span><b>'+live.peers.length+'</b></div></div>'))+
   panel("Known peers",'<table class="table"><thead><tr><th>Peer</th><th>Address</th><th>Last seen</th><th>State</th></tr></thead><tbody>'+peerRows()+'</tbody></table>','<button class="secondary" id="goNetwork">Manage</button>');
  } else if(k==="node"){
