@@ -2588,6 +2588,8 @@ async fn run_product() -> Result<()> {
             let api_onecoin_offers_path = onecoin_offers_path.clone();
             let api_contribution = contribution.clone();
             let api_contribution_path = contribution_path.clone();
+            let api_host = host.clone();
+            let api_host_root = host_root.clone();
             tokio::spawn(async move {
                 if let Err(e) = serve_ui(
                     stream,
@@ -2606,8 +2608,8 @@ async fn run_product() -> Result<()> {
                         onecoin_offers_path: api_onecoin_offers_path,
                         contribution: api_contribution,
                         contribution_path: api_contribution_path,
-                        host: host.clone(),
-                        host_root: host_root.clone(),
+                        host: api_host,
+                        host_root: api_host_root,
                     },
                 )
                 .await
