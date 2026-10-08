@@ -166,8 +166,41 @@ fn load_identity(path: &PathBuf, password: &str, username: &str) -> Result<Ident
     .map_err(anyhow::Error::msg)
 }
 
-async fn http_response(status: &str, content_type: &str, body: &str) -> Vec<u8> {
-    format!("HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: http://tauri.localhost\r\nVary: Origin\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: content-type\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}", body.len()).into_bytes()
+fn allowed_ui_origin(origin: &str) -> bool {
+    if matches!(
+        origin,
+        "http://tauri.localhost" | "https://tauri.localhost" | "tauri://localhost"
+    ) {
+        return true;
+    }
+
+    let ui_addr = std::env::var("AWE_UI_ADDR").unwrap_or_else(|_| "127.0.0.1:41800".to_string());
+    let port = ui_addr.rsplit_once(':').map(|(_, port)| port).unwrap_or("41800");
+    origin == format!("http://127.0.0.1:{port}")
+        || origin == format!("http://localhost:{port}")
+}
+
+async fn http_response(
+    status: &str,
+    content_type: &str,
+    body: &str,
+    request: &str,
+) -> Vec<u8> {
+    let origin = request.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("origin").then_some(value.trim())
+    });
+    let cors_headers = match origin.filter(|value| allowed_ui_origin(value)) {
+        Some(origin) => format!(
+            "Access-Control-Allow-Origin: {origin}\r\nVary: Origin\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: content-type\r\n"
+        ),
+        None => String::new(),
+    };
+    format!(
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n{cors_headers}Cache-Control: no-store\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+    .into_bytes()
 }
 
 fn http_response_bytes(status: &str, content_type: &str, body: &[u8]) -> Vec<u8> {
@@ -1576,7 +1609,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         _ => ("404 Not Found", "text/plain; charset=utf-8", "Not Found".to_string()),
     };
     stream
-        .write_all(&http_response(status, mime, &body).await)
+        .write_all(&http_response(status, mime, &body, &request).await)
         .await?;
     stream.shutdown().await?;
     Ok(())
