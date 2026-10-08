@@ -2030,9 +2030,8 @@ async fn run_product() -> Result<()> {
                         }
                         if message.get("kind").and_then(|v| v.as_str()) == Some("awe.channel.v1") {
                             let event = message.get("event").and_then(|v| v.as_str()).unwrap_or("");
-                            // Inbox sender is the authenticated public key, not the AWEID bytes.
-                            // Convert it through the same identity derivation used by the API.
-                            let sender_uid = AweId::from_public_key(&sender).to_hex();
+                            // Inbox sender is SecureConnection.remote_id, i.e. the authenticated AWEID.
+                            let sender_uid = hex::encode(sender);
                             let mut sync: Option<(String, Vec<u8>)> = None;
                             if let Ok(mut state) = dispatcher_community.lock() {
                                 if event == "upsert" {
@@ -2041,6 +2040,7 @@ async fn run_product() -> Result<()> {
                                             .get("owner")
                                             .and_then(|v| v.as_str())
                                             .unwrap_or("");
+                                        eprintln!("channel upsert received: owner={} authenticated_sender={}", owner, sender_uid);
                                         if owner == sender_uid {
                                             let cid = channel
                                                 .get("id")
