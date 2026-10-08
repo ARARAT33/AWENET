@@ -445,10 +445,7 @@ fn three_node_product_smoke() {
             .get("site_id")
             .and_then(|v| v.as_str())
             .expect("published site ID");
-        let served_site = get(
-            "127.0.0.1:46201",
-            &format!("/site/{site_id}/index.html"),
-        );
+        let served_site = get("127.0.0.1:46201", &format!("/site/{site_id}/index.html"));
         assert!(
             served_site.contains("AWENET site smoke"),
             "published site content was not served: {served_site}"
