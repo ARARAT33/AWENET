@@ -782,9 +782,20 @@ impl RoutingTable {
         self.peers.values().cloned().collect()
     }
 }
-fn insert_peer_bounded(peers: &mut HashMap<[u8; 32], PeerRecord>, record: PeerRecord) {
-    if let std::collections::hash_map::Entry::Occupied(mut entry) = peers.entry(record.awe_id) {
-        entry.insert(record);
+fn insert_peer_bounded(peers: &mut HashMap<[u8; 32], PeerRecord>, mut record: PeerRecord) {
+    if let Some(existing) = peers.get_mut(&record.awe_id) {
+        // A routing advertisement with no endpoints must not erase the last
+        // authenticated endpoint learned from a direct connection.
+        for address in existing.addresses.iter().copied() {
+            if record.addresses.len() >= MAX_ADDRESSES_PER_PEER {
+                break;
+            }
+            if !record.addresses.contains(&address) {
+                record.addresses.push(address);
+            }
+        }
+        record.last_seen_unix = record.last_seen_unix.max(existing.last_seen_unix);
+        *existing = record;
         return;
     }
     if peers.len() >= MAX_PEER_RECORDS {
@@ -995,8 +1006,18 @@ impl Node {
                 }
             }
         }
-        routing.write().await.remove(&c.remote_id);
-        peers.write().await.remove(&c.remote_id);
+        // Keep the last authenticated peer record after disconnect. Removing it
+        // here prevents reconnect attempts precisely when a connection drops.
+        if let Ok(mut known_peers) = peers.try_write() {
+            if let Some(record) = known_peers.get_mut(&c.remote_id) {
+                record.last_seen_unix = now();
+            }
+        }
+        if let Ok(mut known_routes) = routing.try_write() {
+            if let Some(record) = known_routes.peers.get_mut(&c.remote_id) {
+                record.last_seen_unix = now();
+            }
+        }
     }
     pub async fn listen(&self) -> Result<(), NetworkError> {
         let l = TcpListener::bind(self.listen_addr).await?;
