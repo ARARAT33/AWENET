@@ -334,6 +334,10 @@ fn three_node_product_smoke() {
             .and_then(|g| g.get("id"))
             .and_then(|v| v.as_str())
             .expect("channel id");
+        assert!(
+            channel.get("delivered_peers").and_then(|v| v.as_u64()).unwrap_or(0) > 0,
+            "channel update was not acknowledged by any peer: {channel_create}"
+        );
         let channel_sync_deadline = Instant::now() + Duration::from_secs(5);
         loop {
             let channels = get("127.0.0.1:46202", "/api/channels");
