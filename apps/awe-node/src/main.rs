@@ -2714,6 +2714,12 @@ async fn run_product() -> Result<()> {
                     // remote inbox. Clear the durable outbox only after an app ACK
                     // emitted by the recipient after its ledger is persisted.
                     if let Ok(ack) = serde_json::from_slice::<OnecoinTransferAck>(&payload) {
+                        eprintln!(
+                            "ONECOIN app ACK received from peer {} for transaction {} (ACK recipient {})",
+                            hex::encode(sender),
+                            ack.transaction_id,
+                            hex::encode(ack.recipient)
+                        );
                         if ack.recipient == sender {
                             let matches_pending = dispatcher_onecoin_outbox
                                 .lock()
@@ -2724,6 +2730,11 @@ async fn run_product() -> Result<()> {
                                         .map(|tx| tx.recipient == ack.recipient)
                                 })
                                 .unwrap_or(false);
+                            eprintln!(
+                                "ONECOIN app ACK pending match={} for transaction {}",
+                                matches_pending,
+                                ack.transaction_id
+                            );
                             if matches_pending {
                                 if let Err(error) = remove_pending_onecoin_transfer(
                                     &dispatcher_onecoin_path,
@@ -2773,6 +2784,11 @@ async fn run_product() -> Result<()> {
                             })();
                             match received {
                                 Ok(()) => {
+                                    eprintln!(
+                                        "ONECOIN transfer persisted receiver={} transaction={}",
+                                        dispatcher_node.identity.public.awe_id.to_hex(),
+                                        hex::encode(tx.id())
+                                    );
                                     let ack = OnecoinTransferAck {
                                         transaction_id: hex::encode(tx.id()),
                                         recipient: *dispatcher_node
@@ -2782,7 +2798,7 @@ async fn run_product() -> Result<()> {
                                             .as_bytes(),
                                     };
                                     if let Ok(bytes) = serde_json::to_vec(&ack) {
-                                        if let Err(error) = dispatcher_node
+                                        match dispatcher_node
                                             .send_to_peer(
                                                 &sender,
                                                 policy::ONECOIN_TRANSFER_STREAM,
@@ -2790,7 +2806,16 @@ async fn run_product() -> Result<()> {
                                             )
                                             .await
                                         {
-                                            eprintln!("ONECOIN transfer ACK send failed; sender will retry: {error}");
+                                            Ok(_) => eprintln!(
+                                                "ONECOIN transfer application ACK sent to peer {} for {}",
+                                                hex::encode(sender),
+                                                hex::encode(tx.id())
+                                            ),
+                                            Err(error) => eprintln!(
+                                                "ONECOIN transfer ACK send failed for peer {} transaction {}: {error}",
+                                                hex::encode(sender),
+                                                hex::encode(tx.id())
+                                            ),
                                         }
                                     }
                                 }
