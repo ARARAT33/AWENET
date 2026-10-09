@@ -989,9 +989,9 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
 
                 match result {
                     Ok((tx_id, fee_atoms, tx)) => {
-                        let transport_acknowledged = match serde_json::to_vec(&tx) {
+                        let transport_send_accepted = match serde_json::to_vec(&tx) {
                             Ok(bytes) => node
-                                .send_to_peer_confirmed(
+                                .send_to_peer(
                                     &tx.recipient,
                                     policy::ONECOIN_TRANSFER_STREAM,
                                     bytes,
@@ -1012,7 +1012,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                                 "tx_id":tx_id,
                                 "fee_atoms":fee_atoms,
                                 "fee_bps":100,
-                                "transport_acknowledged":transport_acknowledged,
+                                "transport_send_accepted":transport_send_accepted,
                                 "recipient_delivered":!still_pending,
                                 "recipient_pending":still_pending
                             }).to_string(),
@@ -3286,7 +3286,7 @@ async fn run_product() -> Result<()> {
                 // Keep the item queued until the recipient's application ACK
                 // arrives on the same stream and passes identity/transaction checks.
                 if let Err(error) = retry_node
-                    .send_to_peer_confirmed(&tx.recipient, policy::ONECOIN_TRANSFER_STREAM, bytes)
+                    .send_to_peer(&tx.recipient, policy::ONECOIN_TRANSFER_STREAM, bytes)
                     .await
                 {
                     eprintln!("ONECOIN pending transfer {id} will be retried: {error}");
