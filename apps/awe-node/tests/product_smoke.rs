@@ -214,7 +214,8 @@ fn three_node_product_smoke() {
                 .expect("verified offer list JSON");
         assert!(
             offers.as_array().is_some_and(|list| {
-                list.iter().any(|item| item.get("id").and_then(|v| v.as_str()) == Some(published_id))
+                list.iter()
+                    .any(|item| item.get("id").and_then(|v| v.as_str()) == Some(published_id))
             }),
             "verified listing should be returned"
         );
