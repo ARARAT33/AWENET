@@ -354,16 +354,24 @@ fn three_node_product_smoke() {
             }
             thread::sleep(Duration::from_millis(100));
         }
-        let sender_wallet_after_retry: serde_json::Value =
-            serde_json::from_str(&get("127.0.0.1:46201", "/api/onebank/wallet"))
-                .expect("sender wallet after outbox delivery");
-        assert_eq!(
-            sender_wallet_after_retry
+        let ack_deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let sender_wallet_after_retry: serde_json::Value =
+                serde_json::from_str(&get("127.0.0.1:46201", "/api/onebank/wallet"))
+                    .expect("sender wallet after outbox delivery");
+            if sender_wallet_after_retry
                 .get("pending_transfers")
-                .and_then(|v| v.as_u64()),
-            Some(0),
-            "confirmed transfer must leave the pending outbox"
-        );
+                .and_then(|v| v.as_u64()) == Some(0)
+            {
+                break;
+            }
+            if Instant::now() >= ack_deadline {
+                panic!(
+                    "recipient applied transfer but sender outbox was not cleared by application ACK: {sender_wallet_after_retry}"
+                );
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
 
         let status = get("127.0.0.1:46201", "/api/status");
         assert!(
