@@ -131,7 +131,7 @@ impl TierBenefits {
                 data_centre_management: false,
                 data_group_management: false,
                 centre_group_management: false,
-                minimum_monthly_atoms: 40 * ATOMS_PER_COIN,
+                minimum_monthly_atoms: 45 * ATOMS_PER_COIN,
             },
             UserTier::NetPro => Self {
                 tier,
@@ -459,8 +459,9 @@ impl ExchangeOrder {
         if amount_atoms == 0 || amount_atoms > offer.amount_atoms {
             return Err("invalid order amount".into());
         }
-        let coins = amount_atoms.saturating_div(ATOMS_PER_COIN);
-        let fiat_minor = coins.saturating_mul(offer.price_minor_per_coin as u128);
+        let fiat_minor = amount_atoms
+            .saturating_mul(offer.price_minor_per_coin as u128)
+            .saturating_div(ATOMS_PER_COIN);
         let fee = amount_atoms
             .saturating_mul(fee_bps as u128)
             .saturating_div(10_000);
@@ -501,6 +502,39 @@ mod tests {
         r.ram_bytes = 8 * 1024 * 1024 * 1024;
         r.bandwidth_bytes = 1_000_000_000_000;
         assert_eq!(classify_tier(&r), UserTier::NetPlus);
+    }
+
+    #[test]
+    fn net_plus_benefit_matches_default_reward_policy() {
+        let benefits = TierBenefits::for_tier(UserTier::NetPlus, &ResourceContribution::default());
+        let policy = RewardPolicy::default();
+        assert_eq!(benefits.minimum_monthly_atoms, policy.monthly_minimum(UserTier::NetPlus));
+        assert_eq!(benefits.minimum_monthly_atoms, 45 * ATOMS_PER_COIN);
+    }
+
+    #[test]
+    fn fractional_coin_exchange_orders_preserve_fiat_value() {
+        let seller = Identity::generate(Username::new("seller".to_string()).unwrap());
+        let buyer = Identity::generate(Username::new("buyer".to_string()).unwrap());
+        let offer = P2POffer::new(
+            &seller,
+            ExchangeSide::Sell,
+            ATOMS_PER_COIN,
+            100,
+            "USD".to_string(),
+            FiatRail::BankTransfer,
+            None,
+            u64::MAX,
+        ).unwrap();
+        let order = ExchangeOrder::from_offer(
+            &offer,
+            buyer.public.awe_id,
+            seller.public.awe_id,
+            ATOMS_PER_COIN / 2,
+            100,
+            1,
+        ).unwrap();
+        assert_eq!(order.fiat_minor, 50);
     }
 
     #[test]
