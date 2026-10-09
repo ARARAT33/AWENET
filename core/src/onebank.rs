@@ -495,6 +495,7 @@ impl ExchangeOrder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::identity::Username;
     #[test]
     fn tiers_follow_contribution() {
         assert_eq!(
