@@ -278,6 +278,43 @@ fn three_node_product_smoke() {
             "the API must not return an offer with a tampered signer key"
         );
 
+        // Queue a transfer while the recipient is offline; it must survive
+        // that failure and be retried after the peer connects.
+        let node2_pre: serde_json::Value =
+            serde_json::from_str(&get("127.0.0.1:46202", "/api/onebank/wallet"))
+                .expect("node2 wallet before connection");
+        let node2_id_pre = node2_pre
+            .get("awe_id")
+            .and_then(|v| v.as_str())
+            .expect("node2 AWEID before connection")
+            .to_string();
+        let node2_balance_pre = node2_pre
+            .get("balance_atoms")
+            .and_then(|v| v.as_u64())
+            .expect("node2 balance before connection");
+        let queued_transfer = post(
+            "127.0.0.1:46201",
+            "/api/onebank/wallet/send",
+            &format!(
+                r#"{{"recipient":"{node2_id_pre}","amount_coins":"0.25","memo":"outbox retry smoke"}}"#
+            ),
+        );
+        assert!(
+            queued_transfer.contains(r#""status":"accepted""#)
+                && queued_transfer.contains(r#""recipient_pending":true"#),
+            "offline transfer should be accepted into the durable outbox: {queued_transfer}"
+        );
+        let queued_wallet: serde_json::Value =
+            serde_json::from_str(&get("127.0.0.1:46201", "/api/onebank/wallet"))
+                .expect("sender wallet with pending transfer");
+        assert!(
+            queued_wallet
+                .get("pending_transfers")
+                .and_then(|v| v.as_u64())
+                .is_some_and(|count| count >= 1),
+            "pending ONECOIN transfer must be visible in wallet status: {queued_wallet}"
+        );
+
         let connect2 = post(
             "127.0.0.1:46201",
             "/api/connect?address=127.0.0.1%3A46102",
@@ -299,6 +336,34 @@ fn three_node_product_smoke() {
         );
 
         thread::sleep(Duration::from_secs(2));
+
+        let retry_deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let recipient: serde_json::Value =
+                serde_json::from_str(&get("127.0.0.1:46202", "/api/onebank/wallet"))
+                    .expect("recipient wallet while retrying outbox");
+            let current = recipient
+                .get("balance_atoms")
+                .and_then(|v| v.as_u64())
+                .expect("recipient balance while retrying outbox");
+            if current >= node2_balance_pre + 250_000_000_000_000_000u64 {
+                break;
+            }
+            if Instant::now() >= retry_deadline {
+                panic!("durable ONECOIN outbox did not deliver after connection: {recipient}");
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        let sender_wallet_after_retry: serde_json::Value =
+            serde_json::from_str(&get("127.0.0.1:46201", "/api/onebank/wallet"))
+                .expect("sender wallet after outbox delivery");
+        assert_eq!(
+            sender_wallet_after_retry
+                .get("pending_transfers")
+                .and_then(|v| v.as_u64()),
+            Some(0),
+            "confirmed transfer must leave the pending outbox"
+        );
 
         let status = get("127.0.0.1:46201", "/api/status");
         assert!(
