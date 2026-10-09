@@ -410,17 +410,6 @@ fn parse_fiat_minor(value: &serde_json::Value) -> Result<u64, String> {
     Ok(minor)
 }
 
-fn format_onecoin_atoms(atoms: u128) -> String {
-    let whole = atoms / ATOMS_PER_COIN;
-    let remainder = atoms % ATOMS_PER_COIN;
-    if remainder == 0 {
-        return whole.to_string();
-    }
-    format!("{whole}.{remainder:08}")
-        .trim_end_matches('0')
-        .to_owned()
-}
-
 fn parse_onecoin_atoms(value: &serde_json::Value) -> Result<u128, String> {
     let raw = if let Some(text) = value.as_str() {
         text.trim().to_owned()
