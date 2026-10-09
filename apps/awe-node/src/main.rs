@@ -374,7 +374,7 @@ fn parse_fiat_minor(value: &serde_json::Value) -> Result<u64, String> {
     } else {
         return Err("price must be a decimal value".into());
     };
-    if raw.is_empty() || raw.contains(['e', 'E']) {
+    if raw.is_empty() || raw.contains('e') || raw.contains('E') {
         return Err("price must be a plain decimal value".into());
     }
     let mut parts = raw.split('.');
