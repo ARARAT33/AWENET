@@ -261,5 +261,5 @@ const menuToggle=document.getElementById("menuToggle"),sidebar=document.querySel
 function closeMenu(){sidebar?.classList.remove("open");menuToggle?.setAttribute("aria-expanded","false");document.getElementById("menuScrim")?.classList.remove("open")}
 menuToggle?.addEventListener("click",()=>{const open=!sidebar.classList.contains("open");sidebar.classList.toggle("open",open);menuToggle.setAttribute("aria-expanded",String(open));document.getElementById("menuScrim")?.classList.toggle("open",open)});
 const scrim=document.createElement("div");scrim.id="menuScrim";scrim.className="menu-scrim";document.body.appendChild(scrim);scrim.addEventListener("click",closeMenu);
-navs.forEach(n=>n.addEventListener("click",e=>{e.preventDefault();closeMenu();render(n.dataset.view)}));
+navs.forEach(n=>n.addEventListener("click",e=>{e.preventDefault();closeMenu();if(n.dataset.view!=="onecoin")render(n.dataset.view)}));
 (async()=>{render("browser");await refresh();const idChip=document.getElementById("aweIdChip");if(idChip)idChip.textContent=live.node_id&&live.node_id!=="loading"?live.node_id:"API disconnected";render("browser");setInterval(async()=>{await refresh();if(title.textContent===pages.dashboard[0])render("dashboard")},5000);setInterval(pollCallSignals,1000)})();
