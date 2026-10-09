@@ -3168,6 +3168,7 @@ async fn run_product() -> Result<()> {
             let api_policy = policy_state.clone();
             let api_community = community.clone();
             let api_onecoin_ledger = onecoin_ledger.clone();
+            let api_onecoin_outbox = onecoin_outbox.clone();
             let api_onecoin_path = onecoin_path.clone();
             let api_onecoin_offers_path = onecoin_offers_path.clone();
             let api_contribution = contribution.clone();
@@ -3188,7 +3189,7 @@ async fn run_product() -> Result<()> {
                         policy_state: api_policy,
                         community: api_community,
                         onecoin_ledger: api_onecoin_ledger,
-                        onecoin_outbox: onecoin_outbox.clone(),
+                        onecoin_outbox: api_onecoin_outbox,
                         onecoin_path: api_onecoin_path,
                         onecoin_offers_path: api_onecoin_offers_path,
                         contribution: api_contribution,
