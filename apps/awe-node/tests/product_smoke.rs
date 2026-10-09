@@ -8,6 +8,17 @@ use std::{
     time::{Duration, Instant},
 };
 
+fn raw_response(addr: &str, request: &str) -> String {
+    let mut stream = TcpStream::connect(addr).expect("connect");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .expect("read timeout");
+    stream.write_all(request.as_bytes()).expect("write request");
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).expect("read response");
+    String::from_utf8_lossy(&response).into_owned()
+}
+
 fn request(addr: &str, request: &str) -> String {
     let mut stream = TcpStream::connect(addr).expect("connect");
     stream
@@ -117,6 +128,33 @@ fn three_node_product_smoke() {
         wait_for_health("127.0.0.1:46201");
         wait_for_health("127.0.0.1:46202");
         wait_for_health("127.0.0.1:46203");
+
+        let site_id = "a".repeat(64);
+        let site_response = raw_response(
+            "127.0.0.1:46201",
+            &format!(
+                "GET /site/{site_id}/index.html HTTP/1.1\r\nHost: 127.0.0.1:46201\r\nConnection: close\r\n\r\n"
+            ),
+        );
+        assert!(
+            site_response.starts_with("HTTP/1.1 302 Found"),
+            "hosted site should redirect to its isolated origin: {site_response}"
+        );
+        assert!(
+            site_response.contains(&format!(
+                "Location: http://{site_id}.localhost:46201/site/{site_id}/index.html"
+            )),
+            "site redirect must use a per-site localhost origin: {site_response}"
+        );
+
+        let forbidden = raw_response(
+            "127.0.0.1:46201",
+            "POST /api/onebank/contribution HTTP/1.1\r\nHost: 127.0.0.1:46201\r\nOrigin: https://untrusted.example\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+        );
+        assert!(
+            forbidden.starts_with("HTTP/1.1 403 Forbidden"),
+            "cross-origin API mutation must be rejected: {forbidden}"
+        );
 
         for (port, ui) in [
             (46101u16, 46201u16),
