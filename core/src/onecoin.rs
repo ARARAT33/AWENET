@@ -540,18 +540,23 @@ impl OnecoinLedger {
         if !tx.verify(sender_public_key) {
             return Err("invalid ONECOIN signature".into());
         }
+
         let sender_balance = self.balances.get(&sender_key).copied().unwrap_or(0);
         if sender_balance < tx.amount_atoms {
             return Err("insufficient ONECOIN balance".into());
         }
-        let sender_after = sender_balance - tx.amount_atoms;
-        self.balances.insert(sender_key.clone(), sender_after);
         let recipient_balance = self.balances.get(&recipient_key).copied().unwrap_or(0);
-        self.balances.insert(
-            recipient_key,
-            recipient_balance.saturating_add(tx.amount_atoms),
-        );
-        self.nonces.insert(sender_key, expected_nonce + 1);
+        let recipient_after = recipient_balance
+            .checked_add(tx.amount_atoms)
+            .ok_or_else(|| "recipient balance would overflow".to_string())?;
+        let next_nonce = expected_nonce
+            .checked_add(1)
+            .ok_or_else(|| "sender nonce overflow".to_string())?;
+
+        // Complete every fallible check before mutating balances or nonce.
+        self.balances.insert(sender_key.clone(), sender_balance - tx.amount_atoms);
+        self.balances.insert(recipient_key, recipient_after);
+        self.nonces.insert(sender_key, next_nonce);
         Ok(tx.id())
     }
 }
