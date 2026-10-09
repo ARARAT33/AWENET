@@ -3407,6 +3407,73 @@ async fn main() -> Result<()> {
 mod amount_parser_tests {
     use super::*;
 
+    fn temporary_state_path(name: &str) -> PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("awenet-{name}-{}-{nonce}.json", std::process::id()))
+    }
+
+    #[test]
+    fn persisted_onecoin_state_roundtrips_and_overwrites_atomically() {
+        let path = temporary_state_path("outbox-roundtrip");
+        let sender = Identity::generate(Username::new("persist-sender").unwrap());
+        let recipient = Identity::generate(Username::new("persist-recipient").unwrap());
+        let extra = Identity::generate(Username::new("persist-extra").unwrap());
+        let mut ledger = OnecoinLedger::default();
+        ledger
+            .initialize_genesis(&[
+                sender.public.awe_id.clone(),
+                recipient.public.awe_id.clone(),
+            ])
+            .unwrap();
+        let tx = OnecoinTransaction::new(
+            &sender,
+            0,
+            &recipient.public.awe_id,
+            7,
+            Some("durable pending transfer".into()),
+        );
+        let tx_id = hex::encode(tx.id());
+        let pending = BTreeMap::from([(tx_id.clone(), tx.clone())]);
+
+        persist_onecoin_state(&path, &ledger, &pending).unwrap();
+        let loaded = load_persisted_onecoin_state(&path).unwrap();
+        assert_eq!(loaded.format_version, 1);
+        assert_eq!(loaded.ledger.members.len(), 2);
+        assert_eq!(loaded.pending_transfers.get(&tx_id), Some(&tx));
+
+        let mut changed_ledger = loaded.ledger;
+        changed_ledger.ensure_member(&extra.public.awe_id);
+        persist_onecoin_state(&path, &changed_ledger, &BTreeMap::new()).unwrap();
+        let changed = load_persisted_onecoin_state(&path).unwrap();
+        assert_eq!(changed.ledger.members.len(), 3);
+        assert!(changed.pending_transfers.is_empty());
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn persisted_onecoin_state_migrates_legacy_ledger_and_rejects_corruption() {
+        let path = temporary_state_path("legacy-migration");
+        let identity = Identity::generate(Username::new("persist-migration").unwrap());
+        let mut legacy = OnecoinLedger::default();
+        legacy
+            .initialize_genesis(std::slice::from_ref(&identity.public.awe_id))
+            .unwrap();
+        fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+
+        let migrated = load_persisted_onecoin_state(&path).unwrap();
+        assert_eq!(migrated.format_version, 1);
+        assert_eq!(migrated.ledger.balance_atoms(&identity.public.awe_id), legacy.balance_atoms(&identity.public.awe_id));
+        assert!(migrated.pending_transfers.is_empty());
+
+        fs::write(&path, b"{ definitely not valid JSON").unwrap();
+        assert!(load_persisted_onecoin_state(&path).is_err());
+        let _ = fs::remove_file(path);
+    }
+
     #[test]
     fn contribution_parser_rejects_narrow_integer_overflow_and_invalid_types() {
         assert!(
