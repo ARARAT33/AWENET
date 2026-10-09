@@ -89,8 +89,7 @@ impl DataGroup {
     pub fn new(
         id: impl Into<String>,
         centres: impl IntoIterator<Item = String>,
-    ) -> Result<Self, String>
-    {
+    ) -> Result<Self, String> {
         let id = id.into();
         let centre_list = centres.into_iter().map(Into::into).collect::<Vec<_>>();
         let unique = centre_list.iter().cloned().collect::<HashSet<_>>();
