@@ -85,6 +85,47 @@ pub struct CentreGroup {
     pub groups: HashSet<DataGroupId>,
 }
 
+impl DataGroup {
+    pub fn new<I, S>(id: impl Into<String>, centres: I) -> Result<Self, String>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let id = id.into();
+        let centre_list = centres.into_iter().map(Into::into).collect::<Vec<_>>();
+        let unique = centre_list.iter().cloned().collect::<HashSet<_>>();
+        if unique.len() != centre_list.len() {
+            return Err("data group contains duplicate centre IDs".into());
+        }
+        if unique.len() < 3 {
+            return Err("data group must contain at least three distinct centres".into());
+        }
+        Ok(Self {
+            id,
+            centres: unique,
+        })
+    }
+}
+
+impl CentreGroup {
+    pub fn new<I, S>(id: impl Into<String>, groups: I) -> Result<Self, String>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let id = id.into();
+        let group_list = groups.into_iter().map(Into::into).collect::<Vec<_>>();
+        let unique = group_list.iter().cloned().collect::<HashSet<_>>();
+        if unique.len() != group_list.len() {
+            return Err("centre group contains duplicate data-group IDs".into());
+        }
+        if unique.len() < 2 {
+            return Err("centre group must contain at least two distinct data groups".into());
+        }
+        Ok(Self { id, groups: unique })
+    }
+}
+
 #[derive(Default, Debug)]
 pub struct AweNet {
     pub centres: HashMap<DataCentreId, DataCentre>,
