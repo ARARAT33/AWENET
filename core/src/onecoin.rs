@@ -9,7 +9,7 @@ use crate::awenet::ContributionReceipt;
 use crate::identity::{AweId, Identity};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub const ONECOIN_PROTOCOL: &str = "ONECOIN/1";
 pub const ATOMS_PER_COIN: u128 = 1_000_000_000_000_000_000;
@@ -249,6 +249,9 @@ pub struct OnecoinLedger {
     /// Transaction IDs already accepted as replicated incoming transfers.
     #[serde(default)]
     pub received_transactions: BTreeMap<[u8; 32], u128>,
+    /// Per-recipient tracking of sender nonces already accepted from remote nodes.
+    #[serde(default)]
+    pub received_nonces: BTreeMap<String, BTreeSet<u64>>,
     pub join_remainder_atoms: u128,
     pub join_distribution_active: bool,
     pub price: OnecoinPricePolicy,
@@ -266,6 +269,7 @@ impl Default for OnecoinLedger {
             total_issued_atoms: 0,
             collected_fee_atoms: 0,
             received_transactions: BTreeMap::new(),
+            received_nonces: BTreeMap::new(),
             join_remainder_atoms: 0,
             join_distribution_active: true,
             price: OnecoinPricePolicy::default(),
@@ -502,13 +506,13 @@ impl OnecoinLedger {
             return Ok(false);
         }
         let sender_key = Self::key(&sender_id);
-        let expected_nonce = self.nonces.get(&sender_key).copied().unwrap_or(0);
-        if tx.nonce != expected_nonce {
-            return Err("invalid replicated ONECOIN nonce".into());
+        if self
+            .received_nonces
+            .get(&sender_key)
+            .is_some_and(|nonces| nonces.contains(&tx.nonce))
+        {
+            return Err("sender nonce has already been used by a different transfer".into());
         }
-        let next_nonce = expected_nonce
-            .checked_add(1)
-            .ok_or_else(|| "replicated sender nonce overflow".to_string())?;
         let recipient_key = Self::key(recipient);
         let balance = self.balances.get(&recipient_key).copied().unwrap_or(0);
         let recipient_after = balance
@@ -516,7 +520,10 @@ impl OnecoinLedger {
             .ok_or_else(|| "recipient balance would overflow".to_string())?;
 
         self.balances.insert(recipient_key, recipient_after);
-        self.nonces.insert(sender_key, next_nonce);
+        self.received_nonces
+            .entry(sender_key)
+            .or_default()
+            .insert(tx.nonce);
         self.received_transactions.insert(tx_id, tx.amount_atoms);
         Ok(true)
     }
@@ -667,7 +674,7 @@ mod tests {
     }
 
     #[test]
-    fn receive_transfer_is_idempotent_and_checks_nonce() {
+    fn receive_transfer_is_idempotent_and_rejects_reused_sender_nonce() {
         let sender = id("receive-sender");
         let recipient = id("receive-recipient");
         let mut ledger = OnecoinLedger::default();
@@ -687,14 +694,20 @@ mod tests {
             INITIAL_GENESIS_ALLOCATION + ATOMS_PER_COIN
         );
 
-        let out_of_order = OnecoinTransaction::new(&sender, 2, &recipient.public.awe_id, 1, None);
+        // Receivers may see nonces out of order when earlier transfers went to
+        // other nodes, but the same sender nonce cannot credit one wallet twice.
+        let future = OnecoinTransaction::new(&sender, 2, &recipient.public.awe_id, 1, None);
         assert!(ledger
-            .receive_transfer(
-                &out_of_order,
-                &sender.public.public_key,
-                &recipient.public.awe_id,
-            )
+            .receive_transfer(&future, &sender.public.public_key, &recipient.public.awe_id)
+            .unwrap());
+        let conflict = OnecoinTransaction::new(&sender, 2, &recipient.public.awe_id, 2, None);
+        assert!(ledger
+            .receive_transfer(&conflict, &sender.public.public_key, &recipient.public.awe_id)
             .is_err());
+        assert_eq!(
+            ledger.balance_atoms(&recipient.public.awe_id),
+            INITIAL_GENESIS_ALLOCATION + ATOMS_PER_COIN + 1
+        );
     }
 
     #[test]
