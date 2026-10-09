@@ -182,6 +182,63 @@ fn three_node_product_smoke() {
             "replication policy: {storage}"
         );
 
+        let published_offer = post(
+            "127.0.0.1:46201",
+            "/api/onebank/exchange/offers",
+            r#"{"offer":{"side":"sell","amount":"0.5","price":"1.25","currency":"USD","rail":"BankTransfer"}}"#,
+        );
+        let published_offer: serde_json::Value =
+            serde_json::from_str(&published_offer).expect("published offer JSON");
+        assert_eq!(
+            published_offer.get("status").and_then(|v| v.as_str()),
+            Some("published"),
+            "offer should be published"
+        );
+        let offer = published_offer.get("offer").expect("signed offer wrapper");
+        assert_eq!(
+            offer.get("signature_verified").and_then(|v| v.as_bool()),
+            Some(true),
+            "offer must be signed by the publishing node"
+        );
+        assert_eq!(
+            offer
+                .get("owner_public_key")
+                .and_then(|v| v.as_str())
+                .map(str::len),
+            Some(64),
+            "offer must retain the signer's public key"
+        );
+        let published_id = offer.get("id").and_then(|v| v.as_str()).expect("offer id");
+        let offers: serde_json::Value =
+            serde_json::from_str(&get("127.0.0.1:46201", "/api/onebank/exchange/offers"))
+                .expect("verified offer list JSON");
+        assert!(
+            offers.as_array().is_some_and(|list| {
+                list.iter().any(|item| item.get("id").and_then(|v| v.as_str()) == Some(published_id))
+            }),
+            "verified listing should be returned"
+        );
+
+        let offers_path = dirs[0].join("onecoin-exchange-offers.json");
+        let mut stored: serde_json::Value =
+            serde_json::from_slice(&fs::read(&offers_path).expect("read persisted offers"))
+                .expect("persisted offer JSON");
+        stored.as_array_mut().expect("offer array")[0]["owner_public_key"] =
+            serde_json::Value::String("00".repeat(32));
+        fs::write(
+            &offers_path,
+            serde_json::to_vec_pretty(&stored).expect("serialize tampered offer"),
+        )
+        .expect("write tampered offer");
+        let after_tamper: serde_json::Value =
+            serde_json::from_str(&get("127.0.0.1:46201", "/api/onebank/exchange/offers"))
+                .expect("offer list after tamper");
+        assert_eq!(
+            after_tamper.as_array().map(Vec::len),
+            Some(0),
+            "the API must not return an offer with a tampered signer key"
+        );
+
         let connect2 = post(
             "127.0.0.1:46201",
             "/api/connect?address=127.0.0.1%3A46102",
