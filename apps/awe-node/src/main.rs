@@ -2588,9 +2588,9 @@ async fn run_product() -> Result<()> {
     });
 
     let onecoin_path = data_dir.join("onecoin-ledger.json");
-    let persisted_onecoin = load_persisted_onecoin_state(&onecoin_path).map_err(anyhow::Error::msg)?;
-    let onecoin_ledger: OnecoinLedgerState =
-        Arc::new(Mutex::new(persisted_onecoin.ledger));
+    let persisted_onecoin =
+        load_persisted_onecoin_state(&onecoin_path).map_err(anyhow::Error::msg)?;
+    let onecoin_ledger: OnecoinLedgerState = Arc::new(Mutex::new(persisted_onecoin.ledger));
     let onecoin_outbox: OnecoinPendingState =
         Arc::new(Mutex::new(persisted_onecoin.pending_transfers));
     {
@@ -3216,7 +3216,10 @@ async fn run_product() -> Result<()> {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
             let pending = match retry_outbox.lock() {
-                Ok(queue) => queue.iter().map(|(id, tx)| (id.clone(), tx.clone())).collect::<Vec<_>>(),
+                Ok(queue) => queue
+                    .iter()
+                    .map(|(id, tx)| (id.clone(), tx.clone()))
+                    .collect::<Vec<_>>(),
                 Err(_) => continue,
             };
             for (id, tx) in pending {
@@ -3224,11 +3227,7 @@ async fn run_product() -> Result<()> {
                     continue;
                 };
                 if retry_node
-                    .send_to_peer_confirmed(
-                        &tx.recipient,
-                        policy::ONECOIN_TRANSFER_STREAM,
-                        bytes,
-                    )
+                    .send_to_peer_confirmed(&tx.recipient, policy::ONECOIN_TRANSFER_STREAM, bytes)
                     .await
                     .is_ok()
                 {
@@ -3404,14 +3403,20 @@ mod amount_parser_tests {
 
     #[test]
     fn contribution_parser_rejects_narrow_integer_overflow_and_invalid_types() {
-        assert!(parse_resource_contribution(&serde_json::json!({"cpu_cores":4294967296u64})).is_err());
-        assert!(parse_resource_contribution(&serde_json::json!({"online_hours":65536u64})).is_err());
+        assert!(
+            parse_resource_contribution(&serde_json::json!({"cpu_cores":4294967296u64})).is_err()
+        );
+        assert!(
+            parse_resource_contribution(&serde_json::json!({"online_hours":65536u64})).is_err()
+        );
         assert!(parse_resource_contribution(&serde_json::json!({"uptime_bps":10001u64})).is_err());
         assert!(parse_resource_contribution(&serde_json::json!({"storage_bytes":1.5})).is_err());
         assert!(parse_resource_contribution(&serde_json::json!({"cpu_cores":"4"})).is_err());
         assert!(parse_resource_contribution(&serde_json::json!({"online_hours":25})).is_err());
         assert_eq!(
-            parse_resource_contribution(&serde_json::json!({"cpu_cores":4,"storage_bytes":1024})).unwrap().cpu_cores,
+            parse_resource_contribution(&serde_json::json!({"cpu_cores":4,"storage_bytes":1024}))
+                .unwrap()
+                .cpu_cores,
             4
         );
     }
@@ -3442,6 +3447,9 @@ mod amount_parser_tests {
         assert!(parse_onecoin_atoms(&serde_json::json!("-1")).is_err());
         assert!(parse_onecoin_atoms(&serde_json::json!("")).is_err());
         assert!(parse_onecoin_atoms(&serde_json::json!(null)).is_err());
-        assert!(parse_onecoin_atoms(&serde_json::json!("340282366920938463463.374607431768211456")).is_err());
+        assert!(parse_onecoin_atoms(&serde_json::json!(
+            "340282366920938463463.374607431768211456"
+        ))
+        .is_err());
     }
 }
