@@ -530,7 +530,8 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         let expected_host = format!("{}.localhost:{}", site_id.to_ascii_lowercase(), site_port);
         let request_host = request.lines().find_map(|line| {
             let (name, value) = line.split_once(':')?;
-            name.eq_ignore_ascii_case("host").then_some(value.trim().to_ascii_lowercase())
+            name.eq_ignore_ascii_case("host")
+                .then_some(value.trim().to_ascii_lowercase())
         });
         if site_id.len() == 64
             && site_id.bytes().all(|byte| byte.is_ascii_hexdigit())
