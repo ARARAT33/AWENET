@@ -1041,24 +1041,36 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                     let version = payload.get("version").and_then(|v| v.as_str()).unwrap_or("").trim();
                     let entry = payload.get("entry").and_then(|v| v.as_str()).unwrap_or("").trim();
                     let kind = payload.get("kind").and_then(|v| serde_json::from_value::<AppKind>(v.clone()).ok());
-                    let permissions = payload.get("permissions").cloned().and_then(|v| serde_json::from_value::<Vec<AppCapability>>(v).ok()).unwrap_or_default();
-                    let price = payload.get("price_onecoin_atoms").and_then(|v| if v.is_null() { None } else { v.as_str().and_then(|s| s.parse::<u128>().ok()).or_else(|| v.as_u64().map(u128::from)) });
+                    let permissions = payload.get("permissions").cloned()
+                        .map(serde_json::from_value::<Vec<AppCapability>>);
+                    let price_value = payload.get("price_onecoin_atoms");
+                    let price = match price_value {
+                        None | Some(serde_json::Value::Null) => Some(None),
+                        Some(v) => v.as_str().and_then(|s| s.parse::<u128>().ok())
+                            .or_else(|| v.as_u64().map(u128::from)).map(Some),
+                    };
                     let file_values = payload.get("files").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-                    if id.is_empty() || name.is_empty() || version.is_empty() || entry.is_empty() || kind.is_none() || file_values.is_empty() || file_values.len() > 256 {
-                        ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":"id, name, version, entry, kind and 1-256 files are required"}).to_string())
+                    if id.is_empty() || name.is_empty() || version.is_empty() || entry.is_empty() || kind.is_none() || permissions.as_ref().is_none_or(|p| p.is_err()) || price.is_none() || file_values.is_empty() || file_values.len() > 256 {
+                        ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":"id, name, version, entry, kind, valid permissions/price and 1-256 files are required"}).to_string())
                     } else {
+                        let permissions = permissions.and_then(Result::ok).unwrap_or_default();
+                        let price = price.flatten();
                         let mut files = BTreeMap::new();
                         let mut invalid = None;
                         for file in file_values {
                             let path = file.get("path").and_then(|v| v.as_str()).unwrap_or("");
                             let data = file.get("data_hex").and_then(|v| v.as_str()).and_then(|v| hex::decode(v).ok());
                             match data {
-                                Some(bytes) if !path.is_empty() && !path.contains("..") && !path.contains('\\') && path.starts_with('/') && !files.contains_key(path) => { files.insert(path.to_string(), bytes); }
+                                Some(bytes) if !path.is_empty() && path.starts_with('/') && !path.contains('\\') && !path.split('/').any(|part| part == "..") && !files.contains_key(path) => { files.insert(path.to_string(), bytes); }
                                 _ => { invalid = Some("each file needs a unique safe absolute path and valid data_hex"); break; }
                             }
                         }
                         if let Some(error) = invalid {
                             ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":error}).to_string())
+                        } else if files.values().map(Vec::len).sum::<usize>() > 24 * 1024 * 1024 {
+                            ("413 Payload Too Large", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":"package upload exceeds the 24 MiB API limit"}).to_string())
+                        } else if !files.contains_key(entry) {
+                            ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":"entry must reference one of the uploaded files"}).to_string())
                         } else {
                             let root = PathBuf::from(data_dir_for_api()).join("store");
                             let package = AWEPackage::new(&node.identity, id, name, version, kind.unwrap(), entry, files, permissions, Vec::new())
