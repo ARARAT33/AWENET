@@ -496,9 +496,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
     if let Some(host) = request_host.as_deref() {
         let site_suffix = format!(".localhost:{configured_port}");
         if let Some(site_host_id) = host.strip_suffix(&site_suffix) {
-            if site_host_id.len() == 64
-                && site_host_id.bytes().all(|byte| byte.is_ascii_hexdigit())
-            {
+            if site_host_id.len() == 64 && site_host_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
                 let site_prefix = format!("/site/{site_host_id}");
                 let allowed_site_path = path == site_prefix
                     || path
