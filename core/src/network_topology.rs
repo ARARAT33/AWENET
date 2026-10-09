@@ -91,7 +91,7 @@ impl DataGroup {
         centres: impl IntoIterator<Item = String>,
     ) -> Result<Self, String> {
         let id = id.into();
-        let centre_list = centres.into_iter().map(Into::into).collect::<Vec<_>>();
+        let centre_list = centres.into_iter().collect::<Vec<_>>();
         let unique = centre_list.iter().cloned().collect::<HashSet<_>>();
         if unique.len() != centre_list.len() {
             return Err("data group contains duplicate centre IDs".into());
@@ -112,7 +112,7 @@ impl CentreGroup {
         groups: impl IntoIterator<Item = String>,
     ) -> Result<Self, String> {
         let id = id.into();
-        let group_list = groups.into_iter().map(Into::into).collect::<Vec<_>>();
+        let group_list = groups.into_iter().collect::<Vec<_>>();
         let unique = group_list.iter().cloned().collect::<HashSet<_>>();
         if unique.len() != group_list.len() {
             return Err("centre group contains duplicate data-group IDs".into());
