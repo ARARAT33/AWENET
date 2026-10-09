@@ -110,8 +110,7 @@ impl CentreGroup {
     pub fn new(
         id: impl Into<String>,
         groups: impl IntoIterator<Item = String>,
-    ) -> Result<Self, String>
-    {
+    ) -> Result<Self, String> {
         let id = id.into();
         let group_list = groups.into_iter().map(Into::into).collect::<Vec<_>>();
         let unique = group_list.iter().cloned().collect::<HashSet<_>>();
