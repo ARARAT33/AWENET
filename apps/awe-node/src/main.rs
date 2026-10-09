@@ -3255,9 +3255,7 @@ async fn run_product() -> Result<()> {
     // Retry durable outgoing transfers. Duplicate delivery is safe because the
     // receiver tracks transaction IDs and sender nonces before crediting a wallet.
     let retry_node = node.clone();
-    let retry_ledger = onecoin_ledger.clone();
     let retry_outbox = onecoin_outbox.clone();
-    let retry_path = onecoin_path.clone();
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
