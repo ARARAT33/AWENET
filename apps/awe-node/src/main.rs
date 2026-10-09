@@ -3167,9 +3167,18 @@ mod amount_parser_tests {
     }
 
     fn coin_decimal_parser_uses_eighteen_atom_places() {
-        assert_eq!(parse_onecoin_atoms(&serde_json::json!("0.5")).unwrap(), ATOMS_PER_COIN / 2);
-        assert_eq!(parse_onecoin_atoms(&serde_json::json!("0.000000000000000001")).unwrap(), 1);
-        assert_eq!(parse_onecoin_atoms(&serde_json::json!("1.00000001")).unwrap(), ATOMS_PER_COIN + 10_000_000_000);
+        assert_eq!(
+            parse_onecoin_atoms(&serde_json::json!("0.5")).unwrap(),
+            ATOMS_PER_COIN / 2
+        );
+        assert_eq!(
+            parse_onecoin_atoms(&serde_json::json!("0.000000000000000001")).unwrap(),
+            1
+        );
+        assert_eq!(
+            parse_onecoin_atoms(&serde_json::json!("1.00000001")).unwrap(),
+            ATOMS_PER_COIN + 10_000_000_000
+        );
         assert!(parse_onecoin_atoms(&serde_json::json!("1.0000000000000000001")).is_err());
         assert!(parse_onecoin_atoms(&serde_json::json!("1e-3")).is_err());
     }
