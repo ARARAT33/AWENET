@@ -405,7 +405,8 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
 
     // Complete browser CORS preflight before routing API requests.
     if method.eq_ignore_ascii_case("OPTIONS") {
-        let response = http_response("204 No Content", "text/plain; charset=utf-8", "", &request).await;
+        let response =
+            http_response("204 No Content", "text/plain; charset=utf-8", "", &request).await;
         stream.write_all(&response).await?;
         return Ok(());
     }
