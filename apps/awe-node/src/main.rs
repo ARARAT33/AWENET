@@ -403,6 +403,13 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
     let target = parts.next().unwrap_or("/");
     let path = target.split('?').next().unwrap_or("/");
 
+    // Complete browser CORS preflight before routing API requests.
+    if method.eq_ignore_ascii_case("OPTIONS") {
+        let response = http_response("204 No Content", "text/plain; charset=utf-8", "", &request).await;
+        stream.write_all(&response).await?;
+        return Ok(());
+    }
+
     if let Some(site_route) = path.strip_prefix("/site/") {
         let mut parts = site_route.splitn(2, '/');
         let site_id = parts.next().unwrap_or("");
