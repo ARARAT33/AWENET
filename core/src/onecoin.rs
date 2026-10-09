@@ -702,7 +702,11 @@ mod tests {
             .unwrap());
         let conflict = OnecoinTransaction::new(&sender, 2, &recipient.public.awe_id, 2, None);
         assert!(ledger
-            .receive_transfer(&conflict, &sender.public.public_key, &recipient.public.awe_id)
+            .receive_transfer(
+                &conflict,
+                &sender.public.public_key,
+                &recipient.public.awe_id
+            )
             .is_err());
         assert_eq!(
             ledger.balance_atoms(&recipient.public.awe_id),
