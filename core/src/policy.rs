@@ -178,8 +178,7 @@ mod tests {
         let migrated = load_or_create(&path).unwrap();
         assert_eq!(migrated.version, POLICY_VERSION);
         assert!(migrated.allows_stream(ONECOIN_CONSENSUS_STREAM));
-        let persisted: NetworkPolicy =
-            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let persisted: NetworkPolicy = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(persisted.version, POLICY_VERSION);
         let _ = fs::remove_file(path);
     }
