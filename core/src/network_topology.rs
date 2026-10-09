@@ -165,13 +165,13 @@ impl DataGroup {
         id: impl Into<String>,
         centres: impl IntoIterator<Item = DataCentreId>,
     ) -> Result<Self, String> {
-        let centres: Vec<DataCentreId> = centres.into_iter().collect();
+        let centres: HashSet<DataCentreId> = centres.into_iter().collect();
         if centres.len() < 3 {
-            return Err("DataGroup requires at least 3 data centres".into());
+            return Err("DataGroup requires at least 3 distinct data centres".into());
         }
         Ok(Self {
             id: id.into(),
-            centres: centres.into_iter().collect(),
+            centres,
         })
     }
 }
@@ -181,19 +181,22 @@ impl CentreGroup {
         id: impl Into<String>,
         groups: impl IntoIterator<Item = DataGroupId>,
     ) -> Result<Self, String> {
-        let groups: Vec<DataGroupId> = groups.into_iter().collect();
+        let groups: HashSet<DataGroupId> = groups.into_iter().collect();
         if groups.len() < 2 {
-            return Err("CentreGroup requires at least 2 data groups".into());
+            return Err("CentreGroup requires at least 2 distinct data groups".into());
         }
         Ok(Self {
             id: id.into(),
-            groups: groups.into_iter().collect(),
+            groups,
         })
     }
 }
 
 impl AweNet {
     pub fn add_centre(&mut self, d: DataCentre) -> Result<(), String> {
+        if self.centres.contains_key(&d.id) {
+            return Err("data centre ID already exists".into());
+        }
         for existing in self.centres.values() {
             if d.nodes.keys().any(|id| existing.nodes.contains_key(id)) {
                 return Err("node IDs must be globally unique across data centres".into());
@@ -204,6 +207,9 @@ impl AweNet {
     }
 
     pub fn add_data_group(&mut self, group: DataGroup) -> Result<(), String> {
+        if self.data_groups.contains_key(&group.id) {
+            return Err("data group ID already exists".into());
+        }
         if !group.centres.iter().all(|id| self.centres.contains_key(id)) {
             return Err("data group references an unknown centre".into());
         }
@@ -212,6 +218,9 @@ impl AweNet {
     }
 
     pub fn add_centre_group(&mut self, group: CentreGroup) -> Result<(), String> {
+        if self.centre_groups.contains_key(&group.id) {
+            return Err("centre group ID already exists".into());
+        }
         if !group
             .groups
             .iter()
