@@ -2719,7 +2719,8 @@ async fn run_product() -> Result<()> {
                                 .lock()
                                 .ok()
                                 .and_then(|queue| {
-                                    queue.get(&ack.transaction_id)
+                                    queue
+                                        .get(&ack.transaction_id)
                                         .map(|tx| tx.recipient == ack.recipient)
                                 })
                                 .unwrap_or(false);
@@ -2730,7 +2731,9 @@ async fn run_product() -> Result<()> {
                                     &dispatcher_onecoin_outbox,
                                     &ack.transaction_id,
                                 ) {
-                                    eprintln!("ONECOIN recipient ACK could not be persisted: {error}");
+                                    eprintln!(
+                                        "ONECOIN recipient ACK could not be persisted: {error}"
+                                    );
                                 }
                             }
                         }
@@ -2772,18 +2775,28 @@ async fn run_product() -> Result<()> {
                                 Ok(()) => {
                                     let ack = OnecoinTransferAck {
                                         transaction_id: hex::encode(tx.id()),
-                                        recipient: *dispatcher_node.identity.public.awe_id.as_bytes(),
+                                        recipient: *dispatcher_node
+                                            .identity
+                                            .public
+                                            .awe_id
+                                            .as_bytes(),
                                     };
                                     if let Ok(bytes) = serde_json::to_vec(&ack) {
                                         if let Err(error) = dispatcher_node
-                                            .send_to_peer(&sender, policy::ONECOIN_TRANSFER_STREAM, bytes)
+                                            .send_to_peer(
+                                                &sender,
+                                                policy::ONECOIN_TRANSFER_STREAM,
+                                                bytes,
+                                            )
                                             .await
                                         {
                                             eprintln!("ONECOIN transfer ACK send failed; sender will retry: {error}");
                                         }
                                     }
                                 }
-                                Err(error) => eprintln!("ONECOIN incoming transfer was not applied: {error}"),
+                                Err(error) => {
+                                    eprintln!("ONECOIN incoming transfer was not applied: {error}")
+                                }
                             }
                         }
                     }
@@ -3498,7 +3511,10 @@ mod amount_parser_tests {
 
         let migrated = load_persisted_onecoin_state(&path).unwrap();
         assert_eq!(migrated.format_version, 1);
-        assert_eq!(migrated.ledger.balance_atoms(&identity.public.awe_id), legacy.balance_atoms(&identity.public.awe_id));
+        assert_eq!(
+            migrated.ledger.balance_atoms(&identity.public.awe_id),
+            legacy.balance_atoms(&identity.public.awe_id)
+        );
         assert!(migrated.pending_transfers.is_empty());
 
         fs::write(&path, b"{ definitely not valid JSON").unwrap();
