@@ -435,8 +435,7 @@ fn three_node_product_smoke() {
             ),
         );
         assert!(
-            bad_entry.contains(r#""status":"error""#)
-                && bad_entry.contains("entry must reference"),
+            bad_entry.contains(r#""status":"error""#) && bad_entry.contains("entry must reference"),
             "invalid package entry should be rejected: {bad_entry}"
         );
 
