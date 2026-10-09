@@ -52,14 +52,11 @@ fn open_browser_window(app: tauri::AppHandle, url: String) -> Result<(), String>
         .trim()
         .parse()
         .map_err(|error| format!("Invalid browser URL: {error}"))?;
-    let target = tauri::WebviewUrl::External(parsed);
-    let host = match &target {
-        tauri::WebviewUrl::External(url) => url.host_str().unwrap_or("AWENET Browser"),
-        _ => "AWENET Browser",
-    };
-    if !matches!(url.trim().get(..url.find(':').unwrap_or(0)), Some("http" | "https")) {
+    if !matches!(parsed.scheme(), "http" | "https") {
         return Err("Only HTTP and HTTPS URLs may be opened in the AWENET Browser".into());
     }
+    let host = parsed.host_str().unwrap_or("AWENET Browser").to_string();
+    let target = tauri::WebviewUrl::External(parsed);
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
