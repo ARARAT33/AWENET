@@ -2797,21 +2797,28 @@ async fn run_product() -> Result<()> {
                                             .as_bytes(),
                                     };
                                     if let Ok(bytes) = serde_json::to_vec(&ack) {
-                                        match dispatcher_node
-                                            .send_to_peer(
+                                        match tokio::time::timeout(
+                                            std::time::Duration::from_secs(8),
+                                            dispatcher_node.send_to_peer_confirmed(
                                                 &sender,
                                                 policy::ONECOIN_TRANSFER_STREAM,
                                                 bytes,
-                                            )
-                                            .await
+                                            ),
+                                        )
+                                        .await
                                         {
-                                            Ok(_) => eprintln!(
-                                                "ONECOIN transfer application ACK sent to peer {} for {}",
+                                            Ok(Ok(_)) => eprintln!(
+                                                "ONECOIN transfer application ACK delivered to peer {} for {}",
                                                 hex::encode(sender),
                                                 hex::encode(tx.id())
                                             ),
-                                            Err(error) => eprintln!(
+                                            Ok(Err(error)) => eprintln!(
                                                 "ONECOIN transfer ACK send failed for peer {} transaction {}: {error}",
+                                                hex::encode(sender),
+                                                hex::encode(tx.id())
+                                            ),
+                                            Err(_) => eprintln!(
+                                                "ONECOIN transfer ACK send timed out for peer {} transaction {}",
                                                 hex::encode(sender),
                                                 hex::encode(tx.id())
                                             ),
