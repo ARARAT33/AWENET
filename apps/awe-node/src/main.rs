@@ -52,6 +52,12 @@ type OnecoinPendingState = Arc<Mutex<BTreeMap<String, OnecoinTransaction>>>;
 type ContributionState = Arc<Mutex<ResourceContribution>>;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct OnecoinTransferAck {
+    transaction_id: String,
+    recipient: [u8; 32],
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct PersistedOnecoinState {
     format_version: u8,
     ledger: OnecoinLedger,
@@ -983,32 +989,21 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
 
                 match result {
                     Ok((tx_id, fee_atoms, tx)) => {
-                        let delivered = match serde_json::to_vec(&tx) {
-                            Ok(bytes) => {
-                                if node
-                                    .send_to_peer_confirmed(
-                                        &tx.recipient,
-                                        policy::ONECOIN_TRANSFER_STREAM,
-                                        bytes,
-                                    )
-                                    .await
-                                    .is_ok()
-                                {
-                                    // If durable queue cleanup fails, keep the outbox
-                                    // entry so a restart can safely resend it.
-                                    remove_pending_onecoin_transfer(
-                                        &onecoin_path,
-                                        &onecoin_ledger,
-                                        &onecoin_outbox,
-                                        &tx_id,
-                                    )
-                                    .is_ok()
-                                } else {
-                                    false
-                                }
-                            }
+                        let transport_acknowledged = match serde_json::to_vec(&tx) {
+                            Ok(bytes) => node
+                                .send_to_peer_confirmed(
+                                    &tx.recipient,
+                                    policy::ONECOIN_TRANSFER_STREAM,
+                                    bytes,
+                                )
+                                .await
+                                .is_ok(),
                             Err(_) => false,
                         };
+                        let still_pending = onecoin_outbox
+                            .lock()
+                            .map(|queue| queue.contains_key(&tx_id))
+                            .unwrap_or(true);
                         (
                             "200 OK",
                             "application/json; charset=utf-8",
@@ -1017,8 +1012,9 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                                 "tx_id":tx_id,
                                 "fee_atoms":fee_atoms,
                                 "fee_bps":100,
-                                "recipient_delivered":delivered,
-                                "recipient_pending":!delivered
+                                "transport_acknowledged":transport_acknowledged,
+                                "recipient_delivered":!still_pending,
+                                "recipient_pending":still_pending
                             }).to_string(),
                         )
                     }
@@ -2714,8 +2710,38 @@ async fn run_product() -> Result<()> {
                     continue;
                 }
                 if stream == policy::ONECOIN_TRANSFER_STREAM {
+                    // A network DataAck means only that the frame reached the
+                    // remote inbox. Clear the durable outbox only after an app ACK
+                    // emitted by the recipient after its ledger is persisted.
+                    if let Ok(ack) = serde_json::from_slice::<OnecoinTransferAck>(&payload) {
+                        if ack.recipient == sender {
+                            let matches_pending = dispatcher_onecoin_outbox
+                                .lock()
+                                .ok()
+                                .and_then(|queue| {
+                                    queue.get(&ack.transaction_id)
+                                        .map(|tx| tx.recipient == ack.recipient)
+                                })
+                                .unwrap_or(false);
+                            if matches_pending {
+                                if let Err(error) = remove_pending_onecoin_transfer(
+                                    &dispatcher_onecoin_path,
+                                    &dispatcher_onecoin_ledger,
+                                    &dispatcher_onecoin_outbox,
+                                    &ack.transaction_id,
+                                ) {
+                                    eprintln!("ONECOIN recipient ACK could not be persisted: {error}");
+                                }
+                            }
+                        }
+                        continue;
+                    }
+
                     if let Ok(tx) = serde_json::from_slice::<OnecoinTransaction>(&payload) {
-                        if tx.recipient == *dispatcher_node.identity.public.awe_id.as_bytes() {
+                        let tx_sender_aweid = *AweId::from_public_key(&tx.sender).as_bytes();
+                        if tx.recipient == *dispatcher_node.identity.public.awe_id.as_bytes()
+                            && tx_sender_aweid == sender
+                        {
                             let received = (|| -> Result<(), String> {
                                 let mut ledger = dispatcher_onecoin_ledger
                                     .lock()
@@ -2742,8 +2768,22 @@ async fn run_product() -> Result<()> {
                                 }
                                 Ok(())
                             })();
-                            if let Err(error) = received {
-                                eprintln!("ONECOIN incoming transfer was not applied: {error}");
+                            match received {
+                                Ok(()) => {
+                                    let ack = OnecoinTransferAck {
+                                        transaction_id: hex::encode(tx.id()),
+                                        recipient: *dispatcher_node.identity.public.awe_id.as_bytes(),
+                                    };
+                                    if let Ok(bytes) = serde_json::to_vec(&ack) {
+                                        if let Err(error) = dispatcher_node
+                                            .send_to_peer(&sender, policy::ONECOIN_TRANSFER_STREAM, bytes)
+                                            .await
+                                        {
+                                            eprintln!("ONECOIN transfer ACK send failed; sender will retry: {error}");
+                                        }
+                                    }
+                                }
+                                Err(error) => eprintln!("ONECOIN incoming transfer was not applied: {error}"),
                             }
                         }
                     }
@@ -3232,19 +3272,13 @@ async fn run_product() -> Result<()> {
                 let Ok(bytes) = serde_json::to_vec(&tx) else {
                     continue;
                 };
-                if retry_node
+                // Keep the item queued until the recipient's application ACK
+                // arrives on the same stream and passes identity/transaction checks.
+                if let Err(error) = retry_node
                     .send_to_peer_confirmed(&tx.recipient, policy::ONECOIN_TRANSFER_STREAM, bytes)
                     .await
-                    .is_ok()
                 {
-                    if let Err(error) = remove_pending_onecoin_transfer(
-                        &retry_path,
-                        &retry_ledger,
-                        &retry_outbox,
-                        &id,
-                    ) {
-                        eprintln!("ONECOIN outbox acknowledgement persistence failed: {error}");
-                    }
+                    eprintln!("ONECOIN pending transfer {id} will be retried: {error}");
                 }
             }
         }
