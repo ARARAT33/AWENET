@@ -152,7 +152,12 @@ impl DataCentre {
 impl AweNet {
     pub fn add_centre(&mut self, d: DataCentre) -> Result<(), String> {
         if self.centres.contains_key(&d.id) {
-            return Err(format!("duplicate data-centre ID: {}", d.id));
+            return Err("data centre ID already exists".into());
+        }
+        for existing in self.centres.values() {
+            if d.nodes.keys().any(|id| existing.nodes.contains_key(id)) {
+                return Err("node IDs must be globally unique across data centres".into());
+            }
         }
         self.centres.insert(d.id.clone(), d);
         Ok(())
@@ -162,8 +167,8 @@ impl AweNet {
         if self.data_groups.contains_key(&group.id) {
             return Err(format!("duplicate data-group ID: {}", group.id));
         }
-        if group.centres.is_empty() {
-            return Err("data group must contain at least one centre".into());
+        if group.centres.len() < 3 {
+            return Err("data group must contain at least three distinct centres".into());
         }
         if group.centres.iter().any(|id| !self.centres.contains_key(id)) {
             return Err("data group references an unknown centre".into());
@@ -176,8 +181,8 @@ impl AweNet {
         if self.centre_groups.contains_key(&group.id) {
             return Err(format!("duplicate centre-group ID: {}", group.id));
         }
-        if group.groups.is_empty() {
-            return Err("centre group must contain at least one data group".into());
+        if group.groups.len() < 2 {
+            return Err("centre group must contain at least two distinct data groups".into());
         }
         if group.groups.iter().any(|id| !self.data_groups.contains_key(id)) {
             return Err("centre group references an unknown data group".into());
@@ -359,23 +364,46 @@ impl AweNet {
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        for (id, c) in &self.centres {
-            for n in c.nodes.values() {
-                for peer in &n.peers {
-                    if !self.centres.values().any(|dc| dc.nodes.contains_key(peer)) {
-                        return Err(format!("node {id} references unknown peer {peer}"));
+        for (id, centre) in &self.centres {
+            if centre.id != *id {
+                return Err(format!("centre map key does not match centre ID: {id}"));
+            }
+            for (node_id, node) in &centre.nodes {
+                if node.id != *node_id {
+                    return Err(format!("node map key does not match node ID in centre {id}: {node_id}"));
+                }
+                for peer in &node.peers {
+                    if !self.centres.values().any(|other| other.nodes.contains_key(peer)) {
+                        return Err(format!("node {node_id} references unknown peer {peer}"));
                     }
                 }
             }
-        }
-        for g in self.data_groups.values() {
-            if g.centres.len() < 3 || !g.centres.iter().all(|id| self.centres.contains_key(id)) {
-                return Err("invalid data group".into());
+            for linked_id in &centre.links {
+                let Some(linked) = self.centres.get(linked_id) else {
+                    return Err(format!("centre {id} references unknown link {linked_id}"));
+                };
+                if !centre.link_state.contains_key(linked_id)
+                    || !linked.links.contains(id)
+                    || !linked.link_state.contains_key(id)
+                {
+                    return Err(format!("centre link between {id} and {linked_id} is not reciprocal"));
+                }
             }
         }
-        for g in self.centre_groups.values() {
-            if g.groups.len() < 2 || !g.groups.iter().all(|id| self.data_groups.contains_key(id)) {
-                return Err("invalid centre group".into());
+        for (id, group) in &self.data_groups {
+            if group.id != *id
+                || group.centres.len() < 3
+                || !group.centres.iter().all(|centre| self.centres.contains_key(centre))
+            {
+                return Err(format!("invalid data group: {id}"));
+            }
+        }
+        for (id, group) in &self.centre_groups {
+            if group.id != *id
+                || group.groups.len() < 2
+                || !group.groups.iter().all(|group_id| self.data_groups.contains_key(group_id))
+            {
+                return Err(format!("invalid centre group: {id}"));
             }
         }
         Ok(())
