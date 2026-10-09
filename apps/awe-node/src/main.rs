@@ -360,7 +360,10 @@ fn format_onecoin_atoms(atoms: u128) -> String {
     let whole = atoms / ATOMS_PER_COIN;
     let fraction = atoms % ATOMS_PER_COIN;
     let value = format!("{whole}.{fraction:08}");
-    value.trim_end_matches('0').trim_end_matches('.').to_string()
+    value
+        .trim_end_matches('0')
+        .trim_end_matches('.')
+        .to_string()
 }
 
 fn parse_onecoin_atoms(value: &serde_json::Value) -> Result<u128, String> {
@@ -432,7 +435,10 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
     // AWENET UI. Requests without an Origin header remain available to local
     // native clients and command-line diagnostics.
     if path.starts_with("/api/")
-        && matches!(method.to_ascii_uppercase().as_str(), "POST" | "PUT" | "PATCH" | "DELETE")
+        && matches!(
+            method.to_ascii_uppercase().as_str(),
+            "POST" | "PUT" | "PATCH" | "DELETE"
+        )
     {
         let origin = request.lines().find_map(|line| {
             let (name, value) = line.split_once(':')?;
