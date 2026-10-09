@@ -484,6 +484,43 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
     let method = parts.next().unwrap_or("GET");
     let target = parts.next().unwrap_or("/");
     let path = target.split('?').next().unwrap_or("/");
+    let request_host = request.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("host")
+            .then_some(value.trim().to_ascii_lowercase())
+    });
+    let configured_port = env::var("AWE_UI_ADDR")
+        .ok()
+        .and_then(|addr| addr.rsplit_once(':').map(|(_, port)| port.to_string()))
+        .unwrap_or_else(|| "41800".to_string());
+    if let Some(host) = request_host.as_deref() {
+        let site_suffix = format!(".localhost:{configured_port}");
+        if let Some(site_host_id) = host.strip_suffix(&site_suffix) {
+            if site_host_id.len() == 64
+                && site_host_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+            {
+                let site_prefix = format!("/site/{site_host_id}");
+                let allowed_site_path = path == site_prefix
+                    || path
+                        .strip_prefix(&site_prefix)
+                        .is_some_and(|rest| rest.starts_with('/'));
+                if !allowed_site_path {
+                    // A hosted page has its own origin, but that does not make
+                    // the local node API safe to expose to its JavaScript.
+                    // Restrict this virtual host to its own site's files.
+                    let response = http_response(
+                        "404 Not Found",
+                        "text/plain; charset=utf-8",
+                        "Not Found",
+                        &request,
+                    )
+                    .await;
+                    stream.write_all(&response).await?;
+                    return Ok(());
+                }
+            }
+        }
+    }
 
     // CORS headers alone do not prevent cross-origin requests from being sent.
     // Reject browser-originated state changes unless the caller is the local
