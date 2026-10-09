@@ -359,7 +359,7 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> Result<String>
 fn format_onecoin_atoms(atoms: u128) -> String {
     let whole = atoms / ATOMS_PER_COIN;
     let fraction = atoms % ATOMS_PER_COIN;
-    let value = format!("{whole}.{fraction:08}");
+    let value = format!("{whole}.{fraction:018}");
     value
         .trim_end_matches('0')
         .trim_end_matches('.')
@@ -3160,6 +3160,12 @@ mod amount_parser_tests {
     use super::*;
 
     #[test]
+    fn atom_formatter_preserves_all_eighteen_decimal_places() {
+        assert_eq!(format_onecoin_atoms(1), "0.000000000000000001");
+        assert_eq!(format_onecoin_atoms(ATOMS_PER_COIN / 2), "0.5");
+        assert_eq!(format_onecoin_atoms(ATOMS_PER_COIN), "1");
+    }
+
     fn coin_decimal_parser_uses_eighteen_atom_places() {
         assert_eq!(parse_onecoin_atoms(&serde_json::json!("0.5")).unwrap(), ATOMS_PER_COIN / 2);
         assert_eq!(parse_onecoin_atoms(&serde_json::json!("0.000000000000000001")).unwrap(), 1);
