@@ -468,6 +468,28 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
     if let Some(site_route) = path.strip_prefix("/site/") {
         let mut parts = site_route.splitn(2, '/');
         let site_id = parts.next().unwrap_or("");
+        let site_port = env::var("AWE_UI_ADDR")
+            .ok()
+            .and_then(|addr| addr.rsplit_once(':').map(|(_, port)| port.to_string()))
+            .unwrap_or_else(|| "41800".to_string());
+        let expected_host = format!("{}.localhost:{}", site_id.to_ascii_lowercase(), site_port);
+        let request_host = request.lines().find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("host").then_some(value.trim().to_ascii_lowercase())
+        });
+        if site_id.len() == 64
+            && site_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+            && request_host.as_deref() != Some(expected_host.as_str())
+        {
+            // Never execute untrusted hosted content on the trusted UI/API origin.
+            // The per-site localhost subdomain gives each site a separate browser origin.
+            let location = format!("http://{expected_host}/site/{site_route}");
+            let response = format!(
+                "HTTP/1.1 302 Found\r\nLocation: {location}\r\nCache-Control: no-store\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            stream.write_all(response.as_bytes()).await?;
+            return Ok(());
+        }
         let requested_path = decode_site_path(parts.next().unwrap_or("index.html"))
             .unwrap_or_else(|| "index.html".to_string());
         let requested_path = if requested_path.starts_with('/') {
