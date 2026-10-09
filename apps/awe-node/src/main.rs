@@ -339,6 +339,13 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> Result<String>
 }
 
 #[allow(clippy::too_many_arguments)]
+fn format_onecoin_atoms(atoms: u128) -> String {
+    let whole = atoms / ATOMS_PER_COIN;
+    let fraction = atoms % ATOMS_PER_COIN;
+    let value = format!("{whole}.{fraction:08}");
+    value.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
 fn parse_onecoin_atoms(value: &serde_json::Value) -> Result<u128, String> {
     let raw = if let Some(text) = value.as_str() {
         text.trim().to_owned()
@@ -570,6 +577,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                 "awe_id": id.to_hex(),
                 "balance_atoms": balance_atoms,
                 "balance_coins": balance_atoms / ATOMS_PER_COIN,
+                "balance_coins_exact": format_onecoin_atoms(balance_atoms),
                 "tier": tier,
                 "fee_bps": 100,
                 "resource_score": contribution_snapshot.score(),
