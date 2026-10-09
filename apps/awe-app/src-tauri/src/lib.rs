@@ -15,6 +15,7 @@ fn start_node(app: &tauri::AppHandle) -> Result<Child, String> {
         let name = path.file_name().and_then(|x| x.to_str()).unwrap_or("");
         if name.starts_with("awe-node") {
             return Command::new(&path)
+                .env("AWE_NO_NATIVE_UI", "1")
                 .spawn()
                 .map_err(|e| format!("cannot start bundled AWENET node {}: {e}", path.display()));
         }
@@ -48,12 +49,17 @@ fn open_browser_window(app: tauri::AppHandle, url: String) -> Result<(), String>
     if url.len() > 2048 {
         return Err("URL is too long".into());
     }
-    let parsed = url
-        .trim()
-        .parse()
+    let parsed = url::Url::parse(url.trim())
         .map_err(|error| format!("Invalid browser URL: {error}"))?;
-    if !matches!(parsed.scheme(), "http" | "https") {
-        return Err("Only HTTP and HTTPS URLs may be opened in the AWENET Browser".into());
+    if !matches!(parsed.scheme(), "http" | "https")
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+    {
+        return Err(
+            "Only HTTP/HTTPS URLs with a host and without embedded credentials are allowed"
+                .into(),
+        );
     }
     let host = parsed.host_str().unwrap_or("AWENET Browser").to_string();
     let target = tauri::WebviewUrl::External(parsed);
