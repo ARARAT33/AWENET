@@ -170,7 +170,11 @@ impl AweNet {
         if group.centres.len() < 3 {
             return Err("data group must contain at least three distinct centres".into());
         }
-        if group.centres.iter().any(|id| !self.centres.contains_key(id)) {
+        if group
+            .centres
+            .iter()
+            .any(|id| !self.centres.contains_key(id))
+        {
             return Err("data group references an unknown centre".into());
         }
         self.data_groups.insert(group.id.clone(), group);
@@ -184,7 +188,11 @@ impl AweNet {
         if group.groups.len() < 2 {
             return Err("centre group must contain at least two distinct data groups".into());
         }
-        if group.groups.iter().any(|id| !self.data_groups.contains_key(id)) {
+        if group
+            .groups
+            .iter()
+            .any(|id| !self.data_groups.contains_key(id))
+        {
             return Err("centre group references an unknown data group".into());
         }
         self.centre_groups.insert(group.id.clone(), group);
@@ -370,10 +378,16 @@ impl AweNet {
             }
             for (node_id, node) in &centre.nodes {
                 if node.id != *node_id {
-                    return Err(format!("node map key does not match node ID in centre {id}: {node_id}"));
+                    return Err(format!(
+                        "node map key does not match node ID in centre {id}: {node_id}"
+                    ));
                 }
                 for peer in &node.peers {
-                    if !self.centres.values().any(|other| other.nodes.contains_key(peer)) {
+                    if !self
+                        .centres
+                        .values()
+                        .any(|other| other.nodes.contains_key(peer))
+                    {
                         return Err(format!("node {node_id} references unknown peer {peer}"));
                     }
                 }
@@ -386,14 +400,19 @@ impl AweNet {
                     || !linked.links.contains(id)
                     || !linked.link_state.contains_key(id)
                 {
-                    return Err(format!("centre link between {id} and {linked_id} is not reciprocal"));
+                    return Err(format!(
+                        "centre link between {id} and {linked_id} is not reciprocal"
+                    ));
                 }
             }
         }
         for (id, group) in &self.data_groups {
             if group.id != *id
                 || group.centres.len() < 3
-                || !group.centres.iter().all(|centre| self.centres.contains_key(centre))
+                || !group
+                    .centres
+                    .iter()
+                    .all(|centre| self.centres.contains_key(centre))
             {
                 return Err(format!("invalid data group: {id}"));
             }
@@ -401,7 +420,10 @@ impl AweNet {
         for (id, group) in &self.centre_groups {
             if group.id != *id
                 || group.groups.len() < 2
-                || !group.groups.iter().all(|group_id| self.data_groups.contains_key(group_id))
+                || !group
+                    .groups
+                    .iter()
+                    .all(|group_id| self.data_groups.contains_key(group_id))
             {
                 return Err(format!("invalid centre group: {id}"));
             }
