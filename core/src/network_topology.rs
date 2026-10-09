@@ -114,20 +114,20 @@ impl DataCentre {
     }
 
     pub fn full_mesh(&mut self) {
+        // Use the map keys as stable node IDs. Public Node values can be
+        // mutated after insertion, so relying on node.id here can panic.
         let ids: Vec<_> = self
             .nodes
-            .values()
-            .filter(|n| n.alive)
-            .map(|n| n.id.clone())
+            .iter()
+            .filter(|(_, node)| node.alive)
+            .map(|(id, _)| id.clone())
             .collect();
         for a in &ids {
             for b in &ids {
                 if a != b {
-                    self.nodes
-                        .get_mut(a)
-                        .expect("node exists")
-                        .peers
-                        .insert(b.clone());
+                    if let Some(node) = self.nodes.get_mut(a) {
+                        node.peers.insert(b.clone());
+                    }
                 }
             }
         }
@@ -135,72 +135,24 @@ impl DataCentre {
 
     pub fn nearest(&self, from: &NodeId) -> Option<NodeId> {
         self.nodes
-            .values()
-            .filter(|n| n.alive && &n.id != from)
-            .min_by_key(|n| (n.metrics.score(), n.peers.len() as u64, n.id.clone()))
-            .map(|n| n.id.clone())
+            .iter()
+            .filter(|(id, node)| node.alive && *id != from)
+            .min_by_key(|(id, node)| (node.metrics.score(), node.peers.len() as u64, (*id).clone()))
+            .map(|(id, _)| id.clone())
     }
 
     pub fn mark_node(&mut self, id: &NodeId, alive: bool) -> Result<(), String> {
         self.nodes
             .get_mut(id)
-            .map(|n| n.alive = alive)
+            .map(|node| node.alive = alive)
             .ok_or_else(|| "node not found".into())
-    }
-
-    pub fn healthy_nodes(&self, now_unix: u64, max_age: u64) -> Vec<NodeId> {
-        self.nodes
-            .values()
-            .filter(|n| {
-                n.alive
-                    && (n.metrics.last_seen_unix == 0 || n.metrics.is_healthy(now_unix, max_age))
-            })
-            .map(|n| n.id.clone())
-            .collect()
-    }
-}
-
-impl DataGroup {
-    pub fn new(
-        id: impl Into<String>,
-        centres: impl IntoIterator<Item = DataCentreId>,
-    ) -> Result<Self, String> {
-        let centres: HashSet<DataCentreId> = centres.into_iter().collect();
-        if centres.len() < 3 {
-            return Err("DataGroup requires at least 3 distinct data centres".into());
-        }
-        Ok(Self {
-            id: id.into(),
-            centres,
-        })
-    }
-}
-
-impl CentreGroup {
-    pub fn new(
-        id: impl Into<String>,
-        groups: impl IntoIterator<Item = DataGroupId>,
-    ) -> Result<Self, String> {
-        let groups: HashSet<DataGroupId> = groups.into_iter().collect();
-        if groups.len() < 2 {
-            return Err("CentreGroup requires at least 2 distinct data groups".into());
-        }
-        Ok(Self {
-            id: id.into(),
-            groups,
-        })
     }
 }
 
 impl AweNet {
     pub fn add_centre(&mut self, d: DataCentre) -> Result<(), String> {
         if self.centres.contains_key(&d.id) {
-            return Err("data centre ID already exists".into());
-        }
-        for existing in self.centres.values() {
-            if d.nodes.keys().any(|id| existing.nodes.contains_key(id)) {
-                return Err("node IDs must be globally unique across data centres".into());
-            }
+            return Err(format!("duplicate data-centre ID: {}", d.id));
         }
         self.centres.insert(d.id.clone(), d);
         Ok(())
@@ -208,9 +160,12 @@ impl AweNet {
 
     pub fn add_data_group(&mut self, group: DataGroup) -> Result<(), String> {
         if self.data_groups.contains_key(&group.id) {
-            return Err("data group ID already exists".into());
+            return Err(format!("duplicate data-group ID: {}", group.id));
         }
-        if !group.centres.iter().all(|id| self.centres.contains_key(id)) {
+        if group.centres.is_empty() {
+            return Err("data group must contain at least one centre".into());
+        }
+        if group.centres.iter().any(|id| !self.centres.contains_key(id)) {
             return Err("data group references an unknown centre".into());
         }
         self.data_groups.insert(group.id.clone(), group);
@@ -219,13 +174,12 @@ impl AweNet {
 
     pub fn add_centre_group(&mut self, group: CentreGroup) -> Result<(), String> {
         if self.centre_groups.contains_key(&group.id) {
-            return Err("centre group ID already exists".into());
+            return Err(format!("duplicate centre-group ID: {}", group.id));
         }
-        if !group
-            .groups
-            .iter()
-            .all(|id| self.data_groups.contains_key(id))
-        {
+        if group.groups.is_empty() {
+            return Err("centre group must contain at least one data group".into());
+        }
+        if group.groups.iter().any(|id| !self.data_groups.contains_key(id)) {
             return Err("centre group references an unknown data group".into());
         }
         self.centre_groups.insert(group.id.clone(), group);
@@ -241,17 +195,23 @@ impl AweNet {
         if a == b || !self.centres.contains_key(a) || !self.centres.contains_key(b) {
             return Err("invalid data-centre pair".into());
         }
-        let left: Vec<_> = self.centres[a]
+        let left: Vec<_> = self
+            .centres
+            .get(a)
+            .ok_or("source centre not found")?
             .nodes
-            .values()
-            .filter(|n| n.alive)
-            .map(|n| n.id.clone())
+            .iter()
+            .filter(|(_, node)| node.alive)
+            .map(|(id, _)| id.clone())
             .collect();
-        let right: Vec<_> = self.centres[b]
+        let right: Vec<_> = self
+            .centres
+            .get(b)
+            .ok_or("target centre not found")?
             .nodes
-            .values()
-            .filter(|n| n.alive)
-            .map(|n| n.id.clone())
+            .iter()
+            .filter(|(_, node)| node.alive)
+            .map(|(id, _)| id.clone())
             .collect();
         if left.is_empty() || right.is_empty() {
             return Err("both centres must contain live nodes".into());
@@ -263,18 +223,14 @@ impl AweNet {
                     for y in &right {
                         self.centres
                             .get_mut(a)
-                            .unwrap()
-                            .nodes
-                            .get_mut(x)
-                            .unwrap()
+                            .and_then(|centre| centre.nodes.get_mut(x))
+                            .ok_or("source node changed while connecting centres")?
                             .peers
                             .insert(y.clone());
                         self.centres
                             .get_mut(b)
-                            .unwrap()
-                            .nodes
-                            .get_mut(y)
-                            .unwrap()
+                            .and_then(|centre| centre.nodes.get_mut(y))
+                            .ok_or("target node changed while connecting centres")?
                             .peers
                             .insert(x.clone());
                     }
@@ -287,23 +243,25 @@ impl AweNet {
                 }
                 let target = right
                     .iter()
-                    .min_by_key(|id| self.centres[b].nodes[*id].metrics.score())
-                    .unwrap()
-                    .clone();
+                    .filter_map(|id| {
+                        self.centres
+                            .get(b)
+                            .and_then(|centre| centre.nodes.get(id))
+                            .map(|node| (node.metrics.score(), id.clone()))
+                    })
+                    .min_by_key(|(score, id)| (*score, id.clone()))
+                    .map(|(_, id)| id)
+                    .ok_or("target centre has no live nodes")?;
                 self.centres
                     .get_mut(a)
-                    .unwrap()
-                    .nodes
-                    .get_mut(&relay_node)
-                    .unwrap()
+                    .and_then(|centre| centre.nodes.get_mut(&relay_node))
+                    .ok_or("relay node not found")?
                     .peers
                     .insert(target.clone());
                 self.centres
                     .get_mut(b)
-                    .unwrap()
-                    .nodes
-                    .get_mut(&target)
-                    .unwrap()
+                    .and_then(|centre| centre.nodes.get_mut(&target))
+                    .ok_or("target node not found")?
                     .peers
                     .insert(relay_node.clone());
                 (
@@ -312,9 +270,10 @@ impl AweNet {
                 )
             }
         };
-        self.centres.get_mut(a).unwrap().links.insert(b.into());
-        self.centres.get_mut(b).unwrap().links.insert(a.into());
-        self.centres.get_mut(a).unwrap().link_state.insert(
+
+        let source = self.centres.get_mut(a).ok_or("source centre not found")?;
+        source.links.insert(b.into());
+        source.link_state.insert(
             b.into(),
             CentreLink {
                 mode: stored_mode.clone(),
@@ -322,7 +281,9 @@ impl AweNet {
                 healthy: true,
             },
         );
-        self.centres.get_mut(b).unwrap().link_state.insert(
+        let target = self.centres.get_mut(b).ok_or("target centre not found")?;
+        target.links.insert(a.into());
+        target.link_state.insert(
             a.into(),
             CentreLink {
                 mode: stored_mode,
@@ -337,53 +298,61 @@ impl AweNet {
         let state = self
             .centres
             .get(a)
-            .and_then(|c| c.link_state.get(b))
+            .and_then(|centre| centre.link_state.get(b))
             .cloned()
             .ok_or("link not found")?;
-        let candidate = self.centres[a]
+        let reciprocal_state = self
+            .centres
+            .get(b)
+            .and_then(|centre| centre.link_state.get(a))
+            .cloned()
+            .ok_or("reciprocal link not found")?;
+        if state.relays != reciprocal_state.relays {
+            return Err("data-centre link relay state is inconsistent".into());
+        }
+        let candidate = self
+            .centres
+            .get(a)
+            .ok_or("source centre not found")?
             .nodes
-            .values()
-            .filter(|n| n.alive && !state.relays.contains(&n.id))
-            .min_by_key(|n| n.metrics.score())
-            .map(|n| n.id.clone())
+            .iter()
+            .filter(|(id, node)| node.alive && !state.relays.contains(id))
+            .min_by_key(|(id, node)| (node.metrics.score(), (*id).clone()))
+            .map(|(id, _)| id.clone())
             .ok_or("no healthy relay available")?;
-        let target = self.centres[b]
+        let target = self
+            .centres
+            .get(b)
+            .ok_or("target centre not found")?
             .nodes
-            .values()
-            .filter(|n| n.alive)
-            .min_by_key(|n| n.metrics.score())
-            .map(|n| n.id.clone())
+            .iter()
+            .filter(|(_, node)| node.alive)
+            .min_by_key(|(id, node)| (node.metrics.score(), (*id).clone()))
+            .map(|(id, _)| id.clone())
             .ok_or("target centre has no live nodes")?;
+
         self.centres
             .get_mut(a)
-            .unwrap()
-            .nodes
-            .get_mut(&candidate)
-            .unwrap()
+            .and_then(|centre| centre.nodes.get_mut(&candidate))
+            .ok_or("selected relay node disappeared")?
             .peers
             .insert(target.clone());
         self.centres
             .get_mut(b)
-            .unwrap()
-            .nodes
-            .get_mut(&target)
-            .unwrap()
+            .and_then(|centre| centre.nodes.get_mut(&target))
+            .ok_or("target node disappeared")?
             .peers
             .insert(candidate.clone());
         self.centres
             .get_mut(a)
-            .unwrap()
-            .link_state
-            .get_mut(b)
-            .unwrap()
+            .and_then(|centre| centre.link_state.get_mut(b))
+            .ok_or("source link state disappeared")?
             .relays
             .push(candidate.clone());
         self.centres
             .get_mut(b)
-            .unwrap()
-            .link_state
-            .get_mut(a)
-            .unwrap()
+            .and_then(|centre| centre.link_state.get_mut(a))
+            .ok_or("reciprocal link state disappeared")?
             .relays
             .push(candidate.clone());
         Ok(candidate)
