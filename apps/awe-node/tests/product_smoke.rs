@@ -361,7 +361,8 @@ fn three_node_product_smoke() {
                     .expect("sender wallet after outbox delivery");
             if sender_wallet_after_retry
                 .get("pending_transfers")
-                .and_then(|v| v.as_u64()) == Some(0)
+                .and_then(|v| v.as_u64())
+                == Some(0)
             {
                 break;
             }
