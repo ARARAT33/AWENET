@@ -26,7 +26,7 @@ use std::{
     collections::BTreeMap,
     env, fs,
     net::SocketAddr,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -48,7 +48,96 @@ type PolicyState = Arc<Mutex<NetworkPolicy>>;
 type CommunityState = Arc<Mutex<serde_json::Value>>;
 type ConsensusState = Arc<Mutex<Option<OnecoinConsensusRuntime>>>;
 type OnecoinLedgerState = Arc<Mutex<OnecoinLedger>>;
+type OnecoinPendingState = Arc<Mutex<BTreeMap<String, OnecoinTransaction>>>;
 type ContributionState = Arc<Mutex<ResourceContribution>>;
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct PersistedOnecoinState {
+    format_version: u8,
+    ledger: OnecoinLedger,
+    #[serde(default)]
+    pending_transfers: BTreeMap<String, OnecoinTransaction>,
+}
+
+impl Default for PersistedOnecoinState {
+    fn default() -> Self {
+        Self {
+            format_version: 1,
+            ledger: OnecoinLedger::default(),
+            pending_transfers: BTreeMap::new(),
+        }
+    }
+}
+
+fn load_persisted_onecoin_state(path: &Path) -> Result<PersistedOnecoinState, String> {
+    if !path.exists() {
+        return Ok(PersistedOnecoinState::default());
+    }
+    let bytes = fs::read(path).map_err(|error| format!("cannot read ONECOIN state: {error}"))?;
+    if let Ok(state) = serde_json::from_slice::<PersistedOnecoinState>(&bytes) {
+        if state.format_version != 1 {
+            return Err("unsupported persisted ONECOIN state version".into());
+        }
+        for (id, transaction) in &state.pending_transfers {
+            if id != &hex::encode(transaction.id()) || !transaction.verify(&transaction.sender) {
+                return Err("persisted ONECOIN outbox contains an invalid transaction".into());
+            }
+        }
+        return Ok(state);
+    }
+    // Migrate the previous format, which stored only the ledger at this path.
+    serde_json::from_slice::<OnecoinLedger>(&bytes)
+        .map(|ledger| PersistedOnecoinState {
+            ledger,
+            ..PersistedOnecoinState::default()
+        })
+        .map_err(|_| "persisted ONECOIN state is corrupt; refusing to reset wallet balances".into())
+}
+
+fn persist_onecoin_state(
+    path: &Path,
+    ledger: &OnecoinLedger,
+    pending_transfers: &BTreeMap<String, OnecoinTransaction>,
+) -> Result<(), String> {
+    let state = PersistedOnecoinState {
+        format_version: 1,
+        ledger: ledger.clone(),
+        pending_transfers: pending_transfers.clone(),
+    };
+    let bytes = serde_json::to_vec_pretty(&state)
+        .map_err(|error| format!("cannot serialize ONECOIN state: {error}"))?;
+    let temporary = path.with_extension(format!("json.tmp-{}", std::process::id()));
+    if let Err(error) = fs::write(&temporary, bytes) {
+        let _ = fs::remove_file(&temporary);
+        return Err(format!("cannot write temporary ONECOIN state: {error}"));
+    }
+    if let Err(error) = fs::rename(&temporary, path) {
+        let _ = fs::remove_file(&temporary);
+        return Err(format!("cannot commit ONECOIN state atomically: {error}"));
+    }
+    Ok(())
+}
+
+fn remove_pending_onecoin_transfer(
+    path: &Path,
+    ledger_state: &OnecoinLedgerState,
+    pending_state: &OnecoinPendingState,
+    transaction_id: &str,
+) -> Result<bool, String> {
+    let ledger = ledger_state
+        .lock()
+        .map_err(|_| "ONECOIN ledger lock failed".to_string())?;
+    let mut pending = pending_state
+        .lock()
+        .map_err(|_| "ONECOIN outbox lock failed".to_string())?;
+    let mut next_pending = pending.clone();
+    if next_pending.remove(transaction_id).is_none() {
+        return Ok(false);
+    }
+    persist_onecoin_state(path, &ledger, &next_pending)?;
+    *pending = next_pending;
+    Ok(true)
+}
 type HostState = Arc<Mutex<AweHost>>;
 
 #[derive(Clone)]
@@ -63,6 +152,7 @@ struct UiState {
     policy_state: PolicyState,
     community: CommunityState,
     onecoin_ledger: OnecoinLedgerState,
+    onecoin_outbox: OnecoinPendingState,
     onecoin_path: PathBuf,
     onecoin_offers_path: PathBuf,
     contribution: ContributionState,
@@ -496,6 +586,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         policy_state,
         community,
         onecoin_ledger,
+        onecoin_outbox,
         onecoin_path,
         onecoin_offers_path,
         contribution,
@@ -755,6 +846,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         },
         "/api/onebank/wallet" if method == "GET" => {
             let ledger = onecoin_ledger.lock().map(|l| l.clone()).unwrap_or_default();
+            let pending_transfers = onecoin_outbox.lock().map(|pending| pending.len()).unwrap_or_default();
             let id = node.identity.public.awe_id.clone();
             let balance_atoms = ledger.balance_atoms(&id);
             let contribution_snapshot = contribution.lock().map(|r| r.clone()).unwrap_or_default();
@@ -764,6 +856,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                 "balance_atoms": balance_atoms,
                 "balance_coins": balance_atoms / ATOMS_PER_COIN,
                 "balance_coins_exact": format_onecoin_atoms(balance_atoms),
+                "pending_transfers": pending_transfers,
                 "tier": tier,
                 "fee_bps": 100,
                 "resource_score": contribution_snapshot.score(),
@@ -831,68 +924,111 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         },
         "/api/onebank/wallet/send" if method == "POST" => {
             let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
-            let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
-            let recipient_hex = parsed.get("recipient").and_then(|v| v.as_str()).unwrap_or("");
-            let amount_value = parsed.get("amount_coins").cloned().unwrap_or(serde_json::Value::Null);
-            let memo = parsed.get("memo").and_then(|v| v.as_str()).map(str::to_owned);
-            let result: Result<(String, u128, OnecoinTransaction), String> = (|| {
-                if recipient_hex.len() != 64 || !recipient_hex.chars().all(|c| c.is_ascii_hexdigit()) {
-                    return Err("recipient must be a 64-character AWE-ID".into());
-                }
-                let amount_atoms = parse_onecoin_atoms(&amount_value)?;
-                if amount_atoms == 0 {
-                    return Err("amount_coins must be positive".into());
-                }
-                let recipient = AweId::from_hex(recipient_hex)?;
-                if recipient == node.identity.public.awe_id {
-                    return Err("cannot transfer ONECOIN to the same wallet".into());
-                }
-                let mut ledger = onecoin_ledger.lock().map_err(|_| "ONECOIN ledger lock failed".to_string())?;
-                let sender = node.identity.public.awe_id.clone();
-                if ledger.members.is_empty() {
-                    ledger.initialize_genesis(std::slice::from_ref(&sender))?;
-                }
-                ledger.ensure_member(&recipient);
-                if ledger.balance_atoms(&sender) < amount_atoms {
-                    return Err("insufficient ONECOIN balance".into());
-                }
-                let nonce = ledger.nonces.get(&sender.to_hex()).copied().unwrap_or(0);
-                let tx = OnecoinTransaction::new(&node.identity, nonce, &recipient, amount_atoms, memo);
-                let (tx_id, fee_atoms) = ledger.apply_transfer_with_fee(&tx, &node.identity.public.public_key, 100)?;
-                fs::write(&onecoin_path, serde_json::to_vec_pretty(&*ledger).map_err(|_| "ONECOIN ledger serialization failed".to_string())?)
-                    .map_err(|e| e.to_string())?;
-                Ok((hex::encode(tx_id), fee_atoms, tx))
-            })();
-            match result {
-                Ok((tx_id, fee_atoms, tx)) => { let recipient_id = tx.recipient; let delivered = if node.peers().await.into_iter().any(|p| p.awe_id == recipient_id) {
-                        match serde_json::to_vec(&tx) {
+            let parsed = serde_json::from_str::<serde_json::Value>(body);
+            match parsed {
+                Err(_) => (
+                    "400 Bad Request",
+                    "application/json; charset=utf-8",
+                    serde_json::json!({"status":"rejected","error":"invalid JSON body"}).to_string(),
+                ),
+                Ok(parsed) => {
+                let recipient_hex = parsed.get("recipient").and_then(|v| v.as_str()).unwrap_or("");
+                let amount_value = parsed.get("amount_coins").cloned().unwrap_or(serde_json::Value::Null);
+                let memo = parsed.get("memo").and_then(|v| v.as_str()).map(str::to_owned);
+                let result: Result<(String, u128, OnecoinTransaction), String> = (|| {
+                    if recipient_hex.len() != 64 || !recipient_hex.chars().all(|c| c.is_ascii_hexdigit()) {
+                        return Err("recipient must be a 64-character AWE-ID".into());
+                    }
+                    let amount_atoms = parse_onecoin_atoms(&amount_value)?;
+                    if amount_atoms == 0 {
+                        return Err("amount_coins must be positive".into());
+                    }
+                    let recipient = AweId::from_hex(recipient_hex)?;
+                    if recipient == node.identity.public.awe_id {
+                        return Err("cannot transfer ONECOIN to the same wallet".into());
+                    }
+
+                    // Mutate clones first and persist the ledger and retry queue as
+                    // one atomic snapshot. A failed write must never spend in memory.
+                    let mut ledger = onecoin_ledger
+                        .lock()
+                        .map_err(|_| "ONECOIN ledger lock failed".to_string())?;
+                    let mut outbox = onecoin_outbox
+                        .lock()
+                        .map_err(|_| "ONECOIN outbox lock failed".to_string())?;
+                    let mut next_ledger = ledger.clone();
+                    let mut next_outbox = outbox.clone();
+                    let sender = node.identity.public.awe_id.clone();
+                    if next_ledger.members.is_empty() {
+                        next_ledger.initialize_genesis(std::slice::from_ref(&sender))?;
+                    }
+                    next_ledger.ensure_member(&recipient);
+                    if next_ledger.balance_atoms(&sender) < amount_atoms {
+                        return Err("insufficient ONECOIN balance".into());
+                    }
+                    let nonce = next_ledger.nonces.get(&sender.to_hex()).copied().unwrap_or(0);
+                    let tx = OnecoinTransaction::new(&node.identity, nonce, &recipient, amount_atoms, memo);
+                    let (tx_id, _fee_atoms) = next_ledger.apply_transfer_with_fee(
+                        &tx,
+                        &node.identity.public.public_key,
+                        100,
+                    )?;
+                    let tx_id = hex::encode(tx_id);
+                    next_outbox.insert(tx_id.clone(), tx.clone());
+                    persist_onecoin_state(&onecoin_path, &next_ledger, &next_outbox)?;
+                    *ledger = next_ledger;
+                    *outbox = next_outbox;
+                    Ok((tx_id, _fee_atoms, tx))
+                })();
+
+                match result {
+                    Ok((tx_id, fee_atoms, tx)) => {
+                        let delivered = match serde_json::to_vec(&tx) {
                             Ok(bytes) => {
                                 if node
                                     .send_to_peer_confirmed(
-                                        &recipient_id,
-                                        policy::ONECOIN_TRANSFER_STREAM,
-                                        bytes.clone(),
-                                    )
-                                    .await
-                                    .is_ok()
-                                {
-                                    true
-                                } else {
-                                    node.send_to_peer(
-                                        &recipient_id,
+                                        &tx.recipient,
                                         policy::ONECOIN_TRANSFER_STREAM,
                                         bytes,
                                     )
                                     .await
                                     .is_ok()
+                                {
+                                    // If durable queue cleanup fails, keep the outbox
+                                    // entry so a restart can safely resend it.
+                                    remove_pending_onecoin_transfer(
+                                        &onecoin_path,
+                                        &onecoin_ledger,
+                                        &onecoin_outbox,
+                                        &tx_id,
+                                    )
+                                    .is_ok()
+                                } else {
+                                    false
                                 }
-                            },
+                            }
                             Err(_) => false,
-                        }
-                    } else {
-                        false
-                    }; ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"accepted","tx_id":tx_id,"fee_atoms":fee_atoms,"fee_bps":100,"recipient_delivered":delivered,"recipient_pending":!delivered}).to_string()) },
-                Err(error) => ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"rejected","error":error}).to_string())
+                        };
+                        (
+                            "200 OK",
+                            "application/json; charset=utf-8",
+                            serde_json::json!({
+                                "status":"accepted",
+                                "tx_id":tx_id,
+                                "fee_atoms":fee_atoms,
+                                "fee_bps":100,
+                                "recipient_delivered":delivered,
+                                "recipient_pending":!delivered
+                            }).to_string(),
+                        )
+                    }
+                    Err(error) => (
+                        "400 Bad Request",
+                        "application/json; charset=utf-8",
+                        serde_json::json!({"status":"rejected","error":error}).to_string(),
+                    ),
+                }
+                }
             }
         },
         "/api/onebank/exchange/offers" if method == "GET" => {
@@ -2452,22 +2588,24 @@ async fn run_product() -> Result<()> {
     });
 
     let onecoin_path = data_dir.join("onecoin-ledger.json");
-    let onecoin_ledger: OnecoinLedgerState = Arc::new(Mutex::new(
-        fs::read(&onecoin_path)
-            .ok()
-            .and_then(|b| serde_json::from_slice::<OnecoinLedger>(&b).ok())
-            .unwrap_or_default(),
-    ));
+    let persisted_onecoin = load_persisted_onecoin_state(&onecoin_path).map_err(anyhow::Error::msg)?;
+    let onecoin_ledger: OnecoinLedgerState =
+        Arc::new(Mutex::new(persisted_onecoin.ledger));
+    let onecoin_outbox: OnecoinPendingState =
+        Arc::new(Mutex::new(persisted_onecoin.pending_transfers));
     {
         let mut ledger = onecoin_ledger
             .lock()
             .map_err(|_| anyhow::anyhow!("ONECOIN ledger lock failed"))?;
+        let pending = onecoin_outbox
+            .lock()
+            .map_err(|_| anyhow::anyhow!("ONECOIN outbox lock failed"))?;
         if ledger.members.is_empty() {
             ledger
                 .initialize_genesis(std::slice::from_ref(&node.identity.public.awe_id))
                 .map_err(anyhow::Error::msg)?;
-            fs::write(&onecoin_path, serde_json::to_vec_pretty(&*ledger)?)?;
         }
+        persist_onecoin_state(&onecoin_path, &ledger, &pending).map_err(anyhow::Error::msg)?;
     }
     let onecoin_offers_path = data_dir.join("onecoin-exchange-offers.json");
     let contribution_path = data_dir.join("resource-contribution.json");
@@ -2539,6 +2677,7 @@ async fn run_product() -> Result<()> {
     let dispatcher_community = community.clone();
     let dispatcher_consensus = consensus_state.clone();
     let dispatcher_onecoin_ledger = onecoin_ledger.clone();
+    let dispatcher_onecoin_outbox = onecoin_outbox.clone();
     let dispatcher_onecoin_path = onecoin_path.clone();
     tokio::spawn(async move {
         loop {
@@ -2577,23 +2716,34 @@ async fn run_product() -> Result<()> {
                 if stream == policy::ONECOIN_TRANSFER_STREAM {
                     if let Ok(tx) = serde_json::from_slice::<OnecoinTransaction>(&payload) {
                         if tx.recipient == *dispatcher_node.identity.public.awe_id.as_bytes() {
-                            if let Ok(mut ledger) = dispatcher_onecoin_ledger.lock() {
+                            let received = (|| -> Result<(), String> {
+                                let mut ledger = dispatcher_onecoin_ledger
+                                    .lock()
+                                    .map_err(|_| "ONECOIN ledger lock failed".to_string())?;
+                                let pending = dispatcher_onecoin_outbox
+                                    .lock()
+                                    .map_err(|_| "ONECOIN outbox lock failed".to_string())?;
+                                let mut next_ledger = ledger.clone();
                                 let sender_id = AweId::from_public_key(&tx.sender);
-                                ledger.ensure_member(&sender_id);
-                                ledger.ensure_member(&dispatcher_node.identity.public.awe_id);
-                                if ledger
-                                    .receive_transfer(
-                                        &tx,
-                                        &tx.sender,
-                                        &dispatcher_node.identity.public.awe_id,
-                                    )
-                                    .is_ok()
-                                {
-                                    let _ = fs::write(
+                                next_ledger.ensure_member(&sender_id);
+                                next_ledger.ensure_member(&dispatcher_node.identity.public.awe_id);
+                                let changed = next_ledger.receive_transfer(
+                                    &tx,
+                                    &tx.sender,
+                                    &dispatcher_node.identity.public.awe_id,
+                                )?;
+                                if changed {
+                                    persist_onecoin_state(
                                         &dispatcher_onecoin_path,
-                                        serde_json::to_vec_pretty(&*ledger).unwrap_or_default(),
-                                    );
+                                        &next_ledger,
+                                        &pending,
+                                    )?;
+                                    *ledger = next_ledger;
                                 }
+                                Ok(())
+                            })();
+                            if let Err(error) = received {
+                                eprintln!("ONECOIN incoming transfer was not applied: {error}");
                             }
                         }
                     }
@@ -3038,6 +3188,7 @@ async fn run_product() -> Result<()> {
                         policy_state: api_policy,
                         community: api_community,
                         onecoin_ledger: api_onecoin_ledger,
+                        onecoin_outbox: onecoin_outbox.clone(),
                         onecoin_path: api_onecoin_path,
                         onecoin_offers_path: api_onecoin_offers_path,
                         contribution: api_contribution,
@@ -3051,6 +3202,45 @@ async fn run_product() -> Result<()> {
                     eprintln!("UI request error: {e}");
                 }
             });
+        }
+    });
+
+    // Retry durable outgoing transfers. Duplicate delivery is safe because the
+    // receiver tracks transaction IDs and sender nonces before crediting a wallet.
+    let retry_node = node.clone();
+    let retry_ledger = onecoin_ledger.clone();
+    let retry_outbox = onecoin_outbox.clone();
+    let retry_path = onecoin_path.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            let pending = match retry_outbox.lock() {
+                Ok(queue) => queue.iter().map(|(id, tx)| (id.clone(), tx.clone())).collect::<Vec<_>>(),
+                Err(_) => continue,
+            };
+            for (id, tx) in pending {
+                let Ok(bytes) = serde_json::to_vec(&tx) else {
+                    continue;
+                };
+                if retry_node
+                    .send_to_peer_confirmed(
+                        &tx.recipient,
+                        policy::ONECOIN_TRANSFER_STREAM,
+                        bytes,
+                    )
+                    .await
+                    .is_ok()
+                {
+                    if let Err(error) = remove_pending_onecoin_transfer(
+                        &retry_path,
+                        &retry_ledger,
+                        &retry_outbox,
+                        &id,
+                    ) {
+                        eprintln!("ONECOIN outbox acknowledgement persistence failed: {error}");
+                    }
+                }
+            }
         }
     });
 
