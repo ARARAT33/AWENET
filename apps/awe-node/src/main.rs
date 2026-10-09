@@ -826,14 +826,23 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
             let verified = offers
                 .into_iter()
                 .filter(|offer| {
-                    offer
+                    let public_key = offer
+                        .get("owner_public_key")
+                        .and_then(|value| value.as_str())
+                        .and_then(|value| hex::decode(value).ok())
+                        .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok());
+                    let signed = offer
                         .get("signed_offer")
                         .cloned()
-                        .and_then(|value| serde_json::from_value::<P2POffer>(value).ok())
-                        .is_some_and(|signed| signed.verify(
-                            &node.identity.public.public_key,
-                            now_unix(),
-                        ))
+                        .and_then(|value| serde_json::from_value::<P2POffer>(value).ok());
+                    match (public_key, signed) {
+                        (Some(public_key), Some(signed)) => {
+                            offer.get("owner").and_then(|value| value.as_str())
+                                == Some(signed.owner.to_hex().as_str())
+                                && signed.verify(&public_key, now_unix())
+                        }
+                        _ => false,
+                    }
                 })
                 .collect::<Vec<_>>();
             (
@@ -909,6 +918,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                     "currency": currency,
                     "rail": rail_label,
                     "owner": node.identity.public.awe_id.to_hex(),
+                    "owner_public_key": hex::encode(node.identity.public.public_key),
                     "created_at": now,
                     "expires_at_unix": expires,
                     "signature_verified": signed.verify(&node.identity.public.public_key, now),
