@@ -20,7 +20,7 @@ use awep2p_core::onecoin_consensus_runtime::{
 use awep2p_core::policy::{self, NetworkPolicy};
 use awep2p_core::reputation::NodeReputation;
 use awep2p_core::storage::{encode_shards, recover_shards, LocalNodeStore, StoragePolicy};
-use awep2p_core::store::{AppCapability, Store};
+use awep2p_core::store::{AppCapability, AppKind, AWEPackage, Store};
 use awep2p_core::supervisor::{PeerSupervisor, SupervisorConfig};
 use std::{
     collections::BTreeMap,
@@ -1029,6 +1029,55 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                 "application_transport":"authenticated peer data stream",
                 "messages": messenger.lock().map(|x| x.clone()).unwrap_or_default()
             }).to_string())
+        },
+        "/api/store/publish" if method == "POST" => {
+            let body = request.split_once("\r\n\r\n").map(|(_, body)| body).unwrap_or("");
+            let parsed = serde_json::from_str::<serde_json::Value>(body);
+            match parsed {
+                Err(_) => ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":"invalid JSON body"}).to_string()),
+                Ok(payload) => {
+                    let id = payload.get("id").and_then(|v| v.as_str()).unwrap_or("").trim();
+                    let name = payload.get("name").and_then(|v| v.as_str()).unwrap_or("").trim();
+                    let version = payload.get("version").and_then(|v| v.as_str()).unwrap_or("").trim();
+                    let entry = payload.get("entry").and_then(|v| v.as_str()).unwrap_or("").trim();
+                    let kind = payload.get("kind").and_then(|v| serde_json::from_value::<AppKind>(v.clone()).ok());
+                    let permissions = payload.get("permissions").cloned().and_then(|v| serde_json::from_value::<Vec<AppCapability>>(v).ok()).unwrap_or_default();
+                    let price = payload.get("price_onecoin_atoms").and_then(|v| if v.is_null() { None } else { v.as_str().and_then(|s| s.parse::<u128>().ok()).or_else(|| v.as_u64().map(u128::from)) });
+                    let file_values = payload.get("files").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+                    if id.is_empty() || name.is_empty() || version.is_empty() || entry.is_empty() || kind.is_none() || file_values.is_empty() || file_values.len() > 256 {
+                        ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":"id, name, version, entry, kind and 1-256 files are required"}).to_string())
+                    } else {
+                        let mut files = BTreeMap::new();
+                        let mut invalid = None;
+                        for file in file_values {
+                            let path = file.get("path").and_then(|v| v.as_str()).unwrap_or("");
+                            let data = file.get("data_hex").and_then(|v| v.as_str()).and_then(|v| hex::decode(v).ok());
+                            match data {
+                                Some(bytes) if !path.is_empty() && !path.contains("..") && !path.contains('\\') && path.starts_with('/') && !files.contains_key(path) => { files.insert(path.to_string(), bytes); }
+                                _ => { invalid = Some("each file needs a unique safe absolute path and valid data_hex"); break; }
+                            }
+                        }
+                        if let Some(error) = invalid {
+                            ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":error}).to_string())
+                        } else {
+                            let root = PathBuf::from(data_dir_for_api()).join("store");
+                            let package = AWEPackage::new(&node.identity, id, name, version, kind.unwrap(), entry, files, permissions, Vec::new())
+                                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e));
+                            match package.and_then(|mut package| {
+                                if let Some(atoms) = price { package.set_price_onecoin(&node.identity, Some(atoms)).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?; }
+                                Store::open(&root)?.publish(&package)
+                            }) {
+                                Ok(hash) => {
+                                    let hash = hex::encode(hash);
+                                    let size = fs::metadata(root.join("packages").join(&hash)).map(|m| m.len()).unwrap_or(0);
+                                    ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"published","package_hash":hash,"id":id,"name":name,"size":size,"scope":"local-store","signed_by":format_uid(node.identity.public.awe_id.as_bytes())}).to_string())
+                                }
+                                Err(error) => ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":error.to_string()}).to_string())
+                            }
+                        }
+                    }
+                }
+            }
         },
         "/api/store/catalog" => {
             let root = PathBuf::from(data_dir_for_api()).join("store");
