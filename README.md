@@ -37,7 +37,9 @@ release tests.
 For distributed validation, use docs/REAL-NETWORK-TEST.md.
 
 See docs/PRODUCT-ARCHITECTURE.md for the complete architecture and release
-acceptance model.
+acceptance model. Use [docs/PRODUCTION-READINESS-GATES.md](docs/PRODUCTION-READINESS-GATES.md)
+as the prioritized release checklist; gates remain unverified until test evidence
+is recorded.
 
 ## Security
 
