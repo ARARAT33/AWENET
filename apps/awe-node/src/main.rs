@@ -12,7 +12,7 @@ use awep2p_core::identity::{AweId, AweSecret, Identity, LocalVault, Username};
 use awep2p_core::lan_mesh::LanPeerBeacon;
 use awep2p_core::messenger::format_uid;
 use awep2p_core::network::{format_node_descriptor, Node};
-use awep2p_core::onebank::{classify_tier, ResourceContribution};
+use awep2p_core::onebank::{classify_tier, ExchangeSide, FiatRail, P2POffer, ResourceContribution};
 use awep2p_core::onecoin::{OnecoinLedger, OnecoinTransaction, ATOMS_PER_COIN};
 use awep2p_core::onecoin_consensus_runtime::{
     OnecoinConsensusMessage, OnecoinConsensusRuntime, ONECOIN_CONSENSUS_STREAM,
@@ -364,6 +364,61 @@ fn format_onecoin_atoms(atoms: u128) -> String {
         .trim_end_matches('0')
         .trim_end_matches('.')
         .to_string()
+}
+
+fn parse_fiat_minor(value: &serde_json::Value) -> Result<u64, String> {
+    let raw = if let Some(text) = value.as_str() {
+        text.trim().to_owned()
+    } else if value.is_number() {
+        value.to_string()
+    } else {
+        return Err("price must be a decimal value".into());
+    };
+    if raw.is_empty() || raw.contains(['e', 'E']) {
+        return Err("price must be a plain decimal value".into());
+    }
+    let mut parts = raw.split('.');
+    let whole = parts.next().unwrap_or("");
+    let fraction = parts.next().unwrap_or("");
+    if parts.next().is_some()
+        || whole.is_empty()
+        || !whole.bytes().all(|b| b.is_ascii_digit())
+        || fraction.len() > 2
+        || !fraction.bytes().all(|b| b.is_ascii_digit())
+    {
+        return Err("price must use at most 2 decimal places".into());
+    }
+    let whole_minor = whole
+        .parse::<u64>()
+        .map_err(|_| "price is too large".to_string())?
+        .checked_mul(100)
+        .ok_or_else(|| "price is too large".to_string())?;
+    let padded_fraction = format!("{fraction:0<2}");
+    let fraction_minor = if padded_fraction.is_empty() {
+        0
+    } else {
+        padded_fraction
+            .parse::<u64>()
+            .map_err(|_| "price is invalid".to_string())?
+    };
+    let minor = whole_minor
+        .checked_add(fraction_minor)
+        .ok_or_else(|| "price is too large".to_string())?;
+    if minor == 0 {
+        return Err("price must be positive".into());
+    }
+    Ok(minor)
+}
+
+fn format_onecoin_atoms(atoms: u128) -> String {
+    let whole = atoms / ATOMS_PER_COIN;
+    let remainder = atoms % ATOMS_PER_COIN;
+    if remainder == 0 {
+        return whole.to_string();
+    }
+    format!("{whole}.{remainder:08}")
+        .trim_end_matches('0')
+        .to_owned()
 }
 
 fn parse_onecoin_atoms(value: &serde_json::Value) -> Result<u128, String> {
@@ -765,30 +820,143 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         "/api/onebank/exchange/offers" if method == "GET" => {
             let offers: Vec<serde_json::Value> = fs::read(&onecoin_offers_path)
                 .ok()
-                .and_then(|b| serde_json::from_slice(&b).ok())
+                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
                 .unwrap_or_default();
-            ("200 OK", "application/json; charset=utf-8", serde_json::to_string(&offers).unwrap_or_else(|_| "[]".into()))
+            let verified = offers
+                .into_iter()
+                .filter(|offer| {
+                    offer
+                        .get("signed_offer")
+                        .cloned()
+                        .and_then(|value| serde_json::from_value::<P2POffer>(value).ok())
+                        .is_some_and(|signed| signed.verify(
+                            &node.identity.public.public_key,
+                            now_unix(),
+                        ))
+                })
+                .collect::<Vec<_>>();
+            (
+                "200 OK",
+                "application/json; charset=utf-8",
+                serde_json::to_string(&verified).unwrap_or_else(|_| "[]".into()),
+            )
         },
         "/api/onebank/exchange/offers" if method == "POST" => {
             let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
-            let mut offer: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
-            if !offer.is_object() {
-                offer = serde_json::json!({});
-            }
-            if let Some(obj) = offer.as_object_mut() {
-                obj.insert("owner".into(), serde_json::json!(node.identity.public.awe_id.to_hex()));
-                obj.insert("settlement".into(), serde_json::json!("DIRECT_PERSON_TO_PERSON"));
-                obj.insert("coin_transfer".into(), serde_json::json!("AWENET_WALLET"));
-                obj.insert("fiat_transfer".into(), serde_json::json!("OUTSIDE_AWENET"));
-                obj.insert("created_at".into(), serde_json::json!(now_unix()));
-            }
-            let mut offers: Vec<serde_json::Value> = fs::read(&onecoin_offers_path)
-                .ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-            offers.push(offer.clone());
-            let response = fs::write(&onecoin_offers_path, serde_json::to_vec_pretty(&offers).unwrap_or_default());
-            match response {
-                Ok(()) => ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"published","offer":offer,"notice":"ONECOIN transfer is handled by AWENET wallet. Fiat is exchanged directly between people outside AWENET."}).to_string()),
-                Err(error) => ("500 Internal Server Error", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":error.to_string()}).to_string())
+            let result: Result<serde_json::Value, String> = (|| {
+                let payload: serde_json::Value =
+                    serde_json::from_str(body).map_err(|_| "invalid offer JSON".to_string())?;
+                let data = payload.get("offer").unwrap_or(&payload);
+                let side_text = data
+                    .get("side")
+                    .and_then(|value| value.as_str())
+                    .ok_or("offer side is required")?
+                    .to_ascii_lowercase();
+                let side = match side_text.as_str() {
+                    "buy" => ExchangeSide::Buy,
+                    "sell" => ExchangeSide::Sell,
+                    _ => return Err("offer side must be buy or sell".into()),
+                };
+                let amount_atoms = parse_onecoin_atoms(
+                    data.get("amount").ok_or("offer amount is required")?,
+                )?;
+                let price_minor = parse_fiat_minor(
+                    data.get("price").ok_or("offer price is required")?,
+                )?;
+                let currency = data
+                    .get("currency")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("USD")
+                    .trim()
+                    .to_ascii_uppercase();
+                if !["USD", "EUR", "AMD", "GBP"].contains(&currency.as_str()) {
+                    return Err("unsupported fiat currency".into());
+                }
+                let rail_text = data
+                    .get("rail")
+                    .and_then(|value| value.as_str())
+                    .ok_or("offer payment rail is required")?;
+                let (rail, rail_label) = match rail_text.to_ascii_lowercase().as_str() {
+                    "externalpayment" | "external_payment" => {
+                        (FiatRail::ExternalPayment, "ExternalPayment")
+                    }
+                    "banktransfer" | "bank_transfer" => {
+                        (FiatRail::BankTransfer, "BankTransfer")
+                    }
+                    "cash" => (FiatRail::Cash, "Cash"),
+                    _ => return Err("unsupported payment rail".into()),
+                };
+                let now = now_unix();
+                let expires = now.saturating_add(30 * 24 * 60 * 60);
+                let signed = P2POffer::new(
+                    &node.identity,
+                    side.clone(),
+                    amount_atoms,
+                    price_minor,
+                    currency.clone(),
+                    rail,
+                    None,
+                    expires,
+                )?;
+                let signed_value = serde_json::to_value(&signed)
+                    .map_err(|_| "signed offer serialization failed".to_string())?;
+                let value = serde_json::json!({
+                    "id": hex::encode(signed.id),
+                    "side": side_text,
+                    "amount": format_onecoin_atoms(amount_atoms),
+                    "price": format!("{}.{:02}", price_minor / 100, price_minor % 100),
+                    "currency": currency,
+                    "rail": rail_label,
+                    "owner": node.identity.public.awe_id.to_hex(),
+                    "created_at": now,
+                    "expires_at_unix": expires,
+                    "signature_verified": signed.verify(&node.identity.public.public_key, now),
+                    "signed_offer": signed_value,
+                    "settlement": "DIRECT_PERSON_TO_PERSON",
+                    "coin_transfer": "AWENET_WALLET",
+                    "fiat_transfer": "OUTSIDE_AWENET"
+                });
+                Ok(value)
+            })();
+            match result {
+                Ok(offer) => {
+                    let mut offers: Vec<serde_json::Value> = fs::read(&onecoin_offers_path)
+                        .ok()
+                        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+                        .unwrap_or_default();
+                    offers.retain(|stored| {
+                        stored
+                            .get("signed_offer")
+                            .cloned()
+                            .and_then(|value| serde_json::from_value::<P2POffer>(value).ok())
+                            .is_some_and(|signed| signed.verify(
+                                &node.identity.public.public_key,
+                                now_unix(),
+                            ))
+                    });
+                    offers.push(offer.clone());
+                    match fs::write(&onecoin_offers_path, serde_json::to_vec_pretty(&offers).unwrap_or_default()) {
+                        Ok(()) => (
+                            "200 OK",
+                            "application/json; charset=utf-8",
+                            serde_json::json!({
+                                "status": "published",
+                                "offer": offer,
+                                "notice": "The offer is signed by this node. Fiat settlement is external and no payment is executed by this listing."
+                            }).to_string(),
+                        ),
+                        Err(error) => (
+                            "500 Internal Server Error",
+                            "application/json; charset=utf-8",
+                            serde_json::json!({"status":"error","error":error.to_string()}).to_string(),
+                        ),
+                    }
+                }
+                Err(error) => (
+                    "400 Bad Request",
+                    "application/json; charset=utf-8",
+                    serde_json::json!({"status":"rejected","error":error}).to_string(),
+                ),
             }
         },
         "/api/node" => ("200 OK", "application/json; charset=utf-8", serde_json::json!({
