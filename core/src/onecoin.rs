@@ -555,7 +555,8 @@ impl OnecoinLedger {
             .ok_or_else(|| "sender nonce overflow".to_string())?;
 
         // Complete every fallible check before mutating balances or nonce.
-        self.balances.insert(sender_key.clone(), sender_balance - tx.amount_atoms);
+        self.balances
+            .insert(sender_key.clone(), sender_balance - tx.amount_atoms);
         self.balances.insert(recipient_key, recipient_after);
         self.nonces.insert(sender_key, next_nonce);
         Ok(tx.id())
