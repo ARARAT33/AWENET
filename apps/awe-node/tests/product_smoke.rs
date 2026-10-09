@@ -408,6 +408,38 @@ fn three_node_product_smoke() {
         let store = get("127.0.0.1:46201", "/api/store/catalog");
         assert!(store.contains(r#""status":"ok""#), "store API: {store}");
 
+        // Exercise Creator Studio's real local publication endpoint and its validation.
+        let wasm_hex = "0061736d01000000";
+        let publish_app = post(
+            "127.0.0.1:46201",
+            "/api/store/publish",
+            &format!(
+                r#"{{"id":"smoke.creator.app","name":"Creator Smoke Test","version":"1.0.0","kind":"Wasm","entry":"/app.wasm","permissions":[],"price_onecoin_atoms":null,"files":[{{"path":"/app.wasm","data_hex":"{wasm_hex}"}}]}}"#
+            ),
+        );
+        assert!(
+            publish_app.contains(r#""status":"published""#)
+                && publish_app.contains(r#""scope":"local-store""#),
+            "Creator Studio package publication: {publish_app}"
+        );
+        let catalog_after_publish = get("127.0.0.1:46201", "/api/store/catalog");
+        assert!(
+            catalog_after_publish.contains("smoke.creator.app"),
+            "published package missing from verified catalog: {catalog_after_publish}"
+        );
+        let bad_entry = post(
+            "127.0.0.1:46201",
+            "/api/store/publish",
+            &format!(
+                r#"{{"id":"smoke.bad.entry","name":"Invalid Entry","version":"1.0.0","kind":"Wasm","entry":"/missing.wasm","permissions":[],"price_onecoin_atoms":null,"files":[{{"path":"/app.wasm","data_hex":"{wasm_hex}"}}]}}"#
+            ),
+        );
+        assert!(
+            bad_entry.contains(r#""status":"error""#)
+                && bad_entry.contains("entry must reference"),
+            "invalid package entry should be rejected: {bad_entry}"
+        );
+
         let payload = "AWEP2P-REAL-PRODUCT-SMOKE";
         let hex = payload
             .as_bytes()
