@@ -248,7 +248,7 @@ pub struct OnecoinLedger {
     pub collected_fee_atoms: u128,
     /// Transaction IDs already accepted as replicated incoming transfers.
     #[serde(default)]
-    pub received_transactions: BTreeMap<[u8; 32], u128>,
+    pub received_transactions: BTreeMap<String, u128>,
     /// Per-recipient tracking of sender nonces already accepted from remote nodes.
     #[serde(default)]
     pub received_nonces: BTreeMap<String, BTreeSet<u64>>,
@@ -257,7 +257,7 @@ pub struct OnecoinLedger {
     pub price: OnecoinPricePolicy,
     pub reward_policy: ContributionRewardPolicy,
     pub reward_verifiers: BTreeMap<String, [u8; 32]>,
-    pub rewarded_receipts: BTreeMap<[u8; 32], u128>,
+    pub rewarded_receipts: BTreeMap<String, u128>,
 }
 
 impl Default for OnecoinLedger {
@@ -408,7 +408,7 @@ impl OnecoinLedger {
         if self.reward_verifiers.get(&verifier_key) != Some(&signed_receipt.verifier_public_key) {
             return Err("receipt signer is not an authorized reward verifier".into());
         }
-        if self.rewarded_receipts.contains_key(&receipt_key) {
+        if self.rewarded_receipts.contains_key(&hex::encode(receipt_key)) {
             return Err("contribution receipt was already rewarded".into());
         }
         let node_key = Self::key(&signed_receipt.receipt.node);
@@ -419,7 +419,8 @@ impl OnecoinLedger {
         let balance = self.balances.entry(node_key).or_insert(0);
         *balance = balance.saturating_add(reward_atoms);
         self.total_issued_atoms = self.total_issued_atoms.saturating_add(reward_atoms);
-        self.rewarded_receipts.insert(receipt_key, reward_atoms);
+        self.rewarded_receipts
+            .insert(hex::encode(receipt_key), reward_atoms);
         Ok(ContributionReward {
             node: signed_receipt.receipt.node.clone(),
             receipt_hash: receipt_key,
@@ -502,7 +503,7 @@ impl OnecoinLedger {
         self.ensure_member(&sender_id);
         self.ensure_member(recipient);
         let tx_id = tx.id();
-        if self.received_transactions.contains_key(&tx_id) {
+        if self.received_transactions.contains_key(&hex::encode(tx_id)) {
             return Ok(false);
         }
         let sender_key = Self::key(&sender_id);
@@ -524,7 +525,8 @@ impl OnecoinLedger {
             .entry(sender_key)
             .or_default()
             .insert(tx.nonce);
-        self.received_transactions.insert(tx_id, tx.amount_atoms);
+        self.received_transactions
+            .insert(hex::encode(tx_id), tx.amount_atoms);
         Ok(true)
     }
 
@@ -578,6 +580,21 @@ mod tests {
 
     fn id(name: &str) -> Identity {
         Identity::generate(Username::new(name).unwrap())
+    }
+
+    #[test]
+    fn ledger_with_receipts_and_received_transactions_is_json_serializable() {
+        let mut ledger = OnecoinLedger::default();
+        let tx_id = [0x11u8; 32];
+        let receipt_id = [0x22u8; 32];
+        ledger.received_transactions.insert(hex::encode(tx_id), 17);
+        ledger.rewarded_receipts.insert(hex::encode(receipt_id), 29);
+
+        let bytes = serde_json::to_vec(&ledger)
+            .expect("ledger with binary hashes must serialize to JSON");
+        let restored: OnecoinLedger =
+            serde_json::from_slice(&bytes).expect("ledger with hash keys must deserialize");
+        assert_eq!(restored, ledger);
     }
 
     #[test]
