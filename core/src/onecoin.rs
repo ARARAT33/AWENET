@@ -434,8 +434,9 @@ impl OnecoinLedger {
         }
         let fee = tx
             .amount_atoms
-            .saturating_mul(fee_bps as u128)
-            .saturating_div(10_000);
+            .checked_mul(fee_bps as u128)
+            .ok_or_else(|| "ONEBANK fee calculation overflow".to_string())?
+            / 10_000;
         let sender_key = AweId::from_public_key(sender_public_key).to_hex();
         let recipient_key = hex::encode(tx.recipient);
         if !self.members.contains_key(&sender_key) || !self.members.contains_key(&recipient_key) {
@@ -449,19 +450,31 @@ impl OnecoinLedger {
             return Err("invalid ONECOIN signature".into());
         }
         let sender_balance = self.balances.get(&sender_key).copied().unwrap_or(0);
-        let total = tx.amount_atoms.saturating_add(fee);
+        let total = tx
+            .amount_atoms
+            .checked_add(fee)
+            .ok_or_else(|| "transaction total overflows ONECOIN amount range".to_string())?;
         if sender_balance < total {
             return Err("insufficient ONECOIN balance including ONEBANK fee".into());
         }
-        self.balances
-            .insert(sender_key.clone(), sender_balance - total);
         let recipient_balance = self.balances.get(&recipient_key).copied().unwrap_or(0);
-        self.balances.insert(
-            recipient_key,
-            recipient_balance.saturating_add(tx.amount_atoms),
-        );
-        self.collected_fee_atoms = self.collected_fee_atoms.saturating_add(fee);
-        self.nonces.insert(sender_key, expected_nonce + 1);
+        let recipient_after = recipient_balance
+            .checked_add(tx.amount_atoms)
+            .ok_or_else(|| "recipient balance would overflow".to_string())?;
+        let fees_after = self
+            .collected_fee_atoms
+            .checked_add(fee)
+            .ok_or_else(|| "collected ONEBANK fees would overflow".to_string())?;
+        let next_nonce = expected_nonce
+            .checked_add(1)
+            .ok_or_else(|| "sender nonce overflow".to_string())?;
+
+        // Commit the state only after every arithmetic and transaction check has
+        // succeeded, so a rejected transaction cannot partially mutate balances.
+        self.balances.insert(sender_key.clone(), sender_balance - total);
+        self.balances.insert(recipient_key, recipient_after);
+        self.collected_fee_atoms = fees_after;
+        self.nonces.insert(sender_key, next_nonce);
         Ok((tx.id(), fee))
     }
 
@@ -487,10 +500,22 @@ impl OnecoinLedger {
         if self.received_transactions.contains_key(&tx_id) {
             return Ok(false);
         }
+        let sender_key = Self::key(&sender_id);
+        let expected_nonce = self.nonces.get(&sender_key).copied().unwrap_or(0);
+        if tx.nonce != expected_nonce {
+            return Err("invalid replicated ONECOIN nonce".into());
+        }
+        let next_nonce = expected_nonce
+            .checked_add(1)
+            .ok_or_else(|| "replicated sender nonce overflow".to_string())?;
         let recipient_key = Self::key(recipient);
         let balance = self.balances.get(&recipient_key).copied().unwrap_or(0);
-        self.balances
-            .insert(recipient_key, balance.saturating_add(tx.amount_atoms));
+        let recipient_after = balance
+            .checked_add(tx.amount_atoms)
+            .ok_or_else(|| "recipient balance would overflow".to_string())?;
+
+        self.balances.insert(recipient_key, recipient_after);
+        self.nonces.insert(sender_key, next_nonce);
         self.received_transactions.insert(tx_id, tx.amount_atoms);
         Ok(true)
     }
@@ -632,6 +657,73 @@ mod tests {
         l.mint_verified_contribution_reward(&signed).unwrap();
         assert_eq!(l.balance_atoms(&a.public.awe_id), before + expected);
         assert!(l.mint_verified_contribution_reward(&signed).is_err());
+    }
+
+    #[test]
+    fn receive_transfer_is_idempotent_and_checks_nonce() {
+        let sender = id("receive-sender");
+        let recipient = id("receive-recipient");
+        let mut ledger = OnecoinLedger::default();
+        ledger
+            .initialize_genesis(std::slice::from_ref(&recipient.public.awe_id))
+            .unwrap();
+        let tx = OnecoinTransaction::new(
+            &sender,
+            0,
+            &recipient.public.awe_id,
+            ATOMS_PER_COIN,
+            None,
+        );
+        assert!(ledger
+            .receive_transfer(&tx, &sender.public.public_key, &recipient.public.awe_id)
+            .unwrap());
+        assert!(!ledger
+            .receive_transfer(&tx, &sender.public.public_key, &recipient.public.awe_id)
+            .unwrap());
+        assert_eq!(
+            ledger.balance_atoms(&recipient.public.awe_id),
+            INITIAL_GENESIS_ALLOCATION + ATOMS_PER_COIN
+        );
+
+        let out_of_order = OnecoinTransaction::new(
+            &sender,
+            2,
+            &recipient.public.awe_id,
+            1,
+            None,
+        );
+        assert!(ledger
+            .receive_transfer(
+                &out_of_order,
+                &sender.public.public_key,
+                &recipient.public.awe_id,
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn transfer_overflow_is_rejected_without_mutating_ledger() {
+        let sender = id("overflow-sender");
+        let recipient = id("overflow-recipient");
+        let mut ledger = OnecoinLedger::default();
+        ledger
+            .initialize_genesis(&[sender.public.awe_id.clone(), recipient.public.awe_id.clone()])
+            .unwrap();
+        let sender_before = ledger.balance_atoms(&sender.public.awe_id);
+        let recipient_before = ledger.balance_atoms(&recipient.public.awe_id);
+        let tx = OnecoinTransaction::new(
+            &sender,
+            0,
+            &recipient.public.awe_id,
+            u128::MAX,
+            None,
+        );
+        assert!(ledger
+            .apply_transfer_with_fee(&tx, &sender.public.public_key, 100)
+            .is_err());
+        assert_eq!(ledger.balance_atoms(&sender.public.awe_id), sender_before);
+        assert_eq!(ledger.balance_atoms(&recipient.public.awe_id), recipient_before);
+        assert_eq!(ledger.nonces[&sender.public.awe_id.to_hex()], 0);
     }
 
     #[test]
