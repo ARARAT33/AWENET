@@ -471,7 +471,8 @@ impl OnecoinLedger {
 
         // Commit the state only after every arithmetic and transaction check has
         // succeeded, so a rejected transaction cannot partially mutate balances.
-        self.balances.insert(sender_key.clone(), sender_balance - total);
+        self.balances
+            .insert(sender_key.clone(), sender_balance - total);
         self.balances.insert(recipient_key, recipient_after);
         self.collected_fee_atoms = fees_after;
         self.nonces.insert(sender_key, next_nonce);
@@ -672,13 +673,8 @@ mod tests {
         ledger
             .initialize_genesis(std::slice::from_ref(&recipient.public.awe_id))
             .unwrap();
-        let tx = OnecoinTransaction::new(
-            &sender,
-            0,
-            &recipient.public.awe_id,
-            ATOMS_PER_COIN,
-            None,
-        );
+        let tx =
+            OnecoinTransaction::new(&sender, 0, &recipient.public.awe_id, ATOMS_PER_COIN, None);
         assert!(ledger
             .receive_transfer(&tx, &sender.public.public_key, &recipient.public.awe_id)
             .unwrap());
@@ -690,13 +686,7 @@ mod tests {
             INITIAL_GENESIS_ALLOCATION + ATOMS_PER_COIN
         );
 
-        let out_of_order = OnecoinTransaction::new(
-            &sender,
-            2,
-            &recipient.public.awe_id,
-            1,
-            None,
-        );
+        let out_of_order = OnecoinTransaction::new(&sender, 2, &recipient.public.awe_id, 1, None);
         assert!(ledger
             .receive_transfer(
                 &out_of_order,
@@ -712,22 +702,22 @@ mod tests {
         let recipient = id("overflow-recipient");
         let mut ledger = OnecoinLedger::default();
         ledger
-            .initialize_genesis(&[sender.public.awe_id.clone(), recipient.public.awe_id.clone()])
+            .initialize_genesis(&[
+                sender.public.awe_id.clone(),
+                recipient.public.awe_id.clone(),
+            ])
             .unwrap();
         let sender_before = ledger.balance_atoms(&sender.public.awe_id);
         let recipient_before = ledger.balance_atoms(&recipient.public.awe_id);
-        let tx = OnecoinTransaction::new(
-            &sender,
-            0,
-            &recipient.public.awe_id,
-            u128::MAX,
-            None,
-        );
+        let tx = OnecoinTransaction::new(&sender, 0, &recipient.public.awe_id, u128::MAX, None);
         assert!(ledger
             .apply_transfer_with_fee(&tx, &sender.public.public_key, 100)
             .is_err());
         assert_eq!(ledger.balance_atoms(&sender.public.awe_id), sender_before);
-        assert_eq!(ledger.balance_atoms(&recipient.public.awe_id), recipient_before);
+        assert_eq!(
+            ledger.balance_atoms(&recipient.public.awe_id),
+            recipient_before
+        );
         assert_eq!(ledger.nonces[&sender.public.awe_id.to_hex()], 0);
     }
 
