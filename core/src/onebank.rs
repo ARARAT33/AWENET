@@ -241,11 +241,8 @@ pub fn classify_tier(r: &ResourceContribution) -> UserTier {
         || r.ram_bytes > 0
         || r.gpu_units > 0
         || r.bandwidth_bytes > 0
-        || r.online_hours > 0
         || r.node_count > 0
         || r.server_count > 0
-        || r.uptime_bps > 0
-        || r.utilization_bps > 0
     {
         return UserTier::Basic;
     }
@@ -459,6 +456,18 @@ impl ExchangeOrder {
         if amount_atoms == 0 || amount_atoms > offer.amount_atoms {
             return Err("invalid order amount".into());
         }
+        if offer.expires_at_unix < now_unix {
+            return Err("exchange offer has expired".into());
+        }
+        match offer.side {
+            ExchangeSide::Sell if offer.owner != seller => {
+                return Err("seller does not own the sell offer".into());
+            }
+            ExchangeSide::Buy if offer.owner != buyer => {
+                return Err("buyer does not own the buy offer".into());
+            }
+            _ => {}
+        }
         let fiat_minor = amount_atoms
             .saturating_mul(offer.price_minor_per_coin as u128)
             .saturating_div(ATOMS_PER_COIN);
@@ -508,8 +517,22 @@ mod tests {
     fn net_plus_benefit_matches_default_reward_policy() {
         let benefits = TierBenefits::for_tier(UserTier::NetPlus, &ResourceContribution::default());
         let policy = RewardPolicy::default();
-        assert_eq!(benefits.minimum_monthly_atoms, policy.monthly_minimum(UserTier::NetPlus));
+        assert_eq!(
+            benefits.minimum_monthly_atoms,
+            policy.monthly_minimum(UserTier::NetPlus)
+        );
         assert_eq!(benefits.minimum_monthly_atoms, 45 * ATOMS_PER_COIN);
+    }
+
+    #[test]
+    fn uptime_claim_alone_does_not_unlock_paid_tier() {
+        let contribution = ResourceContribution {
+            online_hours: 24,
+            uptime_bps: 10_000,
+            utilization_bps: 10_000,
+            ..Default::default()
+        };
+        assert_eq!(classify_tier(&contribution), UserTier::Free);
     }
 
     #[test]
@@ -525,7 +548,8 @@ mod tests {
             FiatRail::BankTransfer,
             None,
             u64::MAX,
-        ).unwrap();
+        )
+        .unwrap();
         let order = ExchangeOrder::from_offer(
             &offer,
             buyer.public.awe_id,
@@ -533,7 +557,8 @@ mod tests {
             ATOMS_PER_COIN / 2,
             100,
             1,
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(order.fiat_minor, 50);
     }
 
