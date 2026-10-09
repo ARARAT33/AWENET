@@ -408,7 +408,10 @@ impl OnecoinLedger {
         if self.reward_verifiers.get(&verifier_key) != Some(&signed_receipt.verifier_public_key) {
             return Err("receipt signer is not an authorized reward verifier".into());
         }
-        if self.rewarded_receipts.contains_key(&hex::encode(receipt_key)) {
+        if self
+            .rewarded_receipts
+            .contains_key(&hex::encode(receipt_key))
+        {
             return Err("contribution receipt was already rewarded".into());
         }
         let node_key = Self::key(&signed_receipt.receipt.node);
@@ -590,8 +593,8 @@ mod tests {
         ledger.received_transactions.insert(hex::encode(tx_id), 17);
         ledger.rewarded_receipts.insert(hex::encode(receipt_id), 29);
 
-        let bytes = serde_json::to_vec(&ledger)
-            .expect("ledger with binary hashes must serialize to JSON");
+        let bytes =
+            serde_json::to_vec(&ledger).expect("ledger with binary hashes must serialize to JSON");
         let restored: OnecoinLedger =
             serde_json::from_slice(&bytes).expect("ledger with hash keys must deserialize");
         assert_eq!(restored, ledger);
