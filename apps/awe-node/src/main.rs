@@ -3149,8 +3149,9 @@ async fn run_product() -> Result<()> {
     println!("Native UI: AWENET desktop window");
 
     let native_ui_addr = ui_addr;
-    // Keep the original state handles available to the outbox retry worker;
-    // the listener task owns separate Arc clones for incoming HTTP requests.
+    // The HTTP listener owns a node clone; the outbox retry worker keeps the
+    // original handle so it can reconnect to peers independently.
+    let ui_node = node.clone();
     let ui_onecoin_ledger = onecoin_ledger.clone();
     let ui_onecoin_outbox = onecoin_outbox.clone();
     let ui_onecoin_path = onecoin_path.clone();
@@ -3163,7 +3164,7 @@ async fn run_product() -> Result<()> {
                     continue;
                 }
             };
-            let api_node = node.clone();
+            let api_node = ui_node.clone();
             let api_messenger = messenger.clone();
             let api_federation = federation_state.clone();
             let api_storage = storage.clone();
