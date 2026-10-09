@@ -41,9 +41,43 @@ fn stop_node(app: &tauri::AppHandle) {
     }
 }
 
+
+#[cfg(not(target_os = "android"))]
+#[tauri::command]
+fn open_browser_window(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    if url.len() > 2048 {
+        return Err("URL is too long".into());
+    }
+    let parsed = url
+        .trim()
+        .parse()
+        .map_err(|error| format!("Invalid browser URL: {error}"))?;
+    let target = tauri::WebviewUrl::External(parsed);
+    let host = match &target {
+        tauri::WebviewUrl::External(url) => url.host_str().unwrap_or("AWENET Browser"),
+        _ => "AWENET Browser",
+    };
+    if !matches!(url.trim().get(..url.find(':').unwrap_or(0)), Some("http" | "https")) {
+        return Err("Only HTTP and HTTPS URLs may be opened in the AWENET Browser".into());
+    }
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let label = format!("awenet-browser-{nonce}");
+    tauri::WebviewWindowBuilder::new(&app, &label, target)
+        .title(format!("{host} — AWENET Browser"))
+        .inner_size(1200.0, 800.0)
+        .build()
+        .map(|_| ())
+        .map_err(|error| format!("Could not open browser window: {error}"))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default();
+    #[cfg(not(target_os = "android"))]
+    let builder = builder.invoke_handler(tauri::generate_handler![open_browser_window]);
     #[cfg(not(target_os = "android"))]
     let builder = builder.setup(|app| {
         let child = match start_node(app.handle()) {
