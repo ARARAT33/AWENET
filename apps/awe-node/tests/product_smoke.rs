@@ -147,6 +147,44 @@ fn three_node_product_smoke() {
             "site redirect must use a per-site localhost origin: {site_response}"
         );
 
+        let isolated_api = raw_response(
+            "127.0.0.1:46201",
+            &format!(
+                "GET /api/status HTTP/1.1\r\nHost: {site_id}.localhost:46201\r\nConnection: close\r\n\r\n"
+            ),
+        );
+        assert!(
+            isolated_api.starts_with("HTTP/1.1 404 Not Found"),
+            "isolated hosted-site origin must not access the node API: {isolated_api}"
+        );
+        assert!(
+            !isolated_api.contains("\"node_id\""),
+            "isolated hosted-site origin must not receive node status data"
+        );
+
+        let isolated_preflight = raw_response(
+            "127.0.0.1:46201",
+            &format!(
+                "OPTIONS /api/status HTTP/1.1\r\nHost: {site_id}.localhost:46201\r\nOrigin: http://{site_id}.localhost:46201\r\nAccess-Control-Request-Method: GET\r\nConnection: close\r\n\r\n"
+            ),
+        );
+        assert!(
+            isolated_preflight.starts_with("HTTP/1.1 404 Not Found"),
+            "isolated hosted-site origin must not obtain API preflight access: {isolated_preflight}"
+        );
+
+        let cross_site = raw_response(
+            "127.0.0.1:46201",
+            &format!(
+                "GET /site/{}/index.html HTTP/1.1\r\nHost: {site_id}.localhost:46201\r\nConnection: close\r\n\r\n",
+                "b".repeat(64)
+            ),
+        );
+        assert!(
+            cross_site.starts_with("HTTP/1.1 404 Not Found"),
+            "a site origin must not serve another site's content: {cross_site}"
+        );
+
         let forbidden = raw_response(
             "127.0.0.1:46201",
             "POST /api/onebank/contribution HTTP/1.1\r\nHost: 127.0.0.1:46201\r\nOrigin: https://untrusted.example\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
