@@ -86,10 +86,10 @@ pub struct CentreGroup {
 }
 
 impl DataGroup {
-    pub fn new<I, S>(id: impl Into<String>, centres: I) -> Result<Self, String>
-    where
-        I: IntoIterator<Item = S>,
-        S: Into<String>,
+    pub fn new(
+        id: impl Into<String>,
+        centres: impl IntoIterator<Item = String>,
+    ) -> Result<Self, String>
     {
         let id = id.into();
         let centre_list = centres.into_iter().map(Into::into).collect::<Vec<_>>();
@@ -108,10 +108,10 @@ impl DataGroup {
 }
 
 impl CentreGroup {
-    pub fn new<I, S>(id: impl Into<String>, groups: I) -> Result<Self, String>
-    where
-        I: IntoIterator<Item = S>,
-        S: Into<String>,
+    pub fn new(
+        id: impl Into<String>,
+        groups: impl IntoIterator<Item = String>,
+    ) -> Result<Self, String>
     {
         let id = id.into();
         let group_list = groups.into_iter().map(Into::into).collect::<Vec<_>>();
