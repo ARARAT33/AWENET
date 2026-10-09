@@ -501,8 +501,7 @@ impl AweNet {
         }
 
         let mut queue = VecDeque::from([src.clone()]);
-        let mut previous: HashMap<NodeId, Option<NodeId>> =
-            HashMap::from([(src.clone(), None)]);
+        let mut previous: HashMap<NodeId, Option<NodeId>> = HashMap::from([(src.clone(), None)]);
         while let Some(current) = queue.pop_front() {
             if &current == dst {
                 break;
