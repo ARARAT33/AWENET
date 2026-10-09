@@ -472,12 +472,23 @@ impl ExchangeOrder {
             }
             _ => {}
         }
-        let fiat_minor = amount_atoms
-            .saturating_mul(offer.price_minor_per_coin as u128)
-            .saturating_div(ATOMS_PER_COIN);
+        let price = offer.price_minor_per_coin as u128;
+        let whole_coins = amount_atoms / ATOMS_PER_COIN;
+        let fractional_atoms = amount_atoms % ATOMS_PER_COIN;
+        let whole_fiat = whole_coins
+            .checked_mul(price)
+            .ok_or_else(|| "exchange fiat amount is too large".to_string())?;
+        let fractional_fiat = fractional_atoms
+            .checked_mul(price)
+            .ok_or_else(|| "exchange fractional fiat amount is too large".to_string())?
+            / ATOMS_PER_COIN;
+        let fiat_minor = whole_fiat
+            .checked_add(fractional_fiat)
+            .ok_or_else(|| "exchange fiat amount is too large".to_string())?;
         let fee = amount_atoms
-            .saturating_mul(fee_bps as u128)
-            .saturating_div(10_000);
+            .checked_mul(fee_bps as u128)
+            .ok_or_else(|| "exchange fee calculation overflow".to_string())?
+            / 10_000;
         let canonical_order =
             serde_json::to_vec(&(offer.id, &buyer, &seller, amount_atoms, now_unix))
                 .map_err(|_| "exchange order serialization failed".to_string())?;
@@ -538,6 +549,33 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(classify_tier(&contribution), UserTier::Free);
+    }
+
+    #[test]
+    fn exchange_order_rejects_arithmetic_overflow() {
+        let seller = Identity::generate(Username::new("overflow-seller").unwrap());
+        let buyer = Identity::generate(Username::new("overflow-buyer").unwrap());
+        let offer = P2POffer::new(
+            &seller,
+            ExchangeSide::Sell,
+            u128::MAX,
+            u64::MAX,
+            "USD".to_string(),
+            FiatRail::BankTransfer,
+            None,
+            u64::MAX,
+        )
+        .unwrap();
+        assert!(ExchangeOrder::from_offer(
+            &offer,
+            &seller.public.public_key,
+            buyer.public.awe_id,
+            seller.public.awe_id,
+            u128::MAX,
+            100,
+            1,
+        )
+        .is_err());
     }
 
     #[test]
