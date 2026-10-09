@@ -485,6 +485,29 @@ mod tests {
         assert!(n.add_centre(b).is_err());
     }
     #[test]
+    fn duplicate_data_centre_ids_are_rejected() {
+        let mut network = AweNet::default();
+        assert!(network.add_centre(DataCentre::new("same")).is_ok());
+        assert!(network.add_centre(DataCentre::new("same")).is_err());
+        assert_eq!(network.centres.len(), 1);
+    }
+
+    #[test]
+    fn groups_require_distinct_members_and_ids_cannot_overwrite() {
+        assert!(DataGroup::new("g", ["a".to_string(), "a".to_string(), "b".to_string()]).is_err());
+        assert!(CentreGroup::new("cg", ["g".to_string(), "g".to_string()]).is_err());
+
+        let mut network = AweNet::default();
+        for id in ["a", "b", "c"] {
+            network.add_centre(DataCentre::new(id)).unwrap();
+        }
+        let group = DataGroup::new("group", ["a".into(), "b".into(), "c".into()]).unwrap();
+        assert!(network.add_data_group(group.clone()).is_ok());
+        assert!(network.add_data_group(group).is_err());
+        assert_eq!(network.data_groups.len(), 1);
+    }
+
+    #[test]
     fn relay_failover_adds_backup() {
         let mut n = AweNet::default();
         let mut a = DataCentre::new("a");
