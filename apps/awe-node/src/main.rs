@@ -427,6 +427,30 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
     let target = parts.next().unwrap_or("/");
     let path = target.split('?').next().unwrap_or("/");
 
+    // CORS headers alone do not prevent cross-origin requests from being sent.
+    // Reject browser-originated state changes unless the caller is the local
+    // AWENET UI. Requests without an Origin header remain available to local
+    // native clients and command-line diagnostics.
+    if path.starts_with("/api/")
+        && matches!(method.to_ascii_uppercase().as_str(), "POST" | "PUT" | "PATCH" | "DELETE")
+    {
+        let origin = request.lines().find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("origin").then_some(value.trim())
+        });
+        if origin.is_some_and(|value| !allowed_ui_origin(value)) {
+            let response = http_response(
+                "403 Forbidden",
+                "application/json; charset=utf-8",
+                r#"{"status":"error","error":"cross-origin API mutations are not allowed"}"#,
+                &request,
+            )
+            .await;
+            stream.write_all(&response).await?;
+            return Ok(());
+        }
+    }
+
     // Complete browser CORS preflight before routing API requests.
     if method.eq_ignore_ascii_case("OPTIONS") {
         let response =
