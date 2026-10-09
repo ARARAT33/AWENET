@@ -2732,8 +2732,7 @@ async fn run_product() -> Result<()> {
                                 .unwrap_or(false);
                             eprintln!(
                                 "ONECOIN app ACK pending match={} for transaction {}",
-                                matches_pending,
-                                ack.transaction_id
+                                matches_pending, ack.transaction_id
                             );
                             if matches_pending {
                                 if let Err(error) = remove_pending_onecoin_transfer(
