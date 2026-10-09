@@ -1073,7 +1073,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                             ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":"entry must reference one of the uploaded files"}).to_string())
                         } else {
                             let root = PathBuf::from(data_dir_for_api()).join("store");
-                            let package = AWEPackage::new(&node.identity, id, name, version, kind.unwrap(), entry, files, permissions, Vec::new())
+                            let package = AWEPackage::new(&node.identity, id, name, version, kind.unwrap_or(AppKind::Wasm), entry, files, permissions, Vec::new())
                                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e));
                             match package.and_then(|mut package| {
                                 if let Some(atoms) = price { package.set_price_onecoin(&node.identity, Some(atoms)).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?; }
