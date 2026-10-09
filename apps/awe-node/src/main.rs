@@ -410,6 +410,42 @@ fn parse_fiat_minor(value: &serde_json::Value) -> Result<u64, String> {
     Ok(minor)
 }
 
+fn parse_resource_u64(value: &serde_json::Value, key: &str) -> Result<u64, String> {
+    match value.get(key) {
+        None => Ok(0),
+        Some(field) => field
+            .as_u64()
+            .ok_or_else(|| format!("{} must be a non-negative integer", key)),
+    }
+}
+
+fn parse_resource_u32(value: &serde_json::Value, key: &str) -> Result<u32, String> {
+    u32::try_from(parse_resource_u64(value, key)?)
+        .map_err(|_| format!("{} exceeds the supported maximum", key))
+}
+
+fn parse_resource_u16(value: &serde_json::Value, key: &str) -> Result<u16, String> {
+    u16::try_from(parse_resource_u64(value, key)?)
+        .map_err(|_| format!("{} exceeds the supported maximum", key))
+}
+
+fn parse_resource_contribution(value: &serde_json::Value) -> Result<ResourceContribution, String> {
+    let contribution = ResourceContribution {
+        storage_bytes: parse_resource_u64(value, "storage_bytes")?,
+        cpu_cores: parse_resource_u32(value, "cpu_cores")?,
+        ram_bytes: parse_resource_u64(value, "ram_bytes")?,
+        gpu_units: parse_resource_u32(value, "gpu_units")?,
+        bandwidth_bytes: parse_resource_u64(value, "bandwidth_bytes")?,
+        online_hours: parse_resource_u16(value, "online_hours")?,
+        node_count: parse_resource_u32(value, "node_count")?,
+        server_count: parse_resource_u32(value, "server_count")?,
+        uptime_bps: parse_resource_u16(value, "uptime_bps")?,
+        utilization_bps: parse_resource_u16(value, "utilization_bps")?,
+    };
+    contribution.validate()?;
+    Ok(contribution)
+}
+
 fn parse_onecoin_atoms(value: &serde_json::Value) -> Result<u128, String> {
     let raw = if let Some(text) = value.as_str() {
         text.trim().to_owned()
@@ -748,33 +784,49 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         },
         "/api/onebank/contribution" if method == "POST" => {
             let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
-            let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
-            let r = ResourceContribution {
-                storage_bytes: parsed.get("storage_bytes").and_then(|v| v.as_u64()).unwrap_or(0),
-                cpu_cores: parsed.get("cpu_cores").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-                ram_bytes: parsed.get("ram_bytes").and_then(|v| v.as_u64()).unwrap_or(0),
-                gpu_units: parsed.get("gpu_units").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-                bandwidth_bytes: parsed.get("bandwidth_bytes").and_then(|v| v.as_u64()).unwrap_or(0),
-                online_hours: parsed.get("online_hours").and_then(|v| v.as_u64()).unwrap_or(0) as u16,
-                node_count: parsed.get("node_count").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-                server_count: parsed.get("server_count").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-                uptime_bps: parsed.get("uptime_bps").and_then(|v| v.as_u64()).unwrap_or(0) as u16,
-                utilization_bps: parsed.get("utilization_bps").and_then(|v| v.as_u64()).unwrap_or(0) as u16,
-            };
-            match r.validate() {
-                Ok(()) => {
-                    if let Ok(mut guard) = contribution.lock() { *guard = r.clone(); }
-                    match fs::write(&contribution_path, serde_json::to_vec_pretty(&r).unwrap_or_default()) {
-                        Ok(()) => ("200 OK", "application/json; charset=utf-8", serde_json::json!({
-                            "status":"accepted_for_verification",
-                            "tier": classify_tier(&r).wire_name(),
-                            "verified":false,
-                            "reward_status":"requires_signed_usage_receipt"
-                        }).to_string()),
-                        Err(e) => ("500 Internal Server Error", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":e.to_string()}).to_string())
+            let parsed = serde_json::from_str::<serde_json::Value>(body)
+                .map_err(|_| "invalid contribution JSON".to_string())
+                .and_then(|value| parse_resource_contribution(&value));
+            match parsed {
+                Err(error) => (
+                    "400 Bad Request",
+                    "application/json; charset=utf-8",
+                    serde_json::json!({"status":"error","error":error}).to_string(),
+                ),
+                Ok(resource) => {
+                    match contribution.lock() {
+                        Err(_) => (
+                            "500 Internal Server Error",
+                            "application/json; charset=utf-8",
+                            serde_json::json!({"status":"error","error":"resource contribution lock failed"}).to_string(),
+                        ),
+                        Ok(mut guard) => {
+                            let persisted = serde_json::to_vec_pretty(&resource)
+                                .map_err(|error| error.to_string())
+                                .and_then(|bytes| fs::write(&contribution_path, bytes).map_err(|error| error.to_string()));
+                            match persisted {
+                                Ok(()) => {
+                                    *guard = resource.clone();
+                                    (
+                                        "200 OK",
+                                        "application/json; charset=utf-8",
+                                        serde_json::json!({
+                                            "status":"accepted_for_verification",
+                                            "tier": classify_tier(&resource).wire_name(),
+                                            "verified":false,
+                                            "reward_status":"requires_signed_usage_receipt"
+                                        }).to_string(),
+                                    )
+                                }
+                                Err(error) => (
+                                    "500 Internal Server Error",
+                                    "application/json; charset=utf-8",
+                                    serde_json::json!({"status":"error","error":error}).to_string(),
+                                ),
+                            }
+                        }
                     }
-                },
-                Err(error) => ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":error}).to_string())
+                }
             }
         },
         "/api/onebank/wallet/send" if method == "POST" => {
@@ -3158,6 +3210,20 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod amount_parser_tests {
     use super::*;
+
+    #[test]
+    fn contribution_parser_rejects_narrow_integer_overflow_and_invalid_types() {
+        assert!(parse_resource_contribution(&serde_json::json!({"cpu_cores":4294967296u64})).is_err());
+        assert!(parse_resource_contribution(&serde_json::json!({"online_hours":65536u64})).is_err());
+        assert!(parse_resource_contribution(&serde_json::json!({"uptime_bps":10001u64})).is_err());
+        assert!(parse_resource_contribution(&serde_json::json!({"storage_bytes":1.5})).is_err());
+        assert!(parse_resource_contribution(&serde_json::json!({"cpu_cores":"4"})).is_err());
+        assert!(parse_resource_contribution(&serde_json::json!({"online_hours":25})).is_err());
+        assert_eq!(
+            parse_resource_contribution(&serde_json::json!({"cpu_cores":4,"storage_bytes":1024})).unwrap().cpu_cores,
+            4
+        );
+    }
 
     #[test]
     fn atom_formatter_preserves_all_eighteen_decimal_places() {
