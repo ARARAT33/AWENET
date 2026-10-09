@@ -210,6 +210,23 @@ fn http_response_bytes(status: &str, content_type: &str, body: &[u8]) -> Vec<u8>
     response
 }
 
+fn restrict_secret_file_permissions(path: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = fs::metadata(path)?.permissions();
+        permissions.set_mode(0o600);
+        fs::set_permissions(path, permissions)?;
+    }
+    #[cfg(not(unix))]
+    {
+        // Windows files inherit access-control rules from the user's profile
+        // directory. Do not replace its ACL with a guessed policy here.
+        let _ = path;
+    }
+    Ok(())
+}
+
 fn valid_site_domain(value: &str) -> bool {
     if value.is_empty() || value.len() > 253 || value.starts_with('.') || value.ends_with('.') {
         return false;
@@ -1979,6 +1996,7 @@ async fn run_product() -> Result<()> {
     fs::create_dir_all(&data_dir)?;
     let secret_path = data_dir.join("node.awesecret");
     let identity = if secret_path.exists() {
+        restrict_secret_file_permissions(&secret_path)?;
         AweSecret::from_bytes(&fs::read(&secret_path)?)
             .map_err(anyhow::Error::msg)?
             .authenticate()
@@ -1988,6 +2006,7 @@ async fn run_product() -> Result<()> {
             Identity::generate(Username::new("awe-node".to_string()).map_err(anyhow::Error::msg)?);
         let secret = AweSecret::generate(&identity);
         fs::write(&secret_path, secret.to_bytes()?)?;
+        restrict_secret_file_permissions(&secret_path)?;
         identity
     };
     let node_id = format_uid(identity.public.awe_id.as_bytes());
