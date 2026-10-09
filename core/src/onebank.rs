@@ -478,14 +478,9 @@ impl ExchangeOrder {
         let fee = amount_atoms
             .saturating_mul(fee_bps as u128)
             .saturating_div(10_000);
-        let canonical_order = serde_json::to_vec(&(
-            offer.id,
-            &buyer,
-            &seller,
-            amount_atoms,
-            now_unix,
-        ))
-        .map_err(|_| "exchange order serialization failed".to_string())?;
+        let canonical_order =
+            serde_json::to_vec(&(offer.id, &buyer, &seller, amount_atoms, now_unix))
+                .map_err(|_| "exchange order serialization failed".to_string())?;
         Ok(Self {
             id: *blake3::hash(&canonical_order).as_bytes(),
             offer_id: offer.id,
