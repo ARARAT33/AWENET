@@ -447,17 +447,21 @@ pub struct ExchangeOrder {
 impl ExchangeOrder {
     pub fn from_offer(
         offer: &P2POffer,
+        offer_owner_public_key: &[u8; 32],
         buyer: AweId,
         seller: AweId,
         amount_atoms: u128,
         fee_bps: u16,
         now_unix: u64,
     ) -> Result<Self, String> {
+        if !offer.verify(offer_owner_public_key, now_unix) {
+            return Err("exchange offer signature is invalid or the offer has expired".into());
+        }
+        if fee_bps > 500 {
+            return Err("ONEBANK fee cannot exceed 5%".into());
+        }
         if amount_atoms == 0 || amount_atoms > offer.amount_atoms {
             return Err("invalid order amount".into());
-        }
-        if offer.expires_at_unix < now_unix {
-            return Err("exchange offer has expired".into());
         }
         match offer.side {
             ExchangeSide::Sell if offer.owner != seller => {
@@ -474,11 +478,16 @@ impl ExchangeOrder {
         let fee = amount_atoms
             .saturating_mul(fee_bps as u128)
             .saturating_div(10_000);
+        let canonical_order = serde_json::to_vec(&(
+            offer.id,
+            &buyer,
+            &seller,
+            amount_atoms,
+            now_unix,
+        ))
+        .map_err(|_| "exchange order serialization failed".to_string())?;
         Ok(Self {
-            id: *blake3::hash(
-                &serde_json::to_vec(&(offer.id, &buyer, &seller, amount_atoms, now_unix)).unwrap(),
-            )
-            .as_bytes(),
+            id: *blake3::hash(&canonical_order).as_bytes(),
             offer_id: offer.id,
             buyer,
             seller,
@@ -553,6 +562,7 @@ mod tests {
         .unwrap();
         let order = ExchangeOrder::from_offer(
             &offer,
+            &seller.public.public_key,
             buyer.public.awe_id,
             seller.public.awe_id,
             ATOMS_PER_COIN / 2,
@@ -561,6 +571,47 @@ mod tests {
         )
         .unwrap();
         assert_eq!(order.fiat_minor, 50);
+    }
+
+    #[test]
+    fn exchange_orders_reject_tampered_offers_and_excessive_fees() {
+        let seller = Identity::generate(Username::new("offer-seller".to_string()).unwrap());
+        let buyer = Identity::generate(Username::new("offer-buyer".to_string()).unwrap());
+        let offer = P2POffer::new(
+            &seller,
+            ExchangeSide::Sell,
+            ATOMS_PER_COIN,
+            100,
+            "USD".to_string(),
+            FiatRail::BankTransfer,
+            None,
+            u64::MAX,
+        )
+        .unwrap();
+
+        let mut tampered = offer.clone();
+        tampered.price_minor_per_coin = 1;
+        assert!(ExchangeOrder::from_offer(
+            &tampered,
+            &seller.public.public_key,
+            buyer.public.awe_id.clone(),
+            seller.public.awe_id.clone(),
+            ATOMS_PER_COIN / 2,
+            100,
+            1,
+        )
+        .is_err());
+
+        assert!(ExchangeOrder::from_offer(
+            &offer,
+            &seller.public.public_key,
+            buyer.public.awe_id,
+            seller.public.awe_id,
+            ATOMS_PER_COIN / 2,
+            501,
+            1,
+        )
+        .is_err());
     }
 
     #[test]
