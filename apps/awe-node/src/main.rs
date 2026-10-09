@@ -3149,6 +3149,11 @@ async fn run_product() -> Result<()> {
     println!("Native UI: AWENET desktop window");
 
     let native_ui_addr = ui_addr;
+    // Keep the original state handles available to the outbox retry worker;
+    // the listener task owns separate Arc clones for incoming HTTP requests.
+    let ui_onecoin_ledger = onecoin_ledger.clone();
+    let ui_onecoin_outbox = onecoin_outbox.clone();
+    let ui_onecoin_path = onecoin_path.clone();
     tokio::spawn(async move {
         loop {
             let (stream, _) = match listener.accept().await {
@@ -3167,9 +3172,9 @@ async fn run_product() -> Result<()> {
             let api_federation_path = federation_path.clone();
             let api_policy = policy_state.clone();
             let api_community = community.clone();
-            let api_onecoin_ledger = onecoin_ledger.clone();
-            let api_onecoin_outbox = onecoin_outbox.clone();
-            let api_onecoin_path = onecoin_path.clone();
+            let api_onecoin_ledger = ui_onecoin_ledger.clone();
+            let api_onecoin_outbox = ui_onecoin_outbox.clone();
+            let api_onecoin_path = ui_onecoin_path.clone();
             let api_onecoin_offers_path = onecoin_offers_path.clone();
             let api_contribution = contribution.clone();
             let api_contribution_path = contribution_path.clone();
