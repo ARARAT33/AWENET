@@ -52,8 +52,9 @@ const FRAME_PAD_MIN: usize = 256;
 const FRAME_LENGTH_PREFIX: usize = 4;
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 // Bound queueing and socket writes so a slow peer cannot stall product APIs indefinitely.
-const OUTBOUND_QUEUE_TIMEOUT: Duration = Duration::from_secs(5);
-const OUTBOUND_IO_TIMEOUT: Duration = Duration::from_secs(10);
+const OUTBOUND_QUEUE_TIMEOUT: Duration = Duration::from_secs(3);
+const OUTBOUND_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const OUTBOUND_IO_TIMEOUT: Duration = Duration::from_secs(8);
 const HEARTBEAT: Duration = Duration::from_secs(20);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 
@@ -1216,7 +1217,10 @@ impl Node {
                 .get(peer_id)
                 .and_then(|peer| peer.addresses.first().copied())
                 .ok_or_else(|| NetworkError::Protocol("peer address is unknown".into()))?;
-            let connection = Arc::new(tokio::sync::Mutex::new(self.connect(address).await?));
+            let fresh = timeout(OUTBOUND_CONNECT_TIMEOUT, self.connect(address))
+                .await
+                .map_err(|_| NetworkError::Timeout)??;
+            let connection = Arc::new(tokio::sync::Mutex::new(fresh));
             let mut active = self.active.write().await;
             if active.len() < MAX_ACTIVE_CONNECTIONS {
                 active.insert(*peer_id, connection.clone());
@@ -1273,7 +1277,9 @@ impl Node {
             .get(peer_id)
             .and_then(|peer| peer.addresses.first().copied())
             .ok_or_else(|| NetworkError::Protocol("peer address is unknown".into()))?;
-        let mut connection = self.connect(address).await?;
+        let mut connection = timeout(OUTBOUND_CONNECT_TIMEOUT, self.connect(address))
+            .await
+            .map_err(|_| NetworkError::Timeout)??;
         timeout(
             OUTBOUND_IO_TIMEOUT,
             connection.send_data_roundtrip(stream, payload),
