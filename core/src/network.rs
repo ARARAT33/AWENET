@@ -51,6 +51,9 @@ const PREAUTH_RATE_REFILL_PER_SECOND: u64 = 16;
 const FRAME_PAD_MIN: usize = 256;
 const FRAME_LENGTH_PREFIX: usize = 4;
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
+// Bound queueing and socket writes so a slow peer cannot stall product APIs indefinitely.
+const OUTBOUND_QUEUE_TIMEOUT: Duration = Duration::from_secs(5);
+const OUTBOUND_IO_TIMEOUT: Duration = Duration::from_secs(10);
 const HEARTBEAT: Duration = Duration::from_secs(20);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 
@@ -1195,11 +1198,14 @@ impl Node {
         stream: u32,
         payload: Vec<u8>,
     ) -> Result<std::time::Duration, NetworkError> {
-        let _outbound_permit = self
-            .outbound_limit
-            .acquire()
-            .await
-            .map_err(|_| NetworkError::Protocol("outbound limiter closed".into()))?;
+        let _outbound_permit = timeout(
+            OUTBOUND_QUEUE_TIMEOUT,
+            self.outbound_limit.acquire(),
+        )
+        .await
+        .map_err(|_| NetworkError::Timeout)?
+        .map_err(|_| NetworkError::Protocol("outbound limiter closed".into()))?;
+
         let connection = if let Some(connection) = self.active.read().await.get(peer_id).cloned() {
             connection
         } else {
@@ -1217,12 +1223,27 @@ impl Node {
             }
             connection
         };
-        let mut connection = connection.lock().await;
+
+        let mut connection_guard = match timeout(OUTBOUND_QUEUE_TIMEOUT, connection.lock()).await {
+            Ok(guard) => guard,
+            Err(_) => {
+                self.active.write().await.remove(peer_id);
+                return Err(NetworkError::Timeout);
+            }
+        };
         let started = Instant::now();
-        let result = connection
-            .send_data(stream, payload)
-            .await
-            .map(|_| started.elapsed());
+        let result = match timeout(
+            OUTBOUND_IO_TIMEOUT,
+            connection_guard.send_data(stream, payload),
+        )
+        .await
+        {
+            Ok(Ok(())) => Ok(started.elapsed()),
+            Ok(Err(error)) => Err(error),
+            Err(_) => Err(NetworkError::Timeout),
+        };
+        drop(connection_guard);
+
         if result.is_err() {
             self.active.write().await.remove(peer_id);
         }
@@ -1238,11 +1259,13 @@ impl Node {
         stream: u32,
         payload: Vec<u8>,
     ) -> Result<std::time::Duration, NetworkError> {
-        let _outbound_permit = self
-            .outbound_limit
-            .acquire()
-            .await
-            .map_err(|_| NetworkError::Protocol("outbound limiter closed".into()))?;
+        let _outbound_permit = timeout(
+            OUTBOUND_QUEUE_TIMEOUT,
+            self.outbound_limit.acquire(),
+        )
+        .await
+        .map_err(|_| NetworkError::Timeout)?
+        .map_err(|_| NetworkError::Protocol("outbound limiter closed".into()))?;
         let address = self
             .peers
             .read()
@@ -1251,7 +1274,12 @@ impl Node {
             .and_then(|peer| peer.addresses.first().copied())
             .ok_or_else(|| NetworkError::Protocol("peer address is unknown".into()))?;
         let mut connection = self.connect(address).await?;
-        connection.send_data_roundtrip(stream, payload).await
+        timeout(
+            OUTBOUND_IO_TIMEOUT,
+            connection.send_data_roundtrip(stream, payload),
+        )
+        .await
+        .map_err(|_| NetworkError::Timeout)?
     }
 
     pub fn take_inbox(&self) -> Vec<([u8; 32], u32, Vec<u8>)> {
