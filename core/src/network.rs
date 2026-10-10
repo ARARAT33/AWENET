@@ -1200,9 +1200,9 @@ impl Node {
         payload: Vec<u8>,
     ) -> Result<std::time::Duration, NetworkError> {
         let _outbound_permit = timeout(OUTBOUND_QUEUE_TIMEOUT, self.outbound_limit.acquire())
-        .await
-        .map_err(|_| NetworkError::Timeout)?
-        .map_err(|_| NetworkError::Protocol("outbound limiter closed".into()))?;
+            .await
+            .map_err(|_| NetworkError::Timeout)?
+            .map_err(|_| NetworkError::Protocol("outbound limiter closed".into()))?;
 
         let connection = if let Some(connection) = self.active.read().await.get(peer_id).cloned() {
             connection
@@ -1261,9 +1261,9 @@ impl Node {
         payload: Vec<u8>,
     ) -> Result<std::time::Duration, NetworkError> {
         let _outbound_permit = timeout(OUTBOUND_QUEUE_TIMEOUT, self.outbound_limit.acquire())
-        .await
-        .map_err(|_| NetworkError::Timeout)?
-        .map_err(|_| NetworkError::Protocol("outbound limiter closed".into()))?;
+            .await
+            .map_err(|_| NetworkError::Timeout)?
+            .map_err(|_| NetworkError::Protocol("outbound limiter closed".into()))?;
         let address = self
             .peers
             .read()
