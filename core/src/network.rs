@@ -1467,6 +1467,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn outbound_queue_wait_is_bounded_when_saturated() {
+        let identity = Identity::generate(Username::new("outbound-limit").unwrap());
+        let address: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let node = Node::new(identity, address);
+        let permits = node
+            .outbound_limit
+            .clone()
+            .acquire_many_owned(MAX_OUTBOUND_CONCURRENCY as u32)
+            .await
+            .unwrap();
+
+        let started = Instant::now();
+        let result = node.send_to_peer(&[7u8; 32], 99, vec![1]).await;
+        assert!(matches!(result, Err(NetworkError::Timeout)));
+        assert!(started.elapsed() < OUTBOUND_QUEUE_TIMEOUT + Duration::from_secs(1));
+        drop(permits);
+    }
+
+    #[tokio::test]
     async fn authenticated_encrypted_transport() {
         let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let a = l.local_addr().unwrap();
