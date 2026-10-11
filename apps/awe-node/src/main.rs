@@ -2584,3 +2584,33 @@ async fn main() -> Result<()> {
         _ => usage(),
     }
 }
+
+#[cfg(test)]
+mod ui_origin_tests {
+    use super::is_allowed_ui_origin;
+
+    #[test]
+    fn allows_only_known_local_desktop_origins() {
+        for origin in [
+            "tauri://localhost",
+            "http://tauri.localhost",
+            "https://tauri.localhost",
+            "http://127.0.0.1:41800",
+            "http://localhost:41800",
+        ] {
+            assert!(is_allowed_ui_origin(origin), "expected allowed origin: {origin}");
+        }
+    }
+
+    #[test]
+    fn rejects_untrusted_web_origins_and_null_origin() {
+        for origin in [
+            "https://example.com",
+            "http://127.0.0.1:3000",
+            "http://localhost:8080",
+            "null",
+        ] {
+            assert!(!is_allowed_ui_origin(origin), "expected rejected origin: {origin}");
+        }
+    }
+}
