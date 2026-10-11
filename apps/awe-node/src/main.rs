@@ -504,6 +504,8 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         },
         "/api/node" => ("200 OK", "application/json; charset=utf-8", serde_json::json!({
             "id": format_uid(node.identity.public.awe_id.as_bytes()),
+            "uid": format_uid(node.identity.public.awe_id.as_bytes()),
+            "awe_id": node.identity.public.awe_id.to_hex(),
             "descriptor": node.node_descriptor(),
             "username": node.identity.public.username.as_str(),
             "address": node.listen_addr.to_string(),
@@ -523,6 +525,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
             ("200 OK", "application/json; charset=utf-8", serde_json::json!({
                 "product": "AWEp2P", "status": "online",
                 "node_id": format_uid(node.identity.public.awe_id.as_bytes()),
+                "awe_id": node.identity.public.awe_id.to_hex(),
                 "node_address": node.listen_addr.to_string(),
                 "transport": "AWE encrypted TCP", "ui": "connected", "peers": peer_json, "discovered_peers": peer_json.len(), "active_connections": node.active_peer_count().await
             }).to_string())
