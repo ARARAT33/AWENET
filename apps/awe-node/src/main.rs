@@ -335,13 +335,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
     if method.eq_ignore_ascii_case("OPTIONS") {
         stream
             .write_all(
-                &http_response(
-                    "204 No Content",
-                    "text/plain; charset=utf-8",
-                    "",
-                    origin,
-                )
-                .await,
+                &http_response("204 No Content", "text/plain; charset=utf-8", "", origin).await,
             )
             .await?;
         stream.shutdown().await?;
@@ -2598,7 +2592,10 @@ mod ui_origin_tests {
             "http://127.0.0.1:41800",
             "http://localhost:41800",
         ] {
-            assert!(is_allowed_ui_origin(origin), "expected allowed origin: {origin}");
+            assert!(
+                is_allowed_ui_origin(origin),
+                "expected allowed origin: {origin}"
+            );
         }
     }
 
@@ -2610,7 +2607,10 @@ mod ui_origin_tests {
             "http://localhost:8080",
             "null",
         ] {
-            assert!(!is_allowed_ui_origin(origin), "expected rejected origin: {origin}");
+            assert!(
+                !is_allowed_ui_origin(origin),
+                "expected rejected origin: {origin}"
+            );
         }
     }
 }
