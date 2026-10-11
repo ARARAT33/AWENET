@@ -62,6 +62,11 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: ${{ github.head_ref || github.ref_name }}
+      - name: Validate desktop UI JavaScript syntax
+        shell: bash
+        run: |
+          node --check apps/awe-desktop/ui/app.js
+          node --check apps/awe-desktop/ui/onecoin.js
       - name: Reject unfinished markers
         shell: bash
         run: |
