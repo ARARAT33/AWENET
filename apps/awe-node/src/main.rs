@@ -162,8 +162,36 @@ fn load_identity(path: &PathBuf, password: &str, username: &str) -> Result<Ident
     .map_err(anyhow::Error::msg)
 }
 
-async fn http_response(status: &str, content_type: &str, body: &str) -> Vec<u8> {
-    format!("HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: content-type\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}", body.len()).into_bytes()
+fn is_allowed_ui_origin(origin: &str) -> bool {
+    matches!(
+        origin,
+        "tauri://localhost"
+            | "http://tauri.localhost"
+            | "https://tauri.localhost"
+            | "http://127.0.0.1:41800"
+            | "http://localhost:41800"
+    )
+}
+
+async fn http_response(
+    status: &str,
+    content_type: &str,
+    body: &str,
+    origin: Option<&str>,
+) -> Vec<u8> {
+    let cors = origin
+        .filter(|value| is_allowed_ui_origin(value))
+        .map(|value| {
+            format!(
+                "Access-Control-Allow-Origin: {value}\r\nVary: Origin\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: content-type\r\n"
+            )
+        })
+        .unwrap_or_default();
+    format!(
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n{cors}Cache-Control: no-store\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+    .into_bytes()
 }
 
 async fn read_http_request(stream: &mut tokio::net::TcpStream) -> Result<String> {
@@ -283,6 +311,42 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or("GET");
     let path = parts.next().unwrap_or("/").split('?').next().unwrap_or("/");
+    let origin = request.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("origin").then(|| value.trim())
+    });
+    if let Some(origin) = origin {
+        if !is_allowed_ui_origin(origin) {
+            stream
+                .write_all(
+                    &http_response(
+                        "403 Forbidden",
+                        "application/json; charset=utf-8",
+                        r#"{"status":"error","error":"origin not allowed"}"#,
+                        None,
+                    )
+                    .await,
+                )
+                .await?;
+            stream.shutdown().await?;
+            return Ok(());
+        }
+    }
+    if method.eq_ignore_ascii_case("OPTIONS") {
+        stream
+            .write_all(
+                &http_response(
+                    "204 No Content",
+                    "text/plain; charset=utf-8",
+                    "",
+                    origin,
+                )
+                .await,
+            )
+            .await?;
+        stream.shutdown().await?;
+        return Ok(());
+    }
     let (status, mime, body) = match path {
         "/" | "/index.html" => ("200 OK", "text/html; charset=utf-8", UI_HTML.to_string()),
         "/style.css" => ("200 OK", "text/css; charset=utf-8", UI_CSS.to_string()),
@@ -1336,7 +1400,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         _ => ("404 Not Found", "text/plain; charset=utf-8", "Not Found".to_string()),
     };
     stream
-        .write_all(&http_response(status, mime, &body).await)
+        .write_all(&http_response(status, mime, &body, origin).await)
         .await?;
     stream.shutdown().await?;
     Ok(())
