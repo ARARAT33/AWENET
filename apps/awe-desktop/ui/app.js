@@ -19,7 +19,7 @@ async function api(path,options={}){
   throw e;
  }finally{clearTimeout(timer)}
 }
-const call={pc:null,id:null,remote:null,last:0,seen:new Set(),active:false};
+const call={pc:null,id:null,remote:null,last:0,seen:new Set(),pendingIce:[],active:false};
 async function sendCallSignal(type,data){
  if(!call.remote||!call.id)return;
  await api("/api/call/signal",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({recipient:call.remote,call_id:call.id,signal_type:type,data:JSON.stringify(data)})});
@@ -45,18 +45,23 @@ async function acceptCall(signal){
  const status=document.getElementById("callStatus");if(status)status.textContent="Incoming "+(signal.data.media||"voice")+" call…";
  const pc=new RTCPeerConnection({iceServers:[{urls:"stun:stun.l.google.com:19302"}]});call.pc=pc;
  pc.onicecandidate=e=>{if(e.candidate)sendCallSignal("ice",e.candidate).catch(()=>{})};
- pc.ontrack=e=>{const audio=document.getElementById("remoteAudio");if(audio&&e.streams[0])audio.srcObject=e.streams[0]};
+ pc.ontrack=e=>{if(!e.streams[0])return;const v=document.getElementById("remoteVideo"),a=document.getElementById("remoteAudio");if(e.track.kind==="video"&&v){v.srcObject=e.streams[0];v.style.display="block"}else if(a)a.srcObject=e.streams[0]};
  pc.onconnectionstatechange=()=>{if(status)status.textContent="Call: "+pc.connectionState};
  const stream=await navigator.mediaDevices.getUserMedia({audio:true,video:signal.data.media==="video"});
  stream.getTracks().forEach(t=>pc.addTrack(t,stream));
- await pc.setRemoteDescription(signal.data);
+ await pc.setRemoteDescription(signal.data);await flushPendingIce();
  const answer=await pc.createAnswer();await pc.setLocalDescription(answer);
  await sendCallSignal("answer",{sdp:answer.sdp,type:answer.type});
+}
+async function flushPendingIce(){
+ if(!call.pc?.remoteDescription||!call.pendingIce.length)return;
+ const pending=call.pendingIce.splice(0);
+ for(const candidate of pending){try{await call.pc.addIceCandidate(candidate)}catch(_){}}
 }
 async function stopCall(){
  if(call.active&&call.remote&&call.id){try{await sendCallSignal("hangup",{})}catch(_){}}
  if(call.pc){call.pc.getSenders().forEach(s=>s.track?.stop());call.pc.close()}
- call.pc=null;call.id=null;call.remote=null;call.active=false;
+ call.pc=null;call.id=null;call.remote=null;call.pendingIce=[];call.active=false;
  const audio=document.getElementById("remoteAudio");if(audio)audio.srcObject=null;const lv=document.getElementById("localVideo");if(lv){lv.srcObject=null;lv.style.display="none"}const rv=document.getElementById("remoteVideo");if(rv){rv.srcObject=null;rv.style.display="none"}
  const status=document.getElementById("callStatus");if(status)status.textContent="No active call";
 }
@@ -67,8 +72,8 @@ async function pollCallSignals(){
    if(call.seen.has(s.id))continue;call.seen.add(s.id);call.last=Math.max(call.last,Number(s.timestamp)||0);
    let data={};try{data=JSON.parse(s.data||"{}")}catch(_){}
    if(s.signal_type==="offer"&&!call.active){await acceptCall({...s,data})}
-   else if(call.pc&&s.call_id===call.id&&s.signal_type==="answer"){await call.pc.setRemoteDescription(data)}
-   else if(call.pc&&s.call_id===call.id&&s.signal_type==="ice"){try{await call.pc.addIceCandidate(data)}catch(_){}}
+   else if(call.pc&&s.call_id===call.id&&s.signal_type==="answer"){await call.pc.setRemoteDescription(data);await flushPendingIce()}
+   else if(call.pc&&s.call_id===call.id&&s.signal_type==="ice"){if(!call.pc.remoteDescription)call.pendingIce.push(data);else{try{await call.pc.addIceCandidate(data)}catch(_){}}}
    else if(call.active&&s.call_id===call.id&&s.signal_type==="hangup"){await stopCall()}
   }
  }catch(_){}
