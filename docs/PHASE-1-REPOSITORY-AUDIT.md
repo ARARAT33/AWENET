@@ -125,6 +125,7 @@ Core product areas: user identity/UID/AWEID; node lifecycle; CG/DG/DC membership
 39. Transport-level `DataAck` means the remote transport accepted a packet into its bounded inbox; it does not prove that the application handler validated, persisted, or acted on it. Application delivery/storage/consensus acknowledgements must be distinct and tied to durable state transitions.
 40. `GovernanceEngine::authorize_action` currently does not verify `GovernanceCapability.signature`, issuer/holder key bindings or actor identity; it only checks expiry and string scope. This is a security-critical authorization primitive bug and must be fixed before any admin/DC/DG/CG permissions are built on it.
 41. Federation config `join_token` generation is deterministic from public IDs, and `validate_awenode/awedc/dgc` only checks it is non-empty. Any party can produce an apparently valid config; it must not grant membership or administration until the issuing owner signs the invitation and the join flow verifies it.
+42. `onebank::classify_tier` maps raw `ResourceContribution` claims (including `server_count`) directly to tiers such as DATA GROUP and CENTRE GROUP. The HTTP contribution endpoint accepts those fields from the caller and reports `verified: false`, yet wallet UI displays the resulting tier. A user can self-claim huge resources and get a misleading high tier; roles/management permissions must be independent of tiers, and tier/reward eligibility must use verified signed receipts only.
 
 ## 5. API surface observed in `apps/awe-node/src/main.rs`
 
