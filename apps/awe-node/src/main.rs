@@ -2647,7 +2647,11 @@ mod ui_origin_tests {
         assert_eq!(offer.get("published").and_then(|v| v.as_bool()), Some(true));
         let public_json = offer.to_string();
         assert!(!public_json.contains(owner));
-        assert!(offer.get("owner_ref").and_then(|v| v.as_str()).unwrap_or("").starts_with("offer-"));
+        assert!(offer
+            .get("owner_ref")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .starts_with("offer-"));
     }
 
     #[test]
