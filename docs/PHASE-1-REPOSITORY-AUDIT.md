@@ -116,6 +116,10 @@ Core product areas: user identity/UID/AWEID; node lifecycle; CG/DG/DC membership
 31. The runtime's first-run identity file and the separate `LocalVault` API are inconsistent: the product auto-creates an unencrypted secret file rather than requiring a password-protected vault. This blocks safe first-run onboarding and must be fixed before admin bootstrap is added.
 32. The UI's browser iframe accepts arbitrary HTTP(S) URLs. External content in a WebView needs a strict origin/navigation policy and isolation; it must not share privileged local API authority or identity data with untrusted pages.
 33. The ONECOIN UI formatter displays at most nine fractional digits, while the core ledger uses 18 decimal atomic units. The UI must either show the full supported precision or clearly round only for display without affecting transaction inputs.
+34. The backend `parse_onecoin_atoms()` currently rejects amounts with more than 8 decimal places even though the core ledger defines 18 decimal atomic units. The wallet UI and API therefore disagree with the protocol precision; define one canonical decimal precision and test boundary values before money-transfer UI is rewritten.
+35. In `/api/federation/import`, malformed JSON deserialization uses `?` inside the request handler's outer result context in some arms. A parse error can escape the route instead of returning a structured 4xx JSON response, so import failures may surface as a dropped/failed request. Convert all malformed-input paths into explicit API error responses and add malformed/truncated config tests.
+36. `/api/storage/put` writes the manifest directory/file with ignored filesystem errors (`let _ = fs::create_dir_all` and `let _ = fs::write`) but can still return a successful/stored response. A later download/repair may fail because durable metadata was never committed. Manifest commit must be atomic and its failure must fail the operation or enter a recoverable explicit state.
+37. HTTP request parsing is a hand-rolled server. It handles Content-Length with a body-size cap but does not implement chunked transfer encoding and currently defaults an unparsable Content-Length to zero. Tighten malformed/duplicate Content-Length handling, reject unsupported transfer encodings, and test partial headers/bodies, oversized requests, and slow clients.
 
 ## 5. API surface observed in `apps/awe-node/src/main.rs`
 
@@ -142,7 +146,7 @@ No dedicated API family was found for first-run account bootstrap, user director
 - [x] Inventory all 101 tracked paths at the audit snapshot.
 - [x] Read top-level product docs, manifests, CI workflows, desktop entry points, UI route/render structure, major backend router/API families, identity/ONEBANK/ONECOIN/topology/storage/network module contracts.
 - [x] Record the highest-risk mismatches and phase boundaries in this document.
-- [x] Extend targeted backend audit through request framing, federation import, groups/channels, Store, storage upload/repair and runtime identity initialization; record confirmed defects above.
+- [x] Extend targeted backend audit through request framing, federation import, groups/channels, Store, storage upload/repair, runtime identity initialization, sandbox execution and wallet amount parsing; record confirmed defects above.
 - [ ] Finish line-by-line review of the complete 148 KB backend router and all request parsing, persistence, authorization, error and shutdown paths.
 - [ ] Finish line-by-line review of every core module, tests and platform integration; distinguish tested logic from unused scaffolding and identify concrete bugs with file/line evidence.
 - [ ] Reconcile all endpoints with UI actions (request → validation/auth → state transition → persistence → response → visible UI state) and document each gap.
