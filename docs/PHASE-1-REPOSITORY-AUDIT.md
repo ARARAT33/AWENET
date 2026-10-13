@@ -71,6 +71,7 @@ Core product areas: user identity/UID/AWEID; node lifecycle; CG/DG/DC membership
 
 ### P0 — identity, authorization and administration
 - The current UI's “owner profile” display name is saved in localStorage and defaults to a hard-coded personal display name. This is a device-local label, not a cryptographically verified account/profile.
+- The current `/api/node` UID is formatted from the same AWEID used for the node identity. There is no independent person-level immutable UID linked to multiple per-device/node identities, as required. Phase 2 must distinguish `UserId`, `DeviceId`, `NodeId`, AWEID/public keys and mutable usernames, with signed device enrollment/revocation.
 - Backend `/api/node` exposes node UID/AWEID/username and runtime metadata, but the inspected API router has no administrator role model, no founder claim/initialization ceremony, no authenticated admin session/token, and no admin authorization middleware. Searching the router found no `admin`, `role`, `authorization`, `bearer`, `admin_token`, or `admin_key` markers.
 - Governance/registry modules and the protected `.awea` namespace are primitives, not a complete user/admin access-control system for node, DC, DG, CG, sites, users or network operations.
 - CORS origin checks are useful browser isolation but are not authentication. A local process or direct HTTP client can bypass browser-origin restrictions. All state-changing local API operations need an explicit local IPC/authentication boundary and authorization checks.
