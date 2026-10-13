@@ -48,17 +48,26 @@ async function startCall(kind){
  }
 }
 async function acceptCall(signal){
- await stopCall();call.id=signal.call_id;call.remote=signal.sender;call.active=true;
- const status=document.getElementById("callStatus");if(status)status.textContent="Incoming "+(signal.data.media||"voice")+" call…";
- const pc=new RTCPeerConnection({iceServers:[{urls:"stun:stun.l.google.com:19302"}]});call.pc=pc;
- pc.onicecandidate=e=>{if(e.candidate)sendCallSignal("ice",e.candidate).catch(()=>{})};
- pc.ontrack=e=>{if(!e.streams[0])return;const v=document.getElementById("remoteVideo"),a=document.getElementById("remoteAudio");if(e.track.kind==="video"&&v){v.srcObject=e.streams[0];v.style.display="block"}else if(a)a.srcObject=e.streams[0]};
- pc.onconnectionstatechange=()=>{if(status)status.textContent="Call: "+pc.connectionState};
- const stream=await navigator.mediaDevices.getUserMedia({audio:true,video:signal.data.media==="video"});
- stream.getTracks().forEach(t=>pc.addTrack(t,stream));
- await pc.setRemoteDescription(signal.data);await flushPendingIce();
- const answer=await pc.createAnswer();await pc.setLocalDescription(answer);
- await sendCallSignal("answer",{sdp:answer.sdp,type:answer.type});
+ const status=document.getElementById("callStatus");
+ try{
+  if(!window.RTCPeerConnection||!navigator.mediaDevices?.getUserMedia)throw Error("This runtime does not provide WebRTC media");
+  await stopCall();call.id=signal.call_id;call.remote=signal.sender;call.active=true;
+  if(status)status.textContent="Incoming "+(signal.data.media||"voice")+" call…";
+  const pc=new RTCPeerConnection({iceServers:[{urls:"stun:stun.l.google.com:19302"}]});call.pc=pc;
+  pc.onicecandidate=e=>{if(e.candidate)sendCallSignal("ice",e.candidate).catch(()=>{})};
+  pc.ontrack=e=>{if(!e.streams[0])return;const v=document.getElementById("remoteVideo"),a=document.getElementById("remoteAudio");if(e.track.kind==="video"&&v){v.srcObject=e.streams[0];v.style.display="block"}else if(a)a.srcObject=e.streams[0]};
+  pc.onconnectionstatechange=()=>{if(status)status.textContent="Call: "+pc.connectionState};
+  const stream=await navigator.mediaDevices.getUserMedia({audio:true,video:signal.data.media==="video"});
+  stream.getTracks().forEach(t=>pc.addTrack(t,stream));
+  await pc.setRemoteDescription(signal.data);await flushPendingIce();
+  const answer=await pc.createAnswer();await pc.setLocalDescription(answer);
+  await sendCallSignal("answer",{sdp:answer.sdp,type:answer.type});
+ }catch(e){
+  const message=e&&e.message?e.message:String(e);
+  try{await stopCall()}catch(_){}
+  if(status)status.textContent="Incoming call failed: "+message;
+  toast("Could not accept incoming call: "+message);
+ }
 }
 async function flushPendingIce(){
  if(!call.pc?.remoteDescription||!call.pendingIce.length)return;
