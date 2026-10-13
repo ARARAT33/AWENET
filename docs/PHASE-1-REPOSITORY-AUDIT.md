@@ -75,6 +75,7 @@ Core product areas: user identity/UID/AWEID; node lifecycle; CG/DG/DC membership
 3. Governance/registry modules and the protected `.awea` namespace are primitives, not a complete user/admin access-control system for node, DC, DG, CG, sites, users or network operations.
 4. CORS origin checks are useful browser isolation but are not authentication. A local process or direct HTTP client can bypass browser-origin restrictions. All state-changing local API operations need an explicit local IPC/authentication boundary and authorization checks.
 5. Founder privileges must never be granted by a name, localStorage flag, public AWEID alone, or client-side UI. Use a one-time local bootstrap protected by the identity vault, a signed owner record, persistent role assignment, and explicit signed delegation/recovery policy. Test that a second identity cannot claim founder/admin.
+6. **Critical secret-at-rest issue:** the normal `run_product()` first-run path writes `data_dir/node.awesecret` directly as JSON. `AweSecret` includes a plaintext `secret_key` field. This is not the password-protected `LocalVault` path. Before first real-user onboarding, replace this with encrypted vault creation, password/recovery setup, strict file permissions and migration handling; never silently overwrite or regenerate an existing identity.
 
 ### P0 — false-success and missing end-to-end network behavior
 6. `/api/connect` returns `202 Accepted` after spawning an asynchronous bootstrap attempt. The UI currently toasts “Bootstrap complete” immediately, which overstates success. UI must distinguish queued/connecting/connected/failed and use observed peer state.
@@ -82,12 +83,14 @@ Core product areas: user identity/UID/AWEID; node lifecycle; CG/DG/DC membership
 8. The Browser UI can retrieve a file by local API file ID and can pass HTTP(S) URLs to an iframe, but arbitrary `awe://` IDs are rendered as explanatory placeholder content; there is no demonstrated network-wide search index/query pipeline or remote site-by-ID resolver in the UI path.
 9. Group/channel UI and API endpoints exist, but must be verified for durable identity-bound ownership, member authorization, cross-node delivery, remote acknowledgement, replay/deduplication and restart persistence. A UI list or local JSON state is not proof of a distributed group service.
 10. Call signaling/WebRTC UI exists, but real NAT traversal, relay, remote encrypted media, and independent-device audio/video acceptance remain unproven. Do not present these as production-ready.
+11. `core/src/sandbox.rs::WasmSandbox::execute_module` does **not execute WASM**: after validating the header/size, it returns a success string describing a simulated execution frame. The capability set and instruction limit are not enforced by an actual runtime. This is a concrete false-capability implementation; Store must not advertise/run packages as sandboxed WASM until a real runtime is integrated with enforced memory/fuel/capability limits and hostile-module tests.
 
 ### P0 — ONECOIN / ONEBANK correctness
 11. The repository contains ONECOIN ledger, consensus/finality, persistence, governance, payment and wallet modules, plus ONEBANK tier/contribution structures. The current HTTP wallet send path directly mutates a local in-memory ledger and writes it to a local file; it attempts to deliver to a connected peer, but that is not itself proof of network-wide consensus/finality.
 12. The current wallet API reports contribution verification as false and reward status as requiring a signed usage receipt. This is honest and should remain so until a trusted, replay-safe receipt verification path is implemented.
 13. UI tier/reward copy must not imply guaranteed monthly rewards, actual cloud resources or verified resource contribution until the corresponding signed accounting and resource scheduler are connected and tested.
 14. ONECOIN consensus runtime/validator membership, persistent finalized state, transaction gossip, fork handling, quorum safety/liveness and restart/recovery need an integration audit before treating ONECOIN as a production network currency.
+15. `core/src/onecoin_consensus_runtime.rs` and `onecoin_consensus.rs` provide consensus primitives, but the current wallet HTTP route directly applies a transfer to a local `OnecoinLedger`. The audit has not found evidence that this API path waits for a quorum certificate/finalized-state transition before reporting acceptance. Treat wallet transfers as local/experimental until that integration is demonstrated.
 
 ### P1 — topology and cloud semantics
 15. The topology model and federation configuration types describe node/DC/DG/CG groupings, but configuration generation/import is not the same as authenticated membership, live control plane, access policy or operational cloud orchestration.
@@ -110,6 +113,9 @@ Core product areas: user identity/UID/AWEID; node lifecycle; CG/DG/DC membership
 28. `format.yml` can auto-commit formatting on `main`; avoid CI bots racing against review branches and ensure formatting never masks functional validation.
 29. Launch scripts currently reference old AWEP2P releases and can download binaries unrelated to this repo's exact source revision. Fix release URLs/versioning and verify checksums/signatures before use.
 30. A prebuilt `bin/windows-x86_64/awe-node.exe` is committed. Its provenance, source revision, build flags, signature/checksum and reproducibility need to be documented or the binary should be handled as a release artifact rather than an unexplained source file.
+31. The runtime's first-run identity file and the separate `LocalVault` API are inconsistent: the product auto-creates an unencrypted secret file rather than requiring a password-protected vault. This blocks safe first-run onboarding and must be fixed before admin bootstrap is added.
+32. The UI's browser iframe accepts arbitrary HTTP(S) URLs. External content in a WebView needs a strict origin/navigation policy and isolation; it must not share privileged local API authority or identity data with untrusted pages.
+33. The ONECOIN UI formatter displays at most nine fractional digits, while the core ledger uses 18 decimal atomic units. The UI must either show the full supported precision or clearly round only for display without affecting transaction inputs.
 
 ## 5. API surface observed in `apps/awe-node/src/main.rs`
 
@@ -136,6 +142,7 @@ No dedicated API family was found for first-run account bootstrap, user director
 - [x] Inventory all 101 tracked paths at the audit snapshot.
 - [x] Read top-level product docs, manifests, CI workflows, desktop entry points, UI route/render structure, major backend router/API families, identity/ONEBANK/ONECOIN/topology/storage/network module contracts.
 - [x] Record the highest-risk mismatches and phase boundaries in this document.
+- [x] Extend targeted backend audit through request framing, federation import, groups/channels, Store, storage upload/repair and runtime identity initialization; record confirmed defects above.
 - [ ] Finish line-by-line review of the complete 148 KB backend router and all request parsing, persistence, authorization, error and shutdown paths.
 - [ ] Finish line-by-line review of every core module, tests and platform integration; distinguish tested logic from unused scaffolding and identify concrete bugs with file/line evidence.
 - [ ] Reconcile all endpoints with UI actions (request → validation/auth → state transition → persistence → response → visible UI state) and document each gap.
