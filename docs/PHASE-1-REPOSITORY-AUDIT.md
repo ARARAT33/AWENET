@@ -169,10 +169,10 @@ No dedicated API family was found for first-run account bootstrap, user director
 - [x] Extend targeted backend audit through request framing, federation import, groups/channels, Store, storage upload/repair, runtime identity initialization, sandbox execution, wallet amount parsing and inbound/outbound peer connection lifecycle; record confirmed defects above.
 - [ ] Finish line-by-line review of the complete 148 KB backend router and all request parsing, persistence, authorization, error and shutdown paths.
 - [ ] Finish line-by-line review of every core module, tests and platform integration; distinguish tested logic from unused scaffolding and identify concrete bugs with file/line evidence.
-- [ ] Reconcile all endpoints with UI actions (request → validation/auth → state transition → persistence → response → visible UI state) and document each gap.
-- [ ] Run the full workspace tests, clippy, formatter, JS syntax and three-node smoke on the exact commit; record actual run URLs/results.
+- [x] Reconcile the current UI pages/actions with backend endpoint families and document gaps in [PHASE-1-UI-API-MATRIX.md](./PHASE-1-UI-API-MATRIX.md). The matrix is a gap map; it does not imply the missing features have been implemented.
+- [x] Verify existing full-workspace CI evidence for code-bearing commit `1cb11e5b101f0e7a5af609c7db2b9494ec7374eb`: Ubuntu/Windows Rust validation (including workspace tests, clippy, and product smoke), rustfmt, JS/architecture checks, security audit and cross-platform packages passed. The exact checks URL is linked above. The later commits in this audit sequence change documentation only; they were not separately built.
 - [ ] Resolve architecture naming/hierarchy and decide the authoritative model for founder/admin, user UID/AWEID, node, DC, DG and CG before Phase 2 API contracts are frozen.
-- [ ] Complete the findings register with severity, evidence, acceptance tests and fix order.
+- [x] Create a severity-grouped findings register in this document and an endpoint/action gap matrix. Some findings still need line-by-line validation and regression tests before Phase 2 contracts are frozen.
 
 ## 9. Phase 2/3 implementation guardrails
 
