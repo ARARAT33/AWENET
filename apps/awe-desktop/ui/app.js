@@ -118,7 +118,7 @@ async function refresh(){
    security:security||live.security,
    federation:federation||live.federation
   };
-  if(!status)live.status=live.status||"online";
+  if(!status)live.status=node?.status||"online";
   setConnection(true);
  }else{
   live={...live,status:"offline",ui:"disconnected",peers:[]};
