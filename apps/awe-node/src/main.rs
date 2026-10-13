@@ -2615,7 +2615,7 @@ async fn main() -> Result<()> {
 
 #[cfg(test)]
 mod ui_origin_tests {
-    use super::is_allowed_ui_origin;
+    use super::{is_allowed_ui_origin, redact_onecoin_offer_identity};
 
     #[test]
     fn allows_only_known_local_desktop_origins() {
