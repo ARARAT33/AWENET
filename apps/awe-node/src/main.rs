@@ -292,6 +292,30 @@ fn parse_onecoin_atoms(value: &serde_json::Value) -> Result<u128, String> {
         .ok_or_else(|| "amount_coins is too large".to_string())
 }
 
+fn redact_onecoin_offer_identity(offer: &mut serde_json::Value) {
+    let Some(object) = offer.as_object_mut() else {
+        return;
+    };
+    let owner = object
+        .remove("owner")
+        .and_then(|value| value.as_str().map(str::to_owned));
+    let offer_id = object
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown")
+        .to_owned();
+
+    if let Some(owner) = owner {
+        let material = format!("AWE/ONECOIN/OFFER/{owner}/{offer_id}");
+        let digest = hex::encode(blake3::hash(material.as_bytes()).as_bytes());
+        object.insert(
+            "owner_ref".into(),
+            serde_json::json!(format!("offer-{}", &digest[..24])),
+        );
+    }
+    object.insert("published".into(), serde_json::json!(true));
+}
+
 async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<()> {
     let UiState {
         node,
@@ -477,10 +501,13 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
             }
         },
         "/api/onebank/exchange/offers" if method == "GET" => {
-            let offers: Vec<serde_json::Value> = fs::read(&onecoin_offers_path)
+            let mut offers: Vec<serde_json::Value> = fs::read(&onecoin_offers_path)
                 .ok()
                 .and_then(|b| serde_json::from_slice(&b).ok())
                 .unwrap_or_default();
+            for offer in &mut offers {
+                redact_onecoin_offer_identity(offer);
+            }
             ("200 OK", "application/json; charset=utf-8", serde_json::to_string(&offers).unwrap_or_else(|_| "[]".into()))
         },
         "/api/onebank/exchange/offers" if method == "POST" => {
@@ -496,6 +523,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                 obj.insert("fiat_transfer".into(), serde_json::json!("OUTSIDE_AWENET"));
                 obj.insert("created_at".into(), serde_json::json!(now_unix()));
             }
+            redact_onecoin_offer_identity(&mut offer);
             let mut offers: Vec<serde_json::Value> = fs::read(&onecoin_offers_path)
                 .ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
             offers.push(offer.clone());
@@ -2603,6 +2631,23 @@ mod ui_origin_tests {
                 "expected allowed origin: {origin}"
             );
         }
+    }
+
+    #[test]
+    fn public_onecoin_offers_never_expose_owner_aweid() {
+        let owner = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let mut offer = serde_json::json!({
+            "id": "test-offer-1",
+            "owner": owner,
+            "side": "sell",
+            "amount": 2.5
+        });
+        redact_onecoin_offer_identity(&mut offer);
+        assert!(offer.get("owner").is_none());
+        assert_eq!(offer.get("published").and_then(|v| v.as_bool()), Some(true));
+        let public_json = offer.to_string();
+        assert!(!public_json.contains(owner));
+        assert!(offer.get("owner_ref").and_then(|v| v.as_str()).unwrap_or("").starts_with("offer-"));
     }
 
     #[test]
