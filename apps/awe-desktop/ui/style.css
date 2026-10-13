@@ -11,3 +11,39 @@
 .owner-summary code{font-size:10px;overflow-wrap:anywhere;color:#566176}
 .uid-value{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:10px;overflow-wrap:anywhere;text-align:right;max-width:70%}
 @media(max-width:1000px){.app{min-width:0}.sidebar{width:190px}.owner-profile{align-items:flex-start}.owner-profile>.primary{margin-left:60px}}
+
+
+/* Personal workspace customization */
+:root{--awe-accent:#24b99a;--awe-accent-ink:#073b33;--awe-surface:#fff;--awe-canvas:#f4f6fa;--awe-text:#151c2d;--awe-border:#e2e6ed;--awe-radius:14px;color-scheme:light}
+:root[data-accent="violet"]{--awe-accent:#8b5cf6;--awe-accent-ink:#fff}
+:root[data-accent="blue"]{--awe-accent:#3b82f6;--awe-accent-ink:#fff}
+:root[data-accent="amber"]{--awe-accent:#f59e0b;--awe-accent-ink:#422006}
+:root[data-accent="teal"]{--awe-accent:#24b99a;--awe-accent-ink:#073b33}
+:root[data-theme="dark"]{--awe-surface:#151b2a;--awe-canvas:#0d1220;--awe-text:#edf2fb;--awe-border:#293247;color-scheme:dark}
+:root[data-theme="dark"] body,:root[data-theme="dark"] .main{background:var(--awe-canvas);color:var(--awe-text)}
+:root[data-theme="dark"] .topbar,:root[data-theme="dark"] .card,:root[data-theme="dark"] .panel,:root[data-theme="dark"] .secondary,:root[data-theme="dark"] .browser-frame{background:var(--awe-surface);color:var(--awe-text);border-color:var(--awe-border)}
+:root[data-theme="dark"] .topbar{border-bottom-color:var(--awe-border)}
+:root[data-theme="dark"] .metric-label,:root[data-theme="dark"] .muted,:root[data-theme="dark"] .detail,:root[data-theme="dark"] .hero p,:root[data-theme="dark"] .crumb{color:#a5b0c5}
+:root[data-theme="dark"] .table td,:root[data-theme="dark"] .table th,:root[data-theme="dark"] .list-row{border-color:var(--awe-border)}
+:root[data-theme="dark"] input,:root[data-theme="dark"] select,:root[data-theme="dark"] textarea{background:#0d1322;color:var(--awe-text);border-color:#303b52}
+:root[data-theme="dark"] .network-map{background:radial-gradient(circle at center,#202b40,#111827)}
+:root[data-theme="dark"] .network-map:before{background-image:linear-gradient(#263147 1px,transparent 1px),linear-gradient(90deg,#263147 1px,transparent 1px)}
+:root[data-theme="dark"] .notice{background:#202a3d;color:#c5cee0}
+.primary{background:var(--awe-accent);color:var(--awe-accent-ink)}
+.nav.active{box-shadow:inset 3px 0 var(--awe-accent)}
+.status i,.connection i.online{background:var(--awe-accent)}
+:root[data-density="compact"] .card,:root[data-density="compact"] .panel{padding:12px}
+:root[data-density="compact"] .metric{font-size:19px;margin:5px 0 2px}
+:root[data-density="compact"] .nav{padding-top:8px;padding-bottom:8px}
+:root[data-compact-nav="true"] .sidebar{width:76px;padding-left:9px;padding-right:9px}
+:root[data-compact-nav="true"] .brand{padding-left:8px;padding-right:8px}
+:root[data-compact-nav="true"] .brand>div:not(.logo),:root[data-compact-nav="true"] .nav-label,:root[data-compact-nav="true"] .nav span,:root[data-compact-nav="true"] .connection span,:root[data-compact-nav="true"] .connection small{display:none}
+:root[data-compact-nav="true"] .nav{justify-content:center;padding-left:4px;padding-right:4px;font-size:17px}
+:root[data-reduce-motion="true"] *, :root[data-reduce-motion="true"] *::before, :root[data-reduce-motion="true"] *::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}
+.settings-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin:8px 0 18px}
+.setting-field{display:grid;gap:7px;color:#7d8799;font-size:11px;font-weight:650}
+.setting-field select{width:100%;border:1px solid var(--awe-border);border-radius:10px;padding:11px;background:var(--awe-surface);color:var(--awe-text);font:inherit}
+.setting-toggle{display:flex;align-items:center;gap:9px;min-height:39px;color:var(--awe-text);font-weight:500}
+.setting-toggle input{accent-color:var(--awe-accent);width:16px;height:16px}
+.settings-actions{margin:0 0 12px}
+@media(max-width:700px){.settings-grid{grid-template-columns:1fr}:root[data-compact-nav="true"] .sidebar{width:58px}}
