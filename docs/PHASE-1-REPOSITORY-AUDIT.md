@@ -146,13 +146,19 @@ The router includes static UI assets and these API families:
 
 No dedicated API family was found for first-run account bootstrap, user directory/profile, roles/admin, node provisioning, DC/DG/CG administration, network-wide search, domain/site lifecycle, tenant/cloud quotas or authenticated admin actions. These are backend Phase 2 deliverables, not merely UI pages.
 
-## 6. Validation already represented in repository (not independently rerun by this audit)
+## 6. Additional confirmed runtime gaps
+
+- The `/api/health` route returns `status: healthy`, `core: ready`, `network: listening`, `ui: ready`, and `api: ready` as static literals. It does not measure whether peer networking, storage, persistence, replication, or recovery are healthy. Health must be computed from real subsystem checks and return degraded/unhealthy states when dependencies fail.
+- The runtime router has no actual site/hosting lifecycle API (publish/update/delete site, name binding, remote site fetch, domain/TLS ingress, site health/logs). Core host/namespace structs are not connected to an end-user cloud/site API.
+- `ResourceManifest::from_bytes` and current upload flow expose content-addressed hashes based on plaintext bytes. For secret resources, use encrypted-object IDs or carefully scoped metadata so public IDs do not unnecessarily reveal equality/content fingerprints.
+
+## 7. Validation already represented in repository (not independently rerun by this audit)
 - CI defines `cargo fmt --all -- --check`, `cargo check --workspace --all-targets`, `cargo test --workspace --all-targets`, product smoke test, and `cargo clippy --workspace --all-targets -- -D warnings`.
 - `apps/awe-node/tests/product_smoke.rs` launches three independent local node processes and checks health/status, storage, and node connection paths. Its existence is good, but each advertised capability still needs direct assertions and negative/security tests.
 - `core/src` contains unit tests across identity, storage, network, ONECOIN, policy, topology, messaging, registry and other modules.
 - This documentation commit itself is not a build/test result. Do not infer CI status from YAML contents.
 
-## 7. Remaining Phase 1 checklist
+## 8. Remaining Phase 1 checklist
 
 - [x] Inventory all 101 tracked paths at the audit snapshot.
 - [x] Read top-level product docs, manifests, CI workflows, desktop entry points, UI route/render structure, major backend router/API families, identity/ONEBANK/ONECOIN/topology/storage/network module contracts.
@@ -165,7 +171,7 @@ No dedicated API family was found for first-run account bootstrap, user director
 - [ ] Resolve architecture naming/hierarchy and decide the authoritative model for founder/admin, user UID/AWEID, node, DC, DG and CG before Phase 2 API contracts are frozen.
 - [ ] Complete the findings register with severity, evidence, acceptance tests and fix order.
 
-## 8. Phase 2/3 implementation guardrails
+## 9. Phase 2/3 implementation guardrails
 
 1. Do not start by adding UI-only admin badges. Build authorization and persistent role checks into the backend first.
 2. Every privileged operation must be denied by default and require verified role/capability; test unauthorized, expired, replayed and wrong-owner requests.
@@ -176,6 +182,6 @@ No dedicated API family was found for first-run account bootstrap, user director
 7. Phase 3 UI must be a genuine native desktop UI without Tauri/WebView, Search-first, simple navigation, and fully connected to the Phase 2 API. No fake search results or decorative topology.
 8. Do not claim “100% ready” until all checkboxes have repeatable evidence on the exact source revision and clean-machine install tests pass.
 
-## 9. Authoritative status
+## 10. Authoritative status
 
 **Current classification: experimental foundation, not a complete AWENET cloud/network product.** The audit found real protocol and runtime code, but also major missing pieces in authorization/admin, search and site resolution, topology membership/control, resource orchestration, distributed persistence/finality, and native desktop integration. Phase 1 must close the remaining checklist above before declaring it complete.
