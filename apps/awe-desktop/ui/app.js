@@ -19,7 +19,7 @@ async function api(path,options={}){
   throw e;
  }finally{clearTimeout(timer)}
 }
-const call={pc:null,id:null,remote:null,last:0,seen:new Set(),pendingIce:[],active:false};
+const call={pc:null,id:null,remote:null,last:Math.floor(Date.now()/1000),seen:new Set(),pendingIce:[],active:false};
 async function sendCallSignal(type,data){
  if(!call.remote||!call.id)return;
  await api("/api/call/signal",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({recipient:call.remote,call_id:call.id,signal_type:type,data:JSON.stringify(data)})});
@@ -67,7 +67,7 @@ async function stopCall(){
 }
 async function pollCallSignals(){
  try{
-  const r=await api("/api/call/signals?since="+encodeURIComponent(call.last));
+  const r=await api("/api/call/signals?since="+encodeURIComponent(Math.max(0,call.last-1)));
   for(const s of (r.signals||[])){
    if(call.seen.has(s.id))continue;call.seen.add(s.id);call.last=Math.max(call.last,Number(s.timestamp)||0);
    let data={};try{data=JSON.parse(s.data||"{}")}catch(_){}
