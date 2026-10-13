@@ -70,7 +70,22 @@ jobs:
       - name: Build native app
         working-directory: apps/awe-app
         run: npx tauri build --ci
-      - name: Upload desktop packages
+      # Linux AppImage bundling leaves hundreds of temporary files in bundle/**.
+      # Upload only the actual installable packages so build intermediates are not published.
+      - name: Upload Linux desktop packages
+        if: startsWith(matrix.runner, 'ubuntu')
+        uses: actions/upload-artifact@v4
+        with:
+          name: AWENET-${{ matrix.target }}
+          path: |
+            apps/awe-app/src-tauri/target/release/bundle/deb/*.deb
+            apps/awe-app/src-tauri/target/release/bundle/rpm/*.rpm
+            apps/awe-app/src-tauri/target/release/bundle/appimage/*.AppImage
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload Windows and macOS packages
+        if: ${{ !startsWith(matrix.runner, 'ubuntu') }}
         uses: actions/upload-artifact@v4
         with:
           name: AWENET-${{ matrix.target }}
