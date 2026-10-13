@@ -206,12 +206,15 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> Result<String>
             anyhow::bail!("client closed connection before HTTP headers");
         }
         data.extend_from_slice(&chunk[..n]);
-        if data.len() > HEADER_LIMIT {
-            anyhow::bail!("HTTP headers too large");
-        }
         if let Some(pos) = data.windows(4).position(|w| w == b"\r\n\r\n") {
+            if pos + 4 > HEADER_LIMIT {
+                anyhow::bail!("HTTP headers too large");
+            }
             header_end = pos + 4;
             break;
+        }
+        if data.len() > HEADER_LIMIT {
+            anyhow::bail!("HTTP headers too large");
         }
     }
 
