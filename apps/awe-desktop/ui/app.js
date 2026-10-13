@@ -125,6 +125,9 @@ async function refresh(){
   setConnection(false);
  }
 }
+function readPreferences(){const defaults={theme:"light",accent:"teal",density:"comfortable",compactNav:false,reduceMotion:false};try{return {...defaults,...JSON.parse(localStorage.getItem("awenet.ui.preferences")||"{}")}}catch(_){return defaults}}
+function savePreferences(p){try{localStorage.setItem("awenet.ui.preferences",JSON.stringify(p))}catch(_){}}
+function applyPreferences(){const p=readPreferences();document.documentElement.dataset.theme=p.theme;document.documentElement.dataset.accent=p.accent;document.documentElement.dataset.density=p.density;document.documentElement.dataset.reduceMotion=p.reduceMotion?"true":"false";document.documentElement.dataset.compactNav=p.compactNav?"true":"false"}
 function getOwnerDisplayName(){try{return localStorage.getItem("awenet.owner.displayName")||"Ararat Avetisyan"}catch(_){return "Ararat Avetisyan"}}
 async function copyText(value){try{if(navigator.clipboard&&window.isSecureContext){await navigator.clipboard.writeText(value)}else{const el=document.createElement("textarea");el.value=value;el.style.position="fixed";el.style.opacity="0";document.body.appendChild(el);el.select();const ok=document.execCommand("copy");el.remove();if(!ok)throw Error("clipboard unavailable")}toast("Copied to clipboard")}catch(_){toast("Copy failed; select and copy the value manually")}}
 function setConnection(on){document.getElementById("sideDot").classList.toggle("online",on);document.getElementById("sideState").textContent=on?"Node online":"Disconnected";document.getElementById("sideTransport").textContent=on?live.transport:"API unavailable";document.getElementById("apiBadge").textContent="API · "+(on?live.ui:"offline")}
@@ -189,6 +192,7 @@ function render(k){
  } else if(k==="settings"){
   body=panel("Owner account",'<div class="owner-summary"><div class="owner-avatar">A</div><div><b>'+esc(getOwnerDisplayName())+'</b><div class="muted">Local device owner</div><code>'+esc(live.node?.awe_id||live.awe_id||live.node_id)+'</code></div><button class="secondary" id="settingsCopyAweId">Copy AWEID</button></div><div class="notice">The AWEID is derived from the public key in your local identity vault. Keep the vault password and recovery files private.</div>')+
   panel("Automatic runtime",'<div class="list"><div class="list-row"><span>Node API</span><b>'+esc(apiBase())+'</b></div><div class="list-row"><span>Connection</span><b>Automatic</b></div><div class="list-row"><span>Auto refresh</span><b>5 seconds</b></div><div class="list-row"><span>Storage</span><b>Node-managed</b></div></div>')+
+  panel("Personalize your workspace",'<div class="settings-grid"><label class="setting-field">Appearance<select id="prefTheme"><option value="light">Light</option><option value="dark">Dark</option><option value="system">System default</option></select></label><label class="setting-field">Accent color<select id="prefAccent"><option value="teal">AWE Teal</option><option value="violet">Electric Violet</option><option value="blue">Signal Blue</option><option value="amber">Warm Amber</option></select></label><label class="setting-field">Layout density<select id="prefDensity"><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></label><label class="setting-field">Sidebar<label class="setting-toggle"><input id="prefCompactNav" type="checkbox"> Compact navigation</label></label><label class="setting-field">Motion<label class="setting-toggle"><input id="prefReduceMotion" type="checkbox"> Reduce animations</label></label></div><div class="actions settings-actions"><button class="primary" id="savePreferences">Apply workspace</button><button class="secondary" id="resetPreferences">Reset defaults</button></div><div class="muted">Preferences are saved locally on this device. They do not change your network identity or permissions.</div>')+
   panel("Identity & security",'<div class="notice">This owner profile controls the local app and node. Network-wide governance requires explicit protocol-level authorization; the UI does not silently grant administrator rights over other users.</div>');
  }
  view.innerHTML='<div class="content"><div class="hero"><div><h1>'+p[0]+'</h1><p>'+p[1]+'</p></div><div class="actions"><button class="secondary" id="refreshBtn">Refresh</button></div></div>'+body+'</div>';
@@ -202,6 +206,14 @@ function bind(k){
  const saveOwner=document.getElementById("saveOwnerProfile");if(saveOwner)saveOwner.onclick=()=>{const input=document.getElementById("ownerDisplayName"),name=(input?.value||"").trim();if(!name||name.length>64){toast("Enter a display name up to 64 characters");return}try{localStorage.setItem("awenet.owner.displayName",name);toast("Local owner profile saved");render("node")}catch(_){toast("Could not save the local profile")}};
  const copyId=document.getElementById("copyAweId")||document.getElementById("settingsCopyAweId");if(copyId)copyId.onclick=()=>copyText(String(live.node?.awe_id||live.awe_id||live.node_id||""));
  const copyAddress=document.getElementById("copyNodeAddress");if(copyAddress)copyAddress.onclick=()=>copyText(String(live.node_address||""));
+ const prefIds=["prefTheme","prefAccent","prefDensity","prefCompactNav","prefReduceMotion"];
+ if(k==="settings"){
+  const prefs=readPreferences();
+  const theme=document.getElementById("prefTheme"),accent=document.getElementById("prefAccent"),density=document.getElementById("prefDensity"),nav=document.getElementById("prefCompactNav"),motion=document.getElementById("prefReduceMotion");
+  if(theme)theme.value=prefs.theme;if(accent)accent.value=prefs.accent;if(density)density.value=prefs.density;if(nav)nav.checked=!!prefs.compactNav;if(motion)motion.checked=!!prefs.reduceMotion;
+  const save=document.getElementById("savePreferences");if(save)save.onclick=()=>{savePreferences({theme:theme.value,accent:accent.value,density:density.value,compactNav:nav.checked,reduceMotion:motion.checked});applyPreferences();toast("Workspace preferences applied")};
+  const reset=document.getElementById("resetPreferences");if(reset)reset.onclick=()=>{try{localStorage.removeItem("awenet.ui.preferences")}catch(_){}applyPreferences();render("settings");toast("Workspace defaults restored")};
+ }
  const r=document.getElementById("refreshBtn");if(r)r.onclick=async()=>{await refresh();render(k)};
  const g=document.getElementById("goNetwork");if(g)g.onclick=()=>render("network");
  const pr=document.getElementById("peerRefresh");if(pr)pr.onclick=async()=>{await refresh();render("network")};
@@ -254,4 +266,5 @@ async function loadStore(){
 }
 function toast(t){const e=document.createElement("div");e.textContent=t;e.style="position:fixed;right:22px;bottom:22px;background:#111829;color:#fff;padding:11px 15px;border-radius:9px;font-size:11px;z-index:10";document.body.appendChild(e);setTimeout(()=>e.remove(),2200)}
 navs.forEach(n=>n.addEventListener("click",e=>{e.preventDefault();render(n.dataset.view)}));
+applyPreferences();
 (async()=>{render("dashboard");await refresh();render("dashboard");setInterval(async()=>{await refresh();if(title.textContent===pages.dashboard[0])render("dashboard")},5000);setInterval(pollCallSignals,1000)})();
