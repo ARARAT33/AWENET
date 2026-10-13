@@ -384,7 +384,14 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
             ("200 OK", "application/json; charset=utf-8", serde_json::json!({
                 "awe_id": id.to_hex(),
                 "balance_atoms": balance_atoms,
-                "balance_coins": format!("{}.{:09}", balance_atoms / ATOMS_PER_COIN, balance_atoms % ATOMS_PER_COIN).trim_end_matches('0').trim_end_matches('.').to_string(),
+                "balance_coins": format!(
+                    "{}.{:09}",
+                    balance_atoms / ATOMS_PER_COIN,
+                    balance_atoms % ATOMS_PER_COIN
+                )
+                .trim_end_matches('0')
+                .trim_end_matches('.')
+                .to_string(),
                 "tier": tier,
                 "fee_bps": 100,
                 "resource_score": contribution_snapshot.score(),
