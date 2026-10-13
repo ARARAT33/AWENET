@@ -63,7 +63,7 @@ Core product areas: user identity/UID/AWEID; node lifecycle; CG/DG/DC membership
 ### Running product path
 - `apps/awe-node/src/main.rs` is a large (~148 KB) monolithic runtime and HTTP API router.
 - The API serves the shared web UI from `include_str!` assets and defaults to local UI address `127.0.0.1:41800`.
-- Tauri config uses `frontendDist: ../../awe-desktop/ui`; `apps/awe-app/src-tauri/src/lib.rs` spawns a bundled `awe-node` process but does not retain/manage its child handle or prove graceful shutdown/restart.
+- Tauri config uses `frontendDist: ../../awe-desktop/ui`; `apps/awe-app/src-tauri/src/lib.rs` spawns a bundled `awe-node` process but does not retain/manage its child handle or prove graceful shutdown/restart. It also does not set `AWE_NO_NATIVE_UI=1`, while `run_product()` launches `native_ui::run()` unless that environment variable is present. This creates a likely second eframe window alongside the Tauri window and violates the existing single-window desktop requirement.
 - A separate eframe/egui native UI exists in `apps/awe-node/src/native_ui.rs`, but the current Tauri app launches the HTML/CSS/JS WebView UI. It is not currently a clean native desktop application as requested for Phase 3.
 - The HTML UI is one SPA-style page that swaps DOM content. It is not a full network-wide Google-like search engine yet.
 
@@ -156,7 +156,7 @@ No dedicated API family was found for first-run account bootstrap, user director
 - CI defines `cargo fmt --all -- --check`, `cargo check --workspace --all-targets`, `cargo test --workspace --all-targets`, product smoke test, and `cargo clippy --workspace --all-targets -- -D warnings`.
 - `apps/awe-node/tests/product_smoke.rs` launches three independent local node processes and checks health/status, storage, and node connection paths. Its existence is good, but each advertised capability still needs direct assertions and negative/security tests.
 - `core/src` contains unit tests across identity, storage, network, ONECOIN, policy, topology, messaging, registry and other modules.
-- This documentation commit itself is not a build/test result. Do not infer CI status from YAML contents.
+- Actual existing evidence for code-bearing commit `1cb11e5b101f0e7a5af609c7db2b9494ec7374eb`: GitHub check-runs report Ubuntu Rust validation, Windows Rust validation, architecture integrity checks, rustfmt, security audit, five desktop bundle targets and Android APK/AAB as successful. See [checks for that commit](https://github.com/ARARAT33/AWENET/commit/1cb11e5b101f0e7a5af609c7db2b9494ec7374eb/checks). These runs validate that revision, not every later docs-only commit. The architecture integrity grep still passed despite the simulated WASM execution, demonstrating that marker checks do not replace source review. Do not infer readiness from a green CI run.
 
 ## 8. Remaining Phase 1 checklist
 
@@ -183,5 +183,7 @@ No dedicated API family was found for first-run account bootstrap, user director
 8. Do not claim “100% ready” until all checkboxes have repeatable evidence on the exact source revision and clean-machine install tests pass.
 
 ## 10. Authoritative status
+
+Companion UI-to-API contract matrix: [PHASE-1-UI-API-MATRIX.md](./PHASE-1-UI-API-MATRIX.md).
 
 **Current classification: experimental foundation, not a complete AWENET cloud/network product.** The audit found real protocol and runtime code, but also major missing pieces in authorization/admin, search and site resolution, topology membership/control, resource orchestration, distributed persistence/finality, and native desktop integration. Phase 1 must close the remaining checklist above before declaring it complete.
