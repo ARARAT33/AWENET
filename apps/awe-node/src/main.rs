@@ -1741,11 +1741,13 @@ async fn autonomous_repair_cycle(
     }
 }
 
-fn load_or_create_product_identity(data_dir: &std::path::Path) -> Result<Identity> {
+fn load_or_create_product_identity_with_password(
+    data_dir: &std::path::Path,
+    password: Option<String>,
+) -> Result<Identity> {
     let secret_path = data_dir.join("node.awesecret");
     let vault_path = data_dir.join("node.awevault");
     let username_path = data_dir.join("node.aweusername");
-    let password = env::var("AWE_NODE_PASSWORD").ok();
 
     // Opt-in encrypted-at-rest mode. Keep the username as non-secret metadata;
     // the signing key itself is stored only in the authenticated encrypted vault.
@@ -1813,7 +1815,8 @@ async fn run_product() -> Result<()> {
         PathBuf::from(".awep2p")
     };
     fs::create_dir_all(&data_dir)?;
-    let identity = load_or_create_product_identity(&data_dir)?;
+    let identity =
+        load_or_create_product_identity_with_password(&data_dir, env::var("AWE_NODE_PASSWORD").ok())?;
     let node_id = format_uid(identity.public.awe_id.as_bytes());
     let listen: SocketAddr = env::var("AWE_LISTEN_ADDR")
         .unwrap_or_else(|_| "0.0.0.0:41000".into())
@@ -2837,3 +2840,72 @@ mod ui_origin_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod identity_storage_tests {
+    use super::*;
+    use std::path::Path;
+
+    fn temp_data_dir(label: &str) -> std::path::PathBuf {
+        let path = env::temp_dir().join(format!(
+            "awenet-identity-{label}-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&path);
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn product_identity_can_be_created_and_reopened_encrypted() {
+        let dir = temp_data_dir("vault-create");
+        let first =
+            load_or_create_product_identity_with_password(&dir, Some("correct horse".into()))
+                .unwrap();
+        assert!(dir.join("node.awevault").exists());
+        assert!(dir.join("node.aweusername").exists());
+        assert!(!dir.join("node.awesecret").exists());
+
+        let reopened =
+            load_or_create_product_identity_with_password(&dir, Some("correct horse".into()))
+                .unwrap();
+        assert_eq!(first.public.awe_id, reopened.public.awe_id);
+        assert!(load_or_create_product_identity_with_password(&dir, Some("wrong".into())).is_err());
+        assert!(load_or_create_product_identity_with_password(&dir, None).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn product_identity_migrates_plaintext_only_after_vault_is_written() {
+        let dir = temp_data_dir("vault-migrate");
+        let identity = Identity::generate(Username::new("legacy-node").unwrap());
+        fs::write(
+            dir.join("node.awesecret"),
+            AweSecret::generate(&identity).to_bytes().unwrap(),
+        )
+        .unwrap();
+
+        let migrated =
+            load_or_create_product_identity_with_password(&dir, Some("migration password".into()))
+                .unwrap();
+        assert_eq!(identity.public.awe_id, migrated.public.awe_id);
+        assert!(dir.join("node.awevault").exists());
+        assert!(!dir.join("node.awesecret").exists());
+        assert_eq!(
+            fs::read_to_string(dir.join("node.aweusername")).unwrap(),
+            "legacy-node"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn product_identity_rejects_corrupt_vault_without_falling_back_to_plaintext() {
+        let dir = temp_data_dir("vault-corrupt");
+        fs::write(dir.join("node.awevault"), b"not a vault").unwrap();
+        fs::write(dir.join("node.awesecret"), b"legacy fallback must not happen").unwrap();
+        assert!(load_or_create_product_identity_with_password(&dir, Some("password".into())).is_err());
+        assert!(Path::new(&dir.join("node.awesecret")).exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
+
