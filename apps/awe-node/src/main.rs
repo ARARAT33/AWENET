@@ -453,7 +453,18 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         },
         "/api/onebank/wallet/send" if method == "POST" => {
             let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
-            let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+            let parsed: serde_json::Value = match serde_json::from_str(body) {
+                Ok(value) if value.is_object() => value,
+                _ => {
+                    return write_http_response(
+                        stream,
+                        "400 Bad Request",
+                        "application/json; charset=utf-8",
+                        &serde_json::json!({"status":"rejected","error":"request body must be a valid JSON object"}).to_string(),
+                    )
+                    .await;
+                }
+            };
             let recipient_hex = parsed.get("recipient").and_then(|v| v.as_str()).unwrap_or("");
             let amount_value = parsed.get("amount_coins").cloned().unwrap_or(serde_json::Value::Null);
             let memo = parsed.get("memo").and_then(|v| v.as_str()).map(str::to_owned);
@@ -470,19 +481,27 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                     return Err("cannot transfer ONECOIN to the same wallet".into());
                 }
                 let mut ledger = onecoin_ledger.lock().map_err(|_| "ONECOIN ledger lock failed".to_string())?;
+                // Apply against a candidate copy. A rejected transfer or failed disk write
+                // must not leave partially mutated in-memory wallet state.
+                let mut candidate = ledger.clone();
                 let sender = node.identity.public.awe_id.clone();
-                if ledger.members.is_empty() {
-                    ledger.initialize_genesis(std::slice::from_ref(&sender))?;
+                if candidate.members.is_empty() {
+                    candidate.initialize_genesis(std::slice::from_ref(&sender))?;
                 }
-                ledger.ensure_member(&recipient);
-                if ledger.balance_atoms(&sender) < amount_atoms {
+                if candidate.balance_atoms(&sender) < amount_atoms {
                     return Err("insufficient ONECOIN balance".into());
                 }
-                let nonce = ledger.nonces.get(&sender.to_hex()).copied().unwrap_or(0);
+                let nonce = candidate.nonces.get(&sender.to_hex()).copied().unwrap_or(0);
                 let tx = OnecoinTransaction::new(&node.identity, nonce, &recipient, amount_atoms, memo);
-                let (tx_id, fee_atoms) = ledger.apply_transfer_with_fee(&tx, &node.identity.public.public_key, 100)?;
-                fs::write(&onecoin_path, serde_json::to_vec_pretty(&*ledger).map_err(|_| "ONECOIN ledger serialization failed".to_string())?)
-                    .map_err(|e| e.to_string())?;
+                let (tx_id, fee_atoms) = candidate.apply_transfer_with_fee(&tx, &node.identity.public.public_key, 100)?;
+                let serialized = serde_json::to_vec_pretty(&candidate)
+                    .map_err(|_| "ONECOIN ledger serialization failed".to_string())?;
+                let temporary_path = onecoin_path.with_extension("ledger.tmp");
+                fs::write(&temporary_path, serialized)
+                    .map_err(|e| format!("failed to write candidate ONECOIN ledger: {e}"))?;
+                fs::rename(&temporary_path, &onecoin_path)
+                    .map_err(|e| format!("failed to commit candidate ONECOIN ledger: {e}"))?;
+                *ledger = candidate;
                 Ok((hex::encode(tx_id), fee_atoms, tx))
             })();
             match result {
