@@ -273,6 +273,43 @@ mod tests {
     }
 
     #[test]
+    fn preview_ledger_validates_without_mutating_finalized_state() {
+        let a = id("preview_sender");
+        let b = id("preview_recipient");
+        let mut state = OnecoinFinalizedState::default();
+        state
+            .ledger
+            .initialize_genesis(&[a.public.awe_id.clone(), b.public.awe_id.clone()])
+            .unwrap();
+        let initial_balance = state.ledger.balance_atoms(&a.public.awe_id);
+
+        let valid_tx = OnecoinTransaction::new(
+            &a,
+            0,
+            &b.public.awe_id,
+            INITIAL_GENESIS_ALLOCATION / 2,
+            None,
+        );
+        let valid_block = OnecoinBlock::new(&a, 1, [0; 32], vec![valid_tx], 10).unwrap();
+        let preview = state.preview_ledger(&valid_block).unwrap();
+        assert!(preview.balance_atoms(&a.public.awe_id) < initial_balance);
+        assert_eq!(state.ledger.balance_atoms(&a.public.awe_id), initial_balance);
+        assert_eq!(state.height, 0);
+
+        let invalid_tx = OnecoinTransaction::new(
+            &a,
+            0,
+            &b.public.awe_id,
+            INITIAL_GENESIS_ALLOCATION + 1,
+            None,
+        );
+        let invalid_block = OnecoinBlock::new(&a, 1, [0; 32], vec![invalid_tx], 11).unwrap();
+        assert!(state.preview_ledger(&invalid_block).is_err());
+        assert_eq!(state.ledger.balance_atoms(&a.public.awe_id), initial_balance);
+        assert_eq!(state.height, 0);
+    }
+
+    #[test]
     fn finalized_block_requires_two_thirds_and_applies_atomically() {
         let a = id("a");
         let b = id("b");
