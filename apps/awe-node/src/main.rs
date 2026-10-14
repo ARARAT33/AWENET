@@ -216,7 +216,11 @@ fn parse_content_length(headers: &str) -> Result<usize, &'static str> {
             if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
                 return Err("invalid Content-Length header");
             }
-            content_length = Some(value.parse::<usize>().map_err(|_| "invalid Content-Length header")?);
+            content_length = Some(
+                value
+                    .parse::<usize>()
+                    .map_err(|_| "invalid Content-Length header")?,
+            );
         }
     }
     Ok(content_length.unwrap_or(0))
@@ -2655,10 +2659,14 @@ mod ui_origin_tests {
 
     #[test]
     fn rejects_ambiguous_http_framing_headers() {
-        assert!(parse_content_length("POST / HTTP/1.1\r\nContent-Length: 1\r\n\r\n").is_ok());
-        assert!(parse_content_length("POST / HTTP/1.1\r\nContent-Length: nope\r\n\r\n").is_err());
-        assert!(parse_content_length("POST / HTTP/1.1\r\nContent-Length: 1\r\nContent-Length: 1\r\n\r\n").is_err());
-        assert!(parse_content_length("POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n").is_err());
+        let valid = "POST / HTTP/1.1\r\nContent-Length: 1\r\n\r\n";
+        let malformed = "POST / HTTP/1.1\r\nContent-Length: nope\r\n\r\n";
+        let duplicate = "POST / HTTP/1.1\r\nContent-Length: 1\r\nContent-Length: 1\r\n\r\n";
+        let chunked = "POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n";
+        assert!(parse_content_length(valid).is_ok());
+        assert!(parse_content_length(malformed).is_err());
+        assert!(parse_content_length(duplicate).is_err());
+        assert!(parse_content_length(chunked).is_err());
     }
 
     #[test]
