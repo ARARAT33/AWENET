@@ -13,6 +13,7 @@ The following targeted fixes were committed after the audit snapshot; these clos
 - `apps/awe-node/src/main.rs`: ONECOIN API decimal parsing now accepts the ledger's 18 atomic decimal places and has boundary tests for one atom, full precision, excessive precision and scientific notation. UI input/display and consensus-finalized wallet integration still require separate work.
 - `apps/awe-desktop/ui/onecoin.js`: wallet send now validates and submits the exact decimal string (up to 18 fractional digits) rather than converting the amount to JavaScript `Number`; the input allows protocol precision. Exchange-offer display/price handling still needs its own precision contract.
 - `apps/awe-node/src/main.rs`: storage upload no longer silently ignores manifest-directory/manifest-file persistence errors; those errors are included in the partial result. The response's shard count now comes from `StoragePolicy::total_shards()` instead of a hard-coded `1000`.
+- `apps/awe-node/src/main.rs`: the hand-rolled HTTP request parser now rejects malformed/duplicate `Content-Length` headers and unsupported `Transfer-Encoding` instead of treating invalid lengths as zero. Focused framing tests were added; full parser fuzzing/slow-client coverage remains open.
 - CI was triggered for commit `0ba66d9b74c24b760c828eee84ae53e4615e5a33`; Rust validation and rustfmt were queued at the time this note was written. Do not mark these fixes validated until those jobs complete successfully.
 
 ## 1. Product target and naming decisions
