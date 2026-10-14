@@ -308,7 +308,10 @@ mod tests {
         );
         let invalid_block = OnecoinBlock::new(&a, 1, [0; 32], vec![invalid_tx], 11).unwrap();
         assert!(state.preview_ledger(&invalid_block).is_err());
-        assert_eq!(state.ledger.balance_atoms(&a.public.awe_id), initial_balance);
+        assert_eq!(
+            state.ledger.balance_atoms(&a.public.awe_id),
+            initial_balance
+        );
         assert_eq!(state.height, 0);
     }
 
