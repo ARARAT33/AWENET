@@ -74,8 +74,9 @@ impl ResourceContribution {
             .saturating_add((self.cpu_cores as u128).saturating_mul(1024))
             .saturating_add((self.gpu_units as u128).saturating_mul(16_384))
             .saturating_add(self.bandwidth_bytes as u128 / (1024 * 1024))
-            .saturating_add((self.node_count as u128).saturating_mul(10_000))
-            .saturating_add((self.server_count as u128).saturating_mul(20_000))
+            // Node/server counts are unverified claims, not resource proof.
+            // They must not inflate contribution rewards.
+            
     }
 }
 
@@ -210,18 +211,8 @@ impl TierBenefits {
 }
 
 pub fn classify_tier(r: &ResourceContribution) -> UserTier {
-    if r.server_count >= 1_000_000 {
-        return UserTier::CentreGroup;
-    }
-    if r.server_count >= 100_000 {
-        return UserTier::DataGroup;
-    }
-    if r.server_count >= 100 {
-        return UserTier::Pro;
-    }
-    if r.node_count >= 2 || r.server_count >= 2 {
-        return UserTier::NetUltra;
-    }
+    // Management tiers (PRO / DATA GROUP / CENTRE GROUP) require a
+    // separate authenticated grant. Caller-supplied counts cannot grant roles.
     if r.storage_bytes >= 1_000_000_000_000
         && r.cpu_cores >= 8
         && r.ram_bytes >= 16 * 1024 * 1024 * 1024
@@ -242,8 +233,6 @@ pub fn classify_tier(r: &ResourceContribution) -> UserTier {
         || r.gpu_units > 0
         || r.bandwidth_bytes > 0
         || r.online_hours > 0
-        || r.node_count > 0
-        || r.server_count > 0
         || r.uptime_bps > 0
         || r.utilization_bps > 0
     {
@@ -501,6 +490,17 @@ mod tests {
         r.ram_bytes = 8 * 1024 * 1024 * 1024;
         r.bandwidth_bytes = 1_000_000_000_000;
         assert_eq!(classify_tier(&r), UserTier::NetPlus);
+    }
+
+    #[test]
+    fn unverified_node_and_server_claims_cannot_grant_roles_or_rewards() {
+        let claims = ResourceContribution {
+            node_count: u32::MAX,
+            server_count: u32::MAX,
+            ..Default::default()
+        };
+        assert_eq!(classify_tier(&claims), UserTier::Free);
+        assert_eq!(claims.score(), 0);
     }
 
     #[test]
