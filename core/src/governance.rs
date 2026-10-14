@@ -104,7 +104,9 @@ impl GovernanceEngine {
         let in_scope = target == cap.scope
             || target
                 .strip_prefix(&cap.scope)
-                .map(|suffix| suffix.starts_with('/') || suffix.starts_with('.') || suffix.starts_with(':'))
+                .map(|suffix| {
+                    suffix.starts_with('/') || suffix.starts_with('.') || suffix.starts_with(':')
+                })
                 .unwrap_or(false);
         if !in_scope {
             return Err("action out of capability scope");
@@ -151,12 +153,38 @@ mod tests {
             expires_at: 500,
             signature: Vec::new(),
         };
-        cap.signature = issuer.sign(&GovernanceEngine::capability_signing_bytes(&cap).unwrap()).to_vec();
-        assert!(GovernanceEngine::authorize_action(&cap, &holder.public.public_key, "network/dc-1/node-2", 100).is_ok());
-        assert!(GovernanceEngine::authorize_action(&cap, &issuer.public.public_key, "network/dc-1/node-2", 100).is_err());
-        assert!(GovernanceEngine::authorize_action(&cap, &holder.public.public_key, "network/dc-10", 100).is_err());
+        cap.signature = issuer
+            .sign(&GovernanceEngine::capability_signing_bytes(&cap).unwrap())
+            .to_vec();
+        assert!(GovernanceEngine::authorize_action(
+            &cap,
+            &holder.public.public_key,
+            "network/dc-1/node-2",
+            100
+        )
+        .is_ok());
+        assert!(GovernanceEngine::authorize_action(
+            &cap,
+            &issuer.public.public_key,
+            "network/dc-1/node-2",
+            100
+        )
+        .is_err());
+        assert!(GovernanceEngine::authorize_action(
+            &cap,
+            &holder.public.public_key,
+            "network/dc-10",
+            100
+        )
+        .is_err());
         cap.signature[0] ^= 1;
-        assert!(GovernanceEngine::authorize_action(&cap, &holder.public.public_key, "network/dc-1", 100).is_err());
+        assert!(GovernanceEngine::authorize_action(
+            &cap,
+            &holder.public.public_key,
+            "network/dc-1",
+            100
+        )
+        .is_err());
     }
 
     #[test]
