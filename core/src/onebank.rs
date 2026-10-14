@@ -66,17 +66,15 @@ impl ResourceContribution {
         Ok(())
     }
 
-    /// Stable integer score. The weights are deliberately explicit and can be
-    /// changed by governance through a future policy version.
+    /// Stable integer score based only on resource quantities.
+    /// Unverified node/server counts are deliberately excluded so claims cannot
+    /// inflate contribution rewards.
     pub fn score(&self) -> u128 {
         (self.storage_bytes as u128 / (1024 * 1024))
             .saturating_add((self.ram_bytes as u128 / (1024 * 1024)).saturating_mul(4))
             .saturating_add((self.cpu_cores as u128).saturating_mul(1024))
             .saturating_add((self.gpu_units as u128).saturating_mul(16_384))
             .saturating_add(self.bandwidth_bytes as u128 / (1024 * 1024))
-            // Node/server counts are unverified claims, not resource proof.
-            // They must not inflate contribution rewards.
-            
     }
 }
 
