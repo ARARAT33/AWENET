@@ -215,6 +215,6 @@ Companion UI-to-API contract matrix: [PHASE-1-UI-API-MATRIX.md](./PHASE-1-UI-API
 ### Consensus hardening recorded on 2026-10-14
 
 - Candidate blocks are now executed against a cloned ledger before a validator stores or votes for a proposal. Invalid transactions therefore fail before an approval vote is emitted.
-- The runtime now refuses to vote for two different block hashes at the same height within one process; regression tests cover conflicting proposals and oversized consensus messages.
-- This is not full consensus completion: anti-equivocation votes are currently in-memory and are not persisted across restart, and the wallet send endpoint still uses the local ledger path rather than treating finalized consensus state as the authoritative wallet state. These remain Phase 2 blockers until durable validator locking, wallet integration, and independent multi-node tests are complete.
+- The runtime now persists validator vote locks before emitting approval votes and refuses to vote for a different block hash at the same height after a runtime restart. Regression tests cover restart-persistent conflicting-proposal rejection and oversized consensus messages.
+- This is not full consensus completion: the wallet send endpoint still uses the local ledger path rather than treating finalized consensus state as the authoritative wallet state, and validator-set changes/recovery need explicit protocol rules. These remain Phase 2 blockers until wallet integration and independent multi-node tests are complete.
 
