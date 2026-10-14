@@ -2654,9 +2654,18 @@ mod ui_origin_tests {
 
     #[test]
     fn onecoin_amount_parser_matches_18_decimal_protocol_precision() {
-        assert_eq!(parse_onecoin_atoms(&serde_json::json!("1")).unwrap(), ATOMS_PER_COIN);
-        assert_eq!(parse_onecoin_atoms(&serde_json::json!("0.000000000000000001")).unwrap(), 1);
-        assert_eq!(parse_onecoin_atoms(&serde_json::json!("1.123456789012345678")).unwrap(), 1_123_456_789_012_345_678);
+        assert_eq!(
+            parse_onecoin_atoms(&serde_json::json!("1")).unwrap(),
+            ATOMS_PER_COIN
+        );
+        assert_eq!(
+            parse_onecoin_atoms(&serde_json::json!("0.000000000000000001")).unwrap(),
+            1
+        );
+        assert_eq!(
+            parse_onecoin_atoms(&serde_json::json!("1.123456789012345678")).unwrap(),
+            1_123_456_789_012_345_678
+        );
         assert!(parse_onecoin_atoms(&serde_json::json!("0.0000000000000000001")).is_err());
         assert!(parse_onecoin_atoms(&serde_json::json!("1e-3")).is_err());
     }
