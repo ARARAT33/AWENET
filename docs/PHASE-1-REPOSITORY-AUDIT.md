@@ -211,3 +211,10 @@ No dedicated API family was found for first-run account bootstrap, user director
 Companion UI-to-API contract matrix: [PHASE-1-UI-API-MATRIX.md](./PHASE-1-UI-API-MATRIX.md).
 
 **Current classification: experimental foundation, not a complete AWENET cloud/network product.** The audit found real protocol and runtime code, but also major missing pieces in authorization/admin, search and site resolution, topology membership/control, resource orchestration, distributed persistence/finality, and native desktop integration. Phase 1 must close the remaining checklist above before declaring it complete.
+
+### Consensus hardening recorded on 2026-10-14
+
+- Candidate blocks are now executed against a cloned ledger before a validator stores or votes for a proposal. Invalid transactions therefore fail before an approval vote is emitted.
+- The runtime now refuses to vote for two different block hashes at the same height within one process; regression tests cover conflicting proposals and oversized consensus messages.
+- This is not full consensus completion: anti-equivocation votes are currently in-memory and are not persisted across restart, and the wallet send endpoint still uses the local ledger path rather than treating finalized consensus state as the authoritative wallet state. These remain Phase 2 blockers until durable validator locking, wallet integration, and independent multi-node tests are complete.
+
