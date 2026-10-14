@@ -521,7 +521,16 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                         }
                     } else {
                         false
-                    }; ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"accepted","tx_id":tx_id,"fee_atoms":fee_atoms,"fee_bps":100,"recipient_delivered":delivered,"recipient_pending":!delivered}).to_string()) },
+                    }; ("200 OK", "application/json; charset=utf-8", serde_json::json!({
+                        "status":"accepted",
+                        "tx_id":tx_id,
+                        "fee_atoms":fee_atoms,
+                        "fee_bps":100,
+                        "recipient_delivered":delivered,
+                        "recipient_pending":!delivered,
+                        "consensus_finalized":false,
+                        "finality":"local_only_pending_consensus"
+                    }).to_string()) },
                 Err(error) => ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"rejected","error":error}).to_string())
             }
         },
