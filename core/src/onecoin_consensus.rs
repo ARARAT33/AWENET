@@ -293,7 +293,10 @@ mod tests {
         let valid_block = OnecoinBlock::new(&a, 1, [0; 32], vec![valid_tx], 10).unwrap();
         let preview = state.preview_ledger(&valid_block).unwrap();
         assert!(preview.balance_atoms(&a.public.awe_id) < initial_balance);
-        assert_eq!(state.ledger.balance_atoms(&a.public.awe_id), initial_balance);
+        assert_eq!(
+            state.ledger.balance_atoms(&a.public.awe_id),
+            initial_balance
+        );
         assert_eq!(state.height, 0);
 
         let invalid_tx = OnecoinTransaction::new(
