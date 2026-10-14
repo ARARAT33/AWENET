@@ -4,6 +4,15 @@
 **Purpose:** establish what exists, what is actually connected, what is only a model/scaffold, and the order of work before Phase 2 (backend) and Phase 3 (native desktop UI).  
 **Status:** repository inventory and architecture/product-path first-pass audit recorded. This is not a claim that the project is production-ready or that every source line has passed a complete manual line-by-line review. Phase 1 must remain open until the remaining source-level review and findings are reconciled.
 
+## Follow-up fixes on the active audit branch
+
+The following targeted fixes were committed after the audit snapshot; these close the specific defect only, not the entire finding family:
+
+- `core/src/host.rs`: host cache keys now include site domain, manifest version, root hash and path, preventing same-path cross-site cache reuse. Manifest filenames are derived from SHA-256 of the untrusted domain rather than interpolating domain path text. Regression tests cover cross-site cache isolation and traversal-shaped domain input.
+- `core/src/governance.rs`: capability authorization now binds the actor to the holder public key, verifies the issuer's Ed25519 signature over a canonical payload, checks expiry, and uses path-segment scope matching rather than a loose suffix match. Regression tests cover valid delegation, wrong actor, scope confusion and tampered signature. A full persisted role/admin system is still absent.
+- `apps/awe-node/src/main.rs`: ONECOIN API decimal parsing now accepts the ledger's 18 atomic decimal places and has boundary tests for one atom, full precision, excessive precision and scientific notation. UI input/display and consensus-finalized wallet integration still require separate work.
+- CI was triggered for commit `0ba66d9b74c24b760c828eee84ae53e4615e5a33`; Rust validation and rustfmt were queued at the time this note was written. Do not mark these fixes validated until those jobs complete successfully.
+
 ## 1. Product target and naming decisions
 
 AWENET is the network/product name. It is not merely a P2P chat app or a list of disconnected features. The target is a shared network in which independently operated nodes contribute explicitly selected resources and can host/search/open real resources by stable ID.
