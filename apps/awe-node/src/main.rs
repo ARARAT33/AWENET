@@ -2971,6 +2971,24 @@ mod identity_storage_tests {
     }
 
     #[test]
+    fn short_password_does_not_migrate_plaintext_identity() {
+        let dir = temp_data_dir("vault-short-password");
+        let identity = Identity::generate(Username::new("legacy-node").unwrap());
+        fs::write(
+            dir.join("node.awesecret"),
+            AweSecret::generate(&identity).to_bytes().unwrap(),
+        )
+        .unwrap();
+
+        assert!(
+            load_or_create_product_identity_with_password(&dir, Some("short".into())).is_err()
+        );
+        assert!(dir.join("node.awesecret").exists());
+        assert!(!dir.join("node.awevault").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn product_identity_rejects_corrupt_vault_without_falling_back_to_plaintext() {
         let dir = temp_data_dir("vault-corrupt");
         fs::write(dir.join("node.awevault"), b"not a vault").unwrap();
