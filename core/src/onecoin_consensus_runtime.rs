@@ -155,20 +155,22 @@ impl OnecoinConsensusRuntime {
         }
         // Reject invalid transactions before storing or voting on the proposal.
         self.state.state.preview_ledger(&block)?;
-        if self.pending.len() >= MAX_PENDING_BLOCKS && !self.pending.contains_key(&block.hash()) {
-            return Err("too many pending consensus blocks".into());
-        }
         let hash = block.hash();
-        self.pending.insert(hash, block.clone());
-
-        if self.local_is_validator(identity) {
-            if self
+        let is_local_validator = self.local_is_validator(identity);
+        if is_local_validator
+            && self
                 .local_votes
                 .get(&block.header.height)
                 .is_some_and(|previous| previous != &hash)
-            {
-                return Err("refusing to vote for conflicting blocks at the same height".into());
-            }
+        {
+            return Err("refusing to vote for conflicting blocks at the same height".into());
+        }
+        if self.pending.len() >= MAX_PENDING_BLOCKS && !self.pending.contains_key(&hash) {
+            return Err("too many pending consensus blocks".into());
+        }
+        self.pending.insert(hash, block.clone());
+
+        if is_local_validator {
             let previous = self.local_votes.insert(block.header.height, hash);
             if let Err(error) = self.persist_local_votes() {
                 if let Some(previous_hash) = previous {
