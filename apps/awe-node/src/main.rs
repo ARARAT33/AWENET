@@ -453,22 +453,14 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         },
         "/api/onebank/wallet/send" if method == "POST" => {
             let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
-            let parsed: serde_json::Value = match serde_json::from_str(body) {
-                Ok(value) if value.is_object() => value,
-                _ => {
-                    return write_http_response(
-                        stream,
-                        "400 Bad Request",
-                        "application/json; charset=utf-8",
-                        &serde_json::json!({"status":"rejected","error":"request body must be a valid JSON object"}).to_string(),
-                    )
-                    .await;
-                }
-            };
+            let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
             let recipient_hex = parsed.get("recipient").and_then(|v| v.as_str()).unwrap_or("");
             let amount_value = parsed.get("amount_coins").cloned().unwrap_or(serde_json::Value::Null);
             let memo = parsed.get("memo").and_then(|v| v.as_str()).map(str::to_owned);
             let result: Result<(String, u128, OnecoinTransaction), String> = (|| {
+                if !parsed.is_object() {
+                    return Err("request body must be a valid JSON object".into());
+                }
                 if recipient_hex.len() != 64 || !recipient_hex.chars().all(|c| c.is_ascii_hexdigit()) {
                     return Err("recipient must be a 64-character AWE-ID".into());
                 }
