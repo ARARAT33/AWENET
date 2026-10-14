@@ -2844,8 +2844,6 @@ mod ui_origin_tests {
 #[cfg(test)]
 mod identity_storage_tests {
     use super::*;
-    use std::path::Path;
-
     fn temp_data_dir(label: &str) -> std::path::PathBuf {
         let path = env::temp_dir().join(format!(
             "awenet-identity-{label}-{}",
@@ -2904,7 +2902,7 @@ mod identity_storage_tests {
         fs::write(dir.join("node.awevault"), b"not a vault").unwrap();
         fs::write(dir.join("node.awesecret"), b"legacy fallback must not happen").unwrap();
         assert!(load_or_create_product_identity_with_password(&dir, Some("password".into())).is_err());
-        assert!(Path::new(&dir.join("node.awesecret")).exists());
+        assert!(dir.join("node.awesecret").exists());
         let _ = fs::remove_dir_all(&dir);
     }
 }
