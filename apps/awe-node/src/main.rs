@@ -488,10 +488,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                 let (tx_id, fee_atoms) = candidate.apply_transfer_with_fee(&tx, &node.identity.public.public_key, 100)?;
                 let serialized = serde_json::to_vec_pretty(&candidate)
                     .map_err(|_| "ONECOIN ledger serialization failed".to_string())?;
-                let temporary_path = onecoin_path.with_extension("ledger.tmp");
-                fs::write(&temporary_path, serialized)
-                    .map_err(|e| format!("failed to write candidate ONECOIN ledger: {e}"))?;
-                fs::rename(&temporary_path, &onecoin_path)
+                persist_file_with_backup(&onecoin_path, &serialized)
                     .map_err(|e| format!("failed to commit candidate ONECOIN ledger: {e}"))?;
                 *ledger = candidate;
                 Ok((hex::encode(tx_id), fee_atoms, tx))
@@ -1750,6 +1747,40 @@ async fn autonomous_repair_cycle(
             );
         }
     }
+}
+
+fn persist_file_with_backup(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
+    let temporary = path.with_extension("tmp");
+    fs::write(&temporary, bytes)
+        .with_context(|| format!("failed to write temporary file {}", temporary.display()))?;
+
+    if !path.exists() {
+        return fs::rename(&temporary, path)
+            .with_context(|| format!("failed to install file {}", path.display()));
+    }
+
+    // Windows does not consistently replace an existing destination with rename.
+    // Move the old file aside first, then restore it if installing the candidate fails.
+    let backup = path.with_extension("bak");
+    if backup.exists() {
+        fs::remove_file(&backup)
+            .with_context(|| format!("failed to remove stale backup {}", backup.display()))?;
+    }
+    fs::rename(path, &backup)
+        .with_context(|| format!("failed to stage existing file {}", path.display()))?;
+    if let Err(error) = fs::rename(&temporary, path) {
+        let restore = fs::rename(&backup, path);
+        return match restore {
+            Ok(()) => Err(error).with_context(|| format!("failed to install {}", path.display())),
+            Err(restore_error) => Err(anyhow::anyhow!(
+                "failed to install {} ({error}); rollback also failed ({restore_error}); previous data remains at {}",
+                path.display(),
+                backup.display()
+            )),
+        };
+    }
+    let _ = fs::remove_file(&backup);
+    Ok(())
 }
 
 fn load_or_create_product_identity_with_password(
