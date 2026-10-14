@@ -11,7 +11,8 @@ use crate::onecoin_consensus::{
 use crate::onecoin_store::PersistentOnecoinState;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 pub const ONECOIN_CONSENSUS_STREAM: u32 = 200;
 pub const MAX_CONSENSUS_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
@@ -48,9 +49,9 @@ pub struct OnecoinConsensusRuntime {
     pub validators: BTreeMap<String, [u8; 32]>,
     pending: HashMap<[u8; 32], OnecoinBlock>,
     votes: HashMap<[u8; 32], BTreeMap<String, SignedBlockVote>>,
-    // Prevent this process from approving two conflicting blocks at one height.
-    // Durable anti-equivocation records are still required across restarts.
-    local_votes: HashMap<u64, [u8; 32]>,
+    // Persisted before a vote is emitted to prevent equivocation across restarts.
+    local_votes: BTreeMap<u64, [u8; 32]>,
+    vote_lock_path: PathBuf,
 }
 
 impl OnecoinConsensusRuntime {
@@ -58,8 +59,25 @@ impl OnecoinConsensusRuntime {
         path: impl AsRef<Path>,
         validators: BTreeMap<String, [u8; 32]>,
     ) -> Result<Self, String> {
-        let state = PersistentOnecoinState::open(path)
+        let state_path = path.as_ref().to_path_buf();
+        let state = PersistentOnecoinState::open(&state_path)
             .map_err(|e| format!("failed to open ONECOIN consensus state: {e}"))?;
+        let vote_lock_path = state_path.with_extension("vote-locks.json");
+        let mut local_votes: BTreeMap<u64, [u8; 32]> = if vote_lock_path.exists() {
+            let bytes = fs::read(&vote_lock_path)
+                .map_err(|e| format!("failed to read ONECOIN vote locks: {e}"))?;
+            if bytes.len() > 1024 * 1024 {
+                return Err("ONECOIN vote-lock file exceeds size limit".into());
+            }
+            serde_json::from_slice(&bytes)
+                .map_err(|_| "invalid ONECOIN vote-lock file; refusing to vote".to_string())?
+        } else {
+            BTreeMap::new()
+        };
+        if local_votes.len() > 4096 {
+            return Err("ONECOIN vote-lock file has too many entries".into());
+        }
+        local_votes.retain(|height, _| *height > state.state.height);
         if validators.is_empty() {
             return Err("ONECOIN validator set is empty".into());
         }
@@ -73,8 +91,19 @@ impl OnecoinConsensusRuntime {
             validators,
             pending: HashMap::new(),
             votes: HashMap::new(),
-            local_votes: HashMap::new(),
+            local_votes,
+            vote_lock_path,
         })
+    }
+
+    fn persist_local_votes(&self) -> Result<(), String> {
+        let bytes = serde_json::to_vec(&self.local_votes)
+            .map_err(|_| "failed to serialize ONECOIN vote locks".to_string())?;
+        let temporary = self.vote_lock_path.with_extension("vote-locks.part");
+        fs::write(&temporary, bytes)
+            .map_err(|e| format!("failed to write ONECOIN vote locks: {e}"))?;
+        fs::rename(&temporary, &self.vote_lock_path)
+            .map_err(|e| format!("failed to persist ONECOIN vote locks: {e}"))
     }
 
     pub fn local_is_validator(&self, identity: &Identity) -> bool {
@@ -140,7 +169,15 @@ impl OnecoinConsensusRuntime {
             {
                 return Err("refusing to vote for conflicting blocks at the same height".into());
             }
-            self.local_votes.insert(block.header.height, hash);
+            let previous = self.local_votes.insert(block.header.height, hash);
+            if let Err(error) = self.persist_local_votes() {
+                if let Some(previous_hash) = previous {
+                    self.local_votes.insert(block.header.height, previous_hash);
+                } else {
+                    self.local_votes.remove(&block.header.height);
+                }
+                return Err(error);
+            }
             let vote = SignedBlockVote::new(identity, &block, true);
             Ok(vec![(sender, OnecoinConsensusMessage::Vote(vote))])
         } else {
@@ -191,6 +228,7 @@ impl OnecoinConsensusRuntime {
             self.pending.remove(&vote.block_hash);
             self.votes.remove(&vote.block_hash);
             self.local_votes.retain(|height, _| *height > self.state.state.height);
+            self.persist_local_votes()?;
             return Ok(self
                 .validators
                 .values()
@@ -214,6 +252,7 @@ impl OnecoinConsensusRuntime {
         self.pending.remove(&cert.block_hash);
         self.votes.remove(&cert.block_hash);
         self.local_votes.retain(|height, _| *height > self.state.state.height);
+        self.persist_local_votes()?;
         Ok(Vec::new())
     }
 
@@ -243,14 +282,8 @@ mod tests {
             identity.public.awe_id.to_hex(),
             identity.public.public_key,
         )]);
-        let state = PersistentOnecoinState::open(dir.join("state.bin")).unwrap();
-        let mut runtime = OnecoinConsensusRuntime {
-            state,
-            validators,
-            pending: HashMap::new(),
-            votes: HashMap::new(),
-            local_votes: HashMap::new(),
-        };
+        let state_path = dir.join("state.bin");
+        let mut runtime = OnecoinConsensusRuntime::open(&state_path, validators.clone()).unwrap();
         let first = OnecoinBlock::new(&identity, 1, [0; 32], vec![], 1).unwrap();
         let conflicting = OnecoinBlock::new(&identity, 1, [0; 32], vec![], 2).unwrap();
 
@@ -262,7 +295,11 @@ mod tests {
             )
             .unwrap();
         assert_eq!(first_result.len(), 1);
-        assert!(runtime
+        drop(runtime);
+
+        // The lock survives a process/runtime restart.
+        let mut restarted = OnecoinConsensusRuntime::open(&state_path, validators).unwrap();
+        assert!(restarted
             .handle(
                 identity.public.public_key,
                 &identity,
