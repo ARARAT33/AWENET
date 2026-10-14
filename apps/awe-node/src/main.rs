@@ -1822,6 +1822,9 @@ fn load_or_create_product_identity_with_password(
     }
 
     if let Some(password) = password.filter(|value| !value.is_empty()) {
+        if password.chars().count() < 12 {
+            anyhow::bail!("AWE_NODE_PASSWORD must contain at least 12 characters to create or migrate an encrypted identity vault");
+        }
         let identity = if secret_path.exists() {
             AweSecret::from_bytes(&fs::read(&secret_path)?)
                 .map_err(anyhow::Error::msg)?
