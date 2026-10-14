@@ -1134,7 +1134,9 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                                     let manifest_path = PathBuf::from(data_dir_for_api())
                                         .join("storage")
                                         .join("manifests");
-                                    let _ = fs::create_dir_all(&manifest_path);
+                                    if let Err(error) = fs::create_dir_all(&manifest_path) {
+                                        failed.push(serde_json::json!({"error": format!("manifest directory creation failed: {error}")}));
+                                    }
                                     let manifest = serde_json::json!({
                                         "version": 1,
                                         "file_id": hex::encode(file_id),
@@ -1149,10 +1151,19 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                                         "stored_local": stored_local,
                                         "sent_remote": sent_remote
                                     });
-                                    let _ = fs::write(
-                                        manifest_path.join(format!("{}.json", hex::encode(file_id))),
-                                        serde_json::to_vec_pretty(&manifest).unwrap_or_default(),
-                                    );
+                                    let manifest_file = manifest_path.join(format!("{}.json", hex::encode(file_id)));
+                                    match serde_json::to_vec_pretty(&manifest) {
+                                        Ok(bytes) => {
+                                            if let Err(error) = fs::write(&manifest_file, bytes) {
+                                                failed.push(serde_json::json!({
+                                                    "error": format!("manifest persistence failed: {error}")
+                                                }));
+                                            }
+                                        }
+                                        Err(error) => failed.push(serde_json::json!({
+                                            "error": format!("manifest serialization failed: {error}")
+                                        })),
+                                    }
 
                                     let status = if failed
                                         .iter()
