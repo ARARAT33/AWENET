@@ -433,29 +433,18 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         },
         "/api/onebank/contribution" if method == "POST" => {
             let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
-            let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
-            let r = ResourceContribution {
-                storage_bytes: parsed.get("storage_bytes").and_then(|v| v.as_u64()).unwrap_or(0),
-                cpu_cores: parsed.get("cpu_cores").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-                ram_bytes: parsed.get("ram_bytes").and_then(|v| v.as_u64()).unwrap_or(0),
-                gpu_units: parsed.get("gpu_units").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-                bandwidth_bytes: parsed.get("bandwidth_bytes").and_then(|v| v.as_u64()).unwrap_or(0),
-                online_hours: parsed.get("online_hours").and_then(|v| v.as_u64()).unwrap_or(0) as u16,
-                node_count: parsed.get("node_count").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-                server_count: parsed.get("server_count").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-                uptime_bps: parsed.get("uptime_bps").and_then(|v| v.as_u64()).unwrap_or(0) as u16,
-                utilization_bps: parsed.get("utilization_bps").and_then(|v| v.as_u64()).unwrap_or(0) as u16,
-            };
-            match r.validate() {
-                Ok(()) => {
-                    if let Ok(mut guard) = contribution.lock() { *guard = r.clone(); }
+            match parse_resource_contribution(body) {
+                Ok(r) => {
                     match fs::write(&contribution_path, serde_json::to_vec_pretty(&r).unwrap_or_default()) {
-                        Ok(()) => ("200 OK", "application/json; charset=utf-8", serde_json::json!({
-                            "status":"accepted_for_verification",
-                            "tier": classify_tier(&r).wire_name(),
-                            "verified":false,
-                            "reward_status":"requires_signed_usage_receipt"
-                        }).to_string()),
+                        Ok(()) => {
+                            if let Ok(mut guard) = contribution.lock() { *guard = r.clone(); }
+                            ("200 OK", "application/json; charset=utf-8", serde_json::json!({
+                                "status":"accepted_for_verification",
+                                "tier": classify_tier(&r).wire_name(),
+                                "verified":false,
+                                "reward_status":"requires_signed_usage_receipt"
+                            }).to_string())
+                        },
                         Err(e) => ("500 Internal Server Error", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":e.to_string()}).to_string())
                     }
                 },
@@ -2656,6 +2645,39 @@ async fn main() -> Result<()> {
     }
 }
 
+fn parse_resource_contribution(body: &str) -> Result<ResourceContribution, String> {
+    let parsed: serde_json::Value =
+        serde_json::from_str(body).map_err(|_| "invalid contribution JSON".to_string())?;
+    let object = parsed
+        .as_object()
+        .ok_or_else(|| "contribution must be a JSON object".to_string())?;
+    fn number(object: &serde_json::Map<String, serde_json::Value>, key: &str) -> Result<u64, String> {
+        match object.get(key) {
+            None => Ok(0),
+            Some(value) => value
+                .as_u64()
+                .ok_or_else(|| format!("{key} must be a non-negative integer")),
+        }
+    }
+    fn narrow<T: TryFrom<u64>>(value: u64, key: &str) -> Result<T, String> {
+        T::try_from(value).map_err(|_| format!("{key} is out of range"))
+    }
+    let r = ResourceContribution {
+        storage_bytes: number(object, "storage_bytes")?,
+        cpu_cores: narrow(number(object, "cpu_cores")?, "cpu_cores")?,
+        ram_bytes: number(object, "ram_bytes")?,
+        gpu_units: narrow(number(object, "gpu_units")?, "gpu_units")?,
+        bandwidth_bytes: number(object, "bandwidth_bytes")?,
+        online_hours: narrow(number(object, "online_hours")?, "online_hours")?,
+        node_count: narrow(number(object, "node_count")?, "node_count")?,
+        server_count: narrow(number(object, "server_count")?, "server_count")?,
+        uptime_bps: narrow(number(object, "uptime_bps")?, "uptime_bps")?,
+        utilization_bps: narrow(number(object, "utilization_bps")?, "utilization_bps")?,
+    };
+    r.validate()?;
+    Ok(r)
+}
+
 #[cfg(test)]
 mod ui_origin_tests {
     use super::{
@@ -2708,6 +2730,19 @@ mod ui_origin_tests {
         );
         assert!(parse_onecoin_atoms(&serde_json::json!("0.0000000000000000001")).is_err());
         assert!(parse_onecoin_atoms(&serde_json::json!("1e-3")).is_err());
+    }
+
+    #[test]
+    fn contribution_parser_rejects_malformed_and_overflowing_values() {
+        assert!(parse_resource_contribution("{").is_err());
+        assert!(parse_resource_contribution("[]").is_err());
+        assert!(parse_resource_contribution(r#"{"cpu_cores":4294967296}"#).is_err());
+        assert!(parse_resource_contribution(r#"{"online_hours":65536}"#).is_err());
+        assert!(parse_resource_contribution(r#"{"uptime_bps":10001}"#).is_err());
+        assert_eq!(
+            parse_resource_contribution(r#"{"storage_bytes":1024}"#).unwrap().storage_bytes,
+            1024
+        );
     }
 
     #[test]
