@@ -2313,9 +2313,8 @@ async fn run_product() -> Result<()> {
                                 .get("recipient")
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("");
-                            let local_uid = format_uid(
-                                dispatcher_node.identity.public.awe_id.as_bytes(),
-                            );
+                            let local_uid =
+                                format_uid(dispatcher_node.identity.public.awe_id.as_bytes());
                             if recipient == local_uid && !id.is_empty() && !text_value.is_empty() {
                                 if let (Some(cid), Some(channel_message)) = (
                                     message.get("channel_id").and_then(|v| v.as_str()),
@@ -2335,10 +2334,9 @@ async fn run_product() -> Result<()> {
                                             let sender_uid = format_uid(&sender);
                                             // Fallback delivery is still a channel publication;
                                             // subscribers must not gain publish rights via this path.
-                                            let authorized = ch
-                                                .get("owner")
-                                                .and_then(|v| v.as_str())
-                                                == Some(sender_uid.as_str());
+                                            let authorized =
+                                                ch.get("owner").and_then(|v| v.as_str())
+                                                    == Some(sender_uid.as_str());
                                             if authorized {
                                                 if let Some(a) = ch
                                                     .get_mut("messages")
