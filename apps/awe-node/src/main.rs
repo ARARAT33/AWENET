@@ -194,6 +194,33 @@ async fn http_response(
     .into_bytes()
 }
 
+fn parse_content_length(headers: &str) -> Result<usize, &'static str> {
+    let mut content_length = None;
+    for line in headers.lines().skip(1) {
+        let line = line.trim_end_matches('\r');
+        if line.is_empty() {
+            continue;
+        }
+        let (name, value) = line.split_once(':').ok_or("malformed HTTP header")?;
+        if name.trim().is_empty() {
+            return Err("malformed HTTP header name");
+        }
+        if name.eq_ignore_ascii_case("transfer-encoding") {
+            return Err("Transfer-Encoding is unsupported");
+        }
+        if name.eq_ignore_ascii_case("content-length") {
+            if content_length.is_some() {
+                return Err("duplicate Content-Length header");
+            }
+            let value = value.trim();
+            if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+                return Err("invalid Content-Length header");
+            }
+            content_length = Some(value.parse::<usize>().map_err(|_| "invalid Content-Length header")?);
+        }
+    }
+    Ok(content_length.unwrap_or(0))
+}
 async fn read_http_request(stream: &mut tokio::net::TcpStream) -> Result<String> {
     const HEADER_LIMIT: usize = 64 * 1024;
     const BODY_LIMIT: usize = 64 * 1024 * 1024;
@@ -219,17 +246,7 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> Result<String>
     }
 
     let headers = String::from_utf8_lossy(&data[..header_end]);
-    let content_length = headers
-        .lines()
-        .find_map(|line| {
-            let (name, value) = line.split_once(':')?;
-            if name.eq_ignore_ascii_case("content-length") {
-                value.trim().parse::<usize>().ok()
-            } else {
-                None
-            }
-        })
-        .unwrap_or(0);
+    let content_length = parse_content_length(&headers).map_err(anyhow::Error::msg)?;
 
     if content_length > BODY_LIMIT {
         anyhow::bail!("HTTP request body too large");
@@ -2635,6 +2652,14 @@ async fn main() -> Result<()> {
 mod ui_origin_tests {
     use super::{is_allowed_ui_origin, parse_onecoin_atoms, redact_onecoin_offer_identity};
     use awep2p_core::onecoin::ATOMS_PER_COIN;
+
+    #[test]
+    fn rejects_ambiguous_http_framing_headers() {
+        assert!(parse_content_length("POST / HTTP/1.1\r\nContent-Length: 1\r\n\r\n").is_ok());
+        assert!(parse_content_length("POST / HTTP/1.1\r\nContent-Length: nope\r\n\r\n").is_err());
+        assert!(parse_content_length("POST / HTTP/1.1\r\nContent-Length: 1\r\nContent-Length: 1\r\n\r\n").is_err());
+        assert!(parse_content_length("POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n").is_err());
+    }
 
     #[test]
     fn allows_only_known_local_desktop_origins() {
