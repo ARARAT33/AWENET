@@ -2065,9 +2065,8 @@ async fn run_product() -> Result<()> {
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("");
                             let data = message.get("data").and_then(|v| v.as_str()).unwrap_or("");
-                            let local_uid = format_uid(
-                                dispatcher_node.identity.public.awe_id.as_bytes(),
-                            );
+                            let local_uid =
+                                format_uid(dispatcher_node.identity.public.awe_id.as_bytes());
                             if recipient == local_uid
                                 && !id.is_empty()
                                 && !call_id.is_empty()
