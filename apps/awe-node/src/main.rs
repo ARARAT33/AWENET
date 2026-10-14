@@ -2894,6 +2894,17 @@ mod identity_storage_tests {
     }
 
     #[test]
+    fn file_replacement_preserves_existing_data_and_installs_candidate() {
+        let dir = temp_data_dir("file-replace");
+        let path = dir.join("ledger.json");
+        fs::write(&path, b"old ledger").unwrap();
+        persist_file_with_backup(&path, b"new ledger").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"new ledger");
+        assert!(!dir.join("ledger.bak").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn product_identity_can_be_created_and_reopened_encrypted() {
         let dir = temp_data_dir("vault-create");
         let first =
