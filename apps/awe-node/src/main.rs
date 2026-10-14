@@ -2909,4 +2909,3 @@ mod identity_storage_tests {
         let _ = fs::remove_dir_all(&dir);
     }
 }
-
