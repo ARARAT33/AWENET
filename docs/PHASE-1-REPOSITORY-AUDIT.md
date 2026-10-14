@@ -199,6 +199,13 @@ No dedicated API family was found for first-run account bootstrap, user director
 7. Phase 3 UI must be a genuine native desktop UI without Tauri/WebView, Search-first, simple navigation, and fully connected to the Phase 2 API. No fake search results or decorative topology.
 8. Do not claim “100% ready” until all checkboxes have repeatable evidence on the exact source revision and clean-machine install tests pass.
 
+
+### Follow-up hardening recorded on 2026-10-14
+
+- Contribution payload parsing now rejects malformed JSON, non-object payloads, negative/non-integer values and narrowing overflow rather than silently replacing bad input with zero or truncating integers. Regression coverage includes malformed JSON, array input, u32/u16 overflow, and basis-point bounds.
+- Unverified `node_count` and `server_count` claims no longer affect the contribution score or directly grant PRO/DATA GROUP/CENTRE GROUP tiers. These management roles still require a separate authenticated grant mechanism, which remains an implementation gap.
+- The exact follow-up source revision must pass formatting, workspace tests/clippy, security audit and cross-platform build before this hardening is considered verified. This does not close Phase 2: ONECOIN consensus is not yet authoritative for the wallet send API, the default runtime still persists a plaintext node secret, and federation membership/secret storage still need signed authorization and encryption.
+
 ## 10. Authoritative status
 
 Companion UI-to-API contract matrix: [PHASE-1-UI-API-MATRIX.md](./PHASE-1-UI-API-MATRIX.md).
