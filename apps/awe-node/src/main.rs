@@ -2268,18 +2268,11 @@ async fn run_product() -> Result<()> {
                                             })
                                         })
                                     {
-                                        let subscriber = ch
-                                            .get("subscribers")
-                                            .and_then(|v| v.as_array())
-                                            .map(|a| {
-                                                a.iter().any(|v| {
-                                                    v.as_str() == Some(sender_uid.as_str())
-                                                })
-                                            })
-                                            .unwrap_or(false)
-                                            || ch.get("owner").and_then(|v| v.as_str())
-                                                == Some(sender_uid.as_str());
-                                        if subscriber {
+                                        // Match the local publish endpoint: only the
+                                        // authenticated channel owner may publish channel messages.
+                                        let is_owner = ch.get("owner").and_then(|v| v.as_str())
+                                            == Some(sender_uid.as_str());
+                                        if is_owner {
                                             if let Some(mut m) = message.get("message").cloned() {
                                                 // Bind the visible sender to the authenticated peer.
                                                 if let Some(object) = m.as_object_mut() {
@@ -2341,19 +2334,12 @@ async fn run_product() -> Result<()> {
                                             })
                                         {
                                             let sender_uid = format_uid(&sender);
+                                            // Fallback delivery is still a channel publication;
+                                            // subscribers must not gain publish rights via this path.
                                             let authorized = ch
                                                 .get("owner")
                                                 .and_then(|v| v.as_str())
-                                                == Some(sender_uid.as_str())
-                                                || ch
-                                                    .get("subscribers")
-                                                    .and_then(|v| v.as_array())
-                                                    .map(|a| {
-                                                        a.iter().any(|v| {
-                                                            v.as_str() == Some(sender_uid.as_str())
-                                                        })
-                                                    })
-                                                    .unwrap_or(false);
+                                                == Some(sender_uid.as_str());
                                             if authorized {
                                                 if let Some(a) = ch
                                                     .get_mut("messages")
