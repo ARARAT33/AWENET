@@ -2685,7 +2685,7 @@ fn parse_resource_contribution(body: &str) -> Result<ResourceContribution, Strin
 mod ui_origin_tests {
     use super::{
         is_allowed_ui_origin, parse_content_length, parse_onecoin_atoms,
-        redact_onecoin_offer_identity,
+        parse_resource_contribution, redact_onecoin_offer_identity,
     };
     use awep2p_core::onecoin::ATOMS_PER_COIN;
 
