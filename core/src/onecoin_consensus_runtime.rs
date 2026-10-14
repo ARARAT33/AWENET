@@ -48,6 +48,9 @@ pub struct OnecoinConsensusRuntime {
     pub validators: BTreeMap<String, [u8; 32]>,
     pending: HashMap<[u8; 32], OnecoinBlock>,
     votes: HashMap<[u8; 32], BTreeMap<String, SignedBlockVote>>,
+    // Prevent this process from approving two conflicting blocks at one height.
+    // Durable anti-equivocation records are still required across restarts.
+    local_votes: HashMap<u64, [u8; 32]>,
 }
 
 impl OnecoinConsensusRuntime {
@@ -70,6 +73,7 @@ impl OnecoinConsensusRuntime {
             validators,
             pending: HashMap::new(),
             votes: HashMap::new(),
+            local_votes: HashMap::new(),
         })
     }
 
@@ -120,6 +124,8 @@ impl OnecoinConsensusRuntime {
         {
             return Err("proposal does not extend finalized state".into());
         }
+        // Reject invalid transactions before storing or voting on the proposal.
+        self.state.state.preview_ledger(&block)?;
         if self.pending.len() >= MAX_PENDING_BLOCKS && !self.pending.contains_key(&block.hash()) {
             return Err("too many pending consensus blocks".into());
         }
@@ -127,6 +133,14 @@ impl OnecoinConsensusRuntime {
         self.pending.insert(hash, block.clone());
 
         if self.local_is_validator(identity) {
+            if self
+                .local_votes
+                .get(&block.header.height)
+                .is_some_and(|previous| previous != &hash)
+            {
+                return Err("refusing to vote for conflicting blocks at the same height".into());
+            }
+            self.local_votes.insert(block.header.height, hash);
             let vote = SignedBlockVote::new(identity, &block, true);
             Ok(vec![(sender, OnecoinConsensusMessage::Vote(vote))])
         } else {
@@ -176,6 +190,7 @@ impl OnecoinConsensusRuntime {
             self.state.finalize(block, &cert, &self.validators)?;
             self.pending.remove(&vote.block_hash);
             self.votes.remove(&vote.block_hash);
+            self.local_votes.retain(|height, _| *height > self.state.state.height);
             return Ok(self
                 .validators
                 .values()
@@ -198,6 +213,7 @@ impl OnecoinConsensusRuntime {
         self.state.finalize(&block, &cert, &self.validators)?;
         self.pending.remove(&cert.block_hash);
         self.votes.remove(&cert.block_hash);
+        self.local_votes.retain(|height, _| *height > self.state.state.height);
         Ok(Vec::new())
     }
 
