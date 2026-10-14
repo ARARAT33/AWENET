@@ -2651,7 +2651,10 @@ fn parse_resource_contribution(body: &str) -> Result<ResourceContribution, Strin
     let object = parsed
         .as_object()
         .ok_or_else(|| "contribution must be a JSON object".to_string())?;
-    fn number(object: &serde_json::Map<String, serde_json::Value>, key: &str) -> Result<u64, String> {
+    fn number(
+        object: &serde_json::Map<String, serde_json::Value>,
+        key: &str,
+    ) -> Result<u64, String> {
         match object.get(key) {
             None => Ok(0),
             Some(value) => value
@@ -2740,7 +2743,9 @@ mod ui_origin_tests {
         assert!(parse_resource_contribution(r#"{"online_hours":65536}"#).is_err());
         assert!(parse_resource_contribution(r#"{"uptime_bps":10001}"#).is_err());
         assert_eq!(
-            parse_resource_contribution(r#"{"storage_bytes":1024}"#).unwrap().storage_bytes,
+            parse_resource_contribution(r#"{"storage_bytes":1024}"#)
+                .unwrap()
+                .storage_bytes,
             1024
         );
     }
