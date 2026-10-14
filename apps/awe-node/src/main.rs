@@ -2922,10 +2922,14 @@ mod identity_storage_tests {
         assert!(dir.join("node.aweusername").exists());
         assert!(!dir.join("node.awesecret").exists());
 
+        // Simulate a prior migration where vault commit succeeded but plaintext
+        // cleanup failed; a successful unlock must retry the cleanup.
+        fs::write(dir.join("node.awesecret"), b"legacy plaintext").unwrap();
         let reopened =
             load_or_create_product_identity_with_password(&dir, Some("correct horse".into()))
                 .unwrap();
         assert_eq!(first.public.awe_id, reopened.public.awe_id);
+        assert!(!dir.join("node.awesecret").exists());
         assert!(load_or_create_product_identity_with_password(&dir, Some("wrong".into())).is_err());
         assert!(load_or_create_product_identity_with_password(&dir, None).is_err());
         let _ = fs::remove_dir_all(&dir);
