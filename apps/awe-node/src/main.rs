@@ -2065,8 +2065,11 @@ async fn run_product() -> Result<()> {
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("");
                             let data = message.get("data").and_then(|v| v.as_str()).unwrap_or("");
-                            if !id.is_empty()
-                                && !recipient.is_empty()
+                            let local_uid = format_uid(
+                                dispatcher_node.identity.public.awe_id.as_bytes(),
+                            );
+                            if recipient == local_uid
+                                && !id.is_empty()
                                 && !call_id.is_empty()
                                 && !signal_type.is_empty()
                                 && !data.is_empty()
@@ -2145,12 +2148,20 @@ async fn run_product() -> Result<()> {
                                             })
                                             .unwrap_or(false);
                                         if member {
-                                            if let Some(m) = message.get("message").cloned() {
-                                                if let Some(a) = g
-                                                    .get_mut("messages")
-                                                    .and_then(|v| v.as_array_mut())
-                                                {
-                                                    a.push(m);
+                                            if let Some(mut m) = message.get("message").cloned() {
+                                                // The authenticated transport peer, not an embedded
+                                                // JSON field, is the authoritative group-message sender.
+                                                if let Some(object) = m.as_object_mut() {
+                                                    object.insert(
+                                                        "sender".into(),
+                                                        serde_json::json!(sender_uid),
+                                                    );
+                                                    if let Some(a) = g
+                                                        .get_mut("messages")
+                                                        .and_then(|v| v.as_array_mut())
+                                                    {
+                                                        a.push(m);
+                                                    }
                                                 }
                                             }
                                         }
@@ -2269,12 +2280,19 @@ async fn run_product() -> Result<()> {
                                             || ch.get("owner").and_then(|v| v.as_str())
                                                 == Some(sender_uid.as_str());
                                         if subscriber {
-                                            if let Some(m) = message.get("message").cloned() {
-                                                if let Some(a) = ch
-                                                    .get_mut("messages")
-                                                    .and_then(|v| v.as_array_mut())
-                                                {
-                                                    a.push(m);
+                                            if let Some(mut m) = message.get("message").cloned() {
+                                                // Bind the visible sender to the authenticated peer.
+                                                if let Some(object) = m.as_object_mut() {
+                                                    object.insert(
+                                                        "sender".into(),
+                                                        serde_json::json!(sender_uid),
+                                                    );
+                                                    if let Some(a) = ch
+                                                        .get_mut("messages")
+                                                        .and_then(|v| v.as_array_mut())
+                                                    {
+                                                        a.push(m);
+                                                    }
                                                 }
                                             }
                                         }
@@ -2303,7 +2321,10 @@ async fn run_product() -> Result<()> {
                                 .get("recipient")
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("");
-                            if !id.is_empty() && !text_value.is_empty() && !recipient.is_empty() {
+                            let local_uid = format_uid(
+                                dispatcher_node.identity.public.awe_id.as_bytes(),
+                            );
+                            if recipient == local_uid && !id.is_empty() && !text_value.is_empty() {
                                 if let (Some(cid), Some(channel_message)) = (
                                     message.get("channel_id").and_then(|v| v.as_str()),
                                     message.get("channel_message").cloned(),
