@@ -229,7 +229,8 @@ impl OnecoinConsensusRuntime {
             self.state.finalize(block, &cert, &self.validators)?;
             self.pending.remove(&vote.block_hash);
             self.votes.remove(&vote.block_hash);
-            self.local_votes.retain(|height, _| *height > self.state.state.height);
+            self.local_votes
+                .retain(|height, _| *height > self.state.state.height);
             self.persist_local_votes()?;
             return Ok(self
                 .validators
@@ -253,7 +254,8 @@ impl OnecoinConsensusRuntime {
         self.state.finalize(&block, &cert, &self.validators)?;
         self.pending.remove(&cert.block_hash);
         self.votes.remove(&cert.block_hash);
-        self.local_votes.retain(|height, _| *height > self.state.state.height);
+        self.local_votes
+            .retain(|height, _| *height > self.state.state.height);
         self.persist_local_votes()?;
         Ok(Vec::new())
     }
@@ -272,18 +274,14 @@ mod tests {
 
     #[test]
     fn validator_refuses_conflicting_proposals_at_same_height() {
-        let dir = std::env::temp_dir().join(format!(
-            "awenet-consensus-runtime-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("awenet-consensus-runtime-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
 
         let identity = Identity::generate(Username::new("validator").unwrap());
-        let validators = BTreeMap::from([(
-            identity.public.awe_id.to_hex(),
-            identity.public.public_key,
-        )]);
+        let validators =
+            BTreeMap::from([(identity.public.awe_id.to_hex(), identity.public.public_key)]);
         let state_path = dir.join("state.bin");
         let mut runtime = OnecoinConsensusRuntime::open(&state_path, validators.clone()).unwrap();
         let first = OnecoinBlock::new(&identity, 1, [0; 32], vec![], 1).unwrap();
