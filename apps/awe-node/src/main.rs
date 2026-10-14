@@ -1179,7 +1179,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                                             "file_id": hex::encode(file_id),
                                             "filename": filename,
                                             "original_size": data.len(),
-                                            "shards": 1000,
+                                            "shards": policy.total_shards(),
                                             "replicas": 3,
                                             "stored_local": stored_local,
                                             "sent_remote": sent_remote,
