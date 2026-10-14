@@ -100,8 +100,14 @@ impl OnecoinConsensusRuntime {
         let bytes = serde_json::to_vec(&self.local_votes)
             .map_err(|_| "failed to serialize ONECOIN vote locks".to_string())?;
         let temporary = self.vote_lock_path.with_extension("vote-locks.part");
-        fs::write(&temporary, bytes)
+        let mut file = fs::File::create(&temporary)
+            .map_err(|e| format!("failed to create ONECOIN vote-lock file: {e}"))?;
+        use std::io::Write;
+        file.write_all(&bytes)
             .map_err(|e| format!("failed to write ONECOIN vote locks: {e}"))?;
+        file.sync_all()
+            .map_err(|e| format!("failed to sync ONECOIN vote locks: {e}"))?;
+        drop(file);
         fs::rename(&temporary, &self.vote_lock_path)
             .map_err(|e| format!("failed to persist ONECOIN vote locks: {e}"))
     }
