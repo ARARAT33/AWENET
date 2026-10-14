@@ -221,3 +221,61 @@ impl OnecoinConsensusRuntime {
         &self.state.state
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::identity::Username;
+    use crate::onecoin_consensus::OnecoinBlock;
+    use std::fs;
+
+    #[test]
+    fn validator_refuses_conflicting_proposals_at_same_height() {
+        let dir = std::env::temp_dir().join(format!(
+            "awenet-consensus-runtime-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let identity = Identity::generate(Username::new("validator").unwrap());
+        let validators = BTreeMap::from([(
+            identity.public.awe_id.to_hex(),
+            identity.public.public_key,
+        )]);
+        let state = PersistentOnecoinState::open(dir.join("state.bin")).unwrap();
+        let mut runtime = OnecoinConsensusRuntime {
+            state,
+            validators,
+            pending: HashMap::new(),
+            votes: HashMap::new(),
+            local_votes: HashMap::new(),
+        };
+        let first = OnecoinBlock::new(&identity, 1, [0; 32], vec![], 1).unwrap();
+        let conflicting = OnecoinBlock::new(&identity, 1, [0; 32], vec![], 2).unwrap();
+
+        let first_result = runtime
+            .handle(
+                identity.public.public_key,
+                &identity,
+                OnecoinConsensusMessage::Proposal(first),
+            )
+            .unwrap();
+        assert_eq!(first_result.len(), 1);
+        assert!(runtime
+            .handle(
+                identity.public.public_key,
+                &identity,
+                OnecoinConsensusMessage::Proposal(conflicting),
+            )
+            .is_err());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn consensus_messages_reject_payloads_over_size_limit() {
+        let bytes = vec![b' '; MAX_CONSENSUS_MESSAGE_BYTES + 1];
+        assert!(OnecoinConsensusMessage::decode(&bytes).is_err());
+    }
+}
