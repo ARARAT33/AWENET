@@ -1759,8 +1759,7 @@ fn load_or_create_product_identity_with_password(
             .context("encrypted identity is missing node.aweusername metadata")?;
         let username = Username::new(username.trim().to_string()).map_err(anyhow::Error::msg)?;
         let bytes = fs::read(&vault_path).context("failed to read encrypted identity vault")?;
-        return LocalVault::open(&bytes, username, &password)
-            .map_err(anyhow::Error::msg);
+        return LocalVault::open(&bytes, username, &password).map_err(anyhow::Error::msg);
     }
 
     if let Some(password) = password.filter(|value| !value.is_empty()) {
@@ -1777,8 +1776,7 @@ fn load_or_create_product_identity_with_password(
         fs::write(&username_path, identity.public.username.as_str())?;
         let temporary = data_dir.join("node.awevault.tmp");
         fs::write(&temporary, vault)?;
-        fs::rename(&temporary, &vault_path)
-            .context("failed to commit encrypted identity vault")?;
+        fs::rename(&temporary, &vault_path).context("failed to commit encrypted identity vault")?;
         if secret_path.exists() {
             fs::remove_file(&secret_path)
                 .context("vault created but legacy plaintext key could not be removed")?;
@@ -1815,8 +1813,10 @@ async fn run_product() -> Result<()> {
         PathBuf::from(".awep2p")
     };
     fs::create_dir_all(&data_dir)?;
-    let identity =
-        load_or_create_product_identity_with_password(&data_dir, env::var("AWE_NODE_PASSWORD").ok())?;
+    let identity = load_or_create_product_identity_with_password(
+        &data_dir,
+        env::var("AWE_NODE_PASSWORD").ok(),
+    )?;
     let node_id = format_uid(identity.public.awe_id.as_bytes());
     let listen: SocketAddr = env::var("AWE_LISTEN_ADDR")
         .unwrap_or_else(|_| "0.0.0.0:41000".into())
@@ -2845,10 +2845,7 @@ mod ui_origin_tests {
 mod identity_storage_tests {
     use super::*;
     fn temp_data_dir(label: &str) -> std::path::PathBuf {
-        let path = env::temp_dir().join(format!(
-            "awenet-identity-{label}-{}",
-            std::process::id()
-        ));
+        let path = env::temp_dir().join(format!("awenet-identity-{label}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).unwrap();
         path
@@ -2900,8 +2897,14 @@ mod identity_storage_tests {
     fn product_identity_rejects_corrupt_vault_without_falling_back_to_plaintext() {
         let dir = temp_data_dir("vault-corrupt");
         fs::write(dir.join("node.awevault"), b"not a vault").unwrap();
-        fs::write(dir.join("node.awesecret"), b"legacy fallback must not happen").unwrap();
-        assert!(load_or_create_product_identity_with_password(&dir, Some("password".into())).is_err());
+        fs::write(
+            dir.join("node.awesecret"),
+            b"legacy fallback must not happen",
+        )
+        .unwrap();
+        assert!(
+            load_or_create_product_identity_with_password(&dir, Some("password".into())).is_err()
+        );
         assert!(dir.join("node.awesecret").exists());
         let _ = fs::remove_dir_all(&dir);
     }
