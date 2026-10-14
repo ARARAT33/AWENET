@@ -263,7 +263,11 @@ mod tests {
         let h = AweHost::open(&r, 10_000_000, HostPolicy::default()).unwrap();
         let path = h.manifest_path("../../../../outside\\\\evil");
         assert_eq!(path.parent(), Some(r.as_path()));
-        assert!(path.file_name().unwrap().to_string_lossy().ends_with(".manifest.json"));
+        assert!(path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .ends_with(".manifest.json"));
         let _ = fs::remove_dir_all(r);
     }
 
@@ -271,8 +275,12 @@ mod tests {
     fn cache_isolated_between_sites() {
         let r = std::env::temp_dir().join(format!("awe-host-cache-{}", std::process::id()));
         let mut h = AweHost::open(&r, 10_000_000, HostPolicy::default()).unwrap();
-        let f1 = h.publish_file("/index.html", b"site one", "text/html").unwrap();
-        let f2 = h.publish_file("/index.html", b"site two", "text/html").unwrap();
+        let f1 = h
+            .publish_file("/index.html", b"site one", "text/html")
+            .unwrap();
+        let f2 = h
+            .publish_file("/index.html", b"site two", "text/html")
+            .unwrap();
         let m1 = h.publish_manifest("one.awe", 1, vec![1], vec![f1]).unwrap();
         let m2 = h.publish_manifest("two.awe", 1, vec![2], vec![f2]).unwrap();
         assert_eq!(h.get(&m1, "/").unwrap(), b"site one");
