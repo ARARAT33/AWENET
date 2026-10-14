@@ -1741,6 +1741,69 @@ async fn autonomous_repair_cycle(
     }
 }
 
+fn load_or_create_product_identity(data_dir: &std::path::Path) -> Result<Identity> {
+    let secret_path = data_dir.join("node.awesecret");
+    let vault_path = data_dir.join("node.awevault");
+    let username_path = data_dir.join("node.aweusername");
+    let password = env::var("AWE_NODE_PASSWORD").ok();
+
+    // Opt-in encrypted-at-rest mode. Keep the username as non-secret metadata;
+    // the signing key itself is stored only in the authenticated encrypted vault.
+    if vault_path.exists() {
+        let password = password
+            .filter(|value| !value.is_empty())
+            .context("node.awevault exists; set a non-empty AWE_NODE_PASSWORD to unlock it")?;
+        let username = fs::read_to_string(&username_path)
+            .context("encrypted identity is missing node.aweusername metadata")?;
+        let username = Username::new(username.trim().to_string()).map_err(anyhow::Error::msg)?;
+        let bytes = fs::read(&vault_path).context("failed to read encrypted identity vault")?;
+        return LocalVault::open(&bytes, username, &password)
+            .map_err(anyhow::Error::msg);
+    }
+
+    if let Some(password) = password.filter(|value| !value.is_empty()) {
+        let identity = if secret_path.exists() {
+            AweSecret::from_bytes(&fs::read(&secret_path)?)
+                .map_err(anyhow::Error::msg)?
+                .authenticate()
+                .map_err(anyhow::Error::msg)?
+        } else {
+            Identity::generate(Username::new("awe-node".to_string()).map_err(anyhow::Error::msg)?)
+        };
+        let vault = LocalVault::seal(&identity, &password).map_err(anyhow::Error::msg)?;
+        // Write both files successfully before removing the legacy plaintext key.
+        fs::write(&username_path, identity.public.username.as_str())?;
+        let temporary = data_dir.join("node.awevault.tmp");
+        fs::write(&temporary, vault)?;
+        fs::rename(&temporary, &vault_path)
+            .context("failed to commit encrypted identity vault")?;
+        if secret_path.exists() {
+            fs::remove_file(&secret_path)
+                .context("vault created but legacy plaintext key could not be removed")?;
+        }
+        return Ok(identity);
+    }
+
+    if secret_path.exists() {
+        eprintln!(
+            "SECURITY WARNING: node.awesecret stores the signing key unencrypted.              Set AWE_NODE_PASSWORD to migrate it to node.awevault."
+        );
+        return AweSecret::from_bytes(&fs::read(&secret_path)?)
+            .map_err(anyhow::Error::msg)?
+            .authenticate()
+            .map_err(anyhow::Error::msg);
+    }
+
+    let identity =
+        Identity::generate(Username::new("awe-node".to_string()).map_err(anyhow::Error::msg)?);
+    let secret = AweSecret::generate(&identity);
+    fs::write(&secret_path, secret.to_bytes()?)?;
+    eprintln!(
+        "SECURITY WARNING: created an unencrypted node.awesecret.          Set AWE_NODE_PASSWORD to use encrypted-at-rest identity storage."
+    );
+    Ok(identity)
+}
+
 async fn run_product() -> Result<()> {
     let data_dir = if let Some(value) = env::var_os("AWE_DATA_DIR") {
         PathBuf::from(value)
@@ -1750,19 +1813,7 @@ async fn run_product() -> Result<()> {
         PathBuf::from(".awep2p")
     };
     fs::create_dir_all(&data_dir)?;
-    let secret_path = data_dir.join("node.awesecret");
-    let identity = if secret_path.exists() {
-        AweSecret::from_bytes(&fs::read(&secret_path)?)
-            .map_err(anyhow::Error::msg)?
-            .authenticate()
-            .map_err(anyhow::Error::msg)?
-    } else {
-        let identity =
-            Identity::generate(Username::new("awe-node".to_string()).map_err(anyhow::Error::msg)?);
-        let secret = AweSecret::generate(&identity);
-        fs::write(&secret_path, secret.to_bytes()?)?;
-        identity
-    };
+    let identity = load_or_create_product_identity(&data_dir)?;
     let node_id = format_uid(identity.public.awe_id.as_bytes());
     let listen: SocketAddr = env::var("AWE_LISTEN_ADDR")
         .unwrap_or_else(|_| "0.0.0.0:41000".into())
