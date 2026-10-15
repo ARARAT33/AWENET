@@ -204,8 +204,7 @@ fn storage_upload_is_complete(
     required_placements: usize,
     failed_transfers: usize,
 ) -> bool {
-    failed_transfers == 0
-        && stored_local.checked_add(sent_remote) == Some(required_placements)
+    failed_transfers == 0 && stored_local.checked_add(sent_remote) == Some(required_placements)
 }
 
 fn storage_ack_matches(
