@@ -83,6 +83,55 @@ fn validate_group_member_ids(members: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_remote_group(group: &serde_json::Value, authenticated_sender: &str) -> Result<(), String> {
+    if group.get("owner").and_then(|v| v.as_str()) != Some(authenticated_sender) {
+        return Err("group owner does not match authenticated transport identity".into());
+    }
+    let id = group.get("id").and_then(|v| v.as_str()).unwrap_or("");
+    if id.is_empty() || id.len() > 128 {
+        return Err("invalid group ID".into());
+    }
+    validate_community_title(group.get("title").and_then(|v| v.as_str()).unwrap_or(""))?;
+    let members = group.get("members").and_then(|v| v.as_array())
+        .ok_or_else(|| "group members must be an array".to_string())?
+        .iter()
+        .map(|value| value.as_str().map(str::to_owned).ok_or_else(|| "group member ID must be text".to_string()))
+        .collect::<Result<Vec<_>, _>>()?;
+    if members.is_empty() || !members.iter().any(|member| member == authenticated_sender) {
+        return Err("group owner must be a group member".into());
+    }
+    validate_group_member_ids(&members)?;
+    if group.get("messages").and_then(|v| v.as_array()).map(|items| items.len() > MAX_COMMUNITY_MESSAGES_PER_FEED).unwrap_or(true) {
+        return Err("group message history is missing or exceeds the allowed limit".into());
+    }
+    Ok(())
+}
+
+fn validate_remote_channel(channel: &serde_json::Value, authenticated_sender: &str) -> Result<(), String> {
+    if channel.get("owner").and_then(|v| v.as_str()) != Some(authenticated_sender) {
+        return Err("channel owner does not match authenticated transport identity".into());
+    }
+    let id = channel.get("id").and_then(|v| v.as_str()).unwrap_or("");
+    if id.is_empty() || id.len() > 128 {
+        return Err("invalid channel ID".into());
+    }
+    validate_community_title(channel.get("title").and_then(|v| v.as_str()).unwrap_or(""))?;
+    let subscribers = channel.get("subscribers").and_then(|v| v.as_array())
+        .ok_or_else(|| "channel subscribers must be an array".to_string())?;
+    if subscribers.len() > 10_000 || subscribers.iter().any(|value| {
+        value.as_str().and_then(|id| AweId::from_hex(id).ok()).is_none()
+    }) {
+        return Err("invalid or excessive channel subscriber list".into());
+    }
+    if !subscribers.iter().any(|value| value.as_str() == Some(authenticated_sender)) {
+        return Err("channel owner must be subscribed".into());
+    }
+    if channel.get("messages").and_then(|v| v.as_array()).map(|items| items.len() > MAX_COMMUNITY_MESSAGES_PER_FEED).unwrap_or(true) {
+        return Err("channel message history is missing or exceeds the allowed limit".into());
+    }
+    Ok(())
+}
+
 fn append_messenger_entry(log: &mut Vec<serde_json::Value>, item: serde_json::Value) {
     if log.len() >= MAX_MESSENGER_LOG_ENTRIES {
         let remove_count = (MAX_MESSENGER_LOG_ENTRIES / 10).max(1);
@@ -2327,7 +2376,7 @@ async fn run_product() -> Result<()> {
                                             .get("owner")
                                             .and_then(|v| v.as_str())
                                             .unwrap_or("");
-                                        if owner == sender_uid {
+                                        if owner == sender_uid && validate_remote_group(&group, &sender_uid).is_ok() {
                                             let gid = group
                                                 .get("id")
                                                 .and_then(|v| v.as_str())
@@ -2398,7 +2447,7 @@ async fn run_product() -> Result<()> {
                                             .get("owner")
                                             .and_then(|v| v.as_str())
                                             .unwrap_or("");
-                                        if owner == sender_uid {
+                                        if owner == sender_uid && validate_remote_channel(&channel, &sender_uid).is_ok() {
                                             let cid = channel
                                                 .get("id")
                                                 .and_then(|v| v.as_str())
@@ -2898,6 +2947,7 @@ async fn main() -> Result<()> {
 mod phase_two_backend_tests {
     use super::{
         append_bounded_json_entry, append_messenger_entry, is_allowed_ui_origin, json_u16_field, json_u32_field,
+        validate_remote_group, validate_remote_channel,
         parse_content_length, parse_onecoin_atoms, validate_community_message,
         validate_community_title, validate_group_member_ids, validate_storage_file_id,
         ATOMS_PER_COIN, MAX_COMMUNITY_MESSAGE_BYTES, MAX_COMMUNITY_TITLE_BYTES,
@@ -2973,6 +3023,35 @@ mod phase_two_backend_tests {
                 "expected rejected origin: {origin}"
             );
         }
+    }
+
+    #[test]
+    fn remote_group_requires_authenticated_owner_and_valid_members() {
+        let owner = "ab".repeat(32);
+        let member = "cd".repeat(32);
+        let group = json!({
+            "id":"gid-1","title":"AWE group","owner":owner,
+            "members":[owner,member],"messages":[]
+        });
+        assert!(validate_remote_group(&group, &owner).is_ok());
+        assert!(validate_remote_group(&group, &member).is_err());
+        let mut malformed = group.clone();
+        malformed["members"] = json!(["uid-not-an-aweid"]);
+        assert!(validate_remote_group(&malformed, &owner).is_err());
+    }
+
+    #[test]
+    fn remote_channel_requires_authenticated_owner_and_valid_subscribers() {
+        let owner = "ab".repeat(32);
+        let channel = json!({
+            "id":"cid-1","title":"AWE channel","owner":owner,
+            "subscribers":[owner],"messages":[]
+        });
+        assert!(validate_remote_channel(&channel, &owner).is_ok());
+        assert!(validate_remote_channel(&channel, &"cd".repeat(32)).is_err());
+        let mut malformed = channel.clone();
+        malformed["subscribers"] = json!(["uid-not-an-aweid"]);
+        assert!(validate_remote_channel(&malformed, &owner).is_err());
     }
 
     #[test]
