@@ -60,6 +60,7 @@ struct UiState {
     pending_shards: PendingShards,
     policy_state: PolicyState,
     community: CommunityState,
+    consensus_state: ConsensusState,
     onecoin_ledger: OnecoinLedgerState,
     onecoin_path: PathBuf,
     onecoin_offers_path: PathBuf,
@@ -272,6 +273,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         pending_shards,
         policy_state,
         community,
+        consensus_state,
         onecoin_ledger,
         onecoin_path,
         onecoin_offers_path,
@@ -291,7 +293,21 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         "/onecoin.css" => ("200 OK", "text/css; charset=utf-8", ONECOIN_CSS.to_string()),
         "/vendor/qrcode.js" => ("200 OK", "application/javascript; charset=utf-8", QR_JS.to_string()),
         "/api/onebank/wallet" if method == "GET" => {
-            let ledger = onecoin_ledger.lock().map(|l| l.clone()).unwrap_or_default();
+            let consensus_snapshot = consensus_state
+                .lock()
+                .ok()
+                .and_then(|guard| guard.as_ref().map(|runtime| (
+                    runtime.persisted_state().ledger.clone(),
+                    runtime.persisted_state().height,
+                )));
+            let (ledger, finality_mode, consensus_height) = match consensus_snapshot {
+                Some((ledger, height)) => (ledger, "CONSENSUS_FINALIZED", Some(height)),
+                None => (
+                    onecoin_ledger.lock().map(|l| l.clone()).unwrap_or_default(),
+                    "LOCAL_LEDGER",
+                    None,
+                ),
+            };
             let id = node.identity.public.awe_id.clone();
             let balance_atoms = ledger.balance_atoms(&id);
             let contribution_snapshot = contribution.lock().map(|r| r.clone()).unwrap_or_default();
@@ -302,6 +318,8 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                 "balance_coins": balance_atoms / ATOMS_PER_COIN,
                 "tier": tier,
                 "fee_bps": 100,
+                "finality_mode": finality_mode,
+                "consensus_height": consensus_height,
                 "resource_score": contribution_snapshot.score(),
                 "resource": contribution_snapshot,
                 "resource_verified": false,
@@ -355,6 +373,65 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
             let recipient_hex = parsed.get("recipient").and_then(|v| v.as_str()).unwrap_or("");
             let amount_value = parsed.get("amount_coins").cloned().unwrap_or(serde_json::Value::Null);
             let memo = parsed.get("memo").and_then(|v| v.as_str()).map(str::to_owned);
+            if consensus_state.lock().map(|guard| guard.is_some()).unwrap_or(false) {
+                let consensus_result: Result<(String, u128, Vec<([u8; 32], OnecoinConsensusMessage)>, u64, bool), String> = (|| {
+                    let recipient = AweId::from_hex(recipient_hex)?;
+                    if recipient == node.identity.public.awe_id {
+                        return Err("cannot transfer ONECOIN to the same wallet".into());
+                    }
+                    let amount_atoms = parse_onecoin_atoms(&amount_value)?;
+                    if amount_atoms == 0 {
+                        return Err("amount_coins must be positive".into());
+                    }
+                    let mut guard = consensus_state.lock().map_err(|_| "ONECOIN consensus lock failed".to_string())?;
+                    let runtime = guard.as_mut().and_then(|value| value.as_mut()).ok_or("ONECOIN consensus is unavailable")?;
+                    if !runtime.local_is_validator(&node.identity) {
+                        return Err("this node is not a configured ONECOIN validator; transaction submission to remote validators is not yet supported".into());
+                    }
+                    let ledger = &runtime.persisted_state().ledger;
+                    let recipient_key = recipient.to_hex();
+                    if !ledger.members.contains_key(&recipient_key) {
+                        return Err("recipient is not yet a member of finalized ONECOIN state".into());
+                    }
+                    let sender = node.identity.public.awe_id.clone();
+                    if !ledger.members.contains_key(&sender.to_hex()) {
+                        return Err("sender is not a member of finalized ONECOIN state".into());
+                    }
+                    let old_height = runtime.persisted_state().height;
+                    let nonce = ledger.nonces.get(&sender.to_hex()).copied().unwrap_or(0);
+                    let tx = OnecoinTransaction::new(&node.identity, nonce, &recipient, amount_atoms, memo);
+                    let tx_id = hex::encode(tx.id());
+                    let fee_atoms = amount_atoms.saturating_mul(100).saturating_div(10_000);
+                    let outbound = runtime.propose(&node.identity, vec![tx], now_unix())?;
+                    let height = runtime.persisted_state().height;
+                    Ok((tx_id, fee_atoms, outbound, height, height > old_height))
+                })();
+                match consensus_result {
+                    Ok((tx_id, fee_atoms, outbound, height, finalized)) => {
+                        let mut delivered = 0usize;
+                        for (peer, message) in outbound {
+                            if peer == *node.identity.public.awe_id.as_bytes() { continue; }
+                            if let Ok(bytes) = message.encode() {
+                                if node.send_to_peer(&peer, ONECOIN_CONSENSUS_STREAM, bytes).await.is_ok() {
+                                    delivered += 1;
+                                }
+                            }
+                        }
+                        let status = if finalized { "finalized" } else { "submitted_to_consensus" };
+                        (if finalized { "200 OK" } else { "202 Accepted" }, "application/json; charset=utf-8", serde_json::json!({
+                            "status": status,
+                            "tx_id": tx_id,
+                            "fee_atoms": fee_atoms,
+                            "fee_bps": 100,
+                            "finality_mode": "CONSENSUS",
+                            "consensus_height": height,
+                            "outbound_messages_delivered": delivered,
+                            "note": if finalized { "Transaction is in finalized consensus state." } else { "Transaction proposal sent; wallet balance changes only after quorum finality." }
+                        }).to_string())
+                    },
+                    Err(error) => ("409 Conflict", "application/json; charset=utf-8", serde_json::json!({"status":"rejected","finality_mode":"CONSENSUS","error":error}).to_string())
+                }
+            } else {
             let result: Result<(String, u128, OnecoinTransaction), String> = (|| {
                 if recipient_hex.len() != 64 || !recipient_hex.chars().all(|c| c.is_ascii_hexdigit()) {
                     return Err("recipient must be a 64-character AWE-ID".into());
@@ -412,7 +489,8 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                     } else {
                         false
                     }; ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"accepted","tx_id":tx_id,"fee_atoms":fee_atoms,"fee_bps":100,"recipient_delivered":delivered,"recipient_pending":!delivered}).to_string()) },
-                Err(error) => ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"rejected","error":error}).to_string())
+                Err(error) => ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"rejected","error":error,"finality_mode":"LOCAL_LEDGER"}).to_string())
+            }
             }
         },
         "/api/onebank/exchange/offers" if method == "GET" => {
@@ -2364,6 +2442,7 @@ async fn run_product() -> Result<()> {
             let api_federation_path = federation_path.clone();
             let api_policy = policy_state.clone();
             let api_community = community.clone();
+            let api_consensus_state = consensus_state.clone();
             let api_onecoin_ledger = onecoin_ledger.clone();
             let api_onecoin_path = onecoin_path.clone();
             let api_onecoin_offers_path = onecoin_offers_path.clone();
@@ -2382,6 +2461,7 @@ async fn run_product() -> Result<()> {
                         pending_shards: api_pending_shards,
                         policy_state: api_policy,
                         community: api_community,
+                        consensus_state: api_consensus_state,
                         onecoin_ledger: api_onecoin_ledger,
                         onecoin_path: api_onecoin_path,
                         onecoin_offers_path: api_onecoin_offers_path,
