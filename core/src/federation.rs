@@ -424,6 +424,23 @@ mod tests {
     }
 
     #[test]
+    fn legacy_awenet_state_defaults_centre_group_fields() {
+        let legacy = serde_json::json!({
+            "format": "awenet",
+            "version": FORMAT_VERSION,
+            "local_node_id": "node-legacy",
+            "local_data_centre_id": null,
+            "local_data_group_id": null,
+            "joined_data_centres": [],
+            "joined_data_groups": [],
+            "bootstrap_endpoints": []
+        });
+        let state: AweNetConfig = serde_json::from_value(legacy).unwrap();
+        assert_eq!(state.local_centre_group_id, None);
+        assert!(state.joined_centre_groups.is_empty());
+    }
+
+    #[test]
     fn formats_validate() {
         let n = generate_awenode("node-1", "DC One", "127.0.0.1:41000", vec![], 1);
         validate_awenode(&n).unwrap();
