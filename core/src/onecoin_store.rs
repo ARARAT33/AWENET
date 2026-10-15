@@ -285,11 +285,14 @@ mod finalized_state_tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("legacy-state.json");
-        let mut value = serde_json::to_value(OnecoinFinalizedState::default()).unwrap();
-        value.as_object_mut().unwrap().remove("local_votes");
-        let mut bytes = STATE_MAGIC.to_vec();
-        bytes.extend(serde_json::to_vec(&value).unwrap());
-        fs::write(&path, bytes).unwrap();
+        let persistent = PersistentOnecoinState::open(&path).unwrap();
+        persistent.save().unwrap();
+        let bytes = fs::read(&path).unwrap();
+        let serialized = String::from_utf8(bytes[STATE_MAGIC.len()..].to_vec()).unwrap();
+        let legacy_serialized = serialized.replace(",\\\"local_votes\\\":{}", "");
+        let mut legacy_bytes = STATE_MAGIC.to_vec();
+        legacy_bytes.extend(legacy_serialized.as_bytes());
+        fs::write(&path, legacy_bytes).unwrap();
 
         let loaded = PersistentOnecoinState::open(&path).unwrap();
         assert!(loaded.state.local_votes.is_empty());
