@@ -507,6 +507,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                     let bootstrap = parsed.get("bootstrap").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect()).unwrap_or_default();
                     let dc_id = parsed.get("data_centre_id").and_then(|v| v.as_str()).map(str::to_owned).or_else(|| federation_state.lock().ok().and_then(|s| s.local_data_centre_id.clone())).unwrap_or_else(|| format!("dc-{}", &hex::encode(blake3::hash(format!("AWE/DC/{}", format_uid(node.identity.public.awe_id.as_bytes())).as_bytes()).as_bytes())[..24]));
                     let cfg = federation::generate_awenode_for_dc(&format_uid(node.identity.public.awe_id.as_bytes()), &dc_id, name, &endpoint, bootstrap, now);
+                    federation::validate_awenode(&cfg)?;
                     serde_json::to_string_pretty(&cfg).map(|s| ("awenode.awenode".into(), s)).map_err(|e| e.to_string())
                 },
                 "awedc" => {
@@ -515,6 +516,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                     let members = parsed.get("member_node_ids").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect()).unwrap_or_else(|| vec![format_uid(node.identity.public.awe_id.as_bytes())]);
                     if dc_id.is_empty() { Err("data_centre_id is required".into()) } else {
                         let cfg = federation::generate_awedc(&format_uid(node.identity.public.awe_id.as_bytes()), dc_id, name, endpoints, members, now);
+                        federation::validate_awedc(&cfg)?;
                         serde_json::to_string_pretty(&cfg).map(|s| ("data-centre.awedc".into(), s)).map_err(|e| e.to_string())
                     }
                 },
@@ -523,6 +525,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                     let centres = parsed.get("data_centre_ids").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect()).unwrap_or_default();
                     if dc_id.is_empty() { Err("owner_data_centre_id is required".into()) } else {
                         let cfg = federation::generate_dgc(dc_id, name, centres, now);
+                        federation::validate_dgc(&cfg)?;
                         serde_json::to_string_pretty(&cfg).map(|s| ("data-group.dgc".into(), s)).map_err(|e| e.to_string())
                     }
                 },
