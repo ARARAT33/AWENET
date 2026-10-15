@@ -2259,7 +2259,7 @@ async fn run_product() -> Result<()> {
                                                 serde_json::json!(format_uid(&sender)),
                                             );
                                         }
-                                        log.push(item);
+                                        append_messenger_entry(&mut log, item);
                                     }
                                 }
                             }
@@ -2534,7 +2534,7 @@ async fn run_product() -> Result<()> {
                                         if !log.iter().any(|existing| {
                                             existing.get("id").and_then(|v| v.as_str()) == Some(id)
                                         }) {
-                                            log.push(item);
+                                            append_messenger_entry(&mut log, item);
                                         }
                                     }
                                 }
