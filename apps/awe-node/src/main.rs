@@ -373,7 +373,8 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
             let recipient_hex = parsed.get("recipient").and_then(|v| v.as_str()).unwrap_or("");
             let amount_value = parsed.get("amount_coins").cloned().unwrap_or(serde_json::Value::Null);
             let memo = parsed.get("memo").and_then(|v| v.as_str()).map(str::to_owned);
-            if consensus_state.lock().map(|guard| guard.is_some()).unwrap_or(false) {
+            // A poisoned consensus lock must fail closed, never fall back to the non-finalized ledger.
+            if consensus_state.lock().map(|guard| guard.is_some()).unwrap_or(true) {
                 let consensus_result: Result<(String, u128, Vec<([u8; 32], OnecoinConsensusMessage)>, u64, bool), String> = (|| {
                     let recipient = AweId::from_hex(recipient_hex)?;
                     if recipient == node.identity.public.awe_id {
