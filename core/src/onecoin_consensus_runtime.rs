@@ -247,3 +247,50 @@ impl OnecoinConsensusRuntime {
         &self.state.state
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::identity::Username;
+    use std::fs;
+
+    #[test]
+    fn single_validator_proposal_finalizes_and_persists() {
+        let dir = std::env::temp_dir().join(format!("awenet-consensus-propose-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+        let identity = Identity::generate(Username::new("validator").unwrap());
+        let validators = BTreeMap::from([(
+            identity.public.awe_id.to_hex(),
+            identity.public.public_key,
+        )]);
+        let mut runtime = OnecoinConsensusRuntime::open(&path, validators.clone()).unwrap();
+        runtime.state.state.ledger.initialize_genesis(&[identity.public.awe_id.clone()]).unwrap();
+        runtime.state.save().unwrap();
+
+        let outbound = runtime.propose(&identity, Vec::new(), 100).unwrap();
+        assert_eq!(runtime.persisted_state().height, 1);
+        assert!(outbound.iter().any(|(_, message)| matches!(message, OnecoinConsensusMessage::Certificate(_))));
+
+        let reopened = OnecoinConsensusRuntime::open(&path, validators).unwrap();
+        assert_eq!(reopened.persisted_state().height, 1);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn non_validator_cannot_propose() {
+        let dir = std::env::temp_dir().join(format!("awenet-consensus-deny-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let validator = Identity::generate(Username::new("validator").unwrap());
+        let outsider = Identity::generate(Username::new("outsider").unwrap());
+        let validators = BTreeMap::from([(
+            validator.public.awe_id.to_hex(),
+            validator.public.public_key,
+        )]);
+        let mut runtime = OnecoinConsensusRuntime::open(dir.join("state.json"), validators).unwrap();
+        assert!(runtime.propose(&outsider, Vec::new(), 100).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
