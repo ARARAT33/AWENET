@@ -43,6 +43,15 @@ const MAX_MESSENGER_LOG_ENTRIES: usize = 5_000;
 const MAX_COMMUNITY_TITLE_BYTES: usize = 128;
 const MAX_COMMUNITY_MESSAGE_BYTES: usize = 16 * 1024;
 const MAX_GROUP_MEMBERS: usize = 512;
+const MAX_COMMUNITY_MESSAGES_PER_FEED: usize = 5_000;
+
+fn append_bounded_json_entry(entries: &mut Vec<serde_json::Value>, value: serde_json::Value) {
+    if entries.len() >= MAX_COMMUNITY_MESSAGES_PER_FEED {
+        let remove_count = (MAX_COMMUNITY_MESSAGES_PER_FEED / 10).max(1);
+        entries.drain(..remove_count.min(entries.len()));
+    }
+    entries.push(value);
+}
 
 fn validate_community_title(value: &str) -> Result<(), String> {
     if value.trim().is_empty() {
@@ -981,7 +990,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                     Some(group) if !group.get("members").and_then(|v|v.as_array()).map(|a|a.iter().any(|v|v.as_str()==Some(local.as_str()))).unwrap_or(false)=>("403 Forbidden","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"not a group member"}).to_string()),
                     Some(group)=>{
                         let timestamp=now_unix(); let message=serde_json::json!({"id":hex::encode(&blake3::hash(format!("group:{}:{}:{}",gid,local,timestamp).as_bytes()).as_bytes()[..16]),"sender":local,"text":text,"timestamp":timestamp});
-                        if let Ok(mut st)=community.lock(){if let Some(g)=st.get_mut("groups").and_then(|v|v.as_array_mut()).and_then(|a|a.iter_mut().find(|g|g.get("id").and_then(|v|v.as_str())==Some(gid))){if let Some(a)=g.get_mut("messages").and_then(|v|v.as_array_mut()){a.push(message.clone());}}}
+                        if let Ok(mut st)=community.lock(){if let Some(g)=st.get_mut("groups").and_then(|v|v.as_array_mut()).and_then(|a|a.iter_mut().find(|g|g.get("id").and_then(|v|v.as_str())==Some(gid))){if let Some(a)=g.get_mut("messages").and_then(|v|v.as_array_mut()){append_bounded_json_entry(a, message.clone());}}}
                         let env=serde_json::json!({"kind":"awe.group.v1","event":"message","group_id":gid,"message":message,"sender":local}); let members=group.get("members").and_then(|v|v.as_array()).cloned().unwrap_or_default(); let mut delivered=0usize;
                         if let Ok(payload)=serde_json::to_vec(&env){for peer in node.peers().await{let pid=hex::encode(peer.awe_id);if pid!=local&&members.iter().any(|v|v.as_str()==Some(pid.as_str())){let sent=node.send_to_peer_confirmed(&peer.awe_id,100,payload.clone()).await.is_ok()||node.send_to_peer(&peer.awe_id,100,payload.clone()).await.is_ok();if sent{delivered+=1;}}}}
                         ("200 OK","application/json; charset=utf-8",serde_json::json!({"status":"sent","message":message,"delivered_members":delivered}).to_string())
@@ -1048,7 +1057,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
             match channel{
                 None=>("404 Not Found","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"channel not found"}).to_string()),
                 Some(channel) if channel.get("owner").and_then(|v|v.as_str())!=Some(local.as_str())=>("403 Forbidden","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"only channel owner may publish"}).to_string()),
-                Some(_channel) if text.is_empty()=>("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"text is required"}).to_string()),
+                Some(_channel) if validate_community_message(text).is_err()=>("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":validate_community_message(text).unwrap_err()}).to_string()),
                 Some(_channel)=>{
                     let message=serde_json::json!({"id":hex::encode(&blake3::hash(format!("channel:{}:{}:{}",cid,local,now_unix()).as_bytes()).as_bytes()[..16]),"sender":local,"text":text,"timestamp":now_unix()});
                     if let Ok(mut st)=community.lock(){if let Some(ch)=st.get_mut("channels").and_then(|v|v.as_array_mut()).and_then(|a|a.iter_mut().find(|c|c.get("id").and_then(|v|v.as_str())==Some(cid))){if let Some(a)=ch.get_mut("messages").and_then(|v|v.as_array_mut()){a.push(message.clone());}}}
@@ -2369,7 +2378,7 @@ async fn run_product() -> Result<()> {
                                                     .get_mut("messages")
                                                     .and_then(|v| v.as_array_mut())
                                                 {
-                                                    a.push(m);
+                                                    append_bounded_json_entry(a, m);
                                                 }
                                             }
                                         }
@@ -2888,11 +2897,11 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod phase_two_backend_tests {
     use super::{
-        append_messenger_entry, is_allowed_ui_origin, json_u16_field, json_u32_field,
+        append_bounded_json_entry, append_messenger_entry, is_allowed_ui_origin, json_u16_field, json_u32_field,
         parse_content_length, parse_onecoin_atoms, validate_community_message,
         validate_community_title, validate_group_member_ids, validate_storage_file_id,
         ATOMS_PER_COIN, MAX_COMMUNITY_MESSAGE_BYTES, MAX_COMMUNITY_TITLE_BYTES,
-        MAX_GROUP_MEMBERS, MAX_MESSENGER_LOG_ENTRIES,
+        MAX_COMMUNITY_MESSAGES_PER_FEED, MAX_GROUP_MEMBERS, MAX_MESSENGER_LOG_ENTRIES,
     };
     use serde_json::json;
 
@@ -2984,6 +2993,23 @@ mod phase_two_backend_tests {
         assert!(validate_group_member_ids(&["ab".repeat(32)]).is_ok());
         assert!(validate_group_member_ids(&["uid-not-an-aweid".to_string()]).is_err());
         assert!(validate_group_member_ids(&vec!["ab".repeat(32); MAX_GROUP_MEMBERS + 1]).is_err());
+    }
+
+    #[test]
+    fn community_feed_history_is_bounded() {
+        let mut entries = Vec::new();
+        for index in 0..=MAX_COMMUNITY_MESSAGES_PER_FEED {
+            append_bounded_json_entry(&mut entries, json!({"index": index}));
+        }
+        assert_eq!(entries.len(), MAX_COMMUNITY_MESSAGES_PER_FEED);
+        assert_eq!(
+            entries.last().and_then(|entry| entry.get("index")).and_then(|v| v.as_u64()),
+            Some(MAX_COMMUNITY_MESSAGES_PER_FEED as u64)
+        );
+        assert_eq!(
+            entries.first().and_then(|entry| entry.get("index")).and_then(|v| v.as_u64()),
+            Some((MAX_COMMUNITY_MESSAGES_PER_FEED / 10) as u64 + 1)
+        );
     }
 
     #[test]
