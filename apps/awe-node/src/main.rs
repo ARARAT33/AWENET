@@ -2490,7 +2490,9 @@ async fn run_product() -> Result<()> {
                                             .unwrap_or(false);
                                         if member {
                                             if let Some(m) = message.get("message").cloned() {
-                                                if validate_remote_feed_message(&m, &sender_uid).is_ok() {
+                                                if validate_remote_feed_message(&m, &sender_uid)
+                                                    .is_ok()
+                                                {
                                                     if let Some(a) = g
                                                         .get_mut("messages")
                                                         .and_then(|v| v.as_array_mut())
