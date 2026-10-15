@@ -280,10 +280,8 @@ mod finalized_state_tests {
 
     #[test]
     fn old_finalized_state_without_vote_locks_remains_loadable() {
-        let dir = std::env::temp_dir().join(format!(
-            "awe-onecoin-legacy-state-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("awe-onecoin-legacy-state-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("legacy-state.json");
