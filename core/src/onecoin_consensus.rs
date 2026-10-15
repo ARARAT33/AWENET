@@ -277,6 +277,58 @@ mod tests {
     }
 
     #[test]
+    fn finalized_transfer_applies_onebank_fee_exactly_once() {
+        use crate::onecoin::ATOMS_PER_COIN;
+
+        let sender = id("fee-sender");
+        let validator_b = id("fee-validator-b");
+        let validator_c = id("fee-validator-c");
+        let recipient = id("fee-recipient");
+        let mut state = OnecoinFinalizedState::default();
+        state
+            .ledger
+            .initialize_genesis(&[
+                sender.public.awe_id.clone(),
+                validator_b.public.awe_id.clone(),
+                validator_c.public.awe_id.clone(),
+                recipient.public.awe_id.clone(),
+            ])
+            .unwrap();
+        let validators = BTreeMap::from([
+            (sender.public.awe_id.to_hex(), sender.public.public_key),
+            (validator_b.public.awe_id.to_hex(), validator_b.public.public_key),
+            (validator_c.public.awe_id.to_hex(), validator_c.public.public_key),
+        ]);
+        let tx = OnecoinTransaction::new(
+            &sender,
+            0,
+            &recipient.public.awe_id,
+            ATOMS_PER_COIN,
+            None,
+        );
+        let block = OnecoinBlock::new(&sender, 1, [0; 32], vec![tx], 11).unwrap();
+        let certificate = QuorumCertificate {
+            block_hash: block.hash(),
+            height: 1,
+            votes: vec![
+                SignedBlockVote::new(&sender, &block, true),
+                SignedBlockVote::new(&validator_b, &block, true),
+            ],
+        };
+
+        state.finalize(&block, &certificate, &validators).unwrap();
+        assert_eq!(
+            state.ledger.balance_atoms(&sender.public.awe_id),
+            INITIAL_GENESIS_ALLOCATION - ATOMS_PER_COIN - ATOMS_PER_COIN / 100
+        );
+        assert_eq!(
+            state.ledger.balance_atoms(&recipient.public.awe_id),
+            INITIAL_GENESIS_ALLOCATION + ATOMS_PER_COIN
+        );
+        assert_eq!(state.ledger.collected_fee_atoms, ATOMS_PER_COIN / 100);
+    }
+
+    #[test]
     fn finalized_block_requires_two_thirds_and_applies_atomically() {
         let a = id("a");
         let b = id("b");
