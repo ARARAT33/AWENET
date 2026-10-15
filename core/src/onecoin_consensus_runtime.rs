@@ -63,6 +63,16 @@ impl OnecoinConsensusRuntime {
         let state = PersistentOnecoinState::open(&state_path)
             .map_err(|e| format!("failed to open ONECOIN consensus state: {e}"))?;
         let vote_lock_path = state_path.with_extension("vote-locks.json");
+        let vote_lock_backup = state_path.with_extension("vote-locks.bak");
+        // Recover a durable prior snapshot if the process stopped between
+        // staging the old file and installing its replacement on Windows.
+        if !vote_lock_path.exists() && vote_lock_backup.exists() {
+            fs::rename(&vote_lock_backup, &vote_lock_path)
+                .map_err(|e| format!("failed to recover ONECOIN vote-lock backup: {e}"))?;
+        } else if vote_lock_path.exists() && vote_lock_backup.exists() {
+            fs::remove_file(&vote_lock_backup)
+                .map_err(|e| format!("failed to clean stale ONECOIN vote-lock backup: {e}"))?;
+        }
         let mut local_votes: BTreeMap<u64, [u8; 32]> = if vote_lock_path.exists() {
             let bytes = fs::read(&vote_lock_path)
                 .map_err(|e| format!("failed to read ONECOIN vote locks: {e}"))?;
