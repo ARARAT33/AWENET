@@ -279,6 +279,26 @@ mod finalized_state_tests {
     use std::collections::BTreeMap;
 
     #[test]
+    fn old_finalized_state_without_vote_locks_remains_loadable() {
+        let dir = std::env::temp_dir().join(format!(
+            "awe-onecoin-legacy-state-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("legacy-state.json");
+        let mut value = serde_json::to_value(OnecoinFinalizedState::default()).unwrap();
+        value.as_object_mut().unwrap().remove("local_votes");
+        let mut bytes = STATE_MAGIC.to_vec();
+        bytes.extend(serde_json::to_vec(&value).unwrap());
+        fs::write(&path, bytes).unwrap();
+
+        let loaded = PersistentOnecoinState::open(&path).unwrap();
+        assert!(loaded.state.local_votes.is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn finalized_state_round_trips_and_reloads() {
         let dir = std::env::temp_dir().join(format!("awe-onecoin-state-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
