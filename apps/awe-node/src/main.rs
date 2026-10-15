@@ -275,6 +275,42 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> Result<String>
 }
 
 #[allow(clippy::too_many_arguments)]
+fn parse_wallet_send_payload(
+    body: &str,
+) -> Result<(AweId, u128, Option<String>), String> {
+    let parsed: serde_json::Value = serde_json::from_str(body)
+        .map_err(|error| format!("invalid wallet-send JSON: {error}"))?;
+    if !parsed.is_object() {
+        return Err("request body must be a valid JSON object".into());
+    }
+    let recipient_hex = parsed
+        .get("recipient")
+        .and_then(|value| value.as_str())
+        .ok_or("recipient must be a string AWE-ID")?;
+    if recipient_hex.len() != 64 || !recipient_hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err("recipient must be a 64-character AWE-ID".into());
+    }
+    let recipient = AweId::from_hex(recipient_hex)?;
+    let amount_value = parsed
+        .get("amount_coins")
+        .ok_or("amount_coins is required")?;
+    let amount_atoms = parse_onecoin_atoms(amount_value)?;
+    if amount_atoms == 0 {
+        return Err("amount_coins must be positive".into());
+    }
+    let memo = match parsed.get("memo") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(value)) if value.chars().count() <= 256 => {
+            Some(value.clone())
+        }
+        Some(serde_json::Value::String(_)) => {
+            return Err("memo must not exceed 256 characters".into())
+        }
+        Some(_) => return Err("memo must be a string or null".into()),
+    };
+    Ok((recipient, amount_atoms, memo))
+}
+
 fn parse_onecoin_atoms(value: &serde_json::Value) -> Result<u128, String> {
     let raw = if let Some(text) = value.as_str() {
         text.trim().to_owned()
@@ -453,38 +489,8 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         },
         "/api/onebank/wallet/send" if method == "POST" => {
             let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
-            let parsed: Result<serde_json::Value, String> = serde_json::from_str(body)
-                .map_err(|error| format!("invalid wallet-send JSON: {error}"));
             let result: Result<(String, u128, OnecoinTransaction), String> = (|| {
-                let parsed = parsed?;
-                if !parsed.is_object() {
-                    return Err("request body must be a valid JSON object".into());
-                }
-                let recipient_hex = parsed
-                    .get("recipient")
-                    .and_then(|value| value.as_str())
-                    .ok_or("recipient must be a string AWE-ID")?;
-                let amount_value = parsed
-                    .get("amount_coins")
-                    .ok_or("amount_coins is required")?;
-                let memo = match parsed.get("memo") {
-                    None | Some(serde_json::Value::Null) => None,
-                    Some(serde_json::Value::String(value)) if value.chars().count() <= 256 => {
-                        Some(value.clone())
-                    }
-                    Some(serde_json::Value::String(_)) => {
-                        return Err("memo must not exceed 256 characters".into())
-                    }
-                    Some(_) => return Err("memo must be a string or null".into()),
-                };
-                if recipient_hex.len() != 64 || !recipient_hex.chars().all(|c| c.is_ascii_hexdigit()) {
-                    return Err("recipient must be a 64-character AWE-ID".into());
-                }
-                let amount_atoms = parse_onecoin_atoms(amount_value)?;
-                if amount_atoms == 0 {
-                    return Err("amount_coins must be positive".into());
-                }
-                let recipient = AweId::from_hex(recipient_hex)?;
+                let (recipient, amount_atoms, memo) = parse_wallet_send_payload(body)?;
                 if recipient == node.identity.public.awe_id {
                     return Err("cannot transfer ONECOIN to the same wallet".into());
                 }
@@ -3018,5 +3024,59 @@ mod identity_storage_tests {
         );
         assert!(dir.join("node.awesecret").exists());
         let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod wallet_send_payload_tests {
+    use super::*;
+
+    fn valid_body() -> String {
+        let recipient = "ab".repeat(32);
+        format!(r#"{{"recipient":"{recipient}","amount_coins":"1.25","memo":"hello"}}"#)
+    }
+
+    #[test]
+    fn wallet_send_payload_parses_exact_amount_and_memo() {
+        let (recipient, amount, memo) = parse_wallet_send_payload(&valid_body()).unwrap();
+        assert_eq!(recipient.to_hex(), "ab".repeat(32));
+        assert_eq!(amount, 125 * (ATOMS_PER_COIN / 100));
+        assert_eq!(memo.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn wallet_send_payload_rejects_malformed_or_non_object_json() {
+        assert!(parse_wallet_send_payload("{").is_err());
+        assert!(parse_wallet_send_payload("[]").is_err());
+        assert!(parse_wallet_send_payload("null").is_err());
+    }
+
+    #[test]
+    fn wallet_send_payload_requires_recipient_and_amount() {
+        assert!(parse_wallet_send_payload(r#"{"amount_coins":"1"}"#).is_err());
+        assert!(parse_wallet_send_payload(r#"{"recipient":"not-an-id","amount_coins":"1"}"#).is_err());
+        assert!(parse_wallet_send_payload(&format!(
+            r#"{{"recipient":"{}"}}"#,
+            "ab".repeat(32)
+        ))
+        .is_err());
+    }
+
+    #[test]
+    fn wallet_send_payload_rejects_zero_bad_memo_and_overlong_memo() {
+        let recipient = "ab".repeat(32);
+        assert!(parse_wallet_send_payload(&format!(
+            r#"{{"recipient":"{recipient}","amount_coins":"0"}}"#
+        ))
+        .is_err());
+        assert!(parse_wallet_send_payload(&format!(
+            r#"{{"recipient":"{recipient}","amount_coins":"1","memo":5}}"#
+        ))
+        .is_err());
+        assert!(parse_wallet_send_payload(&format!(
+            r#"{{"recipient":"{recipient}","amount_coins":"1","memo":"{}"}}"#,
+            "x".repeat(257)
+        ))
+        .is_err());
     }
 }
