@@ -239,7 +239,7 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> Result<String>
             anyhow::bail!("client closed connection before HTTP headers");
         }
         data.extend_from_slice(&chunk[..n]);
-        if let Some(pos) = data.windows(4).position(|window| window == b"\\r\\n\\r\\n") {
+        if let Some(pos) = data.windows(4).position(|window| window == b"\r\n\r\n") {
             if pos + 4 > HEADER_LIMIT {
                 anyhow::bail!("HTTP headers too large");
             }
@@ -2779,10 +2779,10 @@ mod phase_two_backend_tests {
 
     #[test]
     fn rejects_ambiguous_or_unsupported_http_framing() {
-        assert_eq!(parse_content_length("POST / HTTP/1.1\\r\\nContent-Length: 12\\r\\n\\r\\n").unwrap(), 12);
-        assert!(parse_content_length("POST / HTTP/1.1\\r\\nContent-Length: 1\\r\\nContent-Length: 2\\r\\n\\r\\n").is_err());
-        assert!(parse_content_length("POST / HTTP/1.1\\r\\nTransfer-Encoding: chunked\\r\\n\\r\\n").is_err());
-        assert!(parse_content_length("POST / HTTP/1.1\\r\\nContent-Length: -1\\r\\n\\r\\n").is_err());
+        assert_eq!(parse_content_length("POST / HTTP/1.1\r\nContent-Length: 12\r\n\r\n").unwrap(), 12);
+        assert!(parse_content_length("POST / HTTP/1.1\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\n").is_err());
+        assert!(parse_content_length("POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n").is_err());
+        assert!(parse_content_length("POST / HTTP/1.1\r\nContent-Length: -1\r\n\r\n").is_err());
     }
 
     #[test]
