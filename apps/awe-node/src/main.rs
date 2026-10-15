@@ -195,6 +195,38 @@ async fn http_response(
     .into_bytes()
 }
 
+fn parse_content_length(headers: &str) -> Result<usize, &'static str> {
+    let mut content_length = None;
+    for line in headers.lines().skip(1) {
+        let line = line.trim_end_matches('\r');
+        if line.is_empty() {
+            continue;
+        }
+        let (name, value) = line.split_once(':').ok_or("malformed HTTP header")?;
+        if name.trim().is_empty() {
+            return Err("malformed HTTP header name");
+        }
+        if name.eq_ignore_ascii_case("transfer-encoding") {
+            return Err("Transfer-Encoding is unsupported");
+        }
+        if name.eq_ignore_ascii_case("content-length") {
+            if content_length.is_some() {
+                return Err("duplicate Content-Length header");
+            }
+            let value = value.trim();
+            if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+                return Err("invalid Content-Length header");
+            }
+            content_length = Some(
+                value
+                    .parse::<usize>()
+                    .map_err(|_| "invalid Content-Length header")?,
+            );
+        }
+    }
+    Ok(content_length.unwrap_or(0))
+}
+
 async fn read_http_request(stream: &mut tokio::net::TcpStream) -> Result<String> {
     const HEADER_LIMIT: usize = 64 * 1024;
     const BODY_LIMIT: usize = 64 * 1024 * 1024;
@@ -207,32 +239,23 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> Result<String>
             anyhow::bail!("client closed connection before HTTP headers");
         }
         data.extend_from_slice(&chunk[..n]);
-        if data.len() > HEADER_LIMIT {
-            anyhow::bail!("HTTP headers too large");
-        }
-        if let Some(pos) = data.windows(4).position(|w| w == b"\r\n\r\n") {
+        if let Some(pos) = data.windows(4).position(|window| window == b"\\r\\n\\r\\n") {
+            if pos + 4 > HEADER_LIMIT {
+                anyhow::bail!("HTTP headers too large");
+            }
             header_end = pos + 4;
             break;
+        }
+        if data.len() > HEADER_LIMIT {
+            anyhow::bail!("HTTP headers too large");
         }
     }
 
     let headers = String::from_utf8_lossy(&data[..header_end]);
-    let content_length = headers
-        .lines()
-        .find_map(|line| {
-            let (name, value) = line.split_once(':')?;
-            if name.eq_ignore_ascii_case("content-length") {
-                value.trim().parse::<usize>().ok()
-            } else {
-                None
-            }
-        })
-        .unwrap_or(0);
-
+    let content_length = parse_content_length(&headers).map_err(anyhow::Error::msg)?;
     if content_length > BODY_LIMIT {
         anyhow::bail!("HTTP request body too large");
     }
-
     let target = header_end + content_length;
     if data.len() < target {
         let mut filled = data.len();
@@ -247,7 +270,6 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> Result<String>
     } else if data.len() > target {
         data.truncate(target);
     }
-
     String::from_utf8(data).context("HTTP request must be UTF-8")
 }
 
@@ -2727,7 +2749,8 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod phase_two_backend_tests {
     use super::{
-        is_allowed_ui_origin, json_u16_field, json_u32_field, parse_onecoin_atoms, ATOMS_PER_COIN,
+        is_allowed_ui_origin, json_u16_field, json_u32_field, parse_content_length,
+        parse_onecoin_atoms, ATOMS_PER_COIN,
     };
     use serde_json::json;
 
@@ -2752,6 +2775,14 @@ mod phase_two_backend_tests {
     fn rejects_coin_amounts_with_more_than_18_decimals_or_exponent_notation() {
         assert!(parse_onecoin_atoms(&json!("0.0000000000000000001")).is_err());
         assert!(parse_onecoin_atoms(&json!("1e-3")).is_err());
+    }
+
+    #[test]
+    fn rejects_ambiguous_or_unsupported_http_framing() {
+        assert_eq!(parse_content_length("POST / HTTP/1.1\\r\\nContent-Length: 12\\r\\n\\r\\n").unwrap(), 12);
+        assert!(parse_content_length("POST / HTTP/1.1\\r\\nContent-Length: 1\\r\\nContent-Length: 2\\r\\n\\r\\n").is_err());
+        assert!(parse_content_length("POST / HTTP/1.1\\r\\nTransfer-Encoding: chunked\\r\\n\\r\\n").is_err());
+        assert!(parse_content_length("POST / HTTP/1.1\\r\\nContent-Length: -1\\r\\n\\r\\n").is_err());
     }
 
     #[test]
