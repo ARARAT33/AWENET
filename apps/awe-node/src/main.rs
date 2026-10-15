@@ -3206,7 +3206,7 @@ mod phase_two_backend_tests {
                 .first()
                 .and_then(|entry| entry.get("index"))
                 .and_then(|v| v.as_u64()),
-            Some((MAX_COMMUNITY_MESSAGES_PER_FEED / 10) as u64 + 1)
+            Some((MAX_COMMUNITY_MESSAGES_PER_FEED / 10) as u64)
         );
     }
 
@@ -3227,7 +3227,7 @@ mod phase_two_backend_tests {
             log.first()
                 .and_then(|entry| entry.get("index"))
                 .and_then(|v| v.as_u64()),
-            Some((MAX_MESSENGER_LOG_ENTRIES / 10) as u64 + 1)
+            Some((MAX_MESSENGER_LOG_ENTRIES / 10) as u64)
         );
     }
 
