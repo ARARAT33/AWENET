@@ -2105,6 +2105,15 @@ async fn run_product() -> Result<()> {
                     continue;
                 }
                 if stream == policy::ONECOIN_TRANSFER_STREAM {
+                    // Once consensus is configured, legacy direct transfers must not mutate a
+                    // separate non-finalized ledger behind the wallet's finalized balance.
+                    if dispatcher_consensus
+                        .lock()
+                        .map(|state| state.is_some())
+                        .unwrap_or(true)
+                    {
+                        continue;
+                    }
                     if let Ok(tx) = serde_json::from_slice::<OnecoinTransaction>(&payload) {
                         if tx.recipient == *dispatcher_node.identity.public.awe_id.as_bytes() {
                             if let Ok(mut ledger) = dispatcher_onecoin_ledger.lock() {
