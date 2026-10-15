@@ -2086,7 +2086,7 @@ async fn autonomous_repair_cycle(
                                 if let Some((ack_sender, ack)) = acks.remove(&request_id) {
                                     if storage_ack_matches(
                                         &ack_sender,
-                                        &target_id,
+                                        target_id,
                                         &ack,
                                         &file_id,
                                         index as u16,
