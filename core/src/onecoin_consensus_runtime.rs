@@ -103,10 +103,12 @@ impl OnecoinConsensusRuntime {
             timestamp_unix,
         )?;
         block.validate_shape()?;
+        self.state.state.validate_block_transactions(&block)?;
         let hash = block.hash();
         if self.pending.contains_key(&hash) {
             return Err("duplicate pending ONECOIN proposal".into());
         }
+        self.record_local_vote(&block)?;
         self.pending.insert(hash, block.clone());
 
         // A proposer must count its own signed vote; otherwise a single-validator testnet can
@@ -174,6 +176,9 @@ impl OnecoinConsensusRuntime {
             return Err("too many pending consensus blocks".into());
         }
         let hash = block.hash();
+        if self.local_is_validator(identity) {
+            self.record_local_vote(&block)?;
+        }
         self.pending.insert(hash, block.clone());
 
         if self.local_is_validator(identity) {
@@ -255,6 +260,23 @@ impl OnecoinConsensusRuntime {
         self.pending.remove(&cert.block_hash);
         self.votes.remove(&cert.block_hash);
         Ok(Vec::new())
+    }
+
+    fn record_local_vote(&mut self, block: &OnecoinBlock) -> Result<(), String> {
+        let height = block.header.height;
+        let hash = block.hash();
+        if let Some(previous) = self.state.state.local_votes.get(&height) {
+            if previous != &hash {
+                return Err("local validator already voted for a different block at this height".into());
+            }
+            return Ok(());
+        }
+        self.state.state.local_votes.insert(height, hash);
+        if let Err(error) = self.state.save() {
+            self.state.state.local_votes.remove(&height);
+            return Err(format!("failed to persist local validator vote lock: {error}"));
+        }
+        Ok(())
     }
 
     pub fn persisted_state(&self) -> &OnecoinFinalizedState {
@@ -353,6 +375,52 @@ mod tests {
         );
         assert!(result.is_err());
         assert_eq!(runtime.persisted_state().height, 0);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn validator_does_not_double_vote_even_after_restart() {
+        let dir = std::env::temp_dir().join(format!(
+            "awenet-consensus-double-vote-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+        let proposer_a = Identity::generate(Username::new("proposer-a").unwrap());
+        let proposer_b = Identity::generate(Username::new("proposer-b").unwrap());
+        let local = Identity::generate(Username::new("local-validator").unwrap());
+        let validators = BTreeMap::from([
+            (proposer_a.public.awe_id.to_hex(), proposer_a.public.public_key),
+            (proposer_b.public.awe_id.to_hex(), proposer_b.public.public_key),
+            (local.public.awe_id.to_hex(), local.public.public_key),
+        ]);
+        let mut runtime = OnecoinConsensusRuntime::open(&path, validators.clone()).unwrap();
+        runtime.state.state.ledger.initialize_genesis(&[
+            proposer_a.public.awe_id.clone(),
+            proposer_b.public.awe_id.clone(),
+            local.public.awe_id.clone(),
+        ]).unwrap();
+        runtime.state.save().unwrap();
+        let first = OnecoinBlock::new(&proposer_a, 1, [0; 32], Vec::new(), 100).unwrap();
+        let conflicting = OnecoinBlock::new(&proposer_b, 1, [0; 32], Vec::new(), 101).unwrap();
+        runtime.handle(
+            *proposer_a.public.awe_id.as_bytes(),
+            &local,
+            OnecoinConsensusMessage::Proposal(first),
+        ).unwrap();
+        assert!(runtime.handle(
+            *proposer_b.public.awe_id.as_bytes(),
+            &local,
+            OnecoinConsensusMessage::Proposal(conflicting.clone()),
+        ).is_err());
+
+        let mut reopened = OnecoinConsensusRuntime::open(&path, validators).unwrap();
+        assert!(reopened.handle(
+            *proposer_b.public.awe_id.as_bytes(),
+            &local,
+            OnecoinConsensusMessage::Proposal(conflicting),
+        ).is_err());
         let _ = fs::remove_dir_all(&dir);
     }
 
