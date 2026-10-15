@@ -240,15 +240,15 @@ fn parse_onecoin_atoms(value: &serde_json::Value) -> Result<u128, String> {
     if parts.next().is_some() || whole.is_empty() || !whole.chars().all(|c| c.is_ascii_digit()) {
         return Err("amount_coins has invalid decimal syntax".into());
     }
-    if fraction.len() > 8 || !fraction.chars().all(|c| c.is_ascii_digit()) {
-        return Err("amount_coins supports at most 8 decimal places".into());
+    if fraction.len() > 18 || !fraction.chars().all(|c| c.is_ascii_digit()) {
+        return Err("amount_coins supports at most 18 decimal places".into());
     }
     let whole_atoms = whole
         .parse::<u128>()
         .map_err(|_| "amount_coins is too large".to_string())?
         .checked_mul(ATOMS_PER_COIN)
         .ok_or_else(|| "amount_coins is too large".to_string())?;
-    let padded = format!("{fraction:0<8}");
+    let padded = format!("{fraction:0<18}");
     let fraction_atoms = if padded.is_empty() {
         0
     } else {
@@ -2547,5 +2547,25 @@ async fn main() -> Result<()> {
             .await
         }
         _ => usage(),
+    }
+}
+
+#[cfg(test)]
+mod phase_two_backend_tests {
+    use super::{parse_onecoin_atoms, ATOMS_PER_COIN};
+    use serde_json::json;
+
+    #[test]
+    fn parses_coin_amounts_using_full_18_decimal_precision() {
+        assert_eq!(parse_onecoin_atoms(&json!("1")).unwrap(), ATOMS_PER_COIN);
+        assert_eq!(parse_onecoin_atoms(&json!("1.5")).unwrap(), ATOMS_PER_COIN + ATOMS_PER_COIN / 2);
+        assert_eq!(parse_onecoin_atoms(&json!("0.000000000000000001")).unwrap(), 1);
+        assert_eq!(parse_onecoin_atoms(&json!("0.00000001")).unwrap(), ATOMS_PER_COIN / 100_000_000);
+    }
+
+    #[test]
+    fn rejects_coin_amounts_with_more_than_18_decimals_or_exponent_notation() {
+        assert!(parse_onecoin_atoms(&json!("0.0000000000000000001")).is_err());
+        assert!(parse_onecoin_atoms(&json!("1e-3")).is_err());
     }
 }
