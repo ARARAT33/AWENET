@@ -1052,7 +1052,13 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
             let mut members=p.get("members").and_then(|v|v.as_array()).cloned().unwrap_or_default().into_iter().filter_map(|v|v.as_str().map(str::to_string)).filter(|v|!v.is_empty()).collect::<Vec<_>>();
             let local=node.identity.public.awe_id.to_hex();
             let title_validation = validate_community_title(&title);
-            let members_validation = validate_group_member_ids(&members);
+            let final_member_count =
+                members.len() + (if members.contains(&local) { 0 } else { 1 });
+            let members_validation = if final_member_count > MAX_GROUP_MEMBERS {
+                Err(format!("group cannot exceed {MAX_GROUP_MEMBERS} members"))
+            } else {
+                validate_group_member_ids(&members)
+            };
             if let Err(error) = title_validation {
                 ("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":error}).to_string())
             } else if let Err(error) = members_validation {
