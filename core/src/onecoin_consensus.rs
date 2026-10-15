@@ -209,7 +209,8 @@ impl OnecoinFinalizedState {
                 return Err("duplicate transaction in block".into());
             }
             let sender_key = next.ledger_sender_key(tx)?;
-            next.apply_transfer(tx, &sender_key)?;
+            // Consensus execution must apply the same ONEBANK fee rule as wallet admission.
+            next.apply_transfer_with_fee(tx, &sender_key, 100)?;
         }
         Ok(next)
     }
