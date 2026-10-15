@@ -1282,10 +1282,26 @@ impl Node {
                         .await
                     {
                         Ok(elapsed) => return Ok(elapsed),
-                        Err(error) => last_error = Some(error),
+                        Err(error) => {
+                            eprintln!(
+                                "confirmed peer send failed: peer={}, address={}, stage=data-roundtrip, error={}",
+                                hex::encode(peer_id),
+                                address,
+                                error
+                            );
+                            last_error = Some(error);
+                        }
                     }
                 }
-                Err(error) => last_error = Some(error),
+                Err(error) => {
+                    eprintln!(
+                        "confirmed peer send failed: peer={}, address={}, stage=connect, error={}",
+                        hex::encode(peer_id),
+                        address,
+                        error
+                    );
+                    last_error = Some(error);
+                }
             }
         }
         Err(last_error.unwrap_or_else(|| {
