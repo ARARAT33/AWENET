@@ -293,20 +293,20 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         "/onecoin.css" => ("200 OK", "text/css; charset=utf-8", ONECOIN_CSS.to_string()),
         "/vendor/qrcode.js" => ("200 OK", "application/javascript; charset=utf-8", QR_JS.to_string()),
         "/api/onebank/wallet" if method == "GET" => {
-            let consensus_snapshot = consensus_state
-                .lock()
-                .ok()
-                .and_then(|guard| guard.as_ref().map(|runtime| (
+            let consensus_snapshot = consensus_state.lock().map(|guard| {
+                guard.as_ref().map(|runtime| (
                     runtime.persisted_state().ledger.clone(),
                     runtime.persisted_state().height,
-                )));
+                ))
+            });
             let (ledger, finality_mode, consensus_height) = match consensus_snapshot {
-                Some((ledger, height)) => (ledger, "CONSENSUS_FINALIZED", Some(height)),
-                None => (
+                Ok(Some((ledger, height))) => (ledger, "CONSENSUS_FINALIZED", Some(height)),
+                Ok(None) => (
                     onecoin_ledger.lock().map(|l| l.clone()).unwrap_or_default(),
                     "LOCAL_LEDGER",
                     None,
                 ),
+                Err(_) => (OnecoinLedger::default(), "CONSENSUS_UNAVAILABLE", None),
             };
             let id = node.identity.public.awe_id.clone();
             let balance_atoms = ledger.balance_atoms(&id);
