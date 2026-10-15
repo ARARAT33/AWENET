@@ -5,6 +5,7 @@
 //! when its configured validator set contains its AWEID and public key.
 
 use crate::identity::{AweId, Identity};
+use crate::onecoin::{OnecoinTransaction};
 use crate::onecoin_consensus::{
     OnecoinBlock, OnecoinFinalizedState, QuorumCertificate, SignedBlockVote,
 };
@@ -77,6 +78,47 @@ impl OnecoinConsensusRuntime {
         self.validators
             .get(&identity.public.awe_id.to_hex())
             .is_some_and(|key| key == &identity.public.public_key)
+    }
+
+    /// Propose a block from the current finalized tip and emit it to the configured validators.
+    /// The local validator's signed vote is recorded immediately; state only advances once a quorum
+    /// certificate is verified and persisted.
+    pub fn propose(
+        &mut self,
+        identity: &Identity,
+        transactions: Vec<OnecoinTransaction>,
+        timestamp_unix: u64,
+    ) -> Result<Vec<([u8; 32], OnecoinConsensusMessage)>, String> {
+        if !self.local_is_validator(identity) {
+            return Err("local identity is not an authorized ONECOIN validator".into());
+        }
+        if self.pending.len() >= MAX_PENDING_BLOCKS {
+            return Err("too many pending consensus blocks".into());
+        }
+        let block = OnecoinBlock::new(
+            identity,
+            self.state.state.height.saturating_add(1),
+            self.state.state.tip_hash,
+            transactions,
+            timestamp_unix,
+        )?;
+        block.validate_shape()?;
+        let hash = block.hash();
+        if self.pending.contains_key(&hash) {
+            return Err("duplicate pending ONECOIN proposal".into());
+        }
+        self.pending.insert(hash, block.clone());
+
+        // A proposer must count its own signed vote; otherwise a single-validator testnet can
+        // never finalize and multi-validator networks waste one quorum slot.
+        let local_vote = SignedBlockVote::new(identity, &block, true);
+        let mut outbound = self.handle_vote(identity.public.public_key, local_vote)?;
+        for public_key in self.validators.values().copied() {
+            if public_key != identity.public.public_key {
+                outbound.push((public_key, OnecoinConsensusMessage::Proposal(block.clone())));
+            }
+        }
+        Ok(outbound)
     }
 
     pub fn handle(
