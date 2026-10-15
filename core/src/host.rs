@@ -176,7 +176,16 @@ impl AweHost {
 
     pub fn get(&mut self, manifest: &SiteManifest, path: &str) -> io::Result<Vec<u8>> {
         let clean = normalize_path(path)?;
-        if let Some(v) = self.cache.get(&clean) {
+        // Cache identity must include the site and manifest version. Caching only by
+        // path allows one site's /index.html to leak into another site's response.
+        let cache_key = format!(
+            "{}:{}:{}:{}",
+            manifest.domain,
+            manifest.version,
+            hex::encode(manifest.root_hash),
+            clean
+        );
+        if let Some(v) = self.cache.get(&cache_key) {
             return Ok(v.clone());
         }
         let f = manifest
@@ -196,7 +205,7 @@ impl AweHost {
                 self.cache.remove(&k);
             }
         }
-        self.cache.insert(clean, data.clone());
+        self.cache.insert(cache_key, data.clone());
         Ok(data)
     }
     pub fn save_manifest(&self, manifest: &SiteManifest) -> io::Result<()> {
@@ -214,8 +223,12 @@ impl AweHost {
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid host manifest"))
     }
     pub fn manifest_path(&self, domain: &str) -> PathBuf {
+        // Never interpolate untrusted domain text into a filesystem path. Hashing
+        // gives each input a fixed-length filename and prevents both '/' and '\\'
+        // path traversal on Unix and Windows.
+        let digest = Sha256::digest(domain.as_bytes());
         self.root
-            .join(format!("{}.manifest.json", domain.replace('/', "_")))
+            .join(format!("{}.manifest.json", hex::encode(digest)))
     }
 }
 pub fn normalize_path(path: &str) -> io::Result<String> {
@@ -244,6 +257,37 @@ mod tests {
         assert!(normalize_path("/index.html").is_ok());
         assert!(normalize_path("/../secret").is_err())
     }
+    #[test]
+    fn manifest_path_is_contained_for_untrusted_domains() {
+        let r = std::env::temp_dir().join(format!("awe-host-path-{}", std::process::id()));
+        let h = AweHost::open(&r, 10_000_000, HostPolicy::default()).unwrap();
+        let path = h.manifest_path("../../../../outside\\\\evil");
+        assert_eq!(path.parent(), Some(r.as_path()));
+        assert!(path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .ends_with(".manifest.json"));
+        let _ = fs::remove_dir_all(r);
+    }
+
+    #[test]
+    fn cache_isolated_between_sites() {
+        let r = std::env::temp_dir().join(format!("awe-host-cache-{}", std::process::id()));
+        let mut h = AweHost::open(&r, 10_000_000, HostPolicy::default()).unwrap();
+        let f1 = h
+            .publish_file("/index.html", b"site one", "text/html")
+            .unwrap();
+        let f2 = h
+            .publish_file("/index.html", b"site two", "text/html")
+            .unwrap();
+        let m1 = h.publish_manifest("one.awe", 1, vec![1], vec![f1]).unwrap();
+        let m2 = h.publish_manifest("two.awe", 1, vec![2], vec![f2]).unwrap();
+        assert_eq!(h.get(&m1, "/").unwrap(), b"site one");
+        assert_eq!(h.get(&m2, "/").unwrap(), b"site two");
+        let _ = fs::remove_dir_all(r);
+    }
+
     #[test]
     fn host_roundtrip() {
         let r = std::env::temp_dir().join(format!("awe-host-{}", std::process::id()));

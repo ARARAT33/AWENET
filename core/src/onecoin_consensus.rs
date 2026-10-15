@@ -193,6 +193,24 @@ impl Default for OnecoinFinalizedState {
 }
 
 impl OnecoinFinalizedState {
+    /// Validate and execute a candidate block against a cloned ledger without
+    /// mutating finalized state. Validators call this before voting so invalid
+    /// transfers do not receive approval votes.
+    pub fn preview_ledger(&self, block: &OnecoinBlock) -> Result<OnecoinLedger, String> {
+        block.validate_shape()?;
+        let mut next = self.ledger.clone();
+        let mut seen = BTreeMap::new();
+        for tx in &block.transactions {
+            let txid = tx.id();
+            if seen.insert(txid, true).is_some() {
+                return Err("duplicate transaction in block".into());
+            }
+            let sender_key = next.ledger_sender_key(tx)?;
+            next.apply_transfer(tx, &sender_key)?;
+        }
+        Ok(next)
+    }
+
     pub fn finalize(
         &mut self,
         block: &OnecoinBlock,
@@ -216,17 +234,7 @@ impl OnecoinFinalizedState {
 
         // Execute against a clone first. A failed transaction must never leave
         // the live state half-applied.
-        let mut next = self.ledger.clone();
-        let mut seen = BTreeMap::new();
-        for tx in &block.transactions {
-            let txid = tx.id();
-            if seen.insert(txid, true).is_some() {
-                return Err("duplicate transaction in block".into());
-            }
-            let sender_key = next.ledger_sender_key(tx)?;
-            next.apply_transfer(tx, &sender_key)?;
-        }
-
+        let next = self.preview_ledger(block)?;
         self.ledger = next;
         self.height = block.header.height;
         self.tip_hash = block.hash();
@@ -262,6 +270,49 @@ mod tests {
 
     fn id(name: &str) -> Identity {
         Identity::generate(Username::new(name).unwrap())
+    }
+
+    #[test]
+    fn preview_ledger_validates_without_mutating_finalized_state() {
+        let a = id("preview_sender");
+        let b = id("preview_recipient");
+        let mut state = OnecoinFinalizedState::default();
+        state
+            .ledger
+            .initialize_genesis(&[a.public.awe_id.clone(), b.public.awe_id.clone()])
+            .unwrap();
+        let initial_balance = state.ledger.balance_atoms(&a.public.awe_id);
+
+        let valid_tx = OnecoinTransaction::new(
+            &a,
+            0,
+            &b.public.awe_id,
+            INITIAL_GENESIS_ALLOCATION / 2,
+            None,
+        );
+        let valid_block = OnecoinBlock::new(&a, 1, [0; 32], vec![valid_tx], 10).unwrap();
+        let preview = state.preview_ledger(&valid_block).unwrap();
+        assert!(preview.balance_atoms(&a.public.awe_id) < initial_balance);
+        assert_eq!(
+            state.ledger.balance_atoms(&a.public.awe_id),
+            initial_balance
+        );
+        assert_eq!(state.height, 0);
+
+        let invalid_tx = OnecoinTransaction::new(
+            &a,
+            0,
+            &b.public.awe_id,
+            INITIAL_GENESIS_ALLOCATION + 1,
+            None,
+        );
+        let invalid_block = OnecoinBlock::new(&a, 1, [0; 32], vec![invalid_tx], 11).unwrap();
+        assert!(state.preview_ledger(&invalid_block).is_err());
+        assert_eq!(
+            state.ledger.balance_atoms(&a.public.awe_id),
+            initial_balance
+        );
+        assert_eq!(state.height, 0);
     }
 
     #[test]

@@ -11,7 +11,8 @@ use crate::onecoin_consensus::{
 use crate::onecoin_store::PersistentOnecoinState;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 pub const ONECOIN_CONSENSUS_STREAM: u32 = 200;
 pub const MAX_CONSENSUS_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
@@ -48,6 +49,9 @@ pub struct OnecoinConsensusRuntime {
     pub validators: BTreeMap<String, [u8; 32]>,
     pending: HashMap<[u8; 32], OnecoinBlock>,
     votes: HashMap<[u8; 32], BTreeMap<String, SignedBlockVote>>,
+    // Persisted before a vote is emitted to prevent equivocation across restarts.
+    local_votes: BTreeMap<u64, [u8; 32]>,
+    vote_lock_path: PathBuf,
 }
 
 impl OnecoinConsensusRuntime {
@@ -55,8 +59,35 @@ impl OnecoinConsensusRuntime {
         path: impl AsRef<Path>,
         validators: BTreeMap<String, [u8; 32]>,
     ) -> Result<Self, String> {
-        let state = PersistentOnecoinState::open(path)
+        let state_path = path.as_ref().to_path_buf();
+        let state = PersistentOnecoinState::open(&state_path)
             .map_err(|e| format!("failed to open ONECOIN consensus state: {e}"))?;
+        let vote_lock_path = state_path.with_extension("vote-locks.json");
+        let vote_lock_backup = state_path.with_extension("vote-locks.bak");
+        // Recover a durable prior snapshot if the process stopped between
+        // staging the old file and installing its replacement on Windows.
+        if !vote_lock_path.exists() && vote_lock_backup.exists() {
+            fs::rename(&vote_lock_backup, &vote_lock_path)
+                .map_err(|e| format!("failed to recover ONECOIN vote-lock backup: {e}"))?;
+        } else if vote_lock_path.exists() && vote_lock_backup.exists() {
+            fs::remove_file(&vote_lock_backup)
+                .map_err(|e| format!("failed to clean stale ONECOIN vote-lock backup: {e}"))?;
+        }
+        let mut local_votes: BTreeMap<u64, [u8; 32]> = if vote_lock_path.exists() {
+            let bytes = fs::read(&vote_lock_path)
+                .map_err(|e| format!("failed to read ONECOIN vote locks: {e}"))?;
+            if bytes.len() > 1024 * 1024 {
+                return Err("ONECOIN vote-lock file exceeds size limit".into());
+            }
+            serde_json::from_slice(&bytes)
+                .map_err(|_| "invalid ONECOIN vote-lock file; refusing to vote".to_string())?
+        } else {
+            BTreeMap::new()
+        };
+        if local_votes.len() > 4096 {
+            return Err("ONECOIN vote-lock file has too many entries".into());
+        }
+        local_votes.retain(|height, _| *height > state.state.height);
         if validators.is_empty() {
             return Err("ONECOIN validator set is empty".into());
         }
@@ -70,7 +101,49 @@ impl OnecoinConsensusRuntime {
             validators,
             pending: HashMap::new(),
             votes: HashMap::new(),
+            local_votes,
+            vote_lock_path,
         })
+    }
+
+    fn persist_local_votes(&self) -> Result<(), String> {
+        let bytes = serde_json::to_vec(&self.local_votes)
+            .map_err(|_| "failed to serialize ONECOIN vote locks".to_string())?;
+        let temporary = self.vote_lock_path.with_extension("vote-locks.part");
+        let mut file = fs::File::create(&temporary)
+            .map_err(|e| format!("failed to create ONECOIN vote-lock file: {e}"))?;
+        use std::io::Write;
+        file.write_all(&bytes)
+            .map_err(|e| format!("failed to write ONECOIN vote locks: {e}"))?;
+        file.sync_all()
+            .map_err(|e| format!("failed to sync ONECOIN vote locks: {e}"))?;
+        drop(file);
+
+        // Windows may reject rename-over-existing-file. Stage the previous
+        // lock file and restore it if installing the new durable snapshot fails.
+        if !self.vote_lock_path.exists() {
+            return fs::rename(&temporary, &self.vote_lock_path)
+                .map_err(|e| format!("failed to persist ONECOIN vote locks: {e}"));
+        }
+
+        let backup = self.vote_lock_path.with_extension("vote-locks.bak");
+        if backup.exists() {
+            fs::remove_file(&backup)
+                .map_err(|e| format!("failed to remove stale vote-lock backup: {e}"))?;
+        }
+        fs::rename(&self.vote_lock_path, &backup)
+            .map_err(|e| format!("failed to stage previous ONECOIN vote locks: {e}"))?;
+        if let Err(error) = fs::rename(&temporary, &self.vote_lock_path) {
+            return match fs::rename(&backup, &self.vote_lock_path) {
+                Ok(()) => Err(format!("failed to install ONECOIN vote locks: {error}")),
+                Err(restore_error) => Err(format!(
+                    "failed to install ONECOIN vote locks ({error}); rollback failed ({restore_error}); previous lock file remains at {}",
+                    backup.display()
+                )),
+            };
+        }
+        let _ = fs::remove_file(&backup);
+        Ok(())
     }
 
     pub fn local_is_validator(&self, identity: &Identity) -> bool {
@@ -120,13 +193,33 @@ impl OnecoinConsensusRuntime {
         {
             return Err("proposal does not extend finalized state".into());
         }
-        if self.pending.len() >= MAX_PENDING_BLOCKS && !self.pending.contains_key(&block.hash()) {
+        // Reject invalid transactions before storing or voting on the proposal.
+        self.state.state.preview_ledger(&block)?;
+        let hash = block.hash();
+        let is_local_validator = self.local_is_validator(identity);
+        if is_local_validator
+            && self
+                .local_votes
+                .get(&block.header.height)
+                .is_some_and(|previous| previous != &hash)
+        {
+            return Err("refusing to vote for conflicting blocks at the same height".into());
+        }
+        if self.pending.len() >= MAX_PENDING_BLOCKS && !self.pending.contains_key(&hash) {
             return Err("too many pending consensus blocks".into());
         }
-        let hash = block.hash();
         self.pending.insert(hash, block.clone());
 
-        if self.local_is_validator(identity) {
+        if is_local_validator {
+            let previous = self.local_votes.insert(block.header.height, hash);
+            if let Err(error) = self.persist_local_votes() {
+                if let Some(previous_hash) = previous {
+                    self.local_votes.insert(block.header.height, previous_hash);
+                } else {
+                    self.local_votes.remove(&block.header.height);
+                }
+                return Err(error);
+            }
             let vote = SignedBlockVote::new(identity, &block, true);
             Ok(vec![(sender, OnecoinConsensusMessage::Vote(vote))])
         } else {
@@ -176,6 +269,9 @@ impl OnecoinConsensusRuntime {
             self.state.finalize(block, &cert, &self.validators)?;
             self.pending.remove(&vote.block_hash);
             self.votes.remove(&vote.block_hash);
+            self.local_votes
+                .retain(|height, _| *height > self.state.state.height);
+            self.persist_local_votes()?;
             return Ok(self
                 .validators
                 .values()
@@ -198,10 +294,97 @@ impl OnecoinConsensusRuntime {
         self.state.finalize(&block, &cert, &self.validators)?;
         self.pending.remove(&cert.block_hash);
         self.votes.remove(&cert.block_hash);
+        self.local_votes
+            .retain(|height, _| *height > self.state.state.height);
+        self.persist_local_votes()?;
         Ok(Vec::new())
     }
 
     pub fn persisted_state(&self) -> &OnecoinFinalizedState {
         &self.state.state
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::identity::Username;
+    use crate::onecoin_consensus::OnecoinBlock;
+    use std::fs;
+
+    #[test]
+    fn validator_refuses_conflicting_proposals_at_same_height() {
+        let dir =
+            std::env::temp_dir().join(format!("awenet-consensus-runtime-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let identity = Identity::generate(Username::new("validator").unwrap());
+        let validators =
+            BTreeMap::from([(identity.public.awe_id.to_hex(), identity.public.public_key)]);
+        let state_path = dir.join("state.bin");
+        let mut runtime = OnecoinConsensusRuntime::open(&state_path, validators.clone()).unwrap();
+        let first = OnecoinBlock::new(&identity, 1, [0; 32], vec![], 1).unwrap();
+        let conflicting = OnecoinBlock::new(&identity, 1, [0; 32], vec![], 2).unwrap();
+
+        let first_result = runtime
+            .handle(
+                identity.public.public_key,
+                &identity,
+                OnecoinConsensusMessage::Proposal(first),
+            )
+            .unwrap();
+        assert_eq!(first_result.len(), 1);
+        drop(runtime);
+
+        // The lock survives a process/runtime restart.
+        let mut restarted = OnecoinConsensusRuntime::open(&state_path, validators).unwrap();
+        assert!(restarted
+            .handle(
+                identity.public.public_key,
+                &identity,
+                OnecoinConsensusMessage::Proposal(conflicting),
+            )
+            .is_err());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn interrupted_vote_lock_replacement_recovers_backup() {
+        let dir = std::env::temp_dir().join(format!(
+            "awenet-consensus-vote-backup-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let identity = Identity::generate(Username::new("backup-validator").unwrap());
+        let validators =
+            BTreeMap::from([(identity.public.awe_id.to_hex(), identity.public.public_key)]);
+        let state_path = dir.join("state.bin");
+        let _runtime = OnecoinConsensusRuntime::open(&state_path, validators.clone()).unwrap();
+
+        let vote_lock_path = state_path.with_extension("vote-locks.json");
+        let backup_path = state_path.with_extension("vote-locks.bak");
+        let recovered_hash = [7u8; 32];
+        fs::write(
+            &backup_path,
+            serde_json::to_vec(&BTreeMap::from([(1u64, recovered_hash)])).unwrap(),
+        )
+        .unwrap();
+
+        let runtime = OnecoinConsensusRuntime::open(&state_path, validators).unwrap();
+        assert_eq!(runtime.local_votes.get(&1), Some(&recovered_hash));
+        assert!(vote_lock_path.exists());
+        assert!(!backup_path.exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn consensus_messages_reject_payloads_over_size_limit() {
+        let bytes = vec![b' '; MAX_CONSENSUS_MESSAGE_BYTES + 1];
+        assert!(OnecoinConsensusMessage::decode(&bytes).is_err());
     }
 }

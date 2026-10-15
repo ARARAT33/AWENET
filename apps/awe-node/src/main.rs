@@ -162,10 +162,69 @@ fn load_identity(path: &PathBuf, password: &str, username: &str) -> Result<Ident
     .map_err(anyhow::Error::msg)
 }
 
-async fn http_response(status: &str, content_type: &str, body: &str) -> Vec<u8> {
-    format!("HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: content-type\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}", body.len()).into_bytes()
+fn is_allowed_ui_origin(origin: &str) -> bool {
+    matches!(
+        origin,
+        "tauri://localhost"
+            | "http://tauri.localhost"
+            | "https://tauri.localhost"
+            | "http://127.0.0.1:41800"
+            | "http://localhost:41800"
+    )
 }
 
+async fn http_response(
+    status: &str,
+    content_type: &str,
+    body: &str,
+    origin: Option<&str>,
+) -> Vec<u8> {
+    let cors = origin
+        .filter(|value| is_allowed_ui_origin(value))
+        .map(|value| {
+            format!(
+                "Access-Control-Allow-Origin: {value}\r\nVary: Origin\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: content-type\r\n"
+            )
+        })
+        .unwrap_or_default();
+    format!(
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n{cors}Cache-Control: no-store\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+    .into_bytes()
+}
+
+fn parse_content_length(headers: &str) -> Result<usize, &'static str> {
+    let mut content_length = None;
+    for line in headers.lines().skip(1) {
+        let line = line.trim_end_matches('\r');
+        if line.is_empty() {
+            continue;
+        }
+        let (name, value) = line.split_once(':').ok_or("malformed HTTP header")?;
+        if name.trim().is_empty() {
+            return Err("malformed HTTP header name");
+        }
+        if name.eq_ignore_ascii_case("transfer-encoding") {
+            return Err("Transfer-Encoding is unsupported");
+        }
+        if name.eq_ignore_ascii_case("content-length") {
+            if content_length.is_some() {
+                return Err("duplicate Content-Length header");
+            }
+            let value = value.trim();
+            if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+                return Err("invalid Content-Length header");
+            }
+            content_length = Some(
+                value
+                    .parse::<usize>()
+                    .map_err(|_| "invalid Content-Length header")?,
+            );
+        }
+    }
+    Ok(content_length.unwrap_or(0))
+}
 async fn read_http_request(stream: &mut tokio::net::TcpStream) -> Result<String> {
     const HEADER_LIMIT: usize = 64 * 1024;
     const BODY_LIMIT: usize = 64 * 1024 * 1024;
@@ -178,27 +237,20 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> Result<String>
             anyhow::bail!("client closed connection before HTTP headers");
         }
         data.extend_from_slice(&chunk[..n]);
-        if data.len() > HEADER_LIMIT {
-            anyhow::bail!("HTTP headers too large");
-        }
         if let Some(pos) = data.windows(4).position(|w| w == b"\r\n\r\n") {
+            if pos + 4 > HEADER_LIMIT {
+                anyhow::bail!("HTTP headers too large");
+            }
             header_end = pos + 4;
             break;
+        }
+        if data.len() > HEADER_LIMIT {
+            anyhow::bail!("HTTP headers too large");
         }
     }
 
     let headers = String::from_utf8_lossy(&data[..header_end]);
-    let content_length = headers
-        .lines()
-        .find_map(|line| {
-            let (name, value) = line.split_once(':')?;
-            if name.eq_ignore_ascii_case("content-length") {
-                value.trim().parse::<usize>().ok()
-            } else {
-                None
-            }
-        })
-        .unwrap_or(0);
+    let content_length = parse_content_length(&headers).map_err(anyhow::Error::msg)?;
 
     if content_length > BODY_LIMIT {
         anyhow::bail!("HTTP request body too large");
@@ -222,7 +274,40 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> Result<String>
     String::from_utf8(data).context("HTTP request must be UTF-8")
 }
 
-#[allow(clippy::too_many_arguments)]
+fn parse_wallet_send_payload(body: &str) -> Result<(AweId, u128, Option<String>), String> {
+    let parsed: serde_json::Value =
+        serde_json::from_str(body).map_err(|error| format!("invalid wallet-send JSON: {error}"))?;
+    if !parsed.is_object() {
+        return Err("request body must be a valid JSON object".into());
+    }
+    let recipient_hex = parsed
+        .get("recipient")
+        .and_then(|value| value.as_str())
+        .ok_or("recipient must be a string AWE-ID")?;
+    if recipient_hex.len() != 64 || !recipient_hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err("recipient must be a 64-character AWE-ID".into());
+    }
+    let recipient = AweId::from_hex(recipient_hex)?;
+    let amount_value = parsed
+        .get("amount_coins")
+        .ok_or("amount_coins is required")?;
+    let amount_atoms = parse_onecoin_atoms(amount_value)?;
+    if amount_atoms == 0 {
+        return Err("amount_coins must be positive".into());
+    }
+    let memo = match parsed.get("memo") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(value)) if value.chars().count() <= 256 => {
+            Some(value.clone())
+        }
+        Some(serde_json::Value::String(_)) => {
+            return Err("memo must not exceed 256 characters".into())
+        }
+        Some(_) => return Err("memo must be a string or null".into()),
+    };
+    Ok((recipient, amount_atoms, memo))
+}
+
 fn parse_onecoin_atoms(value: &serde_json::Value) -> Result<u128, String> {
     let raw = if let Some(text) = value.as_str() {
         text.trim().to_owned()
@@ -240,15 +325,15 @@ fn parse_onecoin_atoms(value: &serde_json::Value) -> Result<u128, String> {
     if parts.next().is_some() || whole.is_empty() || !whole.chars().all(|c| c.is_ascii_digit()) {
         return Err("amount_coins has invalid decimal syntax".into());
     }
-    if fraction.len() > 8 || !fraction.chars().all(|c| c.is_ascii_digit()) {
-        return Err("amount_coins supports at most 8 decimal places".into());
+    if fraction.len() > 18 || !fraction.chars().all(|c| c.is_ascii_digit()) {
+        return Err("amount_coins supports at most 18 decimal places".into());
     }
     let whole_atoms = whole
         .parse::<u128>()
         .map_err(|_| "amount_coins is too large".to_string())?
         .checked_mul(ATOMS_PER_COIN)
         .ok_or_else(|| "amount_coins is too large".to_string())?;
-    let padded = format!("{fraction:0<8}");
+    let padded = format!("{fraction:0<18}");
     let fraction_atoms = if padded.is_empty() {
         0
     } else {
@@ -259,6 +344,30 @@ fn parse_onecoin_atoms(value: &serde_json::Value) -> Result<u128, String> {
     whole_atoms
         .checked_add(fraction_atoms)
         .ok_or_else(|| "amount_coins is too large".to_string())
+}
+
+fn redact_onecoin_offer_identity(offer: &mut serde_json::Value) {
+    let Some(object) = offer.as_object_mut() else {
+        return;
+    };
+    let owner = object
+        .remove("owner")
+        .and_then(|value| value.as_str().map(str::to_owned));
+    let offer_id = object
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown")
+        .to_owned();
+
+    if let Some(owner) = owner {
+        let material = format!("AWE/ONECOIN/OFFER/{owner}/{offer_id}");
+        let digest = hex::encode(blake3::hash(material.as_bytes()).as_bytes());
+        object.insert(
+            "owner_ref".into(),
+            serde_json::json!(format!("offer-{}", &digest[..24])),
+        );
+    }
+    object.insert("published".into(), serde_json::json!(true));
 }
 
 async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<()> {
@@ -283,6 +392,36 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or("GET");
     let path = parts.next().unwrap_or("/").split('?').next().unwrap_or("/");
+    let origin = request.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("origin").then(|| value.trim())
+    });
+    if let Some(origin) = origin {
+        if !is_allowed_ui_origin(origin) {
+            stream
+                .write_all(
+                    &http_response(
+                        "403 Forbidden",
+                        "application/json; charset=utf-8",
+                        r#"{"status":"error","error":"origin not allowed"}"#,
+                        None,
+                    )
+                    .await,
+                )
+                .await?;
+            stream.shutdown().await?;
+            return Ok(());
+        }
+    }
+    if method.eq_ignore_ascii_case("OPTIONS") {
+        stream
+            .write_all(
+                &http_response("204 No Content", "text/plain; charset=utf-8", "", origin).await,
+            )
+            .await?;
+        stream.shutdown().await?;
+        return Ok(());
+    }
     let (status, mime, body) = match path {
         "/" | "/index.html" => ("200 OK", "text/html; charset=utf-8", UI_HTML.to_string()),
         "/style.css" => ("200 OK", "text/css; charset=utf-8", UI_CSS.to_string()),
@@ -299,7 +438,14 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
             ("200 OK", "application/json; charset=utf-8", serde_json::json!({
                 "awe_id": id.to_hex(),
                 "balance_atoms": balance_atoms,
-                "balance_coins": balance_atoms / ATOMS_PER_COIN,
+                "balance_coins": format!(
+                    "{}.{:09}",
+                    balance_atoms / ATOMS_PER_COIN,
+                    balance_atoms % ATOMS_PER_COIN
+                )
+                .trim_end_matches('0')
+                .trim_end_matches('.')
+                .to_string(),
                 "tier": tier,
                 "fee_bps": 100,
                 "resource_score": contribution_snapshot.score(),
@@ -320,29 +466,18 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         },
         "/api/onebank/contribution" if method == "POST" => {
             let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
-            let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
-            let r = ResourceContribution {
-                storage_bytes: parsed.get("storage_bytes").and_then(|v| v.as_u64()).unwrap_or(0),
-                cpu_cores: parsed.get("cpu_cores").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-                ram_bytes: parsed.get("ram_bytes").and_then(|v| v.as_u64()).unwrap_or(0),
-                gpu_units: parsed.get("gpu_units").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-                bandwidth_bytes: parsed.get("bandwidth_bytes").and_then(|v| v.as_u64()).unwrap_or(0),
-                online_hours: parsed.get("online_hours").and_then(|v| v.as_u64()).unwrap_or(0) as u16,
-                node_count: parsed.get("node_count").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-                server_count: parsed.get("server_count").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-                uptime_bps: parsed.get("uptime_bps").and_then(|v| v.as_u64()).unwrap_or(0) as u16,
-                utilization_bps: parsed.get("utilization_bps").and_then(|v| v.as_u64()).unwrap_or(0) as u16,
-            };
-            match r.validate() {
-                Ok(()) => {
-                    if let Ok(mut guard) = contribution.lock() { *guard = r.clone(); }
+            match parse_resource_contribution(body) {
+                Ok(r) => {
                     match fs::write(&contribution_path, serde_json::to_vec_pretty(&r).unwrap_or_default()) {
-                        Ok(()) => ("200 OK", "application/json; charset=utf-8", serde_json::json!({
-                            "status":"accepted_for_verification",
-                            "tier": classify_tier(&r).wire_name(),
-                            "verified":false,
-                            "reward_status":"requires_signed_usage_receipt"
-                        }).to_string()),
+                        Ok(()) => {
+                            if let Ok(mut guard) = contribution.lock() { *guard = r.clone(); }
+                            ("200 OK", "application/json; charset=utf-8", serde_json::json!({
+                                "status":"accepted_for_verification",
+                                "tier": classify_tier(&r).wire_name(),
+                                "verified":false,
+                                "reward_status":"requires_signed_usage_receipt"
+                            }).to_string())
+                        },
                         Err(e) => ("500 Internal Server Error", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":e.to_string()}).to_string())
                     }
                 },
@@ -351,36 +486,33 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         },
         "/api/onebank/wallet/send" if method == "POST" => {
             let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
-            let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
-            let recipient_hex = parsed.get("recipient").and_then(|v| v.as_str()).unwrap_or("");
-            let amount_value = parsed.get("amount_coins").cloned().unwrap_or(serde_json::Value::Null);
-            let memo = parsed.get("memo").and_then(|v| v.as_str()).map(str::to_owned);
             let result: Result<(String, u128, OnecoinTransaction), String> = (|| {
-                if recipient_hex.len() != 64 || !recipient_hex.chars().all(|c| c.is_ascii_hexdigit()) {
-                    return Err("recipient must be a 64-character AWE-ID".into());
-                }
-                let amount_atoms = parse_onecoin_atoms(&amount_value)?;
-                if amount_atoms == 0 {
-                    return Err("amount_coins must be positive".into());
-                }
-                let recipient = AweId::from_hex(recipient_hex)?;
+                let (recipient, amount_atoms, memo) = parse_wallet_send_payload(body)?;
                 if recipient == node.identity.public.awe_id {
                     return Err("cannot transfer ONECOIN to the same wallet".into());
                 }
                 let mut ledger = onecoin_ledger.lock().map_err(|_| "ONECOIN ledger lock failed".to_string())?;
+                // Apply against a candidate copy. A rejected transfer or failed disk write
+                // must not leave partially mutated in-memory wallet state.
+                let mut candidate = ledger.clone();
                 let sender = node.identity.public.awe_id.clone();
-                if ledger.members.is_empty() {
-                    ledger.initialize_genesis(std::slice::from_ref(&sender))?;
+                if candidate.members.is_empty() {
+                    candidate.initialize_genesis(std::slice::from_ref(&sender))?;
                 }
-                ledger.ensure_member(&recipient);
-                if ledger.balance_atoms(&sender) < amount_atoms {
+                // A recipient must be registered before the transfer is applied.
+                // This is only local ledger membership, not proof of network consensus.
+                candidate.ensure_member(&recipient);
+                if candidate.balance_atoms(&sender) < amount_atoms {
                     return Err("insufficient ONECOIN balance".into());
                 }
-                let nonce = ledger.nonces.get(&sender.to_hex()).copied().unwrap_or(0);
+                let nonce = candidate.nonces.get(&sender.to_hex()).copied().unwrap_or(0);
                 let tx = OnecoinTransaction::new(&node.identity, nonce, &recipient, amount_atoms, memo);
-                let (tx_id, fee_atoms) = ledger.apply_transfer_with_fee(&tx, &node.identity.public.public_key, 100)?;
-                fs::write(&onecoin_path, serde_json::to_vec_pretty(&*ledger).map_err(|_| "ONECOIN ledger serialization failed".to_string())?)
-                    .map_err(|e| e.to_string())?;
+                let (tx_id, fee_atoms) = candidate.apply_transfer_with_fee(&tx, &node.identity.public.public_key, 100)?;
+                let serialized = serde_json::to_vec_pretty(&candidate)
+                    .map_err(|_| "ONECOIN ledger serialization failed".to_string())?;
+                persist_file_with_backup(&onecoin_path, &serialized)
+                    .map_err(|e| format!("failed to commit candidate ONECOIN ledger: {e}"))?;
+                *ledger = candidate;
                 Ok((hex::encode(tx_id), fee_atoms, tx))
             })();
             match result {
@@ -411,15 +543,27 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                         }
                     } else {
                         false
-                    }; ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"accepted","tx_id":tx_id,"fee_atoms":fee_atoms,"fee_bps":100,"recipient_delivered":delivered,"recipient_pending":!delivered}).to_string()) },
+                    }; ("200 OK", "application/json; charset=utf-8", serde_json::json!({
+                        "status":"accepted",
+                        "tx_id":tx_id,
+                        "fee_atoms":fee_atoms,
+                        "fee_bps":100,
+                        "recipient_delivered":delivered,
+                        "recipient_pending":!delivered,
+                        "consensus_finalized":false,
+                        "finality":"local_only_pending_consensus"
+                    }).to_string()) },
                 Err(error) => ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"rejected","error":error}).to_string())
             }
         },
         "/api/onebank/exchange/offers" if method == "GET" => {
-            let offers: Vec<serde_json::Value> = fs::read(&onecoin_offers_path)
+            let mut offers: Vec<serde_json::Value> = fs::read(&onecoin_offers_path)
                 .ok()
                 .and_then(|b| serde_json::from_slice(&b).ok())
                 .unwrap_or_default();
+            for offer in &mut offers {
+                redact_onecoin_offer_identity(offer);
+            }
             ("200 OK", "application/json; charset=utf-8", serde_json::to_string(&offers).unwrap_or_else(|_| "[]".into()))
         },
         "/api/onebank/exchange/offers" if method == "POST" => {
@@ -435,6 +579,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                 obj.insert("fiat_transfer".into(), serde_json::json!("OUTSIDE_AWENET"));
                 obj.insert("created_at".into(), serde_json::json!(now_unix()));
             }
+            redact_onecoin_offer_identity(&mut offer);
             let mut offers: Vec<serde_json::Value> = fs::read(&onecoin_offers_path)
                 .ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
             offers.push(offer.clone());
@@ -446,6 +591,8 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         },
         "/api/node" => ("200 OK", "application/json; charset=utf-8", serde_json::json!({
             "id": format_uid(node.identity.public.awe_id.as_bytes()),
+            "uid": format_uid(node.identity.public.awe_id.as_bytes()),
+            "awe_id": node.identity.public.awe_id.to_hex(),
             "descriptor": node.node_descriptor(),
             "username": node.identity.public.username.as_str(),
             "address": node.listen_addr.to_string(),
@@ -465,6 +612,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
             ("200 OK", "application/json; charset=utf-8", serde_json::json!({
                 "product": "AWEp2P", "status": "online",
                 "node_id": format_uid(node.identity.public.awe_id.as_bytes()),
+                "awe_id": node.identity.public.awe_id.to_hex(),
                 "node_address": node.listen_addr.to_string(),
                 "transport": "AWE encrypted TCP", "ui": "connected", "peers": peer_json, "discovered_peers": peer_json.len(), "active_connections": node.active_peer_count().await
             }).to_string())
@@ -1035,7 +1183,9 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                                     let manifest_path = PathBuf::from(data_dir_for_api())
                                         .join("storage")
                                         .join("manifests");
-                                    let _ = fs::create_dir_all(&manifest_path);
+                                    if let Err(error) = fs::create_dir_all(&manifest_path) {
+                                        failed.push(serde_json::json!({"error": format!("manifest directory creation failed: {error}")}));
+                                    }
                                     let manifest = serde_json::json!({
                                         "version": 1,
                                         "file_id": hex::encode(file_id),
@@ -1050,10 +1200,19 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                                         "stored_local": stored_local,
                                         "sent_remote": sent_remote
                                     });
-                                    let _ = fs::write(
-                                        manifest_path.join(format!("{}.json", hex::encode(file_id))),
-                                        serde_json::to_vec_pretty(&manifest).unwrap_or_default(),
-                                    );
+                                    let manifest_file = manifest_path.join(format!("{}.json", hex::encode(file_id)));
+                                    match serde_json::to_vec_pretty(&manifest) {
+                                        Ok(bytes) => {
+                                            if let Err(error) = fs::write(&manifest_file, bytes) {
+                                                failed.push(serde_json::json!({
+                                                    "error": format!("manifest persistence failed: {error}")
+                                                }));
+                                            }
+                                        }
+                                        Err(error) => failed.push(serde_json::json!({
+                                            "error": format!("manifest serialization failed: {error}")
+                                        })),
+                                    }
 
                                     let status = if failed
                                         .iter()
@@ -1069,7 +1228,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                                             "file_id": hex::encode(file_id),
                                             "filename": filename,
                                             "original_size": data.len(),
-                                            "shards": 1000,
+                                            "shards": policy.total_shards(),
                                             "replicas": 3,
                                             "stored_local": stored_local,
                                             "sent_remote": sent_remote,
@@ -1336,7 +1495,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         _ => ("404 Not Found", "text/plain; charset=utf-8", "Not Found".to_string()),
     };
     stream
-        .write_all(&http_response(status, mime, &body).await)
+        .write_all(&http_response(status, mime, &body, origin).await)
         .await?;
     stream.shutdown().await?;
     Ok(())
@@ -1621,6 +1780,113 @@ async fn autonomous_repair_cycle(
     }
 }
 
+fn persist_file_with_backup(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
+    let temporary = path.with_extension("tmp");
+    fs::write(&temporary, bytes)
+        .with_context(|| format!("failed to write temporary file {}", temporary.display()))?;
+
+    if !path.exists() {
+        return fs::rename(&temporary, path)
+            .with_context(|| format!("failed to install file {}", path.display()));
+    }
+
+    // Windows does not consistently replace an existing destination with rename.
+    // Move the old file aside first, then restore it if installing the candidate fails.
+    let backup = path.with_extension("bak");
+    if backup.exists() {
+        fs::remove_file(&backup)
+            .with_context(|| format!("failed to remove stale backup {}", backup.display()))?;
+    }
+    fs::rename(path, &backup)
+        .with_context(|| format!("failed to stage existing file {}", path.display()))?;
+    if let Err(error) = fs::rename(&temporary, path) {
+        let restore = fs::rename(&backup, path);
+        return match restore {
+            Ok(()) => Err(error).with_context(|| format!("failed to install {}", path.display())),
+            Err(restore_error) => Err(anyhow::anyhow!(
+                "failed to install {} ({error}); rollback also failed ({restore_error}); previous data remains at {}",
+                path.display(),
+                backup.display()
+            )),
+        };
+    }
+    let _ = fs::remove_file(&backup);
+    Ok(())
+}
+
+fn load_or_create_product_identity_with_password(
+    data_dir: &std::path::Path,
+    password: Option<String>,
+) -> Result<Identity> {
+    let secret_path = data_dir.join("node.awesecret");
+    let vault_path = data_dir.join("node.awevault");
+    let username_path = data_dir.join("node.aweusername");
+
+    // Opt-in encrypted-at-rest mode. Keep the username as non-secret metadata;
+    // the signing key itself is stored only in the authenticated encrypted vault.
+    if vault_path.exists() {
+        let password = password
+            .filter(|value| !value.is_empty())
+            .context("node.awevault exists; set a non-empty AWE_NODE_PASSWORD to unlock it")?;
+        let username = fs::read_to_string(&username_path)
+            .context("encrypted identity is missing node.aweusername metadata")?;
+        let username = Username::new(username.trim().to_string()).map_err(anyhow::Error::msg)?;
+        let bytes = fs::read(&vault_path).context("failed to read encrypted identity vault")?;
+        let identity = LocalVault::open(&bytes, username, &password).map_err(anyhow::Error::msg)?;
+        // A prior migration may have committed the vault but failed to remove the
+        // plaintext key. Retry cleanup only after the encrypted vault unlocks.
+        if secret_path.exists() {
+            fs::remove_file(&secret_path)
+                .context("encrypted vault opened, but legacy plaintext key could not be removed")?;
+        }
+        return Ok(identity);
+    }
+
+    if let Some(password) = password.filter(|value| !value.is_empty()) {
+        if password.chars().count() < 12 {
+            anyhow::bail!("AWE_NODE_PASSWORD must contain at least 12 characters to create or migrate an encrypted identity vault");
+        }
+        let identity = if secret_path.exists() {
+            AweSecret::from_bytes(&fs::read(&secret_path)?)
+                .map_err(anyhow::Error::msg)?
+                .authenticate()
+                .map_err(anyhow::Error::msg)?
+        } else {
+            Identity::generate(Username::new("awe-node".to_string()).map_err(anyhow::Error::msg)?)
+        };
+        let vault = LocalVault::seal(&identity, &password).map_err(anyhow::Error::msg)?;
+        // Write both files successfully before removing the legacy plaintext key.
+        fs::write(&username_path, identity.public.username.as_str())?;
+        let temporary = data_dir.join("node.awevault.tmp");
+        fs::write(&temporary, vault)?;
+        fs::rename(&temporary, &vault_path).context("failed to commit encrypted identity vault")?;
+        if secret_path.exists() {
+            fs::remove_file(&secret_path)
+                .context("vault created but legacy plaintext key could not be removed")?;
+        }
+        return Ok(identity);
+    }
+
+    if secret_path.exists() {
+        eprintln!(
+            "SECURITY WARNING: node.awesecret stores the signing key unencrypted.              Set AWE_NODE_PASSWORD to migrate it to node.awevault."
+        );
+        return AweSecret::from_bytes(&fs::read(&secret_path)?)
+            .map_err(anyhow::Error::msg)?
+            .authenticate()
+            .map_err(anyhow::Error::msg);
+    }
+
+    let identity =
+        Identity::generate(Username::new("awe-node".to_string()).map_err(anyhow::Error::msg)?);
+    let secret = AweSecret::generate(&identity);
+    fs::write(&secret_path, secret.to_bytes()?)?;
+    eprintln!(
+        "SECURITY WARNING: created an unencrypted node.awesecret.          Set AWE_NODE_PASSWORD to use encrypted-at-rest identity storage."
+    );
+    Ok(identity)
+}
+
 async fn run_product() -> Result<()> {
     let data_dir = if let Some(value) = env::var_os("AWE_DATA_DIR") {
         PathBuf::from(value)
@@ -1630,19 +1896,10 @@ async fn run_product() -> Result<()> {
         PathBuf::from(".awep2p")
     };
     fs::create_dir_all(&data_dir)?;
-    let secret_path = data_dir.join("node.awesecret");
-    let identity = if secret_path.exists() {
-        AweSecret::from_bytes(&fs::read(&secret_path)?)
-            .map_err(anyhow::Error::msg)?
-            .authenticate()
-            .map_err(anyhow::Error::msg)?
-    } else {
-        let identity =
-            Identity::generate(Username::new("awe-node".to_string()).map_err(anyhow::Error::msg)?);
-        let secret = AweSecret::generate(&identity);
-        fs::write(&secret_path, secret.to_bytes()?)?;
-        identity
-    };
+    let identity = load_or_create_product_identity_with_password(
+        &data_dir,
+        env::var("AWE_NODE_PASSWORD").ok(),
+    )?;
     let node_id = format_uid(identity.public.awe_id.as_bytes());
     let listen: SocketAddr = env::var("AWE_LISTEN_ADDR")
         .unwrap_or_else(|_| "0.0.0.0:41000".into())
@@ -1934,8 +2191,10 @@ async fn run_product() -> Result<()> {
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("");
                             let data = message.get("data").and_then(|v| v.as_str()).unwrap_or("");
-                            if !id.is_empty()
-                                && !recipient.is_empty()
+                            let local_uid =
+                                format_uid(dispatcher_node.identity.public.awe_id.as_bytes());
+                            if recipient == local_uid
+                                && !id.is_empty()
                                 && !call_id.is_empty()
                                 && !signal_type.is_empty()
                                 && !data.is_empty()
@@ -2014,12 +2273,20 @@ async fn run_product() -> Result<()> {
                                             })
                                             .unwrap_or(false);
                                         if member {
-                                            if let Some(m) = message.get("message").cloned() {
-                                                if let Some(a) = g
-                                                    .get_mut("messages")
-                                                    .and_then(|v| v.as_array_mut())
-                                                {
-                                                    a.push(m);
+                                            if let Some(mut m) = message.get("message").cloned() {
+                                                // The authenticated transport peer, not an embedded
+                                                // JSON field, is the authoritative group-message sender.
+                                                if let Some(object) = m.as_object_mut() {
+                                                    object.insert(
+                                                        "sender".into(),
+                                                        serde_json::json!(sender_uid),
+                                                    );
+                                                    if let Some(a) = g
+                                                        .get_mut("messages")
+                                                        .and_then(|v| v.as_array_mut())
+                                                    {
+                                                        a.push(m);
+                                                    }
                                                 }
                                             }
                                         }
@@ -2126,24 +2393,24 @@ async fn run_product() -> Result<()> {
                                             })
                                         })
                                     {
-                                        let subscriber = ch
-                                            .get("subscribers")
-                                            .and_then(|v| v.as_array())
-                                            .map(|a| {
-                                                a.iter().any(|v| {
-                                                    v.as_str() == Some(sender_uid.as_str())
-                                                })
-                                            })
-                                            .unwrap_or(false)
-                                            || ch.get("owner").and_then(|v| v.as_str())
-                                                == Some(sender_uid.as_str());
-                                        if subscriber {
-                                            if let Some(m) = message.get("message").cloned() {
-                                                if let Some(a) = ch
-                                                    .get_mut("messages")
-                                                    .and_then(|v| v.as_array_mut())
-                                                {
-                                                    a.push(m);
+                                        // Match the local publish endpoint: only the
+                                        // authenticated channel owner may publish channel messages.
+                                        let is_owner = ch.get("owner").and_then(|v| v.as_str())
+                                            == Some(sender_uid.as_str());
+                                        if is_owner {
+                                            if let Some(mut m) = message.get("message").cloned() {
+                                                // Bind the visible sender to the authenticated peer.
+                                                if let Some(object) = m.as_object_mut() {
+                                                    object.insert(
+                                                        "sender".into(),
+                                                        serde_json::json!(sender_uid),
+                                                    );
+                                                    if let Some(a) = ch
+                                                        .get_mut("messages")
+                                                        .and_then(|v| v.as_array_mut())
+                                                    {
+                                                        a.push(m);
+                                                    }
                                                 }
                                             }
                                         }
@@ -2172,7 +2439,9 @@ async fn run_product() -> Result<()> {
                                 .get("recipient")
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("");
-                            if !id.is_empty() && !text_value.is_empty() && !recipient.is_empty() {
+                            let local_uid =
+                                format_uid(dispatcher_node.identity.public.awe_id.as_bytes());
+                            if recipient == local_uid && !id.is_empty() && !text_value.is_empty() {
                                 if let (Some(cid), Some(channel_message)) = (
                                     message.get("channel_id").and_then(|v| v.as_str()),
                                     message.get("channel_message").cloned(),
@@ -2189,19 +2458,11 @@ async fn run_product() -> Result<()> {
                                             })
                                         {
                                             let sender_uid = format_uid(&sender);
-                                            let authorized = ch
-                                                .get("owner")
-                                                .and_then(|v| v.as_str())
-                                                == Some(sender_uid.as_str())
-                                                || ch
-                                                    .get("subscribers")
-                                                    .and_then(|v| v.as_array())
-                                                    .map(|a| {
-                                                        a.iter().any(|v| {
-                                                            v.as_str() == Some(sender_uid.as_str())
-                                                        })
-                                                    })
-                                                    .unwrap_or(false);
+                                            // Fallback delivery is still a channel publication;
+                                            // subscribers must not gain publish rights via this path.
+                                            let authorized =
+                                                ch.get("owner").and_then(|v| v.as_str())
+                                                    == Some(sender_uid.as_str());
                                             if authorized {
                                                 if let Some(a) = ch
                                                     .get_mut("messages")
@@ -2518,5 +2779,302 @@ async fn main() -> Result<()> {
             .await
         }
         _ => usage(),
+    }
+}
+
+fn parse_resource_contribution(body: &str) -> Result<ResourceContribution, String> {
+    let parsed: serde_json::Value =
+        serde_json::from_str(body).map_err(|_| "invalid contribution JSON".to_string())?;
+    let object = parsed
+        .as_object()
+        .ok_or_else(|| "contribution must be a JSON object".to_string())?;
+    fn number(
+        object: &serde_json::Map<String, serde_json::Value>,
+        key: &str,
+    ) -> Result<u64, String> {
+        match object.get(key) {
+            None => Ok(0),
+            Some(value) => value
+                .as_u64()
+                .ok_or_else(|| format!("{key} must be a non-negative integer")),
+        }
+    }
+    fn narrow<T: TryFrom<u64>>(value: u64, key: &str) -> Result<T, String> {
+        T::try_from(value).map_err(|_| format!("{key} is out of range"))
+    }
+    let r = ResourceContribution {
+        storage_bytes: number(object, "storage_bytes")?,
+        cpu_cores: narrow(number(object, "cpu_cores")?, "cpu_cores")?,
+        ram_bytes: number(object, "ram_bytes")?,
+        gpu_units: narrow(number(object, "gpu_units")?, "gpu_units")?,
+        bandwidth_bytes: number(object, "bandwidth_bytes")?,
+        online_hours: narrow(number(object, "online_hours")?, "online_hours")?,
+        node_count: narrow(number(object, "node_count")?, "node_count")?,
+        server_count: narrow(number(object, "server_count")?, "server_count")?,
+        uptime_bps: narrow(number(object, "uptime_bps")?, "uptime_bps")?,
+        utilization_bps: narrow(number(object, "utilization_bps")?, "utilization_bps")?,
+    };
+    r.validate()?;
+    Ok(r)
+}
+
+#[cfg(test)]
+mod ui_origin_tests {
+    use super::{
+        is_allowed_ui_origin, parse_content_length, parse_onecoin_atoms,
+        parse_resource_contribution, redact_onecoin_offer_identity,
+    };
+    use awep2p_core::onecoin::ATOMS_PER_COIN;
+
+    #[test]
+    fn rejects_ambiguous_http_framing_headers() {
+        let valid = "POST / HTTP/1.1\r\nContent-Length: 1\r\n\r\n";
+        let malformed = "POST / HTTP/1.1\r\nContent-Length: nope\r\n\r\n";
+        let duplicate = "POST / HTTP/1.1\r\nContent-Length: 1\r\nContent-Length: 1\r\n\r\n";
+        let chunked = "POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n";
+        assert!(parse_content_length(valid).is_ok());
+        assert!(parse_content_length(malformed).is_err());
+        assert!(parse_content_length(duplicate).is_err());
+        assert!(parse_content_length(chunked).is_err());
+    }
+
+    #[test]
+    fn allows_only_known_local_desktop_origins() {
+        for origin in [
+            "tauri://localhost",
+            "http://tauri.localhost",
+            "https://tauri.localhost",
+            "http://127.0.0.1:41800",
+            "http://localhost:41800",
+        ] {
+            assert!(
+                is_allowed_ui_origin(origin),
+                "expected allowed origin: {origin}"
+            );
+        }
+    }
+
+    #[test]
+    fn onecoin_amount_parser_matches_18_decimal_protocol_precision() {
+        assert_eq!(
+            parse_onecoin_atoms(&serde_json::json!("1")).unwrap(),
+            ATOMS_PER_COIN
+        );
+        assert_eq!(
+            parse_onecoin_atoms(&serde_json::json!("0.000000000000000001")).unwrap(),
+            1
+        );
+        assert_eq!(
+            parse_onecoin_atoms(&serde_json::json!("1.123456789012345678")).unwrap(),
+            1_123_456_789_012_345_678
+        );
+        assert!(parse_onecoin_atoms(&serde_json::json!("0.0000000000000000001")).is_err());
+        assert!(parse_onecoin_atoms(&serde_json::json!("1e-3")).is_err());
+    }
+
+    #[test]
+    fn contribution_parser_rejects_malformed_and_overflowing_values() {
+        assert!(parse_resource_contribution("{").is_err());
+        assert!(parse_resource_contribution("[]").is_err());
+        assert!(parse_resource_contribution(r#"{"cpu_cores":4294967296}"#).is_err());
+        assert!(parse_resource_contribution(r#"{"online_hours":65536}"#).is_err());
+        assert!(parse_resource_contribution(r#"{"uptime_bps":10001}"#).is_err());
+        assert_eq!(
+            parse_resource_contribution(r#"{"storage_bytes":1024}"#)
+                .unwrap()
+                .storage_bytes,
+            1024
+        );
+    }
+
+    #[test]
+    fn public_onecoin_offers_never_expose_owner_aweid() {
+        let owner = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let mut offer = serde_json::json!({
+            "id": "test-offer-1",
+            "owner": owner,
+            "side": "sell",
+            "amount": 2.5
+        });
+        redact_onecoin_offer_identity(&mut offer);
+        assert!(offer.get("owner").is_none());
+        assert_eq!(offer.get("published").and_then(|v| v.as_bool()), Some(true));
+        let public_json = offer.to_string();
+        assert!(!public_json.contains(owner));
+        assert!(offer
+            .get("owner_ref")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .starts_with("offer-"));
+    }
+
+    #[test]
+    fn rejects_untrusted_web_origins_and_null_origin() {
+        for origin in [
+            "https://example.com",
+            "http://127.0.0.1:3000",
+            "http://localhost:8080",
+            "null",
+        ] {
+            assert!(
+                !is_allowed_ui_origin(origin),
+                "expected rejected origin: {origin}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod identity_storage_tests {
+    use super::*;
+    fn temp_data_dir(label: &str) -> std::path::PathBuf {
+        let path = env::temp_dir().join(format!("awenet-identity-{label}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&path);
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn file_replacement_preserves_existing_data_and_installs_candidate() {
+        let dir = temp_data_dir("file-replace");
+        let path = dir.join("ledger.json");
+        fs::write(&path, b"old ledger").unwrap();
+        persist_file_with_backup(&path, b"new ledger").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"new ledger");
+        assert!(!dir.join("ledger.bak").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn product_identity_can_be_created_and_reopened_encrypted() {
+        let dir = temp_data_dir("vault-create");
+        let first =
+            load_or_create_product_identity_with_password(&dir, Some("correct horse".into()))
+                .unwrap();
+        assert!(dir.join("node.awevault").exists());
+        assert!(dir.join("node.aweusername").exists());
+        assert!(!dir.join("node.awesecret").exists());
+
+        // Simulate a prior migration where vault commit succeeded but plaintext
+        // cleanup failed; a successful unlock must retry the cleanup.
+        fs::write(dir.join("node.awesecret"), b"legacy plaintext").unwrap();
+        let reopened =
+            load_or_create_product_identity_with_password(&dir, Some("correct horse".into()))
+                .unwrap();
+        assert_eq!(first.public.awe_id, reopened.public.awe_id);
+        assert!(!dir.join("node.awesecret").exists());
+        assert!(load_or_create_product_identity_with_password(&dir, Some("wrong".into())).is_err());
+        assert!(load_or_create_product_identity_with_password(&dir, None).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn product_identity_migrates_plaintext_only_after_vault_is_written() {
+        let dir = temp_data_dir("vault-migrate");
+        let identity = Identity::generate(Username::new("legacy-node").unwrap());
+        fs::write(
+            dir.join("node.awesecret"),
+            AweSecret::generate(&identity).to_bytes().unwrap(),
+        )
+        .unwrap();
+
+        let migrated =
+            load_or_create_product_identity_with_password(&dir, Some("migration password".into()))
+                .unwrap();
+        assert_eq!(identity.public.awe_id, migrated.public.awe_id);
+        assert!(dir.join("node.awevault").exists());
+        assert!(!dir.join("node.awesecret").exists());
+        assert_eq!(
+            fs::read_to_string(dir.join("node.aweusername")).unwrap(),
+            "legacy-node"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn short_password_does_not_migrate_plaintext_identity() {
+        let dir = temp_data_dir("vault-short-password");
+        let identity = Identity::generate(Username::new("legacy-node").unwrap());
+        fs::write(
+            dir.join("node.awesecret"),
+            AweSecret::generate(&identity).to_bytes().unwrap(),
+        )
+        .unwrap();
+
+        assert!(load_or_create_product_identity_with_password(&dir, Some("short".into())).is_err());
+        assert!(dir.join("node.awesecret").exists());
+        assert!(!dir.join("node.awevault").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn product_identity_rejects_corrupt_vault_without_falling_back_to_plaintext() {
+        let dir = temp_data_dir("vault-corrupt");
+        fs::write(dir.join("node.awevault"), b"not a vault").unwrap();
+        fs::write(
+            dir.join("node.awesecret"),
+            b"legacy fallback must not happen",
+        )
+        .unwrap();
+        assert!(
+            load_or_create_product_identity_with_password(&dir, Some("password".into())).is_err()
+        );
+        assert!(dir.join("node.awesecret").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod wallet_send_payload_tests {
+    use super::*;
+
+    fn valid_body() -> String {
+        let recipient = "ab".repeat(32);
+        format!(r#"{{"recipient":"{recipient}","amount_coins":"1.25","memo":"hello"}}"#)
+    }
+
+    #[test]
+    fn wallet_send_payload_parses_exact_amount_and_memo() {
+        let (recipient, amount, memo) = parse_wallet_send_payload(&valid_body()).unwrap();
+        assert_eq!(recipient.to_hex(), "ab".repeat(32));
+        assert_eq!(amount, 125 * (ATOMS_PER_COIN / 100));
+        assert_eq!(memo.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn wallet_send_payload_rejects_malformed_or_non_object_json() {
+        assert!(parse_wallet_send_payload("{").is_err());
+        assert!(parse_wallet_send_payload("[]").is_err());
+        assert!(parse_wallet_send_payload("null").is_err());
+    }
+
+    #[test]
+    fn wallet_send_payload_requires_recipient_and_amount() {
+        assert!(parse_wallet_send_payload(r#"{"amount_coins":"1"}"#).is_err());
+        assert!(
+            parse_wallet_send_payload(r#"{"recipient":"not-an-id","amount_coins":"1"}"#).is_err()
+        );
+        assert!(
+            parse_wallet_send_payload(&format!(r#"{{"recipient":"{}"}}"#, "ab".repeat(32)))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn wallet_send_payload_rejects_zero_bad_memo_and_overlong_memo() {
+        let recipient = "ab".repeat(32);
+        assert!(parse_wallet_send_payload(&format!(
+            r#"{{"recipient":"{recipient}","amount_coins":"0"}}"#
+        ))
+        .is_err());
+        assert!(parse_wallet_send_payload(&format!(
+            r#"{{"recipient":"{recipient}","amount_coins":"1","memo":5}}"#
+        ))
+        .is_err());
+        assert!(parse_wallet_send_payload(&format!(
+            r#"{{"recipient":"{recipient}","amount_coins":"1","memo":"{}"}}"#,
+            "x".repeat(257)
+        ))
+        .is_err());
     }
 }

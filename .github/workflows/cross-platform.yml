@@ -1,13 +1,12 @@
-name: AWEp2P Cross-Platform Product
-
+name: AWENET Cross-Platform Build and Release
 
 concurrency:
-  group: awe-cross-platform-${{ github.ref }}
+  group: awenet-cross-platform-${{ github.ref }}
   cancel-in-progress: true
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'codex/fix-ui-call-handler-parse']
     tags: ['v*']
   workflow_dispatch:
 
@@ -30,7 +29,7 @@ jobs:
             runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             binary: awe-node
-          - name: Linux arm64
+          - name: Linux ARM64
             runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             binary: awe-node
@@ -58,7 +57,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      - name: Build AWEp2P node
+      - name: Build AWENET node
         run: cargo build --release -p awe-node --target ${{ matrix.target }}
       - name: Prepare bundled node
         shell: bash
@@ -71,12 +70,28 @@ jobs:
       - name: Build native app
         working-directory: apps/awe-app
         run: npx tauri build --ci
-      - name: Upload desktop packages
+      # Linux AppImage bundling leaves hundreds of temporary files in bundle/**.
+      # Upload only the actual installable packages so build intermediates are not published.
+      - name: Upload Linux desktop packages
+        if: startsWith(matrix.runner, 'ubuntu')
         uses: actions/upload-artifact@v4
         with:
-          name: AWEp2P-${{ matrix.target }}
+          name: AWENET-${{ matrix.target }}
+          path: |
+            apps/awe-app/src-tauri/target/release/bundle/deb/*.deb
+            apps/awe-app/src-tauri/target/release/bundle/rpm/*.rpm
+            apps/awe-app/src-tauri/target/release/bundle/appimage/*.AppImage
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload Windows and macOS packages
+        if: ${{ !startsWith(matrix.runner, 'ubuntu') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: AWENET-${{ matrix.target }}
           path: apps/awe-app/src-tauri/target/release/bundle/**
           if-no-files-found: error
+          retention-days: 14
 
   android:
     name: Android APK/AAB
@@ -121,11 +136,12 @@ jobs:
       - name: Upload Android packages
         uses: actions/upload-artifact@v4
         with:
-          name: AWEp2P-Android
+          name: AWENET-Android
           path: |
             apps/awe-app/src-tauri/gen/android/app/build/outputs/apk/**/*.apk
             apps/awe-app/src-tauri/gen/android/app/build/outputs/bundle/**/*.aab
           if-no-files-found: error
+          retention-days: 14
 
   release:
     name: Publish GitHub Release
@@ -144,7 +160,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: AWEp2P ${{ github.ref_name }}
+          name: AWENET ${{ github.ref_name }}
           generate_release_notes: true
           files: |
             release/**/*.exe
