@@ -16,11 +16,20 @@ use std::path::Path;
 
 pub const ONECOIN_CONSENSUS_STREAM: u32 = 200;
 pub const MAX_CONSENSUS_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
+fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
 const MAX_PENDING_BLOCKS: usize = 256;
 const MAX_VOTES_PER_BLOCK: usize = 4096;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum OnecoinConsensusMessage {
+    /// A signed transaction submitted by a non-validator to a validator for inclusion.
+    TransactionSubmission(OnecoinTransaction),
     Proposal(OnecoinBlock),
     Vote(SignedBlockVote),
     Certificate(QuorumCertificate),
@@ -135,17 +144,71 @@ impl OnecoinConsensusRuntime {
         message: OnecoinConsensusMessage,
     ) -> Result<Vec<([u8; 32], OnecoinConsensusMessage)>, String> {
         // The transport authenticates peers by AWEID, not by raw public key.
-        let sender_id = hex::encode(sender);
-        if !self.validators.contains_key(&sender_id) {
-            return Err("consensus sender is not a validator".into());
-        }
+        // Non-validators may submit a signed transaction, but only configured validators
+        // may propose blocks, vote, or distribute finality certificates.
         match message {
+            OnecoinConsensusMessage::TransactionSubmission(tx) => {
+                self.handle_submission(sender, identity, tx)
+            }
             OnecoinConsensusMessage::Proposal(block) => {
+                self.require_validator_sender(sender)?;
                 self.handle_proposal(sender, identity, block)
             }
-            OnecoinConsensusMessage::Vote(vote) => self.handle_vote(sender, vote),
-            OnecoinConsensusMessage::Certificate(cert) => self.handle_certificate(cert),
+            OnecoinConsensusMessage::Vote(vote) => {
+                self.require_validator_sender(sender)?;
+                self.handle_vote(sender, vote)
+            }
+            OnecoinConsensusMessage::Certificate(cert) => {
+                self.require_validator_sender(sender)?;
+                self.handle_certificate(cert)
+            }
         }
+    }
+
+    fn require_validator_sender(&self, sender: [u8; 32]) -> Result<(), String> {
+        if self.validators.contains_key(&hex::encode(sender)) {
+            Ok(())
+        } else {
+            Err("consensus sender is not a validator".into())
+        }
+    }
+
+    fn handle_submission(
+        &mut self,
+        sender: [u8; 32],
+        identity: &Identity,
+        tx: OnecoinTransaction,
+    ) -> Result<Vec<([u8; 32], OnecoinConsensusMessage)>, String> {
+        let sender_aweid = AweId::from_public_key(&tx.sender);
+        if sender_aweid.as_bytes() != &sender {
+            return Err("transaction sender does not match authenticated peer".into());
+        }
+        if !self.local_is_validator(identity) {
+            return Err("only a configured validator can accept transaction submissions".into());
+        }
+        if self.pending.values().any(|block| {
+            block.transactions.iter().any(|pending_tx| pending_tx.id() == tx.id())
+        }) {
+            return Err("transaction is already pending consensus".into());
+        }
+        let sender_key = sender_aweid.to_hex();
+        let recipient_key = hex::encode(tx.recipient);
+        if !self.state.state.ledger.members.contains_key(&sender_key) {
+            return Err("transaction sender is not a member of finalized ONECOIN state".into());
+        }
+        if !self.state.state.ledger.members.contains_key(&recipient_key) {
+            return Err("transaction recipient is not a member of finalized ONECOIN state".into());
+        }
+        // Reuse deterministic block execution to validate signature, nonce, fee, and balance
+        // before a validator creates or signs a proposal.
+        self.state.state.validate_block_transactions(&OnecoinBlock::new(
+            identity,
+            self.state.state.height.saturating_add(1),
+            self.state.state.tip_hash,
+            vec![tx.clone()],
+            0,
+        )?)?;
+        self.propose(identity, vec![tx], now_unix())
     }
 
     fn handle_proposal(
@@ -321,6 +384,104 @@ mod tests {
 
         let reopened = OnecoinConsensusRuntime::open(&path, validators).unwrap();
         assert_eq!(reopened.persisted_state().height, 1);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn non_validator_transaction_submission_is_validated_and_proposed() {
+        let dir = std::env::temp_dir().join(format!(
+            "awenet-consensus-submission-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let validator = Identity::generate(Username::new("submission-validator").unwrap());
+        let sender = Identity::generate(Username::new("submission-sender").unwrap());
+        let recipient = Identity::generate(Username::new("submission-recipient").unwrap());
+        let validators = BTreeMap::from([(
+            validator.public.awe_id.to_hex(),
+            validator.public.public_key,
+        )]);
+        let mut runtime =
+            OnecoinConsensusRuntime::open(dir.join("state.json"), validators).unwrap();
+        runtime
+            .state
+            .state
+            .ledger
+            .initialize_genesis(&[
+                validator.public.awe_id.clone(),
+                sender.public.awe_id.clone(),
+                recipient.public.awe_id.clone(),
+            ])
+            .unwrap();
+        runtime.state.save().unwrap();
+
+        let tx = OnecoinTransaction::new(
+            &sender,
+            0,
+            &recipient.public.awe_id,
+            100,
+            Some("test submission".into()),
+        );
+        let outbound = runtime
+            .handle(
+                *sender.public.awe_id.as_bytes(),
+                &validator,
+                OnecoinConsensusMessage::TransactionSubmission(tx),
+            )
+            .unwrap();
+        assert_eq!(runtime.persisted_state().height, 1);
+        assert!(outbound.iter().any(|(_, message)| {
+            matches!(message, OnecoinConsensusMessage::Certificate(_))
+        }));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn transaction_submission_rejects_transport_identity_mismatch() {
+        let dir = std::env::temp_dir().join(format!(
+            "awenet-consensus-submission-forgery-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let validator = Identity::generate(Username::new("submission-validator2").unwrap());
+        let sender = Identity::generate(Username::new("submission-sender2").unwrap());
+        let impostor = Identity::generate(Username::new("submission-impostor").unwrap());
+        let recipient = Identity::generate(Username::new("submission-recipient2").unwrap());
+        let validators = BTreeMap::from([(
+            validator.public.awe_id.to_hex(),
+            validator.public.public_key,
+        )]);
+        let mut runtime =
+            OnecoinConsensusRuntime::open(dir.join("state.json"), validators).unwrap();
+        runtime
+            .state
+            .state
+            .ledger
+            .initialize_genesis(&[
+                validator.public.awe_id.clone(),
+                sender.public.awe_id.clone(),
+                impostor.public.awe_id.clone(),
+                recipient.public.awe_id.clone(),
+            ])
+            .unwrap();
+        runtime.state.save().unwrap();
+        let tx = OnecoinTransaction::new(
+            &sender,
+            0,
+            &recipient.public.awe_id,
+            100,
+            None,
+        );
+        assert!(runtime
+            .handle(
+                *impostor.public.awe_id.as_bytes(),
+                &validator,
+                OnecoinConsensusMessage::TransactionSubmission(tx),
+            )
+            .is_err());
+        assert_eq!(runtime.persisted_state().height, 0);
         let _ = fs::remove_dir_all(&dir);
     }
 
