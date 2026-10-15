@@ -48,6 +48,7 @@ type CommunityState = Arc<Mutex<serde_json::Value>>;
 type ConsensusState = Arc<Mutex<Option<OnecoinConsensusRuntime>>>;
 type OnecoinLedgerState = Arc<Mutex<OnecoinLedger>>;
 type ContributionState = Arc<Mutex<ResourceContribution>>;
+type ConsensusSendResult = (String, u128, Vec<([u8; 32], OnecoinConsensusMessage)>, u64, bool);
 
 #[derive(Clone)]
 struct UiState {
@@ -479,7 +480,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
             let memo = parsed.get("memo").and_then(|v| v.as_str()).map(str::to_owned);
             // A poisoned consensus lock must fail closed, never fall back to the non-finalized ledger.
             if consensus_state.lock().map(|guard| guard.is_some()).unwrap_or(true) {
-                let consensus_result: Result<(String, u128, Vec<([u8; 32], OnecoinConsensusMessage)>, u64, bool), String> = (|| {
+                let consensus_result: Result<ConsensusSendResult, String> = (|| {
                     let recipient = AweId::from_hex(recipient_hex)?;
                     if recipient == node.identity.public.awe_id {
                         return Err("cannot transfer ONECOIN to the same wallet".into());
