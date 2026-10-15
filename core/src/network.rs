@@ -1265,15 +1265,32 @@ impl Node {
             .acquire()
             .await
             .map_err(|_| NetworkError::Protocol("outbound limiter closed".into()))?;
-        let address = self
+        let addresses = self
             .peers
             .read()
             .await
             .get(peer_id)
-            .and_then(|peer| peer.addresses.first().copied())
+            .map(|peer| peer.addresses.clone())
+            .filter(|addresses| !addresses.is_empty())
             .ok_or_else(|| NetworkError::Protocol("peer address is unknown".into()))?;
-        let mut connection = self.connect(address).await?;
-        connection.send_data_roundtrip(stream, payload).await
+        let mut last_error = None;
+        for address in addresses {
+            match self.connect(address).await {
+                Ok(mut connection) => {
+                    match connection
+                        .send_data_roundtrip(stream, payload.clone())
+                        .await
+                    {
+                        Ok(elapsed) => return Ok(elapsed),
+                        Err(error) => last_error = Some(error),
+                    }
+                }
+                Err(error) => last_error = Some(error),
+            }
+        }
+        Err(last_error.unwrap_or_else(|| {
+            NetworkError::Protocol("peer has no usable authenticated address".into())
+        }))
     }
 
     pub fn take_inbox(&self) -> Vec<([u8; 32], u32, Vec<u8>)> {
