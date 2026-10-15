@@ -180,6 +180,9 @@ pub struct OnecoinFinalizedState {
     pub ledger: OnecoinLedger,
     pub height: u64,
     pub tip_hash: [u8; 32],
+    /// Persisted local validator votes prevent double-voting after process restarts.
+    #[serde(default)]
+    pub local_votes: BTreeMap<u64, [u8; 32]>,
 }
 
 impl Default for OnecoinFinalizedState {
@@ -188,6 +191,7 @@ impl Default for OnecoinFinalizedState {
             ledger: OnecoinLedger::default(),
             height: 0,
             tip_hash: [0; 32],
+            local_votes: BTreeMap::new(),
         }
     }
 }
@@ -242,6 +246,7 @@ impl OnecoinFinalizedState {
         self.ledger = next;
         self.height = block.header.height;
         self.tip_hash = block.hash();
+        self.local_votes.remove(&block.header.height);
         Ok(self.tip_hash)
     }
 }
