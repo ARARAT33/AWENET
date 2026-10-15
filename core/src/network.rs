@@ -1036,7 +1036,10 @@ impl Node {
             let _ = s.set_nodelay(true);
             let Ok(permit) = Arc::clone(&semaphore).try_acquire_owned() else {
                 // Bounded admission: do not spawn unlimited tasks under connection floods.
-                eprintln!("inbound connection concurrency limit reached: ip={}", a.ip());
+                eprintln!(
+                    "inbound connection concurrency limit reached: ip={}",
+                    a.ip()
+                );
                 drop(s);
                 continue;
             };
