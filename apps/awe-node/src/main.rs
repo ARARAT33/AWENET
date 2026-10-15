@@ -114,9 +114,7 @@ fn validate_remote_group(
                 .ok_or_else(|| "group member ID must be text".to_string())
         })
         .collect::<Result<Vec<_>, _>>()?;
-    if members.is_empty()
-        || !members.iter().any(|member| member == authenticated_sender)
-    {
+    if members.is_empty() || !members.iter().any(|member| member == authenticated_sender) {
         return Err("group owner must be a group member".into());
     }
     validate_group_member_ids(&members)?;
