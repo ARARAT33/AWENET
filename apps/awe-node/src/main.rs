@@ -480,6 +480,9 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                 if candidate.members.is_empty() {
                     candidate.initialize_genesis(std::slice::from_ref(&sender))?;
                 }
+                // A recipient must be registered before the transfer is applied.
+                // This is only local ledger membership, not proof of network consensus.
+                candidate.ensure_member(&recipient);
                 if candidate.balance_atoms(&sender) < amount_atoms {
                     return Err("insufficient ONECOIN balance".into());
                 }
@@ -2980,9 +2983,7 @@ mod identity_storage_tests {
         )
         .unwrap();
 
-        assert!(
-            load_or_create_product_identity_with_password(&dir, Some("short".into())).is_err()
-        );
+        assert!(load_or_create_product_identity_with_password(&dir, Some("short".into())).is_err());
         assert!(dir.join("node.awesecret").exists());
         assert!(!dir.join("node.awevault").exists());
         let _ = fs::remove_dir_all(&dir);
