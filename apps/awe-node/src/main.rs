@@ -129,6 +129,24 @@ fn validate_remote_group(
     Ok(())
 }
 
+fn validate_remote_feed_message(
+    message: &serde_json::Value,
+    authenticated_sender: &str,
+) -> Result<(), String> {
+    if message.get("sender").and_then(|v| v.as_str()) != Some(authenticated_sender) {
+        return Err("message sender does not match authenticated transport identity".into());
+    }
+    let id = message.get("id").and_then(|v| v.as_str()).unwrap_or("");
+    if id.is_empty() || id.len() > 128 {
+        return Err("invalid community message ID".into());
+    }
+    validate_community_message(message.get("text").and_then(|v| v.as_str()).unwrap_or(""))?;
+    if message.get("timestamp").and_then(|v| v.as_u64()).is_none() {
+        return Err("message timestamp is required".into());
+    }
+    Ok(())
+}
+
 fn validate_remote_channel(
     channel: &serde_json::Value,
     authenticated_sender: &str,
@@ -2472,11 +2490,13 @@ async fn run_product() -> Result<()> {
                                             .unwrap_or(false);
                                         if member {
                                             if let Some(m) = message.get("message").cloned() {
-                                                if let Some(a) = g
-                                                    .get_mut("messages")
-                                                    .and_then(|v| v.as_array_mut())
-                                                {
-                                                    append_bounded_json_entry(a, m);
+                                                if validate_remote_feed_message(&m, &sender_uid).is_ok() {
+                                                    if let Some(a) = g
+                                                        .get_mut("messages")
+                                                        .and_then(|v| v.as_array_mut())
+                                                    {
+                                                        append_bounded_json_entry(a, m);
+                                                    }
                                                 }
                                             }
                                         }
@@ -2599,11 +2619,13 @@ async fn run_product() -> Result<()> {
                                                 == Some(sender_uid.as_str());
                                         if subscriber {
                                             if let Some(m) = message.get("message").cloned() {
-                                                if let Some(a) = ch
-                                                    .get_mut("messages")
-                                                    .and_then(|v| v.as_array_mut())
-                                                {
-                                                    a.push(m);
+                                                if validate_remote_feed_message(&m, &sender_uid).is_ok() {
+                                                    if let Some(a) = ch
+                                                        .get_mut("messages")
+                                                        .and_then(|v| v.as_array_mut())
+                                                    {
+                                                        append_bounded_json_entry(a, m);
+                                                    }
                                                 }
                                             }
                                         }
@@ -3090,6 +3112,17 @@ mod phase_two_backend_tests {
         let mut malformed = group.clone();
         malformed["members"] = json!(["uid-not-an-aweid"]);
         assert!(validate_remote_group(&malformed, &owner).is_err());
+    }
+
+    #[test]
+    fn community_message_must_match_authenticated_sender_and_limits() {
+        let sender = "ab".repeat(32);
+        let message = json!({"id":"msg-1","sender":sender,"text":"hello","timestamp":1});
+        assert!(validate_remote_feed_message(&message, &sender).is_ok());
+        assert!(validate_remote_feed_message(&message, &"cd".repeat(32)).is_err());
+        let mut malformed = message.clone();
+        malformed["text"] = json!("x".repeat(MAX_COMMUNITY_MESSAGE_BYTES + 1));
+        assert!(validate_remote_feed_message(&malformed, &sender).is_err());
     }
 
     #[test]
