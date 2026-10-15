@@ -5,7 +5,7 @@
 //! when its configured validator set contains its AWEID and public key.
 
 use crate::identity::{AweId, Identity};
-use crate::onecoin::{OnecoinTransaction};
+use crate::onecoin::OnecoinTransaction;
 use crate::onecoin_consensus::{
     OnecoinBlock, OnecoinFinalizedState, QuorumCertificate, SignedBlockVote,
 };
@@ -258,22 +258,28 @@ mod tests {
 
     #[test]
     fn single_validator_proposal_finalizes_and_persists() {
-        let dir = std::env::temp_dir().join(format!("awenet-consensus-propose-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("awenet-consensus-propose-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("state.json");
         let identity = Identity::generate(Username::new("validator").unwrap());
-        let validators = BTreeMap::from([(
-            identity.public.awe_id.to_hex(),
-            identity.public.public_key,
-        )]);
+        let validators =
+            BTreeMap::from([(identity.public.awe_id.to_hex(), identity.public.public_key)]);
         let mut runtime = OnecoinConsensusRuntime::open(&path, validators.clone()).unwrap();
-        runtime.state.state.ledger.initialize_genesis(&[identity.public.awe_id.clone()]).unwrap();
+        runtime
+            .state
+            .state
+            .ledger
+            .initialize_genesis(&[identity.public.awe_id.clone()])
+            .unwrap();
         runtime.state.save().unwrap();
 
         let outbound = runtime.propose(&identity, Vec::new(), 100).unwrap();
         assert_eq!(runtime.persisted_state().height, 1);
-        assert!(outbound.iter().any(|(_, message)| matches!(message, OnecoinConsensusMessage::Certificate(_))));
+        assert!(outbound
+            .iter()
+            .any(|(_, message)| matches!(message, OnecoinConsensusMessage::Certificate(_))));
 
         let reopened = OnecoinConsensusRuntime::open(&path, validators).unwrap();
         assert_eq!(reopened.persisted_state().height, 1);
@@ -284,7 +290,10 @@ mod tests {
     fn validator_rejects_unspendable_transaction_before_voting() {
         use crate::onecoin::INITIAL_GENESIS_ALLOCATION;
 
-        let dir = std::env::temp_dir().join(format!("awenet-consensus-invalid-tx-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "awenet-consensus-invalid-tx-{}",
+            std::process::id()
+        ));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let proposer = Identity::generate(Username::new("proposer").unwrap());
@@ -292,19 +301,39 @@ mod tests {
         let recipient = Identity::generate(Username::new("recipient").unwrap());
         let validators = BTreeMap::from([
             (proposer.public.awe_id.to_hex(), proposer.public.public_key),
-            (validator.public.awe_id.to_hex(), validator.public.public_key),
+            (
+                validator.public.awe_id.to_hex(),
+                validator.public.public_key,
+            ),
         ]);
-        let mut runtime = OnecoinConsensusRuntime::open(dir.join("state.json"), validators).unwrap();
-        runtime.state.state.ledger.initialize_genesis(&[
-            proposer.public.awe_id.clone(),
-            validator.public.awe_id.clone(),
-            recipient.public.awe_id.clone(),
-        ]).unwrap();
+        let mut runtime =
+            OnecoinConsensusRuntime::open(dir.join("state.json"), validators).unwrap();
+        runtime
+            .state
+            .state
+            .ledger
+            .initialize_genesis(&[
+                proposer.public.awe_id.clone(),
+                validator.public.awe_id.clone(),
+                recipient.public.awe_id.clone(),
+            ])
+            .unwrap();
         runtime.state.save().unwrap();
         let tx = OnecoinTransaction::new(
-            &proposer, 0, &recipient.public.awe_id, INITIAL_GENESIS_ALLOCATION + 1, None,
+            &proposer,
+            0,
+            &recipient.public.awe_id,
+            INITIAL_GENESIS_ALLOCATION + 1,
+            None,
         );
-        let block = OnecoinBlock::new(&proposer, 1, runtime.persisted_state().tip_hash, vec![tx], 101).unwrap();
+        let block = OnecoinBlock::new(
+            &proposer,
+            1,
+            runtime.persisted_state().tip_hash,
+            vec![tx],
+            101,
+        )
+        .unwrap();
         let result = runtime.handle(
             proposer.public.public_key,
             &validator,
@@ -317,7 +346,8 @@ mod tests {
 
     #[test]
     fn non_validator_cannot_propose() {
-        let dir = std::env::temp_dir().join(format!("awenet-consensus-deny-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("awenet-consensus-deny-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let validator = Identity::generate(Username::new("validator").unwrap());
@@ -326,7 +356,8 @@ mod tests {
             validator.public.awe_id.to_hex(),
             validator.public.public_key,
         )]);
-        let mut runtime = OnecoinConsensusRuntime::open(dir.join("state.json"), validators).unwrap();
+        let mut runtime =
+            OnecoinConsensusRuntime::open(dir.join("state.json"), validators).unwrap();
         assert!(runtime.propose(&outsider, Vec::new(), 100).is_err());
         let _ = fs::remove_dir_all(&dir);
     }
