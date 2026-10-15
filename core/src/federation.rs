@@ -44,6 +44,19 @@ pub struct DataGroupConfig {
     pub join_token: String,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CentreGroupConfig {
+    pub format: String,
+    pub version: u16,
+    pub centre_group_id: String,
+    pub centre_group_name: String,
+    pub issued_at_unix: u64,
+    pub owner_data_group_id: String,
+    pub data_group_ids: Vec<String>,
+    pub peer_centre_groups: Vec<String>,
+    pub join_token: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct AweNetConfig {
     pub format: String,
@@ -151,6 +164,29 @@ pub fn generate_dgc(
     }
 }
 
+/// Create a Centre Group from at least two Data Groups. The owner must be a member.
+pub fn generate_cgc(
+    owner_dg_id: &str,
+    name: &str,
+    data_groups: Vec<String>,
+    now: u64,
+) -> CentreGroupConfig {
+    let mut sorted = data_groups;
+    sorted.sort();
+    sorted.dedup();
+    CentreGroupConfig {
+        format: "cgc".into(),
+        version: FORMAT_VERSION,
+        centre_group_id: id("cg", &format!("{owner_dg_id}:{name}:{}", sorted.join(","))),
+        centre_group_name: name.into(),
+        issued_at_unix: now,
+        owner_data_group_id: owner_dg_id.into(),
+        data_group_ids: sorted,
+        peer_centre_groups: Vec::new(),
+        join_token: token("cg", owner_dg_id),
+    }
+}
+
 pub fn save_json<T: Serialize>(value: &T, path: &Path) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -177,6 +213,13 @@ pub fn load_dgc(path: &Path) -> Result<DataGroupConfig, String> {
     let v: DataGroupConfig = serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
     validate_dgc(&v)?;
+    Ok(v)
+}
+
+pub fn load_cgc(path: &Path) -> Result<CentreGroupConfig, String> {
+    let v: CentreGroupConfig = serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    validate_cgc(&v)?;
     Ok(v)
 }
 
@@ -239,6 +282,34 @@ pub fn validate_dgc(v: &DataGroupConfig) -> Result<(), String> {
     Ok(())
 }
 
+pub fn validate_cgc(v: &CentreGroupConfig) -> Result<(), String> {
+    if v.format != "cgc" || v.version != FORMAT_VERSION {
+        return Err("invalid .cgc format/version".into());
+    }
+    if v.centre_group_id.is_empty()
+        || v.centre_group_name.trim().is_empty()
+        || v.owner_data_group_id.is_empty()
+        || v.join_token.is_empty()
+    {
+        return Err("incomplete .cgc configuration".into());
+    }
+    if v.data_group_ids.len() < 2 {
+        return Err("centre group requires at least two data groups".into());
+    }
+    let groups: BTreeSet<_> = v.data_group_ids.iter().collect();
+    if groups.len() != v.data_group_ids.len() {
+        return Err("centre group contains duplicate data-group IDs".into());
+    }
+    if !groups.contains(&&v.owner_data_group_id) {
+        return Err("centre group owner must be one of its member data groups".into());
+    }
+    let peers: BTreeSet<_> = v.peer_centre_groups.iter().collect();
+    if peers.len() != v.peer_centre_groups.len() || peers.contains(&&v.centre_group_id) {
+        return Err("centre group contains duplicate or self-referencing peers".into());
+    }
+    Ok(())
+}
+
 pub fn merge_awedc(
     local: &mut DataCentreConfig,
     incoming: &DataCentreConfig,
@@ -278,6 +349,23 @@ pub fn merge_dgc(local: &mut DataGroupConfig, incoming: &DataGroupConfig) -> Res
     Ok(())
 }
 
+pub fn merge_cgc(local: &mut CentreGroupConfig, incoming: &CentreGroupConfig) -> Result<(), String> {
+    validate_cgc(local)?;
+    validate_cgc(incoming)?;
+    if local.centre_group_id == incoming.centre_group_id {
+        return Err("cannot merge a centre group with itself".into());
+    }
+    if !local.peer_centre_groups.contains(&incoming.centre_group_id) {
+        local.peer_centre_groups.push(incoming.centre_group_id.clone());
+    }
+    for peer in &incoming.peer_centre_groups {
+        if peer != &local.centre_group_id && !local.peer_centre_groups.contains(peer) {
+            local.peer_centre_groups.push(peer.clone());
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -308,6 +396,27 @@ mod tests {
         assert!(validate_dgc(&dg).is_err());
         dg.data_centre_ids.push("dc-owner".into());
         assert!(validate_dgc(&dg).is_ok());
+    }
+
+    #[test]
+    fn centre_group_requires_owner_membership_and_unique_members() {
+        let mut cg = generate_cgc("dg-owner", "Core Group", vec!["dg-owner".into(), "dg-peer".into()], 7);
+        assert!(validate_cgc(&cg).is_ok());
+        cg.owner_data_group_id = "dg-missing".into();
+        assert!(validate_cgc(&cg).is_err());
+        cg.owner_data_group_id = "dg-owner".into();
+        cg.data_group_ids.push("dg-owner".into());
+        assert!(validate_cgc(&cg).is_err());
+    }
+
+    #[test]
+    fn centre_group_merge_does_not_add_self_reference() {
+        let mut a = generate_cgc("dg-a", "Group A", vec!["dg-a".into(), "dg-b".into()], 1);
+        let b = generate_cgc("dg-b", "Group B", vec!["dg-b".into(), "dg-c".into()], 2);
+        merge_cgc(&mut a, &b).unwrap();
+        assert!(a.peer_centre_groups.contains(&b.centre_group_id));
+        assert!(!a.peer_centre_groups.contains(&a.centre_group_id));
+        assert!(validate_cgc(&a).is_ok());
     }
 
     #[test]
