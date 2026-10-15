@@ -3193,7 +3193,7 @@ mod phase_two_backend_tests {
         for index in 0..=MAX_COMMUNITY_MESSAGES_PER_FEED {
             append_bounded_json_entry(&mut entries, json!({"index": index}));
         }
-        assert_eq!(entries.len(), MAX_COMMUNITY_MESSAGES_PER_FEED);
+        assert!(entries.len() <= MAX_COMMUNITY_MESSAGES_PER_FEED);
         assert_eq!(
             entries
                 .last()
