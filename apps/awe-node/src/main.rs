@@ -39,6 +39,26 @@ const QR_JS: &str = include_str!("../../awe-desktop/ui/vendor/qrcode.js");
 const DEFAULT_UI_ADDR: &str = "127.0.0.1:41800";
 
 type MessengerLog = Arc<Mutex<Vec<serde_json::Value>>>;
+const MAX_MESSENGER_LOG_ENTRIES: usize = 5_000;
+
+fn append_messenger_entry(log: &mut Vec<serde_json::Value>, item: serde_json::Value) {
+    if log.len() >= MAX_MESSENGER_LOG_ENTRIES {
+        let remove_count = (MAX_MESSENGER_LOG_ENTRIES / 10).max(1);
+        log.drain(..remove_count.min(log.len()));
+    }
+    append_messenger_entry(&mut log, item);
+}
+
+fn validate_storage_file_id(value: &str) -> Result<[u8; 32], String> {
+    let bytes = hex::decode(value).map_err(|_| "file_id must be 64 hexadecimal characters".to_string())?;
+    let id: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| "file_id must be 64 hexadecimal characters".to_string())?;
+    if value.len() != 64 {
+        return Err("file_id must be 64 hexadecimal characters".into());
+    }
+    Ok(id)
+}
 type FederationState = Arc<Mutex<AweNetConfig>>;
 type StorageState = Arc<LocalNodeStore>;
 type PendingAcks = Arc<Mutex<BTreeMap<[u8; 16], StorageShardAck>>>;
@@ -876,7 +896,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                         match serde_json::to_vec(&envelope) {
                             Ok(payload) => match node.send_to_peer(&recipient_id, 100, payload).await {
                                 Ok(_) => {
-                                    if let Ok(mut log)=messenger.lock(){ log.push(envelope.clone()); }
+                                    if let Ok(mut log)=messenger.lock(){ append_messenger_entry(&mut log, envelope.clone()); }
                                     ("200 OK","application/json; charset=utf-8",serde_json::json!({"status":"sent","signal":envelope}).to_string())
                                 },
                                 Err(error)=>("502 Bad Gateway","application/json; charset=utf-8",serde_json::json!({"status":"error","error":error.to_string()}).to_string())
@@ -1096,7 +1116,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                                 "rtt_ms": rtt.as_millis()
                             });
                             if let Ok(mut log) = messenger.lock() {
-                                log.push(item.clone());
+                                append_messenger_entry(&mut log, item.clone());
                             }
                             ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"sent","message":item}).to_string())
                         }
@@ -1377,9 +1397,19 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                 .and_then(|path| path.split('?').nth(1))
                 .and_then(|q| q.split('&').find_map(|p| p.strip_prefix("file_id=")))
                 .unwrap_or("");
-            let manifest_path = PathBuf::from(data_dir_for_api())
-                .join("storage").join("manifests")
-                .join(format!("{file_id_hex}.json"));
+            let manifest_path = match validate_storage_file_id(file_id_hex) {
+                Ok(_) => PathBuf::from(data_dir_for_api())
+                    .join("storage")
+                    .join("manifests")
+                    .join(format!("{file_id_hex}.json")),
+                Err(error) => {
+                    let response = ("400 Bad Request", "application/json; charset=utf-8",
+                        serde_json::json!({"status":"error","error":error}).to_string());
+                    stream.write_all(&http_response(response.0, response.1, &response.2, origin).await).await?;
+                    stream.shutdown().await?;
+                    return Ok(());
+                }
+            };
             match fs::read(&manifest_path) {
                 Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes) {
                     Ok(manifest) => {
@@ -1898,7 +1928,35 @@ async fn run_product() -> Result<()> {
         anyhow::bail!("node storage has no available capacity");
     }
     let storage: StorageState = Arc::new(LocalNodeStore::open(&storage_root, storage_quota)?);
-    let messenger: MessengerLog = Arc::new(Mutex::new(Vec::new()));
+    let messenger_path = data_dir.join("messenger.json");
+    let messenger: MessengerLog = Arc::new(Mutex::new(
+        fs::read(&messenger_path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Vec<serde_json::Value>>(&bytes).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .rev()
+            .take(MAX_MESSENGER_LOG_ENTRIES)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect(),
+    ));
+    let messenger_save = messenger.clone();
+    let messenger_save_path = messenger_path.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            if let Ok(log) = messenger_save.lock() {
+                if let Ok(bytes) = serde_json::to_vec(&*log) {
+                    let temporary = messenger_save_path.with_extension("json.tmp");
+                    if fs::write(&temporary, bytes).is_ok() {
+                        let _ = fs::rename(&temporary, &messenger_save_path);
+                    }
+                }
+            }
+        }
+    });
     let community_path = data_dir.join("community.json");
     let community: CommunityState = Arc::new(Mutex::new(
         fs::read(&community_path)
