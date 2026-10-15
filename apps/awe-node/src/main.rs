@@ -211,7 +211,7 @@ fn validate_storage_file_id(value: &str) -> Result<[u8; 32], String> {
 }
 type FederationState = Arc<Mutex<AweNetConfig>>;
 type StorageState = Arc<LocalNodeStore>;
-type PendingAcks = Arc<Mutex<BTreeMap<[u8; 16], StorageShardAck>>>;
+type PendingAcks = Arc<Mutex<BTreeMap<[u8; 16], ([u8; 32], StorageShardAck)>>>;
 type PendingShards = Arc<Mutex<BTreeMap<[u8; 16], StorageShardTransfer>>>;
 type PolicyState = Arc<Mutex<NetworkPolicy>>;
 type CommunityState = Arc<Mutex<serde_json::Value>>;
@@ -1405,8 +1405,9 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                                                             let mut confirmed = false;
                                                             while tokio::time::Instant::now() < deadline {
                                                                 if let Ok(mut acks) = task_pending_acks.lock() {
-                                                                    if let Some(ack) = acks.remove(&request_id) {
-                                                                        confirmed = ack.file_id == file_id
+                                                                    if let Some((ack_sender, ack)) = acks.remove(&request_id) {
+                                                                        confirmed = ack_sender == peer_id
+                                                                            && ack.file_id == file_id
                                                                             && ack.shard_index == index as u16
                                                                             && ack.stored_object_id == shard_hash;
                                                                         break;
@@ -2025,8 +2026,9 @@ async fn autonomous_repair_cycle(
                             tokio::time::Instant::now() + std::time::Duration::from_secs(5);
                         while tokio::time::Instant::now() < deadline {
                             if let Ok(mut acks) = pending_acks.lock() {
-                                if let Some(ack) = acks.remove(&request_id) {
-                                    if ack.file_id == file_id
+                                if let Some((ack_sender, ack)) = acks.remove(&request_id) {
+                                    if ack_sender == target_id
+                                        && ack.file_id == file_id
                                         && ack.shard_index == index as u16
                                         && ack.stored_object_id == expected_hash
                                     {
@@ -2727,7 +2729,7 @@ async fn run_product() -> Result<()> {
                 if let Ok(ack) = serde_json::from_slice::<StorageShardAck>(&payload) {
                     if ack.version == awep2p_core::data_plane::STORAGE_PROTOCOL_VERSION {
                         if let Ok(mut pending) = dispatcher_acks.lock() {
-                            pending.insert(ack.request_id, ack);
+                            pending.insert(ack.request_id, (sender, ack));
                         }
                     }
                     continue;
