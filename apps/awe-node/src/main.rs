@@ -2404,6 +2404,13 @@ async fn run_product() -> Result<()> {
                     .map(|p| p.clone())
                     .unwrap_or_default();
                 if !runtime_policy.allows_stream(stream) {
+                    if stream == STORAGE_STREAM || stream == ONECOIN_CONSENSUS_STREAM {
+                        eprintln!(
+                            "application stream rejected by local policy: stream={}, allowed={:?}",
+                            stream,
+                            runtime_policy.allowed_streams
+                        );
+                    }
                     continue;
                 }
                 if stream == ONECOIN_CONSENSUS_STREAM {
@@ -2798,6 +2805,11 @@ async fn run_product() -> Result<()> {
                 if stream != STORAGE_STREAM {
                     continue;
                 }
+                eprintln!(
+                    "storage stream payload received: peer={}, bytes={}",
+                    hex::encode(sender),
+                    payload.len()
+                );
                 if let Ok(ack) = serde_json::from_slice::<StorageShardAck>(&payload) {
                     if ack.version == awep2p_core::data_plane::STORAGE_PROTOCOL_VERSION {
                         if let Ok(mut pending) = dispatcher_acks.lock() {
