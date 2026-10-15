@@ -187,7 +187,10 @@ impl OnecoinConsensusRuntime {
             return Err("only a configured validator can accept transaction submissions".into());
         }
         if self.pending.values().any(|block| {
-            block.transactions.iter().any(|pending_tx| pending_tx.id() == tx.id())
+            block
+                .transactions
+                .iter()
+                .any(|pending_tx| pending_tx.id() == tx.id())
         }) {
             return Err("transaction is already pending consensus".into());
         }
@@ -201,13 +204,15 @@ impl OnecoinConsensusRuntime {
         }
         // Reuse deterministic block execution to validate signature, nonce, fee, and balance
         // before a validator creates or signs a proposal.
-        self.state.state.validate_block_transactions(&OnecoinBlock::new(
-            identity,
-            self.state.state.height.saturating_add(1),
-            self.state.state.tip_hash,
-            vec![tx.clone()],
-            0,
-        )?)?;
+        self.state
+            .state
+            .validate_block_transactions(&OnecoinBlock::new(
+                identity,
+                self.state.state.height.saturating_add(1),
+                self.state.state.tip_hash,
+                vec![tx.clone()],
+                0,
+            )?)?;
         self.propose(identity, vec![tx], now_unix())
     }
 
@@ -431,9 +436,9 @@ mod tests {
             )
             .unwrap();
         assert_eq!(runtime.persisted_state().height, 1);
-        assert!(outbound.iter().any(|(_, message)| {
-            matches!(message, OnecoinConsensusMessage::Certificate(_))
-        }));
+        assert!(outbound
+            .iter()
+            .any(|(_, message)| { matches!(message, OnecoinConsensusMessage::Certificate(_)) }));
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -446,8 +451,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let validator = Identity::generate(Username::new("duplicate-validator").unwrap());
-        let second_validator =
-            Identity::generate(Username::new("duplicate-validator2").unwrap());
+        let second_validator = Identity::generate(Username::new("duplicate-validator2").unwrap());
         let sender = Identity::generate(Username::new("duplicate-sender").unwrap());
         let recipient = Identity::generate(Username::new("duplicate-recipient").unwrap());
         let validators = BTreeMap::from([
@@ -474,13 +478,7 @@ mod tests {
             ])
             .unwrap();
         runtime.state.save().unwrap();
-        let tx = OnecoinTransaction::new(
-            &sender,
-            0,
-            &recipient.public.awe_id,
-            100,
-            None,
-        );
+        let tx = OnecoinTransaction::new(&sender, 0, &recipient.public.awe_id, 100, None);
         runtime
             .handle(
                 *sender.public.awe_id.as_bytes(),
