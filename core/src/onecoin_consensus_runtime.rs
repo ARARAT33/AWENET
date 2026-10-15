@@ -112,10 +112,15 @@ impl OnecoinConsensusRuntime {
         // A proposer must count its own signed vote; otherwise a single-validator testnet can
         // never finalize and multi-validator networks waste one quorum slot.
         let local_vote = SignedBlockVote::new(identity, &block, true);
-        let mut outbound = self.handle_vote(identity.public.public_key, local_vote)?;
-        for public_key in self.validators.values().copied() {
-            if public_key != identity.public.public_key {
-                outbound.push((public_key, OnecoinConsensusMessage::Proposal(block.clone())));
+        let mut outbound = self.handle_vote(*identity.public.awe_id.as_bytes(), local_vote)?;
+        for (validator_id, public_key) in &self.validators {
+            if public_key != &identity.public.public_key {
+                let peer_id = hex::decode(validator_id)
+                    .map_err(|_| "invalid validator AWEID encoding".to_string())?;
+                let peer_id: [u8; 32] = peer_id
+                    .try_into()
+                    .map_err(|_| "invalid validator AWEID length".to_string())?;
+                outbound.push((peer_id, OnecoinConsensusMessage::Proposal(block.clone())));
             }
         }
         Ok(outbound)
@@ -127,8 +132,9 @@ impl OnecoinConsensusRuntime {
         identity: &Identity,
         message: OnecoinConsensusMessage,
     ) -> Result<Vec<([u8; 32], OnecoinConsensusMessage)>, String> {
-        let sender_id = AweId::from_public_key(&sender).to_hex();
-        if self.validators.get(&sender_id) != Some(&sender) {
+        // The transport authenticates peers by AWEID, not by raw public key.
+        let sender_id = hex::encode(sender);
+        if !self.validators.contains_key(&sender_id) {
             return Err("consensus sender is not a validator".into());
         }
         match message {
@@ -147,7 +153,7 @@ impl OnecoinConsensusRuntime {
         block: OnecoinBlock,
     ) -> Result<Vec<([u8; 32], OnecoinConsensusMessage)>, String> {
         block.validate_shape()?;
-        if block.header.proposer != AweId::from_public_key(&sender) {
+        if block.header.proposer.as_bytes() != &sender {
             return Err("proposal sender does not match block proposer".into());
         }
         let proposer_key = self
@@ -183,7 +189,7 @@ impl OnecoinConsensusRuntime {
         sender: [u8; 32],
         vote: SignedBlockVote,
     ) -> Result<Vec<([u8; 32], OnecoinConsensusMessage)>, String> {
-        if vote.voter != AweId::from_public_key(&sender) {
+        if vote.voter.as_bytes() != &sender {
             return Err("vote sender does not match voter".into());
         }
         let key = self
@@ -224,7 +230,10 @@ impl OnecoinConsensusRuntime {
                 .validators
                 .values()
                 .copied()
-                .map(|peer| (peer, OnecoinConsensusMessage::Certificate(cert.clone())))
+                .map(|public_key| {
+                let peer_id = AweId::from_public_key(&public_key);
+                (*peer_id.as_bytes(), OnecoinConsensusMessage::Certificate(cert.clone()))
+            })
                 .collect());
         }
         Ok(Vec::new())
@@ -335,7 +344,7 @@ mod tests {
         )
         .unwrap();
         let result = runtime.handle(
-            proposer.public.public_key,
+            *proposer.public.awe_id.as_bytes(),
             &validator,
             OnecoinConsensusMessage::Proposal(block),
         );
