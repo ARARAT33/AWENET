@@ -80,7 +80,9 @@ impl NetworkPolicy {
 }
 
 fn migrate_legacy_stream_ids(policy: &mut NetworkPolicy) -> bool {
-    let storage_stream_enabled = policy.allowed_streams.contains(&crate::data_plane::STORAGE_STREAM);
+    let storage_stream_enabled = policy
+        .allowed_streams
+        .contains(&crate::data_plane::STORAGE_STREAM);
     let consensus_stream = crate::onecoin_consensus_runtime::ONECOIN_CONSENSUS_STREAM;
     if storage_stream_enabled && !policy.allowed_streams.contains(&consensus_stream) {
         // Before the stream-ID collision was fixed, allowing storage stream 200
@@ -155,25 +157,28 @@ mod tests {
         assert!(policy.allows_stream(crate::data_plane::STORAGE_STREAM));
         assert!(policy.allows_stream(ONECOIN_TRANSFER_STREAM));
         assert!(policy.allows_stream(crate::onecoin_consensus_runtime::ONECOIN_CONSENSUS_STREAM));
-        assert_ne!(crate::data_plane::STORAGE_STREAM, crate::onecoin_consensus_runtime::ONECOIN_CONSENSUS_STREAM);
+        assert_ne!(
+            crate::data_plane::STORAGE_STREAM,
+            crate::onecoin_consensus_runtime::ONECOIN_CONSENSUS_STREAM
+        );
         assert!(!policy.allows_stream(999_999));
     }
 
     #[test]
     fn existing_policy_migrates_the_previously_colliding_consensus_stream() {
-        let dir = std::env::temp_dir().join(format!("awenet-policy-migrate-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("awenet-policy-migrate-{}", std::process::id()));
         let path = dir.join("policy.json");
         let mut legacy = NetworkPolicy::default();
-        legacy.allowed_streams.retain(|stream| {
-            *stream != crate::onecoin_consensus_runtime::ONECOIN_CONSENSUS_STREAM
-        });
+        legacy
+            .allowed_streams
+            .retain(|stream| *stream != crate::onecoin_consensus_runtime::ONECOIN_CONSENSUS_STREAM);
         fs::create_dir_all(&dir).unwrap();
         fs::write(&path, serde_json::to_vec_pretty(&legacy).unwrap()).unwrap();
         let loaded = load_or_create(&path).unwrap();
         assert!(loaded.allows_stream(crate::data_plane::STORAGE_STREAM));
         assert!(loaded.allows_stream(crate::onecoin_consensus_runtime::ONECOIN_CONSENSUS_STREAM));
-        let persisted: NetworkPolicy =
-            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let persisted: NetworkPolicy = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert!(persisted.allows_stream(crate::onecoin_consensus_runtime::ONECOIN_CONSENSUS_STREAM));
         let _ = fs::remove_dir_all(dir);
     }
