@@ -917,7 +917,13 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
             let title=p.get("title").and_then(|v|v.as_str()).unwrap_or("").trim().to_string();
             let mut members=p.get("members").and_then(|v|v.as_array()).cloned().unwrap_or_default().into_iter().filter_map(|v|v.as_str().map(str::to_string)).filter(|v|!v.is_empty()).collect::<Vec<_>>();
             let local=node.identity.public.awe_id.to_hex();
-            if title.is_empty(){("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"title is required"}).to_string())}else{
+            let title_validation = validate_community_title(&title);
+            let members_validation = validate_group_member_ids(&members);
+            if let Err(error) = title_validation {
+                ("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":error}).to_string())
+            } else if let Err(error) = members_validation {
+                ("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":error}).to_string())
+            } else {
                 if !members.contains(&local){members.push(local.clone());} members.sort();members.dedup();
                 let id=format!("gid-{}",hex::encode(&blake3::hash(format!("{}:{}:{}",local,title,now_unix()).as_bytes()).as_bytes()[..12]));
                 let group=serde_json::json!({"id":id,"title":title,"owner":local,"members":members,"created_at":now_unix(),"messages":[]});
@@ -931,7 +937,11 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         "/api/groups/send" if method == "POST" => {
             let body=request.split("\r\n\r\n").nth(1).unwrap_or(""); let p:serde_json::Value=serde_json::from_str(body).unwrap_or_default();
             let gid=p.get("group_id").and_then(|v|v.as_str()).unwrap_or("").trim(); let text=p.get("text").and_then(|v|v.as_str()).unwrap_or("").trim(); let local=node.identity.public.awe_id.to_hex();
-            if gid.is_empty()||text.is_empty(){("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"group_id and text are required"}).to_string())}else{
+            if gid.is_empty() {
+                ("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"group_id is required"}).to_string())
+            } else if let Err(error) = validate_community_message(text) {
+                ("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":error}).to_string())
+            } else {
                 let group=community.lock().ok().and_then(|s|s.get("groups").and_then(|v|v.as_array()).and_then(|a|a.iter().find(|g|g.get("id").and_then(|v|v.as_str())==Some(gid)).cloned()));
                 match group{
                     None=>("404 Not Found","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"group not found"}).to_string()),
@@ -952,7 +962,9 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         },
         "/api/channels/create" if method == "POST" => {
             let body=request.split("\r\n\r\n").nth(1).unwrap_or(""); let p:serde_json::Value=serde_json::from_str(body).unwrap_or_default(); let title=p.get("title").and_then(|v|v.as_str()).unwrap_or("").trim().to_string(); let local=node.identity.public.awe_id.to_hex();
-            if title.is_empty(){("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"title is required"}).to_string())}else{
+            if let Err(error) = validate_community_title(&title) {
+                ("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":error}).to_string())
+            } else {
                 let id=format!("cid-{}",hex::encode(&blake3::hash(format!("{}:{}:{}",local,title,now_unix()).as_bytes()).as_bytes()[..12])); let channel=serde_json::json!({"id":id,"title":title,"owner":local,"subscribers":[local],"created_at":now_unix(),"messages":[]});
                 if let Ok(mut st)=community.lock(){if let Some(a)=st.get_mut("channels").and_then(|v|v.as_array_mut()){a.push(channel.clone());}}
                 let env=serde_json::json!({"kind":"awe.channel.v1","event":"upsert","channel":channel,"sender":local}); let mut delivered=0usize;
