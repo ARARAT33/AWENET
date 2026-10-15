@@ -887,7 +887,10 @@ impl Node {
             .expect("admission lock poisoned")
             .allow(c.remote_id, 1, now())
         {
-            eprintln!("inbound peer connection rate-limited: {}", hex::encode(c.remote_id));
+            eprintln!(
+                "inbound peer connection rate-limited: {}",
+                hex::encode(c.remote_id)
+            );
             let _ = defense
                 .lock()
                 .expect("defense lock poisoned")
