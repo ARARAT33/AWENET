@@ -1949,10 +1949,7 @@ async fn run_product() -> Result<()> {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             if let Ok(log) = messenger_save.lock() {
                 if let Ok(bytes) = serde_json::to_vec(&*log) {
-                    let temporary = messenger_save_path.with_extension("json.tmp");
-                    if fs::write(&temporary, bytes).is_ok() {
-                        let _ = fs::rename(&temporary, &messenger_save_path);
-                    }
+                    let _ = fs::write(&messenger_save_path, bytes);
                 }
             }
         }
@@ -2846,8 +2843,9 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod phase_two_backend_tests {
     use super::{
-        is_allowed_ui_origin, json_u16_field, json_u32_field, parse_content_length,
-        parse_onecoin_atoms, ATOMS_PER_COIN,
+        append_messenger_entry, is_allowed_ui_origin, json_u16_field, json_u32_field,
+        parse_content_length, parse_onecoin_atoms, validate_storage_file_id, ATOMS_PER_COIN,
+        MAX_MESSENGER_LOG_ENTRIES,
     };
     use serde_json::json;
 
@@ -2919,6 +2917,32 @@ mod phase_two_backend_tests {
                 "expected rejected origin: {origin}"
             );
         }
+    }
+
+    #[test]
+    fn messenger_history_is_bounded_and_keeps_recent_entries() {
+        let mut log = Vec::new();
+        for index in 0..=MAX_MESSENGER_LOG_ENTRIES {
+            append_messenger_entry(&mut log, json!({"index": index}));
+        }
+        assert!(log.len() <= MAX_MESSENGER_LOG_ENTRIES);
+        assert_eq!(
+            log.last().and_then(|entry| entry.get("index")).and_then(|v| v.as_u64()),
+            Some(MAX_MESSENGER_LOG_ENTRIES as u64)
+        );
+        assert_eq!(
+            log.first().and_then(|entry| entry.get("index")).and_then(|v| v.as_u64()),
+            Some((MAX_MESSENGER_LOG_ENTRIES / 10) as u64 + 1)
+        );
+    }
+
+    #[test]
+    fn storage_object_ids_must_be_exactly_32_bytes_of_hex() {
+        let valid = "ab".repeat(32);
+        assert!(validate_storage_file_id(&valid).is_ok());
+        assert!(validate_storage_file_id("../etc/passwd").is_err());
+        assert!(validate_storage_file_id(&"a".repeat(63)).is_err());
+        assert!(validate_storage_file_id(&"g".repeat(64)).is_err());
     }
 
     #[test]
