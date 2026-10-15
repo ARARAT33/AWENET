@@ -267,14 +267,18 @@ impl OnecoinConsensusRuntime {
         let hash = block.hash();
         if let Some(previous) = self.state.state.local_votes.get(&height) {
             if previous != &hash {
-                return Err("local validator already voted for a different block at this height".into());
+                return Err(
+                    "local validator already voted for a different block at this height".into(),
+                );
             }
             return Ok(());
         }
         self.state.state.local_votes.insert(height, hash);
         if let Err(error) = self.state.save() {
             self.state.state.local_votes.remove(&height);
-            return Err(format!("failed to persist local validator vote lock: {error}"));
+            return Err(format!(
+                "failed to persist local validator vote lock: {error}"
+            ));
         }
         Ok(())
     }
@@ -391,36 +395,53 @@ mod tests {
         let proposer_b = Identity::generate(Username::new("proposer-b").unwrap());
         let local = Identity::generate(Username::new("local-validator").unwrap());
         let validators = BTreeMap::from([
-            (proposer_a.public.awe_id.to_hex(), proposer_a.public.public_key),
-            (proposer_b.public.awe_id.to_hex(), proposer_b.public.public_key),
+            (
+                proposer_a.public.awe_id.to_hex(),
+                proposer_a.public.public_key,
+            ),
+            (
+                proposer_b.public.awe_id.to_hex(),
+                proposer_b.public.public_key,
+            ),
             (local.public.awe_id.to_hex(), local.public.public_key),
         ]);
         let mut runtime = OnecoinConsensusRuntime::open(&path, validators.clone()).unwrap();
-        runtime.state.state.ledger.initialize_genesis(&[
-            proposer_a.public.awe_id.clone(),
-            proposer_b.public.awe_id.clone(),
-            local.public.awe_id.clone(),
-        ]).unwrap();
+        runtime
+            .state
+            .state
+            .ledger
+            .initialize_genesis(&[
+                proposer_a.public.awe_id.clone(),
+                proposer_b.public.awe_id.clone(),
+                local.public.awe_id.clone(),
+            ])
+            .unwrap();
         runtime.state.save().unwrap();
         let first = OnecoinBlock::new(&proposer_a, 1, [0; 32], Vec::new(), 100).unwrap();
         let conflicting = OnecoinBlock::new(&proposer_b, 1, [0; 32], Vec::new(), 101).unwrap();
-        runtime.handle(
-            *proposer_a.public.awe_id.as_bytes(),
-            &local,
-            OnecoinConsensusMessage::Proposal(first),
-        ).unwrap();
-        assert!(runtime.handle(
-            *proposer_b.public.awe_id.as_bytes(),
-            &local,
-            OnecoinConsensusMessage::Proposal(conflicting.clone()),
-        ).is_err());
+        runtime
+            .handle(
+                *proposer_a.public.awe_id.as_bytes(),
+                &local,
+                OnecoinConsensusMessage::Proposal(first),
+            )
+            .unwrap();
+        assert!(runtime
+            .handle(
+                *proposer_b.public.awe_id.as_bytes(),
+                &local,
+                OnecoinConsensusMessage::Proposal(conflicting.clone()),
+            )
+            .is_err());
 
         let mut reopened = OnecoinConsensusRuntime::open(&path, validators).unwrap();
-        assert!(reopened.handle(
-            *proposer_b.public.awe_id.as_bytes(),
-            &local,
-            OnecoinConsensusMessage::Proposal(conflicting),
-        ).is_err());
+        assert!(reopened
+            .handle(
+                *proposer_b.public.awe_id.as_bytes(),
+                &local,
+                OnecoinConsensusMessage::Proposal(conflicting),
+            )
+            .is_err());
         let _ = fs::remove_dir_all(&dir);
     }
 
