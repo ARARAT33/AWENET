@@ -231,9 +231,12 @@ impl OnecoinConsensusRuntime {
                 .values()
                 .copied()
                 .map(|public_key| {
-                let peer_id = AweId::from_public_key(&public_key);
-                (*peer_id.as_bytes(), OnecoinConsensusMessage::Certificate(cert.clone()))
-            })
+                    let peer_id = AweId::from_public_key(&public_key);
+                    (
+                        *peer_id.as_bytes(),
+                        OnecoinConsensusMessage::Certificate(cert.clone()),
+                    )
+                })
                 .collect());
         }
         Ok(Vec::new())
