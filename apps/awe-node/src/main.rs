@@ -1426,10 +1426,14 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                                                 let task_node = node.clone();
                                                 let task_pending_acks = pending_acks.clone();
                                                 let task_limit = transfer_limit.clone();
-                                                let peer_limit = peer_transfer_limits
-                                                    .get(&peer_id)
-                                                    .cloned()
-                                                    .ok_or_else(|| anyhow::anyhow!("missing per-peer storage transfer limit"))?;
+                                                let Some(peer_limit) = peer_transfer_limits.get(&peer_id).cloned() else {
+                                                    failed.push(serde_json::json!({
+                                                        "shard": index,
+                                                        "node": target,
+                                                        "error": "missing per-peer storage transfer limit"
+                                                    }));
+                                                    continue;
+                                                };
                                                 let target_name = target.clone();
                                                 remote_jobs.spawn(async move {
                                                     let _permit = task_limit.acquire_owned().await
