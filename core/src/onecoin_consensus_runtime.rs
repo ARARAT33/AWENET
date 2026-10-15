@@ -309,7 +309,7 @@ mod tests {
             .state
             .state
             .ledger
-            .initialize_genesis(&[identity.public.awe_id.clone()])
+            .initialize_genesis(std::slice::from_ref(&identity.public.awe_id))
             .unwrap();
         runtime.state.save().unwrap();
 
