@@ -453,18 +453,34 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         },
         "/api/onebank/wallet/send" if method == "POST" => {
             let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
-            let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
-            let recipient_hex = parsed.get("recipient").and_then(|v| v.as_str()).unwrap_or("");
-            let amount_value = parsed.get("amount_coins").cloned().unwrap_or(serde_json::Value::Null);
-            let memo = parsed.get("memo").and_then(|v| v.as_str()).map(str::to_owned);
+            let parsed: Result<serde_json::Value, String> = serde_json::from_str(body)
+                .map_err(|error| format!("invalid wallet-send JSON: {error}"));
             let result: Result<(String, u128, OnecoinTransaction), String> = (|| {
+                let parsed = parsed?;
                 if !parsed.is_object() {
                     return Err("request body must be a valid JSON object".into());
                 }
+                let recipient_hex = parsed
+                    .get("recipient")
+                    .and_then(|value| value.as_str())
+                    .ok_or("recipient must be a string AWE-ID")?;
+                let amount_value = parsed
+                    .get("amount_coins")
+                    .ok_or("amount_coins is required")?;
+                let memo = match parsed.get("memo") {
+                    None | Some(serde_json::Value::Null) => None,
+                    Some(serde_json::Value::String(value)) if value.chars().count() <= 256 => {
+                        Some(value.clone())
+                    }
+                    Some(serde_json::Value::String(_)) => {
+                        return Err("memo must not exceed 256 characters".into())
+                    }
+                    Some(_) => return Err("memo must be a string or null".into()),
+                };
                 if recipient_hex.len() != 64 || !recipient_hex.chars().all(|c| c.is_ascii_hexdigit()) {
                     return Err("recipient must be a 64-character AWE-ID".into());
                 }
-                let amount_atoms = parse_onecoin_atoms(&amount_value)?;
+                let amount_atoms = parse_onecoin_atoms(amount_value)?;
                 if amount_atoms == 0 {
                     return Err("amount_coins must be positive".into());
                 }
