@@ -48,7 +48,13 @@ type CommunityState = Arc<Mutex<serde_json::Value>>;
 type ConsensusState = Arc<Mutex<Option<OnecoinConsensusRuntime>>>;
 type OnecoinLedgerState = Arc<Mutex<OnecoinLedger>>;
 type ContributionState = Arc<Mutex<ResourceContribution>>;
-type ConsensusSendResult = (String, u128, Vec<([u8; 32], OnecoinConsensusMessage)>, u64, bool);
+type ConsensusSendResult = (
+    String,
+    u128,
+    Vec<([u8; 32], OnecoinConsensusMessage)>,
+    u64,
+    bool,
+);
 
 #[derive(Clone)]
 struct UiState {
