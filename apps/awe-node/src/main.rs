@@ -2657,7 +2657,7 @@ async fn main() -> Result<()> {
 
 #[cfg(test)]
 mod phase_two_backend_tests {
-    use super::{parse_onecoin_atoms, ATOMS_PER_COIN};
+    use super::{json_u16_field, json_u32_field, parse_onecoin_atoms, ATOMS_PER_COIN};
     use serde_json::json;
 
     #[test]
@@ -2681,5 +2681,12 @@ mod phase_two_backend_tests {
     fn rejects_coin_amounts_with_more_than_18_decimals_or_exponent_notation() {
         assert!(parse_onecoin_atoms(&json!("0.0000000000000000001")).is_err());
         assert!(parse_onecoin_atoms(&json!("1e-3")).is_err());
+    }
+
+    #[test]
+    fn rejects_overflowing_resource_contribution_fields() {
+        assert!(json_u32_field(&json!({"cpu_cores": 4_294_967_296u64}), "cpu_cores").is_err());
+        assert!(json_u16_field(&json!({"online_hours": 65_536}), "online_hours").is_err());
+        assert!(json_u32_field(&json!({"node_count": -1}), "node_count").is_err());
     }
 }
