@@ -318,14 +318,16 @@ impl OnecoinLedger {
         members: &[AweId],
         verifiers: &[[u8; 32]],
     ) -> Result<(), String> {
+        let member_ids = members.iter().map(Self::key).collect::<std::collections::BTreeSet<_>>();
+        if verifiers.iter().any(|key| {
+            !member_ids.contains(&Self::key(&AweId::from_public_key(key)))
+        }) {
+            return Err("reward verifier must be a genesis member".into());
+        }
         self.initialize_genesis(members)?;
         for public_key in verifiers {
             let id = AweId::from_public_key(public_key);
-            let key = Self::key(&id);
-            if !self.members.contains_key(&key) {
-                return Err("reward verifier must be a genesis member".into());
-            }
-            self.reward_verifiers.insert(key, *public_key);
+            self.reward_verifiers.insert(Self::key(&id), *public_key);
         }
         Ok(())
     }
@@ -368,24 +370,43 @@ impl OnecoinLedger {
         if self.members.contains_key(&key) {
             return Err("member already exists".into());
         }
-        self.members.insert(key.clone(), *id.as_bytes());
-        self.balances.entry(key.clone()).or_insert(0);
-        self.nonces.entry(key).or_insert(0);
 
-        let distribution = JoinDistribution::calculate(id.clone(), self.member_count());
-        if self.join_distribution_active && distribution.active {
-            let share = distribution.per_member_atoms;
-            for member_key in self.members.keys().cloned().collect::<Vec<_>>() {
-                let balance = self.balances.entry(member_key).or_insert(0);
-                *balance = balance.saturating_add(share);
+        let next_member_count = self
+            .member_count()
+            .checked_add(1)
+            .ok_or_else(|| "ONECOIN member count overflow".to_string())?;
+        let distribution = JoinDistribution::calculate(id.clone(), next_member_count);
+        let should_distribute = self.join_distribution_active && distribution.active;
+        let mut next_balances = self.balances.clone();
+        next_balances.entry(key.clone()).or_insert(0);
+        if should_distribute {
+            for balance in next_balances.values_mut() {
+                *balance = balance
+                    .checked_add(distribution.per_member_atoms)
+                    .ok_or_else(|| "ONECOIN join distribution balance overflow".to_string())?;
             }
-            self.total_issued_atoms = self
-                .total_issued_atoms
-                .saturating_add(distribution.distributed_atoms);
-            self.join_remainder_atoms = self
-                .join_remainder_atoms
-                .saturating_add(distribution.remainder_atoms);
+        }
+        let next_total_issued = if should_distribute {
+            self.total_issued_atoms
+                .checked_add(distribution.distributed_atoms)
+                .ok_or_else(|| "ONECOIN total supply overflow".to_string())?
         } else {
+            self.total_issued_atoms
+        };
+        let next_remainder = if should_distribute {
+            self.join_remainder_atoms
+                .checked_add(distribution.remainder_atoms)
+                .ok_or_else(|| "ONECOIN join remainder overflow".to_string())?
+        } else {
+            self.join_remainder_atoms
+        };
+
+        self.members.insert(key.clone(), *id.as_bytes());
+        self.balances = next_balances;
+        self.nonces.entry(key).or_insert(0);
+        self.total_issued_atoms = next_total_issued;
+        self.join_remainder_atoms = next_remainder;
+        if !should_distribute {
             self.join_distribution_active = false;
         }
         Ok(distribution)
@@ -412,9 +433,16 @@ impl OnecoinLedger {
             return Err("reward recipient is not a member".into());
         }
         let reward_atoms = self.reward_policy.reward_for(&signed_receipt.receipt)?;
-        let balance = self.balances.entry(node_key).or_insert(0);
-        *balance = balance.saturating_add(reward_atoms);
-        self.total_issued_atoms = self.total_issued_atoms.saturating_add(reward_atoms);
+        let balance_before = self.balances.get(&node_key).copied().unwrap_or(0);
+        let balance_after = balance_before
+            .checked_add(reward_atoms)
+            .ok_or_else(|| "ONECOIN reward balance overflow".to_string())?;
+        let total_issued_after = self
+            .total_issued_atoms
+            .checked_add(reward_atoms)
+            .ok_or_else(|| "ONECOIN total supply overflow".to_string())?;
+        self.balances.insert(node_key, balance_after);
+        self.total_issued_atoms = total_issued_after;
         self.rewarded_receipts.insert(receipt_key, reward_atoms);
         Ok(ContributionReward {
             node: signed_receipt.receipt.node.clone(),
