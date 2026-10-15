@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
-pub const ONECOIN_CONSENSUS_STREAM: u32 = 200;
+pub const ONECOIN_CONSENSUS_STREAM: u32 = 202;
 pub const MAX_CONSENSUS_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 fn now_unix() -> u64 {
     std::time::SystemTime::now()
