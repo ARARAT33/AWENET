@@ -528,13 +528,7 @@ mod tests {
             ])
             .unwrap();
         runtime.state.save().unwrap();
-        let tx = OnecoinTransaction::new(
-            &sender,
-            0,
-            &recipient.public.awe_id,
-            100,
-            None,
-        );
+        let tx = OnecoinTransaction::new(&sender, 0, &recipient.public.awe_id, 100, None);
         assert!(runtime
             .handle(
                 *impostor.public.awe_id.as_bytes(),
