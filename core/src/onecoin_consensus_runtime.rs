@@ -438,6 +438,69 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_pending_transaction_submission_is_rejected() {
+        let dir = std::env::temp_dir().join(format!(
+            "awenet-consensus-submission-duplicate-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let validator = Identity::generate(Username::new("duplicate-validator").unwrap());
+        let second_validator =
+            Identity::generate(Username::new("duplicate-validator2").unwrap());
+        let sender = Identity::generate(Username::new("duplicate-sender").unwrap());
+        let recipient = Identity::generate(Username::new("duplicate-recipient").unwrap());
+        let validators = BTreeMap::from([
+            (
+                validator.public.awe_id.to_hex(),
+                validator.public.public_key,
+            ),
+            (
+                second_validator.public.awe_id.to_hex(),
+                second_validator.public.public_key,
+            ),
+        ]);
+        let mut runtime =
+            OnecoinConsensusRuntime::open(dir.join("state.json"), validators).unwrap();
+        runtime
+            .state
+            .state
+            .ledger
+            .initialize_genesis(&[
+                validator.public.awe_id.clone(),
+                second_validator.public.awe_id.clone(),
+                sender.public.awe_id.clone(),
+                recipient.public.awe_id.clone(),
+            ])
+            .unwrap();
+        runtime.state.save().unwrap();
+        let tx = OnecoinTransaction::new(
+            &sender,
+            0,
+            &recipient.public.awe_id,
+            100,
+            None,
+        );
+        runtime
+            .handle(
+                *sender.public.awe_id.as_bytes(),
+                &validator,
+                OnecoinConsensusMessage::TransactionSubmission(tx.clone()),
+            )
+            .unwrap();
+        assert_eq!(runtime.persisted_state().height, 0);
+        assert!(runtime
+            .handle(
+                *sender.public.awe_id.as_bytes(),
+                &validator,
+                OnecoinConsensusMessage::TransactionSubmission(tx),
+            )
+            .unwrap_err()
+            .contains("already pending"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn transaction_submission_rejects_transport_identity_mismatch() {
         let dir = std::env::temp_dir().join(format!(
             "awenet-consensus-submission-forgery-{}",
