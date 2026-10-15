@@ -236,7 +236,9 @@ pub fn validate_awenode(v: &AweNodeConfig) -> Result<(), String> {
         || v.data_centre_name.trim().is_empty()
         || v.endpoint.trim().is_empty()
         || v.join_token.trim().is_empty()
-        || v.bootstrap_endpoints.iter().any(|endpoint| endpoint.trim().is_empty())
+        || v.bootstrap_endpoints
+            .iter()
+            .any(|endpoint| endpoint.trim().is_empty())
     {
         return Err("incomplete .awenode configuration".into());
     }
@@ -270,7 +272,10 @@ pub fn validate_awedc(v: &DataCentreConfig) -> Result<(), String> {
     if !members.contains(&&v.owner_node_id) {
         return Err("data centre owner must be one of its member nodes".into());
     }
-    if v.member_node_ids.iter().any(|member| member.trim().is_empty()) {
+    if v.member_node_ids
+        .iter()
+        .any(|member| member.trim().is_empty())
+    {
         return Err("data centre member IDs must not be empty".into());
     }
     let endpoints: BTreeSet<_> = v.endpoints.iter().collect();
