@@ -2884,6 +2884,16 @@ async fn run_product() -> Result<()> {
                     eprintln!("storage transfer rejected by validation: {error}");
                     continue;
                 }
+                if !runtime_policy.allows_shard(transfer.payload.len())
+                    || transfer.original_size > runtime_policy.max_upload_bytes
+                {
+                    eprintln!(
+                        "storage transfer rejected by local size policy: shard_bytes={}, original_bytes={}",
+                        transfer.payload.len(),
+                        transfer.original_size
+                    );
+                    continue;
+                }
                 let object_id = match dispatcher_storage.put(&transfer.payload) {
                     Ok(object_id) => object_id,
                     Err(error) => {
