@@ -46,7 +46,7 @@ fn append_messenger_entry(log: &mut Vec<serde_json::Value>, item: serde_json::Va
         let remove_count = (MAX_MESSENGER_LOG_ENTRIES / 10).max(1);
         log.drain(..remove_count.min(log.len()));
     }
-    append_messenger_entry(&mut log, item);
+    log.push(item);
 }
 
 fn validate_storage_file_id(value: &str) -> Result<[u8; 32], String> {
@@ -1131,7 +1131,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                                 "error": error.to_string()
                             });
                             if let Ok(mut log) = messenger.lock() {
-                                log.push(item.clone());
+                                append_messenger_entry(&mut log, item.clone());
                             }
                             ("502 Bad Gateway", "application/json; charset=utf-8", serde_json::json!({"status":"failed","message":item}).to_string())
                         }
