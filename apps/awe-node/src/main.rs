@@ -198,6 +198,16 @@ fn append_messenger_entry(log: &mut Vec<serde_json::Value>, item: serde_json::Va
     log.push(item);
 }
 
+fn storage_upload_is_complete(
+    stored_local: usize,
+    sent_remote: usize,
+    required_placements: usize,
+    failed_transfers: usize,
+) -> bool {
+    failed_transfers == 0
+        && stored_local.checked_add(sent_remote) == Some(required_placements)
+}
+
 fn storage_ack_matches(
     ack_sender: &[u8; 32],
     expected_sender: &[u8; 32],
@@ -1436,16 +1446,14 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                                                             if confirmed {
                                                                 Ok((1usize, None))
                                                             } else {
-                                                                // The transport accepted the shard and the receiver's data-plane
-                                                                // handler persists it before attempting the application ACK.
-                                                                // Keep the transfer successful when only the ACK callback is
-                                                                // unavailable, while exposing that the application ACK was missed.
+                                                                // A successful transport write is not proof of durable storage.
+                                                                // Do not count this placement until its authenticated ACK arrives.
                                                                 Ok((
-                                                                    1usize,
+                                                                    0usize,
                                                                     Some(serde_json::json!({
                                                                         "shard": index,
                                                                         "node": target_name,
-                                                                        "warning": "remote storage ACK not confirmed"
+                                                                        "error": "remote storage ACK not confirmed"
                                                                     })),
                                                                 ))
                                                             }
@@ -1480,10 +1488,20 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                                         }
                                     }
 
+                                    let required_placements = plan
+                                        .placements
+                                        .iter()
+                                        .map(|placement| placement.nodes.len())
+                                        .sum::<usize>();
+                                    let complete = storage_upload_is_complete(
+                                        stored_local,
+                                        sent_remote,
+                                        required_placements,
+                                        failed.len(),
+                                    );
                                     let manifest_path = PathBuf::from(data_dir_for_api())
                                         .join("storage")
                                         .join("manifests");
-                                    let _ = fs::create_dir_all(&manifest_path);
                                     let manifest = serde_json::json!({
                                         "version": 1,
                                         "file_id": hex::encode(file_id),
@@ -1498,31 +1516,53 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                                         "stored_local": stored_local,
                                         "sent_remote": sent_remote
                                     });
-                                    let _ = fs::write(
-                                        manifest_path.join(format!("{}.json", hex::encode(file_id))),
-                                        serde_json::to_vec_pretty(&manifest).unwrap_or_default(),
-                                    );
-
-                                    let status = if failed
-                                        .iter()
-                                        .all(|entry| entry.get("error").is_none())
-                                    {
-                                        "stored"
+                                    let persist_result = if complete {
+                                        fs::create_dir_all(&manifest_path).and_then(|()| {
+                                            let bytes = serde_json::to_vec_pretty(&manifest)
+                                                .map_err(std::io::Error::other)?;
+                                            fs::write(
+                                                manifest_path.join(format!("{}.json", hex::encode(file_id))),
+                                                bytes,
+                                            )
+                                        })
                                     } else {
-                                        "partial"
+                                        Ok(())
                                     };
-                                    ("200 OK", "application/json; charset=utf-8",
-                                        serde_json::json!({
-                                            "status": status,
-                                            "file_id": hex::encode(file_id),
-                                            "filename": filename,
-                                            "original_size": data.len(),
-                                            "shards": 1000,
-                                            "replicas": 3,
-                                            "stored_local": stored_local,
-                                            "sent_remote": sent_remote,
-                                            "failures": failed
-                                        }).to_string())
+
+                                    if !complete {
+                                        ("503 Service Unavailable", "application/json; charset=utf-8",
+                                            serde_json::json!({
+                                                "status": "partial",
+                                                "error": "not all planned shard replicas were durably acknowledged; manifest was not committed",
+                                                "file_id": hex::encode(file_id),
+                                                "filename": filename,
+                                                "original_size": data.len(),
+                                                "required_placements": required_placements,
+                                                "stored_local": stored_local,
+                                                "sent_remote": sent_remote,
+                                                "failures": failed
+                                            }).to_string())
+                                    } else if let Err(error) = persist_result {
+                                        ("500 Internal Server Error", "application/json; charset=utf-8",
+                                            serde_json::json!({
+                                                "status": "error",
+                                                "error": format!("all replicas stored but manifest persistence failed: {error}"),
+                                                "file_id": hex::encode(file_id)
+                                            }).to_string())
+                                    } else {
+                                        ("200 OK", "application/json; charset=utf-8",
+                                            serde_json::json!({
+                                                "status": "stored",
+                                                "file_id": hex::encode(file_id),
+                                                "filename": filename,
+                                                "original_size": data.len(),
+                                                "shards": policy.total_shards(),
+                                                "replicas": 3,
+                                                "stored_local": stored_local,
+                                                "sent_remote": sent_remote,
+                                                "failures": failed
+                                            }).to_string())
+                                    }
                                 }
                             }
                         }
@@ -3229,6 +3269,14 @@ mod phase_two_backend_tests {
                 .and_then(|v| v.as_u64()),
             Some((MAX_MESSENGER_LOG_ENTRIES / 10) as u64)
         );
+    }
+
+    #[test]
+    fn storage_manifest_requires_all_durable_placements() {
+        assert!(storage_upload_is_complete(1, 2, 3, 0));
+        assert!(!storage_upload_is_complete(1, 1, 3, 0));
+        assert!(!storage_upload_is_complete(1, 2, 3, 1));
+        assert!(!storage_upload_is_complete(usize::MAX, 1, 3, 0));
     }
 
     #[test]
