@@ -64,8 +64,12 @@ pub struct AweNetConfig {
     pub local_node_id: String,
     pub local_data_centre_id: Option<String>,
     pub local_data_group_id: Option<String>,
+    #[serde(default)]
+    pub local_centre_group_id: Option<String>,
     pub joined_data_centres: Vec<String>,
     pub joined_data_groups: Vec<String>,
+    #[serde(default)]
+    pub joined_centre_groups: Vec<String>,
     pub bootstrap_endpoints: Vec<String>,
 }
 
