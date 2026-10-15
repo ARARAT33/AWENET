@@ -409,7 +409,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                         return Err("amount_coins must be positive".into());
                     }
                     let mut guard = consensus_state.lock().map_err(|_| "ONECOIN consensus lock failed".to_string())?;
-                    let runtime = guard.as_mut().and_then(|value| value.as_mut()).ok_or("ONECOIN consensus is unavailable")?;
+                    let runtime = guard.as_mut().ok_or("ONECOIN consensus is unavailable")?;
                     if !runtime.local_is_validator(&node.identity) {
                         return Err("this node is not a configured ONECOIN validator; transaction submission to remote validators is not yet supported".into());
                     }
