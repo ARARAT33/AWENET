@@ -18,7 +18,9 @@ use awep2p_core::onecoin_consensus_runtime::{
 };
 use awep2p_core::policy::{self, NetworkPolicy};
 use awep2p_core::reputation::NodeReputation;
-use awep2p_core::storage::{encode_shards, recover_shards, save_manifest, LocalNodeStore, StoragePolicy};
+use awep2p_core::storage::{
+    encode_shards, recover_shards, save_manifest, LocalNodeStore, StoragePolicy,
+};
 use awep2p_core::store::{AppCapability, Store};
 use awep2p_core::supervisor::{PeerSupervisor, SupervisorConfig};
 use std::{
