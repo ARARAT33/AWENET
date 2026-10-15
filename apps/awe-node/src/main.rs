@@ -223,6 +223,25 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> Result<String>
     String::from_utf8(data).context("HTTP request must be UTF-8")
 }
 
+fn json_u64_field(value: &serde_json::Value, field: &str) -> Result<u64, String> {
+    match value.get(field) {
+        None => Ok(0),
+        Some(raw) => raw
+            .as_u64()
+            .ok_or_else(|| format!("{field} must be a non-negative integer")),
+    }
+}
+
+fn json_u32_field(value: &serde_json::Value, field: &str) -> Result<u32, String> {
+    u32::try_from(json_u64_field(value, field)?)
+        .map_err(|_| format!("{field} exceeds the supported range"))
+}
+
+fn json_u16_field(value: &serde_json::Value, field: &str) -> Result<u16, String> {
+    u16::try_from(json_u64_field(value, field)?)
+        .map_err(|_| format!("{field} exceeds the supported range"))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn parse_onecoin_atoms(value: &serde_json::Value) -> Result<u128, String> {
     let raw = if let Some(text) = value.as_str() {
@@ -338,21 +357,26 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         },
         "/api/onebank/contribution" if method == "POST" => {
             let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
-            let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
-            let r = ResourceContribution {
-                storage_bytes: parsed.get("storage_bytes").and_then(|v| v.as_u64()).unwrap_or(0),
-                cpu_cores: parsed.get("cpu_cores").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-                ram_bytes: parsed.get("ram_bytes").and_then(|v| v.as_u64()).unwrap_or(0),
-                gpu_units: parsed.get("gpu_units").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-                bandwidth_bytes: parsed.get("bandwidth_bytes").and_then(|v| v.as_u64()).unwrap_or(0),
-                online_hours: parsed.get("online_hours").and_then(|v| v.as_u64()).unwrap_or(0) as u16,
-                node_count: parsed.get("node_count").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-                server_count: parsed.get("server_count").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-                uptime_bps: parsed.get("uptime_bps").and_then(|v| v.as_u64()).unwrap_or(0) as u16,
-                utilization_bps: parsed.get("utilization_bps").and_then(|v| v.as_u64()).unwrap_or(0) as u16,
-            };
-            match r.validate() {
-                Ok(()) => {
+            let parsed: Result<serde_json::Value, String> = serde_json::from_str(body)
+                .map_err(|_| "contribution body must be valid JSON".to_string());
+            let contribution_result: Result<ResourceContribution, String> = parsed.and_then(|parsed| {
+                let resource = ResourceContribution {
+                    storage_bytes: json_u64_field(&parsed, "storage_bytes")?,
+                    cpu_cores: json_u32_field(&parsed, "cpu_cores")?,
+                    ram_bytes: json_u64_field(&parsed, "ram_bytes")?,
+                    gpu_units: json_u32_field(&parsed, "gpu_units")?,
+                    bandwidth_bytes: json_u64_field(&parsed, "bandwidth_bytes")?,
+                    online_hours: json_u16_field(&parsed, "online_hours")?,
+                    node_count: json_u32_field(&parsed, "node_count")?,
+                    server_count: json_u32_field(&parsed, "server_count")?,
+                    uptime_bps: json_u16_field(&parsed, "uptime_bps")?,
+                    utilization_bps: json_u16_field(&parsed, "utilization_bps")?,
+                };
+                resource.validate()?;
+                Ok(resource)
+            });
+            match contribution_result {
+                Ok(r) => {
                     if let Ok(mut guard) = contribution.lock() { *guard = r.clone(); }
                     match fs::write(&contribution_path, serde_json::to_vec_pretty(&r).unwrap_or_default()) {
                         Ok(()) => ("200 OK", "application/json; charset=utf-8", serde_json::json!({
