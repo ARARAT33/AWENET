@@ -3050,9 +3050,9 @@ mod phase_two_backend_tests {
         append_bounded_json_entry, append_messenger_entry, is_allowed_ui_origin, json_u16_field,
         json_u32_field, parse_content_length, parse_onecoin_atoms, validate_community_message,
         validate_community_title, validate_group_member_ids, validate_remote_channel,
-        validate_remote_feed_message, validate_remote_group, validate_storage_file_id, ATOMS_PER_COIN,
-        MAX_COMMUNITY_MESSAGES_PER_FEED, MAX_COMMUNITY_MESSAGE_BYTES, MAX_COMMUNITY_TITLE_BYTES,
-        MAX_GROUP_MEMBERS, MAX_MESSENGER_LOG_ENTRIES,
+        validate_remote_feed_message, validate_remote_group, validate_storage_file_id,
+        ATOMS_PER_COIN, MAX_COMMUNITY_MESSAGES_PER_FEED, MAX_COMMUNITY_MESSAGE_BYTES,
+        MAX_COMMUNITY_TITLE_BYTES, MAX_GROUP_MEMBERS, MAX_MESSENGER_LOG_ENTRIES,
     };
     use serde_json::json;
 
@@ -3237,9 +3237,30 @@ mod phase_two_backend_tests {
         let file_id = [9u8; 32];
         let hash = [10u8; 32];
         let ack = StorageShardAck::new([1u8; 16], file_id, 4, hash);
-        assert!(storage_ack_matches(&expected_sender, &expected_sender, &ack, &file_id, 4, &hash));
-        assert!(!storage_ack_matches(&attacker, &expected_sender, &ack, &file_id, 4, &hash));
-        assert!(!storage_ack_matches(&expected_sender, &expected_sender, &ack, &file_id, 5, &hash));
+        assert!(storage_ack_matches(
+            &expected_sender,
+            &expected_sender,
+            &ack,
+            &file_id,
+            4,
+            &hash
+        ));
+        assert!(!storage_ack_matches(
+            &attacker,
+            &expected_sender,
+            &ack,
+            &file_id,
+            4,
+            &hash
+        ));
+        assert!(!storage_ack_matches(
+            &expected_sender,
+            &expected_sender,
+            &ack,
+            &file_id,
+            5,
+            &hash
+        ));
     }
 
     #[test]
