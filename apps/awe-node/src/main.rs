@@ -1426,9 +1426,17 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                                                             let deadline = tokio::time::Instant::now()
                                                                 + std::time::Duration::from_secs(5);
                                                             let mut confirmed = false;
+                                                            let mut ack_received = false;
+                                                            let mut ack_identity_matches = false;
+                                                            let mut ack_payload_matches = false;
                                                             while tokio::time::Instant::now() < deadline {
                                                                 if let Ok(mut acks) = task_pending_acks.lock() {
                                                                     if let Some((ack_sender, ack)) = acks.remove(&request_id) {
+                                                                        ack_received = true;
+                                                                        ack_identity_matches = ack_sender == peer_id;
+                                                                        ack_payload_matches = ack.file_id == file_id
+                                                                            && ack.shard_index == index as u16
+                                                                            && ack.stored_object_id == shard_hash;
                                                                         confirmed = storage_ack_matches(
                                                                             &ack_sender,
                                                                             &peer_id,
@@ -1446,13 +1454,17 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                                                                 Ok((1usize, None))
                                                             } else {
                                                                 // A successful transport write is not proof of durable storage.
-                                                                // Do not count this placement until its authenticated ACK arrives.
+                                                                // Include mismatch diagnostics so failed acceptance runs can distinguish
+                                                                // absent ACKs from identity or payload mismatches.
                                                                 Ok((
                                                                     0usize,
                                                                     Some(serde_json::json!({
                                                                         "shard": index,
                                                                         "node": target_name,
-                                                                        "error": "remote storage ACK not confirmed"
+                                                                        "error": "remote storage ACK not confirmed",
+                                                                        "ack_received": ack_received,
+                                                                        "ack_identity_matches": ack_identity_matches,
+                                                                        "ack_payload_matches": ack_payload_matches
                                                                     })),
                                                                 ))
                                                             }
