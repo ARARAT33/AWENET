@@ -2788,7 +2788,9 @@ mod phase_two_backend_tests {
             "POST / HTTP/1.1\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\n"
         )
         .is_err());
-        assert!(parse_content_length("POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n").is_err());
+        assert!(
+            parse_content_length("POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n").is_err()
+        );
         assert!(parse_content_length("POST / HTTP/1.1\r\nContent-Length: -1\r\n\r\n").is_err());
     }
 
