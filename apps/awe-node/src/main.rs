@@ -58,7 +58,9 @@ fn validate_community_title(value: &str) -> Result<(), String> {
         return Err("title is required".into());
     }
     if value.len() > MAX_COMMUNITY_TITLE_BYTES {
-        return Err(format!("title must not exceed {MAX_COMMUNITY_TITLE_BYTES} bytes"));
+        return Err(format!(
+            "title must not exceed {MAX_COMMUNITY_TITLE_BYTES} bytes"
+        ));
     }
     Ok(())
 }
@@ -68,7 +70,9 @@ fn validate_community_message(value: &str) -> Result<(), String> {
         return Err("message text is required".into());
     }
     if value.len() > MAX_COMMUNITY_MESSAGE_BYTES {
-        return Err(format!("message text must not exceed {MAX_COMMUNITY_MESSAGE_BYTES} bytes"));
+        return Err(format!(
+            "message text must not exceed {MAX_COMMUNITY_MESSAGE_BYTES} bytes"
+        ));
     }
     Ok(())
 }
@@ -77,13 +81,19 @@ fn validate_group_member_ids(members: &[String]) -> Result<(), String> {
     if members.len() > MAX_GROUP_MEMBERS {
         return Err(format!("group cannot exceed {MAX_GROUP_MEMBERS} members"));
     }
-    if members.iter().any(|member| AweId::from_hex(member).is_err()) {
+    if members
+        .iter()
+        .any(|member| AweId::from_hex(member).is_err())
+    {
         return Err("group member IDs must be 64-character hexadecimal AWEIDs".into());
     }
     Ok(())
 }
 
-fn validate_remote_group(group: &serde_json::Value, authenticated_sender: &str) -> Result<(), String> {
+fn validate_remote_group(
+    group: &serde_json::Value,
+    authenticated_sender: &str,
+) -> Result<(), String> {
     if group.get("owner").and_then(|v| v.as_str()) != Some(authenticated_sender) {
         return Err("group owner does not match authenticated transport identity".into());
     }
@@ -92,22 +102,39 @@ fn validate_remote_group(group: &serde_json::Value, authenticated_sender: &str) 
         return Err("invalid group ID".into());
     }
     validate_community_title(group.get("title").and_then(|v| v.as_str()).unwrap_or(""))?;
-    let members = group.get("members").and_then(|v| v.as_array())
+    let members = group
+        .get("members")
+        .and_then(|v| v.as_array())
         .ok_or_else(|| "group members must be an array".to_string())?
         .iter()
-        .map(|value| value.as_str().map(str::to_owned).ok_or_else(|| "group member ID must be text".to_string()))
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| "group member ID must be text".to_string())
+        })
         .collect::<Result<Vec<_>, _>>()?;
-    if members.is_empty() || !members.iter().any(|member| member == authenticated_sender) {
+    if members.is_empty()
+        || !members.iter().any(|member| member == authenticated_sender)
+    {
         return Err("group owner must be a group member".into());
     }
     validate_group_member_ids(&members)?;
-    if group.get("messages").and_then(|v| v.as_array()).map(|items| items.len() > MAX_COMMUNITY_MESSAGES_PER_FEED).unwrap_or(true) {
+    if group
+        .get("messages")
+        .and_then(|v| v.as_array())
+        .map(|items| items.len() > MAX_COMMUNITY_MESSAGES_PER_FEED)
+        .unwrap_or(true)
+    {
         return Err("group message history is missing or exceeds the allowed limit".into());
     }
     Ok(())
 }
 
-fn validate_remote_channel(channel: &serde_json::Value, authenticated_sender: &str) -> Result<(), String> {
+fn validate_remote_channel(
+    channel: &serde_json::Value,
+    authenticated_sender: &str,
+) -> Result<(), String> {
     if channel.get("owner").and_then(|v| v.as_str()) != Some(authenticated_sender) {
         return Err("channel owner does not match authenticated transport identity".into());
     }
@@ -116,17 +143,32 @@ fn validate_remote_channel(channel: &serde_json::Value, authenticated_sender: &s
         return Err("invalid channel ID".into());
     }
     validate_community_title(channel.get("title").and_then(|v| v.as_str()).unwrap_or(""))?;
-    let subscribers = channel.get("subscribers").and_then(|v| v.as_array())
+    let subscribers = channel
+        .get("subscribers")
+        .and_then(|v| v.as_array())
         .ok_or_else(|| "channel subscribers must be an array".to_string())?;
-    if subscribers.len() > 10_000 || subscribers.iter().any(|value| {
-        value.as_str().and_then(|id| AweId::from_hex(id).ok()).is_none()
-    }) {
+    if subscribers.len() > 10_000
+        || subscribers.iter().any(|value| {
+            value
+                .as_str()
+                .and_then(|id| AweId::from_hex(id).ok())
+                .is_none()
+        })
+    {
         return Err("invalid or excessive channel subscriber list".into());
     }
-    if !subscribers.iter().any(|value| value.as_str() == Some(authenticated_sender)) {
+    if !subscribers
+        .iter()
+        .any(|value| value.as_str() == Some(authenticated_sender))
+    {
         return Err("channel owner must be subscribed".into());
     }
-    if channel.get("messages").and_then(|v| v.as_array()).map(|items| items.len() > MAX_COMMUNITY_MESSAGES_PER_FEED).unwrap_or(true) {
+    if channel
+        .get("messages")
+        .and_then(|v| v.as_array())
+        .map(|items| items.len() > MAX_COMMUNITY_MESSAGES_PER_FEED)
+        .unwrap_or(true)
+    {
         return Err("channel message history is missing or exceeds the allowed limit".into());
     }
     Ok(())
@@ -141,7 +183,8 @@ fn append_messenger_entry(log: &mut Vec<serde_json::Value>, item: serde_json::Va
 }
 
 fn validate_storage_file_id(value: &str) -> Result<[u8; 32], String> {
-    let bytes = hex::decode(value).map_err(|_| "file_id must be 64 hexadecimal characters".to_string())?;
+    let bytes =
+        hex::decode(value).map_err(|_| "file_id must be 64 hexadecimal characters".to_string())?;
     let id: [u8; 32] = bytes
         .try_into()
         .map_err(|_| "file_id must be 64 hexadecimal characters".to_string())?;
@@ -2376,7 +2419,9 @@ async fn run_product() -> Result<()> {
                                             .get("owner")
                                             .and_then(|v| v.as_str())
                                             .unwrap_or("");
-                                        if owner == sender_uid && validate_remote_group(&group, &sender_uid).is_ok() {
+                                        if owner == sender_uid
+                                            && validate_remote_group(&group, &sender_uid).is_ok()
+                                        {
                                             let gid = group
                                                 .get("id")
                                                 .and_then(|v| v.as_str())
@@ -2447,7 +2492,10 @@ async fn run_product() -> Result<()> {
                                             .get("owner")
                                             .and_then(|v| v.as_str())
                                             .unwrap_or("");
-                                        if owner == sender_uid && validate_remote_channel(&channel, &sender_uid).is_ok() {
+                                        if owner == sender_uid
+                                            && validate_remote_channel(&channel, &sender_uid)
+                                                .is_ok()
+                                        {
                                             let cid = channel
                                                 .get("id")
                                                 .and_then(|v| v.as_str())
@@ -2946,12 +2994,12 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod phase_two_backend_tests {
     use super::{
-        append_bounded_json_entry, append_messenger_entry, is_allowed_ui_origin, json_u16_field, json_u32_field,
-        validate_remote_group, validate_remote_channel,
-        parse_content_length, parse_onecoin_atoms, validate_community_message,
-        validate_community_title, validate_group_member_ids, validate_storage_file_id,
-        ATOMS_PER_COIN, MAX_COMMUNITY_MESSAGE_BYTES, MAX_COMMUNITY_TITLE_BYTES,
-        MAX_COMMUNITY_MESSAGES_PER_FEED, MAX_GROUP_MEMBERS, MAX_MESSENGER_LOG_ENTRIES,
+        append_bounded_json_entry, append_messenger_entry, is_allowed_ui_origin, json_u16_field,
+        json_u32_field, parse_content_length, parse_onecoin_atoms, validate_community_message,
+        validate_community_title, validate_group_member_ids, validate_remote_channel,
+        validate_remote_group, validate_storage_file_id, ATOMS_PER_COIN,
+        MAX_COMMUNITY_MESSAGES_PER_FEED, MAX_COMMUNITY_MESSAGE_BYTES, MAX_COMMUNITY_TITLE_BYTES,
+        MAX_GROUP_MEMBERS, MAX_MESSENGER_LOG_ENTRIES,
     };
     use serde_json::json;
 
@@ -3082,11 +3130,17 @@ mod phase_two_backend_tests {
         }
         assert_eq!(entries.len(), MAX_COMMUNITY_MESSAGES_PER_FEED);
         assert_eq!(
-            entries.last().and_then(|entry| entry.get("index")).and_then(|v| v.as_u64()),
+            entries
+                .last()
+                .and_then(|entry| entry.get("index"))
+                .and_then(|v| v.as_u64()),
             Some(MAX_COMMUNITY_MESSAGES_PER_FEED as u64)
         );
         assert_eq!(
-            entries.first().and_then(|entry| entry.get("index")).and_then(|v| v.as_u64()),
+            entries
+                .first()
+                .and_then(|entry| entry.get("index"))
+                .and_then(|v| v.as_u64()),
             Some((MAX_COMMUNITY_MESSAGES_PER_FEED / 10) as u64 + 1)
         );
     }
@@ -3099,11 +3153,15 @@ mod phase_two_backend_tests {
         }
         assert!(log.len() <= MAX_MESSENGER_LOG_ENTRIES);
         assert_eq!(
-            log.last().and_then(|entry| entry.get("index")).and_then(|v| v.as_u64()),
+            log.last()
+                .and_then(|entry| entry.get("index"))
+                .and_then(|v| v.as_u64()),
             Some(MAX_MESSENGER_LOG_ENTRIES as u64)
         );
         assert_eq!(
-            log.first().and_then(|entry| entry.get("index")).and_then(|v| v.as_u64()),
+            log.first()
+                .and_then(|entry| entry.get("index"))
+                .and_then(|v| v.as_u64()),
             Some((MAX_MESSENGER_LOG_ENTRIES / 10) as u64 + 1)
         );
     }
