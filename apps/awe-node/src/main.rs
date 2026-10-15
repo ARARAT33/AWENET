@@ -1429,7 +1429,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                                                 let peer_limit = peer_transfer_limits
                                                     .get(&peer_id)
                                                     .cloned()
-                                                    .ok_or_else(|| "missing per-peer storage transfer limit".to_string())?;
+                                                    .ok_or_else(|| anyhow::anyhow!("missing per-peer storage transfer limit"))?;
                                                 let target_name = target.clone();
                                                 remote_jobs.spawn(async move {
                                                     let _permit = task_limit.acquire_owned().await
