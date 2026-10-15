@@ -18,7 +18,7 @@ use awep2p_core::onecoin_consensus_runtime::{
 };
 use awep2p_core::policy::{self, NetworkPolicy};
 use awep2p_core::reputation::NodeReputation;
-use awep2p_core::storage::{encode_shards, recover_shards, LocalNodeStore, StoragePolicy};
+use awep2p_core::storage::{encode_shards, recover_shards, save_manifest, LocalNodeStore, StoragePolicy};
 use awep2p_core::store::{AppCapability, Store};
 use awep2p_core::supervisor::{PeerSupervisor, SupervisorConfig};
 use std::{
@@ -1550,9 +1550,9 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                                         fs::create_dir_all(&manifest_path).and_then(|()| {
                                             let bytes = serde_json::to_vec_pretty(&manifest)
                                                 .map_err(std::io::Error::other)?;
-                                            fs::write(
+                                            save_manifest(
                                                 manifest_path.join(format!("{}.json", hex::encode(file_id))),
-                                                bytes,
+                                                &bytes,
                                             )
                                         })
                                     } else {
