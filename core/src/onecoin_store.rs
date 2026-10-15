@@ -163,6 +163,17 @@ pub struct PersistentOnecoinState {
 
 impl PersistentOnecoinState {
     fn validate_state(state: &OnecoinFinalizedState) -> io::Result<()> {
+        if state.local_votes.len() > 1
+            || state
+                .local_votes
+                .keys()
+                .any(|height| *height != state.height.saturating_add(1))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "ONECOIN local vote-lock invariant violated",
+            ));
+        }
         let ledger = &state.ledger;
         if ledger.members.len() != ledger.balances.len()
             || ledger.members.len() != ledger.nonces.len()
