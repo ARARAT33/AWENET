@@ -108,8 +108,32 @@ impl OnecoinConsensusRuntime {
         file.sync_all()
             .map_err(|e| format!("failed to sync ONECOIN vote locks: {e}"))?;
         drop(file);
-        fs::rename(&temporary, &self.vote_lock_path)
-            .map_err(|e| format!("failed to persist ONECOIN vote locks: {e}"))
+
+        // Windows may reject rename-over-existing-file. Stage the previous
+        // lock file and restore it if installing the new durable snapshot fails.
+        if !self.vote_lock_path.exists() {
+            return fs::rename(&temporary, &self.vote_lock_path)
+                .map_err(|e| format!("failed to persist ONECOIN vote locks: {e}"));
+        }
+
+        let backup = self.vote_lock_path.with_extension("vote-locks.bak");
+        if backup.exists() {
+            fs::remove_file(&backup)
+                .map_err(|e| format!("failed to remove stale vote-lock backup: {e}"))?;
+        }
+        fs::rename(&self.vote_lock_path, &backup)
+            .map_err(|e| format!("failed to stage previous ONECOIN vote locks: {e}"))?;
+        if let Err(error) = fs::rename(&temporary, &self.vote_lock_path) {
+            return match fs::rename(&backup, &self.vote_lock_path) {
+                Ok(()) => Err(format!("failed to install ONECOIN vote locks: {error}")),
+                Err(restore_error) => Err(format!(
+                    "failed to install ONECOIN vote locks ({error}); rollback failed ({restore_error}); previous lock file remains at {}",
+                    backup.display()
+                )),
+            };
+        }
+        let _ = fs::remove_file(&backup);
+        Ok(())
     }
 
     pub fn local_is_validator(&self, identity: &Identity) -> bool {
