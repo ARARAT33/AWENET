@@ -2638,9 +2638,18 @@ mod phase_two_backend_tests {
     #[test]
     fn parses_coin_amounts_using_full_18_decimal_precision() {
         assert_eq!(parse_onecoin_atoms(&json!("1")).unwrap(), ATOMS_PER_COIN);
-        assert_eq!(parse_onecoin_atoms(&json!("1.5")).unwrap(), ATOMS_PER_COIN + ATOMS_PER_COIN / 2);
-        assert_eq!(parse_onecoin_atoms(&json!("0.000000000000000001")).unwrap(), 1);
-        assert_eq!(parse_onecoin_atoms(&json!("0.00000001")).unwrap(), ATOMS_PER_COIN / 100_000_000);
+        assert_eq!(
+            parse_onecoin_atoms(&json!("1.5")).unwrap(),
+            ATOMS_PER_COIN + ATOMS_PER_COIN / 2
+        );
+        assert_eq!(
+            parse_onecoin_atoms(&json!("0.000000000000000001")).unwrap(),
+            1
+        );
+        assert_eq!(
+            parse_onecoin_atoms(&json!("0.00000001")).unwrap(),
+            ATOMS_PER_COIN / 100_000_000
+        );
     }
 
     #[test]
