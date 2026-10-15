@@ -301,16 +301,17 @@ mod tests {
             .unwrap();
         let validators = BTreeMap::from([
             (sender.public.awe_id.to_hex(), sender.public.public_key),
-            (validator_b.public.awe_id.to_hex(), validator_b.public.public_key),
-            (validator_c.public.awe_id.to_hex(), validator_c.public.public_key),
+            (
+                validator_b.public.awe_id.to_hex(),
+                validator_b.public.public_key,
+            ),
+            (
+                validator_c.public.awe_id.to_hex(),
+                validator_c.public.public_key,
+            ),
         ]);
-        let tx = OnecoinTransaction::new(
-            &sender,
-            0,
-            &recipient.public.awe_id,
-            ATOMS_PER_COIN,
-            None,
-        );
+        let tx =
+            OnecoinTransaction::new(&sender, 0, &recipient.public.awe_id, ATOMS_PER_COIN, None);
         let block = OnecoinBlock::new(&sender, 1, [0; 32], vec![tx], 11).unwrap();
         let certificate = QuorumCertificate {
             block_hash: block.hash(),
