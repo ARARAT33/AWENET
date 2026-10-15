@@ -5,7 +5,7 @@ use awep2p_core::data_plane::{
 };
 use awep2p_core::diagnostics::{NodeDiagnostics, NodeMetrics};
 use awep2p_core::federation::{
-    self, AweNetConfig, AweNodeConfig, DataCentreConfig, DataGroupConfig,
+    self, AweNetConfig, AweNodeConfig, CentreGroupConfig, DataCentreConfig, DataGroupConfig,
 };
 use awep2p_core::identity::{AweId, AweSecret, Identity, LocalVault, Username};
 use awep2p_core::lan_mesh::LanPeerBeacon;
@@ -489,7 +489,9 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
             ("200 OK", "application/json; charset=utf-8", serde_json::json!({
                 "format": state.format, "version": state.version, "local_node_id": state.local_node_id,
                 "data_centre_id": state.local_data_centre_id, "data_group_id": state.local_data_group_id,
+                "centre_group_id": state.local_centre_group_id,
                 "joined_data_centres": state.joined_data_centres, "joined_data_groups": state.joined_data_groups,
+                "joined_centre_groups": state.joined_centre_groups,
                 "bootstrap_endpoints": state.bootstrap_endpoints
             }).to_string())
         },
@@ -524,7 +526,16 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                         serde_json::to_string_pretty(&cfg).map(|s| ("data-group.dgc".into(), s)).map_err(|e| e.to_string())
                     }
                 },
-                _ => Err("kind must be awenode, awedc or dgc".to_string())
+                "cgc" => {
+                    let dg_id = parsed.get("owner_data_group_id").and_then(|v| v.as_str()).unwrap_or("");
+                    let groups = parsed.get("data_group_ids").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect()).unwrap_or_default();
+                    if dg_id.is_empty() { Err("owner_data_group_id is required".into()) } else {
+                        let cfg = federation::generate_cgc(dg_id, name, groups, now);
+                        federation::validate_cgc(&cfg)?;
+                        serde_json::to_string_pretty(&cfg).map(|s| ("centre-group.cgc".into(), s)).map_err(|e| e.to_string())
+                    }
+                },
+                _ => Err("kind must be awenode, awedc, dgc or cgc".to_string())
             };
             match result {
                 Ok((filename, content)) => ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"generated","filename":filename,"content":content}).to_string()),
@@ -565,6 +576,17 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                     s.bootstrap_endpoints.extend(cfg.endpoints.clone());
                     s.bootstrap_endpoints.sort(); s.bootstrap_endpoints.dedup();
                     if !s.joined_data_centres.contains(&cfg.data_centre_id) { s.joined_data_centres.push(cfg.data_centre_id.clone()); }
+                    s.format = "awenet".into(); s.version = federation::FORMAT_VERSION;
+                    Ok(())
+                },
+                "cgc" => {
+                    let cfg: CentreGroupConfig = serde_json::from_str(content).map_err(anyhow::Error::msg)?;
+                    federation::validate_cgc(&cfg).map_err(anyhow::Error::msg)?;
+                    let mut s = federation_state.lock().map_err(|_| anyhow::anyhow!("state lock poisoned"))?;
+                    s.local_node_id = format_uid(node.identity.public.awe_id.as_bytes());
+                    s.local_centre_group_id = Some(cfg.centre_group_id.clone());
+                    for dg in &cfg.data_group_ids { if !s.joined_data_groups.contains(dg) { s.joined_data_groups.push(dg.clone()); } }
+                    if !s.joined_centre_groups.contains(&cfg.centre_group_id) { s.joined_centre_groups.push(cfg.centre_group_id); }
                     s.format = "awenet".into(); s.version = federation::FORMAT_VERSION;
                     Ok(())
                 },
