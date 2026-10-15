@@ -2779,9 +2779,18 @@ mod phase_two_backend_tests {
 
     #[test]
     fn rejects_ambiguous_or_unsupported_http_framing() {
-        assert_eq!(parse_content_length("POST / HTTP/1.1\r\nContent-Length: 12\r\n\r\n").unwrap(), 12);
-        assert!(parse_content_length("POST / HTTP/1.1\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\n").is_err());
-        assert!(parse_content_length("POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n").is_err());
+        assert_eq!(
+            parse_content_length("POST / HTTP/1.1\r\nContent-Length: 12\r\n\r\n").unwrap(),
+            12
+        );
+        assert!(parse_content_length(
+            "POST / HTTP/1.1\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\n"
+        )
+        .is_err());
+        assert!(parse_content_length(
+            "POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n"
+        )
+        .is_err());
         assert!(parse_content_length("POST / HTTP/1.1\r\nContent-Length: -1\r\n\r\n").is_err());
     }
 
@@ -2812,7 +2821,8 @@ mod phase_two_backend_tests {
 
     #[test]
     fn rejects_overflowing_resource_contribution_fields() {
-        assert!(json_u32_field(&json!({"cpu_cores": 4_294_967_296u64}), "cpu_cores").is_err());
+        assert!(json_u32_field(&json!({"cpu_cores": 4_294_967_296u64}), "cpu_cores")
+            .is_err());
         assert!(json_u16_field(&json!({"online_hours": 65_536}), "online_hours").is_err());
         assert!(json_u32_field(&json!({"node_count": -1}), "node_count").is_err());
     }
