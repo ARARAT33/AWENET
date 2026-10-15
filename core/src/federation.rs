@@ -231,10 +231,12 @@ pub fn validate_awenode(v: &AweNodeConfig) -> Result<(), String> {
     if v.format != "awenode" || v.version != FORMAT_VERSION {
         return Err("invalid .awenode format/version".into());
     }
-    if v.node_id.is_empty()
-        || v.data_centre_id.is_empty()
-        || v.endpoint.is_empty()
-        || v.join_token.is_empty()
+    if v.node_id.trim().is_empty()
+        || v.data_centre_id.trim().is_empty()
+        || v.data_centre_name.trim().is_empty()
+        || v.endpoint.trim().is_empty()
+        || v.join_token.trim().is_empty()
+        || v.bootstrap_endpoints.iter().any(|endpoint| endpoint.trim().is_empty())
     {
         return Err("incomplete .awenode configuration".into());
     }
@@ -268,9 +270,16 @@ pub fn validate_awedc(v: &DataCentreConfig) -> Result<(), String> {
     if !members.contains(&&v.owner_node_id) {
         return Err("data centre owner must be one of its member nodes".into());
     }
+    if v.member_node_ids.iter().any(|member| member.trim().is_empty()) {
+        return Err("data centre member IDs must not be empty".into());
+    }
     let endpoints: BTreeSet<_> = v.endpoints.iter().collect();
     if endpoints.len() != v.endpoints.len() {
         return Err("data centre contains duplicate endpoints".into());
+    }
+    let peers: BTreeSet<_> = v.peer_data_centres.iter().collect();
+    if peers.len() != v.peer_data_centres.len() || peers.contains(&&v.data_centre_id) {
+        return Err("data centre contains duplicate or self-referencing peers".into());
     }
     Ok(())
 }
@@ -282,8 +291,8 @@ pub fn validate_dgc(v: &DataGroupConfig) -> Result<(), String> {
     if v.data_group_id.is_empty() || v.owner_data_centre_id.is_empty() || v.join_token.is_empty() {
         return Err("incomplete .dgc configuration".into());
     }
-    if v.data_centre_ids.len() < 2 {
-        return Err("data group requires at least two data centres".into());
+    if v.data_group_name.trim().is_empty() || v.data_centre_ids.len() < 2 {
+        return Err("data group requires a name and at least two data centres".into());
     }
     let centres: BTreeSet<_> = v.data_centre_ids.iter().collect();
     if centres.len() != v.data_centre_ids.len() {
@@ -291,6 +300,13 @@ pub fn validate_dgc(v: &DataGroupConfig) -> Result<(), String> {
     }
     if !centres.contains(&&v.owner_data_centre_id) {
         return Err("data group owner must be one of its member data centres".into());
+    }
+    if v.data_centre_ids.iter().any(|id| id.trim().is_empty()) {
+        return Err("data group member IDs must not be empty".into());
+    }
+    let peers: BTreeSet<_> = v.peer_data_groups.iter().collect();
+    if peers.len() != v.peer_data_groups.len() || peers.contains(&&v.data_group_id) {
+        return Err("data group contains duplicate or self-referencing peers".into());
     }
     Ok(())
 }
@@ -316,6 +332,9 @@ pub fn validate_cgc(v: &CentreGroupConfig) -> Result<(), String> {
     if !groups.contains(&&v.owner_data_group_id) {
         return Err("centre group owner must be one of its member data groups".into());
     }
+    if v.data_group_ids.iter().any(|id| id.trim().is_empty()) {
+        return Err("centre group member IDs must not be empty".into());
+    }
     let peers: BTreeSet<_> = v.peer_centre_groups.iter().collect();
     if peers.len() != v.peer_centre_groups.len() || peers.contains(&&v.centre_group_id) {
         return Err("centre group contains duplicate or self-referencing peers".into());
@@ -327,6 +346,7 @@ pub fn merge_awedc(
     local: &mut DataCentreConfig,
     incoming: &DataCentreConfig,
 ) -> Result<(), String> {
+    validate_awedc(local)?;
     validate_awedc(incoming)?;
     if local.data_centre_id == incoming.data_centre_id {
         return Err("cannot merge a data centre with itself".into());
@@ -345,6 +365,7 @@ pub fn merge_awedc(
 }
 
 pub fn merge_dgc(local: &mut DataGroupConfig, incoming: &DataGroupConfig) -> Result<(), String> {
+    validate_dgc(local)?;
     validate_dgc(incoming)?;
     if local.data_group_id == incoming.data_group_id {
         return Err("cannot merge a data group with itself".into());
