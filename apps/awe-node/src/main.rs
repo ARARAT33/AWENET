@@ -2509,13 +2509,24 @@ async fn run_product() -> Result<()> {
     let native_ui_addr = ui_addr;
     tokio::spawn(async move {
         loop {
-            let (stream, _) = match listener.accept().await {
+            let (mut stream, peer_addr) = match listener.accept().await {
                 Ok(value) => value,
                 Err(error) => {
                     eprintln!("UI listener error: {error}");
                     continue;
                 }
             };
+            if !peer_addr.ip().is_loopback() {
+                let response = http_response(
+                    "403 Forbidden",
+                    "application/json; charset=utf-8",
+                    r#"{"status":"error","error":"local UI API accepts loopback clients only"}"#,
+                    None,
+                ).await;
+                let _ = stream.write_all(&response).await;
+                let _ = stream.shutdown().await;
+                continue;
+            }
             let api_node = node.clone();
             let api_messenger = messenger.clone();
             let api_federation = federation_state.clone();
