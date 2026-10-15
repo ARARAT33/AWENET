@@ -491,9 +491,6 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                     }
                     let mut guard = consensus_state.lock().map_err(|_| "ONECOIN consensus lock failed".to_string())?;
                     let runtime = guard.as_mut().ok_or("ONECOIN consensus is unavailable")?;
-                    if !runtime.local_is_validator(&node.identity) {
-                        return Err("this node is not a configured ONECOIN validator; transaction submission to remote validators is not yet supported".into());
-                    }
                     let ledger = &runtime.persisted_state().ledger;
                     let recipient_key = recipient.to_hex();
                     if !ledger.members.contains_key(&recipient_key) {
@@ -508,7 +505,32 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                     let tx = OnecoinTransaction::new(&node.identity, nonce, &recipient, amount_atoms, memo);
                     let tx_id = hex::encode(tx.id());
                     let fee_atoms = amount_atoms.saturating_mul(100).saturating_div(10_000);
-                    let outbound = runtime.propose(&node.identity, vec![tx], now_unix())?;
+                    let outbound = if runtime.local_is_validator(&node.identity) {
+                        runtime.propose(&node.identity, vec![tx], now_unix())?
+                    } else {
+                        // Wallets may submit signed transactions to configured validators without
+                        // being validators themselves. The validator rechecks membership, nonce,
+                        // signature, balance, and fee against its own finalized state.
+                        let mut submissions = Vec::new();
+                        for (validator_id, public_key) in &runtime.validators {
+                            if public_key == &node.identity.public.public_key {
+                                continue;
+                            }
+                            let decoded = hex::decode(validator_id)
+                                .map_err(|_| "invalid configured validator AWEID".to_string())?;
+                            let peer_id: [u8; 32] = decoded
+                                .try_into()
+                                .map_err(|_| "invalid configured validator AWEID length".to_string())?;
+                            submissions.push((
+                                peer_id,
+                                OnecoinConsensusMessage::TransactionSubmission(tx.clone()),
+                            ));
+                        }
+                        if submissions.is_empty() {
+                            return Err("no remote ONECOIN validator is currently available".into());
+                        }
+                        submissions
+                    };
                     let height = runtime.persisted_state().height;
                     Ok((tx_id, fee_atoms, outbound, height, height > old_height))
                 })();
@@ -532,7 +554,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                             "finality_mode": "CONSENSUS",
                             "consensus_height": height,
                             "outbound_messages_delivered": delivered,
-                            "note": if finalized { "Transaction is in finalized consensus state." } else { "Transaction proposal sent; wallet balance changes only after quorum finality." }
+                            "note": if finalized { "Transaction is in finalized consensus state." } else { "Transaction sent to consensus peers; wallet balance changes only after quorum finality." }
                         }).to_string())
                     },
                     Err(error) => ("409 Conflict", "application/json; charset=utf-8", serde_json::json!({"status":"rejected","finality_mode":"CONSENSUS","error":error}).to_string())
