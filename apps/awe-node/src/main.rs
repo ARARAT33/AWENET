@@ -40,6 +40,39 @@ const DEFAULT_UI_ADDR: &str = "127.0.0.1:41800";
 
 type MessengerLog = Arc<Mutex<Vec<serde_json::Value>>>;
 const MAX_MESSENGER_LOG_ENTRIES: usize = 5_000;
+const MAX_COMMUNITY_TITLE_BYTES: usize = 128;
+const MAX_COMMUNITY_MESSAGE_BYTES: usize = 16 * 1024;
+const MAX_GROUP_MEMBERS: usize = 512;
+
+fn validate_community_title(value: &str) -> Result<(), String> {
+    if value.trim().is_empty() {
+        return Err("title is required".into());
+    }
+    if value.len() > MAX_COMMUNITY_TITLE_BYTES {
+        return Err(format!("title must not exceed {MAX_COMMUNITY_TITLE_BYTES} bytes"));
+    }
+    Ok(())
+}
+
+fn validate_community_message(value: &str) -> Result<(), String> {
+    if value.trim().is_empty() {
+        return Err("message text is required".into());
+    }
+    if value.len() > MAX_COMMUNITY_MESSAGE_BYTES {
+        return Err(format!("message text must not exceed {MAX_COMMUNITY_MESSAGE_BYTES} bytes"));
+    }
+    Ok(())
+}
+
+fn validate_group_member_ids(members: &[String]) -> Result<(), String> {
+    if members.len() > MAX_GROUP_MEMBERS {
+        return Err(format!("group cannot exceed {MAX_GROUP_MEMBERS} members"));
+    }
+    if members.iter().any(|member| AweId::from_hex(member).is_err()) {
+        return Err("group member IDs must be 64-character hexadecimal AWEIDs".into());
+    }
+    Ok(())
+}
 
 fn append_messenger_entry(log: &mut Vec<serde_json::Value>, item: serde_json::Value) {
     if log.len() >= MAX_MESSENGER_LOG_ENTRIES {
@@ -2856,8 +2889,10 @@ async fn main() -> Result<()> {
 mod phase_two_backend_tests {
     use super::{
         append_messenger_entry, is_allowed_ui_origin, json_u16_field, json_u32_field,
-        parse_content_length, parse_onecoin_atoms, validate_storage_file_id, ATOMS_PER_COIN,
-        MAX_MESSENGER_LOG_ENTRIES,
+        parse_content_length, parse_onecoin_atoms, validate_community_message,
+        validate_community_title, validate_group_member_ids, validate_storage_file_id,
+        ATOMS_PER_COIN, MAX_COMMUNITY_MESSAGE_BYTES, MAX_COMMUNITY_TITLE_BYTES,
+        MAX_GROUP_MEMBERS, MAX_MESSENGER_LOG_ENTRIES,
     };
     use serde_json::json;
 
@@ -2929,6 +2964,26 @@ mod phase_two_backend_tests {
                 "expected rejected origin: {origin}"
             );
         }
+    }
+
+    #[test]
+    fn community_titles_and_messages_have_explicit_size_limits() {
+        assert!(validate_community_title("AWE").is_ok());
+        assert!(validate_community_title("  ").is_err());
+        assert!(validate_community_title(&"x".repeat(MAX_COMMUNITY_TITLE_BYTES)).is_ok());
+        assert!(validate_community_title(&"x".repeat(MAX_COMMUNITY_TITLE_BYTES + 1)).is_err());
+        assert!(validate_community_message("hello").is_ok());
+        assert!(validate_community_message(" ").is_err());
+        assert!(validate_community_message(&"x".repeat(MAX_COMMUNITY_MESSAGE_BYTES)).is_ok());
+        assert!(validate_community_message(&"x".repeat(MAX_COMMUNITY_MESSAGE_BYTES + 1)).is_err());
+    }
+
+    #[test]
+    fn group_members_must_be_bounded_valid_aweids() {
+        assert!(validate_group_member_ids(&[]).is_ok());
+        assert!(validate_group_member_ids(&["ab".repeat(32)]).is_ok());
+        assert!(validate_group_member_ids(&["uid-not-an-aweid".to_string()]).is_err());
+        assert!(validate_group_member_ids(&vec!["ab".repeat(32); MAX_GROUP_MEMBERS + 1]).is_err());
     }
 
     #[test]
