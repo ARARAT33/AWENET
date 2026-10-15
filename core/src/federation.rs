@@ -1,5 +1,6 @@
+use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
-use std::{fs, path::Path};
+use std::{collections::BTreeSet, fs, path::Path};
 
 pub const FORMAT_VERSION: u16 = 1;
 
@@ -55,22 +56,12 @@ pub struct AweNetConfig {
     pub bootstrap_endpoints: Vec<String>,
 }
 
-fn token(prefix: &str, seed: &str) -> String {
-    let mut bytes = Vec::with_capacity(prefix.len() + seed.len() + 8);
-    bytes.extend_from_slice(prefix.as_bytes());
-    bytes.extend_from_slice(seed.as_bytes());
-    bytes.extend_from_slice(
-        &std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-            .to_be_bytes(),
-    );
-    format!(
-        "{}-{}",
-        prefix,
-        &hex::encode(blake3::hash(&bytes).as_bytes())[..32]
-    )
+fn token(prefix: &str, _seed: &str) -> String {
+    // Join credentials must be unpredictable. Hashing a node/group ID with a
+    // timestamp is not a secret and can make invitations guessable.
+    let mut secret = [0u8; 32];
+    OsRng.fill_bytes(&mut secret);
+    format!("{prefix}-{}", hex::encode(secret))
 }
 
 fn id(prefix: &str, seed: &str) -> String {
@@ -217,6 +208,14 @@ pub fn validate_awedc(v: &DataCentreConfig) -> Result<(), String> {
     if v.member_node_ids.is_empty() {
         return Err("data centre must contain at least one node".into());
     }
+    let members: BTreeSet<_> = v.member_node_ids.iter().collect();
+    if members.len() != v.member_node_ids.len() {
+        return Err("data centre contains duplicate node IDs".into());
+    }
+    let endpoints: BTreeSet<_> = v.endpoints.iter().collect();
+    if endpoints.len() != v.endpoints.len() {
+        return Err("data centre contains duplicate endpoints".into());
+    }
     Ok(())
 }
 
@@ -229,6 +228,13 @@ pub fn validate_dgc(v: &DataGroupConfig) -> Result<(), String> {
     }
     if v.data_centre_ids.len() < 2 {
         return Err("data group requires at least two data centres".into());
+    }
+    let centres: BTreeSet<_> = v.data_centre_ids.iter().collect();
+    if centres.len() != v.data_centre_ids.len() {
+        return Err("data group contains duplicate data-centre IDs".into());
+    }
+    if !centres.contains(&&v.owner_data_centre_id) {
+        return Err("data group owner must be one of its member data centres".into());
     }
     Ok(())
 }
@@ -275,6 +281,35 @@ pub fn merge_dgc(local: &mut DataGroupConfig, incoming: &DataGroupConfig) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn join_tokens_are_unpredictable_and_unique() {
+        let a = generate_awenode("node-1", "DC One", "127.0.0.1:41000", vec![], 1);
+        let b = generate_awenode("node-1", "DC One", "127.0.0.1:41000", vec![], 1);
+        assert_ne!(a.join_token, b.join_token);
+        assert!(a.join_token.starts_with("node-"));
+        assert_eq!(a.join_token.len(), "node-".len() + 64);
+    }
+
+    #[test]
+    fn rejects_duplicate_data_centre_members() {
+        let mut dc = generate_awedc(
+            "node-1", "dc-1", "DC One",
+            vec!["127.0.0.1:41000".into()],
+            vec!["node-1".into(), "node-1".into()], 1,
+        );
+        assert!(validate_awedc(&dc).is_err());
+        dc.member_node_ids = vec!["node-1".into()];
+        assert!(validate_awedc(&dc).is_ok());
+    }
+
+    #[test]
+    fn rejects_data_group_without_owner_membership() {
+        let mut dg = generate_dgc("dc-owner", "Group", vec!["dc-a".into(), "dc-b".into()], 1);
+        assert!(validate_dgc(&dg).is_err());
+        dg.data_centre_ids.push("dc-owner".into());
+        assert!(validate_dgc(&dg).is_ok());
+    }
+
     #[test]
     fn formats_validate() {
         let n = generate_awenode("node-1", "DC One", "127.0.0.1:41000", vec![], 1);
