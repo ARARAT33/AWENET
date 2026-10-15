@@ -193,6 +193,27 @@ impl Default for OnecoinFinalizedState {
 }
 
 impl OnecoinFinalizedState {
+    /// Validate transaction execution against a clone of the current ledger without committing it.
+    /// Validators use this before signing a proposal so invalid blocks cannot collect votes.
+    pub fn validate_block_transactions(&self, block: &OnecoinBlock) -> Result<(), String> {
+        self.execute_transactions(block).map(|_| ())
+    }
+
+    fn execute_transactions(&self, block: &OnecoinBlock) -> Result<OnecoinLedger, String> {
+        block.validate_shape()?;
+        let mut next = self.ledger.clone();
+        let mut seen = BTreeMap::new();
+        for tx in &block.transactions {
+            let txid = tx.id();
+            if seen.insert(txid, true).is_some() {
+                return Err("duplicate transaction in block".into());
+            }
+            let sender_key = next.ledger_sender_key(tx)?;
+            next.apply_transfer(tx, &sender_key)?;
+        }
+        Ok(next)
+    }
+
     pub fn finalize(
         &mut self,
         block: &OnecoinBlock,
@@ -216,17 +237,7 @@ impl OnecoinFinalizedState {
 
         // Execute against a clone first. A failed transaction must never leave
         // the live state half-applied.
-        let mut next = self.ledger.clone();
-        let mut seen = BTreeMap::new();
-        for tx in &block.transactions {
-            let txid = tx.id();
-            if seen.insert(txid, true).is_some() {
-                return Err("duplicate transaction in block".into());
-            }
-            let sender_key = next.ledger_sender_key(tx)?;
-            next.apply_transfer(tx, &sender_key)?;
-        }
-
+        let next = self.execute_transactions(block)?;
         self.ledger = next;
         self.height = block.header.height;
         self.tip_hash = block.hash();
