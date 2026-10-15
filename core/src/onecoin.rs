@@ -474,7 +474,8 @@ impl OnecoinLedger {
             .ok_or_else(|| "transaction nonce overflow".to_string())?;
 
         // Compute every result before mutating state so rejected transactions are atomic.
-        self.balances.insert(sender_key.clone(), sender_balance - total);
+        self.balances
+            .insert(sender_key.clone(), sender_balance - total);
         self.balances.insert(recipient_key, recipient_after);
         self.collected_fee_atoms = collected_fees_after;
         self.nonces.insert(sender_key, next_nonce);
@@ -582,14 +583,10 @@ mod tests {
         ledger.balances.insert(recipient_key.clone(), u128::MAX);
         let sender_before = ledger.balances[&sender_key];
         let nonce_before = ledger.nonces[&sender_key];
-        let tx = OnecoinTransaction::new(
-            &sender,
-            nonce_before,
-            &recipient.public.awe_id,
-            1,
-            None,
-        );
-        assert!(ledger.apply_transfer(&tx, &sender.public.public_key).is_err());
+        let tx = OnecoinTransaction::new(&sender, nonce_before, &recipient.public.awe_id, 1, None);
+        assert!(ledger
+            .apply_transfer(&tx, &sender.public.public_key)
+            .is_err());
         assert_eq!(ledger.balances[&sender_key], sender_before);
         assert_eq!(ledger.nonces[&sender_key], nonce_before);
     }
@@ -607,13 +604,7 @@ mod tests {
             .unwrap();
         let sender_key = sender.public.awe_id.to_hex();
         let before = ledger.clone();
-        let tx = OnecoinTransaction::new(
-            &sender,
-            0,
-            &recipient.public.awe_id,
-            u128::MAX,
-            None,
-        );
+        let tx = OnecoinTransaction::new(&sender, 0, &recipient.public.awe_id, u128::MAX, None);
         assert!(ledger
             .apply_transfer_with_fee(&tx, &sender.public.public_key, 100)
             .unwrap_err()
