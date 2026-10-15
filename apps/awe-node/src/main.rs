@@ -275,11 +275,9 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> Result<String>
 }
 
 #[allow(clippy::too_many_arguments)]
-fn parse_wallet_send_payload(
-    body: &str,
-) -> Result<(AweId, u128, Option<String>), String> {
-    let parsed: serde_json::Value = serde_json::from_str(body)
-        .map_err(|error| format!("invalid wallet-send JSON: {error}"))?;
+fn parse_wallet_send_payload(body: &str) -> Result<(AweId, u128, Option<String>), String> {
+    let parsed: serde_json::Value =
+        serde_json::from_str(body).map_err(|error| format!("invalid wallet-send JSON: {error}"))?;
     if !parsed.is_object() {
         return Err("request body must be a valid JSON object".into());
     }
@@ -3054,12 +3052,13 @@ mod wallet_send_payload_tests {
     #[test]
     fn wallet_send_payload_requires_recipient_and_amount() {
         assert!(parse_wallet_send_payload(r#"{"amount_coins":"1"}"#).is_err());
-        assert!(parse_wallet_send_payload(r#"{"recipient":"not-an-id","amount_coins":"1"}"#).is_err());
-        assert!(parse_wallet_send_payload(&format!(
-            r#"{{"recipient":"{}"}}"#,
-            "ab".repeat(32)
-        ))
-        .is_err());
+        assert!(
+            parse_wallet_send_payload(r#"{"recipient":"not-an-id","amount_coins":"1"}"#).is_err()
+        );
+        assert!(
+            parse_wallet_send_payload(&format!(r#"{{"recipient":"{}"}}"#, "ab".repeat(32)))
+                .is_err()
+        );
     }
 
     #[test]
