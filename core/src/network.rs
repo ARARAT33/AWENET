@@ -983,6 +983,7 @@ impl Node {
                                 false
                             };
                             if !accepted {
+                                eprintln!("inbound data rejected by queue bounds: peer={}, stream={}, bytes={}", hex::encode(c.remote_id), stream, payload.len());
                                 break;
                             }
                             if c.send(&Control::DataAck {
@@ -1035,6 +1036,7 @@ impl Node {
             let _ = s.set_nodelay(true);
             let Ok(permit) = Arc::clone(&semaphore).try_acquire_owned() else {
                 // Bounded admission: do not spawn unlimited tasks under connection floods.
+                eprintln!("inbound connection concurrency limit reached: ip={}", a.ip());
                 drop(s);
                 continue;
             };
@@ -1044,6 +1046,7 @@ impl Node {
                 .expect("preauth lock poisoned")
                 .allow(a.ip(), now());
             if !ip_allowed {
+                eprintln!("inbound connection preauth rate-limited: ip={}", a.ip());
                 drop(s);
                 drop(permit);
                 continue;
