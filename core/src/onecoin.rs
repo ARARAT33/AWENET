@@ -592,7 +592,6 @@ mod tests {
         assert!(ledger.apply_transfer(&tx, &sender.public.public_key).is_err());
         assert_eq!(ledger.balances[&sender_key], sender_before);
         assert_eq!(ledger.nonces[&sender_key], nonce_before);
-        let _ = recipient_key;
     }
 
     #[test]
