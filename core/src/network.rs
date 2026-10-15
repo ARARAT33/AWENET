@@ -875,14 +875,19 @@ impl Node {
         inbox: InboxQueue,
         inbox_bytes: Arc<Mutex<usize>>,
     ) {
-        let Ok(mut c) = handshake(stream, identity, listen_addr, false).await else {
-            return;
+        let mut c = match handshake(stream, identity, listen_addr, false).await {
+            Ok(connection) => connection,
+            Err(error) => {
+                eprintln!("inbound peer handshake rejected: {error}");
+                return;
+            }
         };
         if !admission
             .lock()
             .expect("admission lock poisoned")
             .allow(c.remote_id, 1, now())
         {
+            eprintln!("inbound peer connection rate-limited: {}", hex::encode(c.remote_id));
             let _ = defense
                 .lock()
                 .expect("defense lock poisoned")
