@@ -1813,8 +1813,7 @@ fn load_or_create_product_identity_with_password(
             .context("encrypted identity is missing node.aweusername metadata")?;
         let username = Username::new(username.trim().to_string()).map_err(anyhow::Error::msg)?;
         let bytes = fs::read(&vault_path).context("failed to read encrypted identity vault")?;
-        let identity =
-            LocalVault::open(&bytes, username, &password).map_err(anyhow::Error::msg)?;
+        let identity = LocalVault::open(&bytes, username, &password).map_err(anyhow::Error::msg)?;
         // A prior migration may have committed the vault but failed to remove the
         // plaintext key. Retry cleanup only after the encrypted vault unlocks.
         if secret_path.exists() {
