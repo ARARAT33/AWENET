@@ -351,6 +351,38 @@ mod tests {
     }
 
     #[test]
+    fn interrupted_vote_lock_replacement_recovers_backup() {
+        let dir = std::env::temp_dir().join(format!(
+            "awenet-consensus-vote-backup-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let identity = Identity::generate(Username::new("backup-validator").unwrap());
+        let validators =
+            BTreeMap::from([(identity.public.awe_id.to_hex(), identity.public.public_key)]);
+        let state_path = dir.join("state.bin");
+        let _runtime = OnecoinConsensusRuntime::open(&state_path, validators.clone()).unwrap();
+
+        let vote_lock_path = state_path.with_extension("vote-locks.json");
+        let backup_path = state_path.with_extension("vote-locks.bak");
+        let recovered_hash = [7u8; 32];
+        fs::write(
+            &backup_path,
+            serde_json::to_vec(&BTreeMap::from([(1u64, recovered_hash)])).unwrap(),
+        )
+        .unwrap();
+
+        let runtime = OnecoinConsensusRuntime::open(&state_path, validators).unwrap();
+        assert_eq!(runtime.local_votes.get(&1), Some(&recovered_hash));
+        assert!(vote_lock_path.exists());
+        assert!(!backup_path.exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn consensus_messages_reject_payloads_over_size_limit() {
         let bytes = vec![b' '; MAX_CONSENSUS_MESSAGE_BYTES + 1];
         assert!(OnecoinConsensusMessage::decode(&bytes).is_err());
