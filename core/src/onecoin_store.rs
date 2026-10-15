@@ -289,7 +289,7 @@ mod finalized_state_tests {
         persistent.save().unwrap();
         let bytes = fs::read(&path).unwrap();
         let serialized = String::from_utf8(bytes[STATE_MAGIC.len()..].to_vec()).unwrap();
-        let legacy_serialized = serialized.replace(",\\\"local_votes\\\":{}", "");
+        let legacy_serialized = serialized.replace(",\"local_votes\":{}", "");
         let mut legacy_bytes = STATE_MAGIC.to_vec();
         legacy_bytes.extend(legacy_serialized.as_bytes());
         fs::write(&path, legacy_bytes).unwrap();
