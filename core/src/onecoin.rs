@@ -322,9 +322,10 @@ impl OnecoinLedger {
             .iter()
             .map(Self::key)
             .collect::<std::collections::BTreeSet<_>>();
-        if verifiers.iter().any(|key| {
-            !member_ids.contains(&Self::key(&AweId::from_public_key(key)))
-        }) {
+        if verifiers
+            .iter()
+            .any(|key| !member_ids.contains(&Self::key(&AweId::from_public_key(key))))
+        {
             return Err("reward verifier must be a genesis member".into());
         }
         self.initialize_genesis(members)?;
