@@ -274,7 +274,6 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> Result<String>
     String::from_utf8(data).context("HTTP request must be UTF-8")
 }
 
-#[allow(clippy::too_many_arguments)]
 fn parse_wallet_send_payload(body: &str) -> Result<(AweId, u128, Option<String>), String> {
     let parsed: serde_json::Value =
         serde_json::from_str(body).map_err(|error| format!("invalid wallet-send JSON: {error}"))?;
