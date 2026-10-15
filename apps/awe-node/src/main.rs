@@ -2842,11 +2842,24 @@ async fn run_product() -> Result<()> {
                 let Ok(transfer) = serde_json::from_slice::<StorageShardTransfer>(&payload) else {
                     continue;
                 };
-                if transfer.sender != sender || transfer.verify().is_err() {
+                if transfer.sender != sender {
+                    eprintln!(
+                        "storage transfer rejected: authenticated sender mismatch (peer={}, claimed={})",
+                        hex::encode(sender),
+                        hex::encode(transfer.sender)
+                    );
                     continue;
                 }
-                let Ok(object_id) = dispatcher_storage.put(&transfer.payload) else {
+                if let Err(error) = transfer.verify() {
+                    eprintln!("storage transfer rejected by validation: {error}");
                     continue;
+                }
+                let object_id = match dispatcher_storage.put(&transfer.payload) {
+                    Ok(object_id) => object_id,
+                    Err(error) => {
+                        eprintln!("storage shard durable write failed: {error}");
+                        continue;
+                    }
                 };
                 let ack = StorageShardAck::new(
                     transfer.request_id,
@@ -2854,10 +2867,16 @@ async fn run_product() -> Result<()> {
                     transfer.shard_index,
                     object_id,
                 );
-                if let Ok(bytes) = serde_json::to_vec(&ack) {
-                    let _ = dispatcher_node
-                        .send_to_peer(&sender, STORAGE_STREAM, bytes)
-                        .await;
+                match serde_json::to_vec(&ack) {
+                    Ok(bytes) => {
+                        if let Err(error) = dispatcher_node
+                            .send_to_peer(&sender, STORAGE_STREAM, bytes)
+                            .await
+                        {
+                            eprintln!("storage ACK send failed: {error}");
+                        }
+                    }
+                    Err(error) => eprintln!("storage ACK serialization failed: {error}"),
                 }
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
