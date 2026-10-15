@@ -1440,7 +1440,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                                                         .map_err(|_| "storage transfer scheduler closed".to_string())?;
                                                     let _peer_permit = peer_limit.acquire_owned().await
                                                         .map_err(|_| "per-peer storage transfer scheduler closed".to_string())?;
-                                                    match task_node.send_to_peer_confirmed(&peer_id, STORAGE_STREAM, bytes).await {
+                                                    match task_node.send_to_peer(&peer_id, STORAGE_STREAM, bytes).await {
                                                         Ok(_) => {
                                                             let deadline = tokio::time::Instant::now()
                                                                 + std::time::Duration::from_secs(5);
