@@ -939,6 +939,11 @@ impl Node {
                         cost,
                         now(),
                     ) {
+                        eprintln!(
+                            "inbound peer message rate-limited: peer={}, message_cost={}",
+                            hex::encode(c.remote_id),
+                            cost
+                        );
                         let _ = defense
                             .lock()
                             .expect("defense lock poisoned")
