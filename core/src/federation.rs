@@ -255,7 +255,10 @@ pub fn validate_awedc(v: &DataCentreConfig) -> Result<(), String> {
     if v.data_centre_name.trim().is_empty() || v.member_node_ids.is_empty() {
         return Err("data centre must have a name and at least one node".into());
     }
-    if v.endpoints.iter().any(|endpoint| endpoint.trim().is_empty()) {
+    if v.endpoints
+        .iter()
+        .any(|endpoint| endpoint.trim().is_empty())
+    {
         return Err("data centre endpoints must not be empty".into());
     }
     let members: BTreeSet<_> = v.member_node_ids.iter().collect();
@@ -359,14 +362,19 @@ pub fn merge_dgc(local: &mut DataGroupConfig, incoming: &DataGroupConfig) -> Res
     Ok(())
 }
 
-pub fn merge_cgc(local: &mut CentreGroupConfig, incoming: &CentreGroupConfig) -> Result<(), String> {
+pub fn merge_cgc(
+    local: &mut CentreGroupConfig,
+    incoming: &CentreGroupConfig,
+) -> Result<(), String> {
     validate_cgc(local)?;
     validate_cgc(incoming)?;
     if local.centre_group_id == incoming.centre_group_id {
         return Err("cannot merge a centre group with itself".into());
     }
     if !local.peer_centre_groups.contains(&incoming.centre_group_id) {
-        local.peer_centre_groups.push(incoming.centre_group_id.clone());
+        local
+            .peer_centre_groups
+            .push(incoming.centre_group_id.clone());
     }
     for peer in &incoming.peer_centre_groups {
         if peer != &local.centre_group_id && !local.peer_centre_groups.contains(peer) {
@@ -391,8 +399,12 @@ mod tests {
     #[test]
     fn rejects_data_centre_without_owner_membership() {
         let dc = generate_awedc(
-            "node-owner", "dc-1", "DC One",
-            vec!["127.0.0.1:41000".into()], vec!["node-other".into()], 1,
+            "node-owner",
+            "dc-1",
+            "DC One",
+            vec!["127.0.0.1:41000".into()],
+            vec!["node-other".into()],
+            1,
         );
         assert!(validate_awedc(&dc).is_err());
     }
@@ -400,9 +412,12 @@ mod tests {
     #[test]
     fn rejects_duplicate_data_centre_members() {
         let mut dc = generate_awedc(
-            "node-1", "dc-1", "DC One",
+            "node-1",
+            "dc-1",
+            "DC One",
             vec!["127.0.0.1:41000".into()],
-            vec!["node-1".into(), "node-1".into()], 1,
+            vec!["node-1".into(), "node-1".into()],
+            1,
         );
         assert!(validate_awedc(&dc).is_err());
         dc.member_node_ids = vec!["node-1".into()];
@@ -419,7 +434,12 @@ mod tests {
 
     #[test]
     fn centre_group_requires_owner_membership_and_unique_members() {
-        let mut cg = generate_cgc("dg-owner", "Core Group", vec!["dg-owner".into(), "dg-peer".into()], 7);
+        let mut cg = generate_cgc(
+            "dg-owner",
+            "Core Group",
+            vec!["dg-owner".into(), "dg-peer".into()],
+            7,
+        );
         assert!(validate_cgc(&cg).is_ok());
         cg.owner_data_group_id = "dg-missing".into();
         assert!(validate_cgc(&cg).is_err());
