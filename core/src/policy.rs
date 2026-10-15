@@ -39,6 +39,7 @@ impl Default for NetworkPolicy {
                 MESSENGER_STREAM,
                 crate::data_plane::STORAGE_STREAM,
                 ONECOIN_TRANSFER_STREAM,
+                crate::onecoin_consensus_runtime::ONECOIN_CONSENSUS_STREAM,
             ],
         }
     }
@@ -130,6 +131,8 @@ mod tests {
         assert!(policy.allows_stream(MESSENGER_STREAM));
         assert!(policy.allows_stream(crate::data_plane::STORAGE_STREAM));
         assert!(policy.allows_stream(ONECOIN_TRANSFER_STREAM));
+        assert!(policy.allows_stream(crate::onecoin_consensus_runtime::ONECOIN_CONSENSUS_STREAM));
+        assert_ne!(crate::data_plane::STORAGE_STREAM, crate::onecoin_consensus_runtime::ONECOIN_CONSENSUS_STREAM);
         assert!(!policy.allows_stream(999_999));
     }
 
