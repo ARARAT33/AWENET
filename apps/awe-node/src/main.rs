@@ -2407,8 +2407,7 @@ async fn run_product() -> Result<()> {
                     if stream == STORAGE_STREAM || stream == ONECOIN_CONSENSUS_STREAM {
                         eprintln!(
                             "application stream rejected by local policy: stream={}, allowed={:?}",
-                            stream,
-                            runtime_policy.allowed_streams
+                            stream, runtime_policy.allowed_streams
                         );
                     }
                     continue;
