@@ -252,12 +252,18 @@ pub fn validate_awedc(v: &DataCentreConfig) -> Result<(), String> {
     {
         return Err("incomplete .awedc configuration".into());
     }
-    if v.member_node_ids.is_empty() {
-        return Err("data centre must contain at least one node".into());
+    if v.data_centre_name.trim().is_empty() || v.member_node_ids.is_empty() {
+        return Err("data centre must have a name and at least one node".into());
+    }
+    if v.endpoints.iter().any(|endpoint| endpoint.trim().is_empty()) {
+        return Err("data centre endpoints must not be empty".into());
     }
     let members: BTreeSet<_> = v.member_node_ids.iter().collect();
     if members.len() != v.member_node_ids.len() {
         return Err("data centre contains duplicate node IDs".into());
+    }
+    if !members.contains(&&v.owner_node_id) {
+        return Err("data centre owner must be one of its member nodes".into());
     }
     let endpoints: BTreeSet<_> = v.endpoints.iter().collect();
     if endpoints.len() != v.endpoints.len() {
@@ -380,6 +386,15 @@ mod tests {
         assert_ne!(a.join_token, b.join_token);
         assert!(a.join_token.starts_with("node-"));
         assert_eq!(a.join_token.len(), "node-".len() + 64);
+    }
+
+    #[test]
+    fn rejects_data_centre_without_owner_membership() {
+        let dc = generate_awedc(
+            "node-owner", "dc-1", "DC One",
+            vec!["127.0.0.1:41000".into()], vec!["node-other".into()], 1,
+        );
+        assert!(validate_awedc(&dc).is_err());
     }
 
     #[test]
