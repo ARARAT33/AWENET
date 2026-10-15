@@ -1382,6 +1382,15 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                                     let mut sent_remote = 0usize;
                                     let mut failed = Vec::new();
                                     let transfer_limit = Arc::new(tokio::sync::Semaphore::new(32));
+                                    // A peer must have at most one first-connect/upload operation
+                                    // in flight. Otherwise concurrent sends can all observe an empty
+                                    // active-connection cache, race to create sockets, and replace one
+                                    // another's cached connection before ACKs are returned.
+                                    let peer_transfer_limits = peer_ids
+                                        .values()
+                                        .copied()
+                                        .map(|peer_id| (peer_id, Arc::new(tokio::sync::Semaphore::new(1))))
+                                        .collect::<std::collections::BTreeMap<_, _>>();
                                     let mut remote_jobs: tokio::task::JoinSet<Result<(usize, Option<serde_json::Value>), String>> = tokio::task::JoinSet::new();
 
                                     for (index, shard) in shards.into_iter().enumerate() {
@@ -1417,10 +1426,16 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                                                 let task_node = node.clone();
                                                 let task_pending_acks = pending_acks.clone();
                                                 let task_limit = transfer_limit.clone();
+                                                let peer_limit = peer_transfer_limits
+                                                    .get(&peer_id)
+                                                    .cloned()
+                                                    .ok_or_else(|| "missing per-peer storage transfer limit".to_string())?;
                                                 let target_name = target.clone();
                                                 remote_jobs.spawn(async move {
                                                     let _permit = task_limit.acquire_owned().await
                                                         .map_err(|_| "storage transfer scheduler closed".to_string())?;
+                                                    let _peer_permit = peer_limit.acquire_owned().await
+                                                        .map_err(|_| "per-peer storage transfer scheduler closed".to_string())?;
                                                     match task_node.send_to_peer(&peer_id, STORAGE_STREAM, bytes).await {
                                                         Ok(_) => {
                                                             let deadline = tokio::time::Instant::now()
