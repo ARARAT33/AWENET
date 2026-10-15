@@ -2621,7 +2621,9 @@ async fn run_product() -> Result<()> {
                                                 == Some(sender_uid.as_str());
                                         if subscriber {
                                             if let Some(m) = message.get("message").cloned() {
-                                                if validate_remote_feed_message(&m, &sender_uid).is_ok() {
+                                                if validate_remote_feed_message(&m, &sender_uid)
+                                                    .is_ok()
+                                                {
                                                     if let Some(a) = ch
                                                         .get_mut("messages")
                                                         .and_then(|v| v.as_array_mut())
