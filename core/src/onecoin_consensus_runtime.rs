@@ -162,6 +162,8 @@ impl OnecoinConsensusRuntime {
         {
             return Err("proposal does not extend finalized state".into());
         }
+        // Never vote for a block whose transactions would fail deterministic execution.
+        self.state.state.validate_block_transactions(&block)?;
         if self.pending.len() >= MAX_PENDING_BLOCKS && !self.pending.contains_key(&block.hash()) {
             return Err("too many pending consensus blocks".into());
         }
