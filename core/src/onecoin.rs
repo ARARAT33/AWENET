@@ -318,7 +318,10 @@ impl OnecoinLedger {
         members: &[AweId],
         verifiers: &[[u8; 32]],
     ) -> Result<(), String> {
-        let member_ids = members.iter().map(Self::key).collect::<std::collections::BTreeSet<_>>();
+        let member_ids = members
+            .iter()
+            .map(Self::key)
+            .collect::<std::collections::BTreeSet<_>>();
         if verifiers.iter().any(|key| {
             !member_ids.contains(&Self::key(&AweId::from_public_key(key)))
         }) {
@@ -641,6 +644,42 @@ mod tests {
         assert_eq!(ledger.nonces, before.nonces);
         assert_eq!(ledger.collected_fee_atoms, before.collected_fee_atoms);
         assert_eq!(ledger.balances[&sender_key], before.balances[&sender_key]);
+    }
+
+    #[test]
+    fn failed_join_distribution_does_not_partially_register_member() {
+        let existing = id("join-overflow-existing");
+        let newcomer = id("join-overflow-newcomer");
+        let mut ledger = OnecoinLedger::default();
+        ledger
+            .initialize_genesis(std::slice::from_ref(&existing.public.awe_id))
+            .unwrap();
+        ledger
+            .balances
+            .insert(existing.public.awe_id.to_hex(), u128::MAX);
+        let balances_before = ledger.balances.clone();
+        let members_before = ledger.members.clone();
+        let supply_before = ledger.total_issued_atoms;
+        assert!(ledger.register_member(&newcomer.public.awe_id).is_err());
+        assert_eq!(ledger.balances, balances_before);
+        assert_eq!(ledger.members, members_before);
+        assert_eq!(ledger.total_issued_atoms, supply_before);
+    }
+
+    #[test]
+    fn invalid_genesis_verifier_does_not_initialize_ledger() {
+        let member = id("genesis-member");
+        let non_member = id("genesis-non-member");
+        let mut ledger = OnecoinLedger::default();
+        assert!(ledger
+            .initialize_genesis_with_verifiers(
+                std::slice::from_ref(&member.public.awe_id),
+                &[non_member.public.public_key],
+            )
+            .is_err());
+        assert!(ledger.members.is_empty());
+        assert!(ledger.balances.is_empty());
+        assert_eq!(ledger.total_issued_atoms, 0);
     }
 
     #[test]
