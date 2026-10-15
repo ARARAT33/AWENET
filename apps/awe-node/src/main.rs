@@ -198,6 +198,20 @@ fn append_messenger_entry(log: &mut Vec<serde_json::Value>, item: serde_json::Va
     log.push(item);
 }
 
+fn storage_ack_matches(
+    ack_sender: &[u8; 32],
+    expected_sender: &[u8; 32],
+    ack: &StorageShardAck,
+    file_id: &[u8; 32],
+    shard_index: u16,
+    expected_hash: &[u8; 32],
+) -> bool {
+    ack_sender == expected_sender
+        && ack.file_id == *file_id
+        && ack.shard_index == shard_index
+        && ack.stored_object_id == *expected_hash
+}
+
 fn validate_storage_file_id(value: &str) -> Result<[u8; 32], String> {
     let bytes =
         hex::decode(value).map_err(|_| "file_id must be 64 hexadecimal characters".to_string())?;
@@ -1406,10 +1420,14 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                                                             while tokio::time::Instant::now() < deadline {
                                                                 if let Ok(mut acks) = task_pending_acks.lock() {
                                                                     if let Some((ack_sender, ack)) = acks.remove(&request_id) {
-                                                                        confirmed = ack_sender == peer_id
-                                                                            && ack.file_id == file_id
-                                                                            && ack.shard_index == index as u16
-                                                                            && ack.stored_object_id == shard_hash;
+                                                                        confirmed = storage_ack_matches(
+                                                                            &ack_sender,
+                                                                            &peer_id,
+                                                                            &ack,
+                                                                            &file_id,
+                                                                            index as u16,
+                                                                            &shard_hash,
+                                                                        );
                                                                         break;
                                                                     }
                                                                 }
@@ -2027,11 +2045,14 @@ async fn autonomous_repair_cycle(
                         while tokio::time::Instant::now() < deadline {
                             if let Ok(mut acks) = pending_acks.lock() {
                                 if let Some((ack_sender, ack)) = acks.remove(&request_id) {
-                                    if ack_sender == target_id
-                                        && ack.file_id == file_id
-                                        && ack.shard_index == index as u16
-                                        && ack.stored_object_id == expected_hash
-                                    {
+                                    if storage_ack_matches(
+                                        &ack_sender,
+                                        &target_id,
+                                        &ack,
+                                        &file_id,
+                                        index as u16,
+                                        &expected_hash,
+                                    ) {
                                         nodes_value.push(serde_json::Value::String(target.clone()));
                                         repaired = true;
                                     }
@@ -3207,6 +3228,18 @@ mod phase_two_backend_tests {
                 .and_then(|v| v.as_u64()),
             Some((MAX_MESSENGER_LOG_ENTRIES / 10) as u64 + 1)
         );
+    }
+
+    #[test]
+    fn storage_ack_must_match_the_authenticated_target() {
+        let expected_sender = [7u8; 32];
+        let attacker = [8u8; 32];
+        let file_id = [9u8; 32];
+        let hash = [10u8; 32];
+        let ack = StorageShardAck::new([1u8; 16], file_id, 4, hash);
+        assert!(storage_ack_matches(&expected_sender, &expected_sender, &ack, &file_id, 4, &hash));
+        assert!(!storage_ack_matches(&attacker, &expected_sender, &ack, &file_id, 4, &hash));
+        assert!(!storage_ack_matches(&expected_sender, &expected_sender, &ack, &file_id, 5, &hash));
     }
 
     #[test]
