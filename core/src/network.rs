@@ -1203,19 +1203,27 @@ impl Node {
         let connection = if let Some(connection) = self.active.read().await.get(peer_id).cloned() {
             connection
         } else {
-            let address = self
-                .peers
-                .read()
-                .await
-                .get(peer_id)
-                .and_then(|peer| peer.addresses.first().copied())
-                .ok_or_else(|| NetworkError::Protocol("peer address is unknown".into()))?;
-            let connection = Arc::new(tokio::sync::Mutex::new(self.connect(address).await?));
+            // Serialize cold-connection creation through the active-map write lock,
+            // then recheck the cache. Without the second check, concurrent sends to
+            // one peer can open many handshakes, replace each other's cached sockets,
+            // and lose application ACKs while the receiver enforces connection limits.
             let mut active = self.active.write().await;
-            if active.len() < MAX_ACTIVE_CONNECTIONS {
-                active.insert(*peer_id, connection.clone());
+            if let Some(connection) = active.get(peer_id).cloned() {
+                connection
+            } else {
+                let address = self
+                    .peers
+                    .read()
+                    .await
+                    .get(peer_id)
+                    .and_then(|peer| peer.addresses.first().copied())
+                    .ok_or_else(|| NetworkError::Protocol("peer address is unknown".into()))?;
+                let connection = Arc::new(tokio::sync::Mutex::new(self.connect(address).await?));
+                if active.len() < MAX_ACTIVE_CONNECTIONS {
+                    active.insert(*peer_id, connection.clone());
+                }
+                connection
             }
-            connection
         };
         let mut connection = connection.lock().await;
         let started = Instant::now();
