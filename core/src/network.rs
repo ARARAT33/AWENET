@@ -1687,6 +1687,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn encrypted_data_plane_request_response_returns_application_payload() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_identity = Arc::new(Identity::generate(
+            Username::new("request-response-server").unwrap(),
+        ));
+        let client_identity = Arc::new(Identity::generate(
+            Username::new("request-response-client").unwrap(),
+        ));
+        let server_task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut server = handshake(stream, server_identity, address, false).await.unwrap();
+            loop {
+                match server.recv().await.unwrap() {
+                    Control::Data {
+                        stream,
+                        payload,
+                        request: true,
+                    } => {
+                        assert_eq!(payload, b"durable-shard");
+                        server.send(&Control::DataAck {
+                            stream,
+                            bytes: payload.len() as u32,
+                            response: Some(b"durable-ack".to_vec()),
+                        }).await.unwrap();
+                        break;
+                    }
+                    Control::Ping { sequence } => {
+                        server.send(&Control::Pong { sequence }).await.unwrap();
+                    }
+                    _ => {}
+                }
+            }
+        });
+        let stream = TcpStream::connect(address).await.unwrap();
+        let mut client = handshake(stream, client_identity, address, true).await.unwrap();
+        let (_, response) = client
+            .send_data_request_roundtrip(77, b"durable-shard".to_vec())
+            .await
+            .unwrap();
+        assert_eq!(response, b"durable-ack");
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn distinct_sessions_have_working_key_agreement() {
         let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let a = l.local_addr().unwrap();
