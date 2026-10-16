@@ -1280,20 +1280,8 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                 _ => Err("kind must be awenode, awedc, dgc or cgc".to_string())
             };
             match result {
-                Ok((filename, content)) => {
-                    let payload = match serde_json::from_str::<serde_json::Value>(&content) {
-                        Ok(payload) => payload,
-                        Err(error) => {
-                            return respond_json(
-                                &mut stream,
-                                origin,
-                                "500 Internal Server Error",
-                                serde_json::json!({"status":"error","error":error.to_string()}),
-                            )
-                            .await;
-                        }
-                    };
-                    match sign_federation_invitation(kind, payload.clone(), &node.identity) {
+                Ok((filename, content)) => match serde_json::from_str::<serde_json::Value>(&content) {
+                    Ok(payload) => match sign_federation_invitation(kind, payload.clone(), &node.identity) {
                         Ok(signed_content) => match record_generated_federation_owner(
                             kind, &payload, &owner_node_id, &federation_state, &federation_path,
                         ) {
@@ -1303,6 +1291,24 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                                 serde_json::json!({"status":"generated","filename":filename,"content":signed_content}).to_string(),
                             ),
                             Err(error) => (
+                                "500 Internal Server Error",
+                                "application/json; charset=utf-8",
+                                serde_json::json!({"status":"error","error":error}).to_string(),
+                            ),
+                        },
+                        Err(error) => (
+                            "400 Bad Request",
+                            "application/json; charset=utf-8",
+                            serde_json::json!({"status":"error","error":error}).to_string(),
+                        ),
+                    },
+                    Err(error) => (
+                        "500 Internal Server Error",
+                        "application/json; charset=utf-8",
+                        serde_json::json!({"status":"error","error":error.to_string()}).to_string(),
+                    ),
+                },
+                Err(error) => (
                                 "500 Internal Server Error",
                                 "application/json; charset=utf-8",
                                 serde_json::json!({"status":"error","error":error}).to_string(),
