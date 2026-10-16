@@ -650,7 +650,12 @@ impl SecureConnection {
         if payload.len() > MAX_FRAME / 2 {
             return Err(NetworkError::FrameTooLarge);
         }
-        self.send(&Control::Data { stream, payload, request: false }).await
+        self.send(&Control::Data {
+            stream,
+            payload,
+            request: false,
+        })
+        .await
     }
     pub async fn ping(&mut self, sequence: u64) -> Result<(), NetworkError> {
         self.send(&Control::Ping { sequence }).await
@@ -694,7 +699,12 @@ impl SecureConnection {
         }
         let expected = payload.len() as u32;
         let started = Instant::now();
-        self.send(&Control::Data { stream, payload, request: false }).await?;
+        self.send(&Control::Data {
+            stream,
+            payload,
+            request: false,
+        })
+        .await?;
         loop {
             match timeout(HELLO_TIMEOUT, self.recv()).await {
                 Ok(Ok(Control::DataAck {
@@ -745,26 +755,43 @@ impl SecureConnection {
         }
         let expected = payload.len() as u32;
         let started = Instant::now();
-        self.send(&Control::Data { stream, payload, request: true }).await?;
+        self.send(&Control::Data {
+            stream,
+            payload,
+            request: true,
+        })
+        .await?;
         loop {
             match timeout(HELLO_TIMEOUT, self.recv()).await {
-                Ok(Ok(Control::DataAck { stream: echoed, bytes, response: Some(response) }))
-                    if echoed == stream && bytes == expected => {
+                Ok(Ok(Control::DataAck {
+                    stream: echoed,
+                    bytes,
+                    response: Some(response),
+                })) if echoed == stream && bytes == expected => {
                         return Ok((started.elapsed(), response));
                     }
                 Ok(Ok(Control::Ping { sequence })) => {
                     self.send(&Control::Pong { sequence }).await?;
                 }
-                Ok(Ok(Control::Data { stream: incoming, payload, .. })) => {
+                Ok(Ok(Control::Data {
+                    stream: incoming,
+                    payload,
+                    ..
+                })) => {
                     self.send(&Control::DataAck {
                         stream: incoming,
                         bytes: payload.len() as u32,
                         response: None,
-                    }).await?;
+                    })
+                    .await?;
                 }
-                Ok(Ok(Control::Pong { .. } | Control::Nodes { .. } | Control::DataAck { .. })) => {}
+                Ok(Ok(
+                    Control::Pong { .. } | Control::Nodes { .. } | Control::DataAck { .. }
+                )) => {}
                 Ok(Ok(Control::FindNode { .. } | Control::Hello { .. })) => {
-                    return Err(NetworkError::Protocol("unexpected control message during request".into()));
+                    return Err(NetworkError::Protocol(
+                        "unexpected control message during request".into(),
+                    ));
                 }
                 Ok(Err(error)) => return Err(error),
                 Err(_) => return Err(NetworkError::Timeout),
@@ -774,7 +801,9 @@ impl SecureConnection {
 
     pub async fn recv_data(&mut self) -> Result<Option<(u32, Vec<u8>)>, NetworkError> {
         match self.recv().await? {
-            Control::Data { stream, payload, .. } => Ok(Some((stream, payload))),
+            Control::Data {
+                stream, payload, ..
+            } => Ok(Some((stream, payload))),
             Control::Ping { sequence } => {
                 self.send(&Control::Pong { sequence }).await?;
                 Ok(None)
@@ -884,7 +913,10 @@ impl InboundMessage {
     }
 
     pub fn respond(&mut self, payload: Vec<u8>) -> bool {
-        self.reply.take().map(|reply| reply.send(payload).is_ok()).unwrap_or(false)
+        self.reply
+            .take()
+            .map(|reply| reply.send(payload).is_ok())
+            .unwrap_or(false)
     }
 }
 
@@ -1033,7 +1065,11 @@ impl Node {
                                 break;
                             }
                         }
-                        Control::Data { stream, payload, request } => {
+                        Control::Data {
+                            stream,
+                            payload,
+                            request,
+                        } => {
                             let (reply, response_rx) = if request {
                                 let (tx, rx) = oneshot::channel();
                                 (Some(tx), Some(rx))
@@ -1409,7 +1445,10 @@ impl Node {
         stream: u32,
         payload: Vec<u8>,
     ) -> Result<(std::time::Duration, Vec<u8>), NetworkError> {
-        let _outbound_permit = self.outbound_limit.acquire().await
+        let _outbound_permit = self
+            .outbound_limit
+            .acquire()
+            .await
             .map_err(|_| NetworkError::Protocol("outbound limiter closed".into()))?;
         let connection = if let Some(connection) = self.active.read().await.get(peer_id).cloned() {
             connection
@@ -1418,7 +1457,11 @@ impl Node {
             if let Some(connection) = active.get(peer_id).cloned() {
                 connection
             } else {
-                let address = self.peers.read().await.get(peer_id)
+                let address = self
+                    .peers
+                    .read()
+                    .await
+                    .get(peer_id)
                     .and_then(|peer| peer.addresses.first().copied())
                     .ok_or_else(|| NetworkError::Protocol("peer address is unknown".into()))?;
                 let connection = Arc::new(tokio::sync::Mutex::new(self.connect(address).await?));
@@ -1429,7 +1472,9 @@ impl Node {
             }
         };
         let mut connection = connection.lock().await;
-        let result = connection.send_data_request_roundtrip(stream, payload).await;
+        let result = connection
+            .send_data_request_roundtrip(stream, payload)
+            .await;
         if result.is_err() {
             self.active.write().await.remove(peer_id);
         }
@@ -1658,7 +1703,9 @@ mod tests {
             let mut server = handshake(s, si, a, false).await.unwrap();
             loop {
                 match server.recv().await.unwrap() {
-                    Control::Data { stream, payload, .. } => {
+                    Control::Data {
+                        stream, payload, ..
+                    } => {
                         server
                             .send(&Control::DataAck {
                                 stream,
@@ -1698,7 +1745,9 @@ mod tests {
         ));
         let server_task = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
-            let mut server = handshake(stream, server_identity, address, false).await.unwrap();
+            let mut server = handshake(stream, server_identity, address, false)
+                .await
+                .unwrap();
             loop {
                 match server.recv().await.unwrap() {
                     Control::Data {
@@ -1707,11 +1756,14 @@ mod tests {
                         request: true,
                     } => {
                         assert_eq!(payload, b"durable-shard");
-                        server.send(&Control::DataAck {
-                            stream,
-                            bytes: payload.len() as u32,
-                            response: Some(b"durable-ack".to_vec()),
-                        }).await.unwrap();
+                        server
+                            .send(&Control::DataAck {
+                                stream,
+                                bytes: payload.len() as u32,
+                                response: Some(b"durable-ack".to_vec()),
+                            })
+                            .await
+                            .unwrap();
                         break;
                     }
                     Control::Ping { sequence } => {
@@ -1722,7 +1774,9 @@ mod tests {
             }
         });
         let stream = TcpStream::connect(address).await.unwrap();
-        let mut client = handshake(stream, client_identity, address, true).await.unwrap();
+        let mut client = handshake(stream, client_identity, address, true)
+            .await
+            .unwrap();
         let (_, response) = client
             .send_data_request_roundtrip(77, b"durable-shard".to_vec())
             .await
