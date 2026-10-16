@@ -1205,24 +1205,75 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         },
         "/api/onebank/exchange/offers" if method == "POST" => {
             let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
-            let mut offer: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
-            if !offer.is_object() {
-                offer = serde_json::json!({});
-            }
-            if let Some(obj) = offer.as_object_mut() {
-                obj.insert("owner".into(), serde_json::json!(node.identity.public.awe_id.to_hex()));
-                obj.insert("settlement".into(), serde_json::json!("DIRECT_PERSON_TO_PERSON"));
-                obj.insert("coin_transfer".into(), serde_json::json!("AWENET_WALLET"));
-                obj.insert("fiat_transfer".into(), serde_json::json!("OUTSIDE_AWENET"));
-                obj.insert("created_at".into(), serde_json::json!(now_unix()));
-            }
-            let mut offers: Vec<serde_json::Value> = fs::read(&onecoin_offers_path)
-                .ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-            offers.push(offer.clone());
-            let response = fs::write(&onecoin_offers_path, serde_json::to_vec_pretty(&offers).unwrap_or_default());
-            match response {
-                Ok(()) => ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"published","offer":offer,"notice":"ONECOIN transfer is handled by AWENET wallet. Fiat is exchanged directly between people outside AWENET."}).to_string()),
-                Err(error) => ("500 Internal Server Error", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":error.to_string()}).to_string())
+            let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+            let mut offer = parsed.get("offer").cloned().unwrap_or(parsed);
+            let validation = (|| -> Result<String, String> {
+                let obj = offer.as_object().ok_or_else(|| "offer must be a JSON object".to_string())?;
+                let id = obj.get("id").and_then(|v| v.as_str()).unwrap_or("").trim();
+                if id.is_empty() || id.len() > 128 {
+                    return Err("offer.id must be 1..128 characters".into());
+                }
+                let side = obj.get("side").and_then(|v| v.as_str()).unwrap_or("");
+                if !matches!(side, "buy" | "sell") {
+                    return Err("offer.side must be buy or sell".into());
+                }
+                let amount = obj.get("amount").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                if !amount.is_finite() || amount <= 0.0 {
+                    return Err("offer.amount must be a positive finite number".into());
+                }
+                let price = obj.get("price").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                if !price.is_finite() || price <= 0.0 {
+                    return Err("offer.price must be a positive finite number".into());
+                }
+                let currency = obj.get("currency").and_then(|v| v.as_str()).unwrap_or("");
+                if !matches!(currency, "USD" | "EUR" | "AMD" | "GBP") {
+                    return Err("offer.currency must be USD, EUR, AMD, or GBP".into());
+                }
+                let rail = obj.get("rail").and_then(|v| v.as_str()).unwrap_or("");
+                if !matches!(rail, "ExternalPayment" | "BankTransfer" | "Cash") {
+                    return Err("offer.rail must be ExternalPayment, BankTransfer, or Cash".into());
+                }
+                Ok(id.to_string())
+            })();
+            match validation {
+                Err(error) => ("400 Bad Request", "application/json; charset=utf-8",
+                    serde_json::json!({"status":"error","error":error}).to_string()),
+                Ok(offer_id) => {
+                    let mut offers: Vec<serde_json::Value> = fs::read(&onecoin_offers_path)
+                        .ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+                    if offers.len() >= 10_000 {
+                        ("507 Insufficient Storage", "application/json; charset=utf-8",
+                            serde_json::json!({"status":"error","error":"offer book limit reached"}).to_string())
+                    } else if offers.iter().any(|known| {
+                        known.get("id").and_then(|v| v.as_str()) == Some(offer_id.as_str())
+                    }) {
+                        ("409 Conflict", "application/json; charset=utf-8",
+                            serde_json::json!({"status":"error","error":"offer ID already exists"}).to_string())
+                    } else {
+                        if let Some(obj) = offer.as_object_mut() {
+                            obj.insert("owner".into(), serde_json::json!(node.identity.public.awe_id.to_hex()));
+                            obj.insert("settlement".into(), serde_json::json!("DIRECT_PERSON_TO_PERSON"));
+                            obj.insert("coin_transfer".into(), serde_json::json!("AWENET_WALLET"));
+                            obj.insert("fiat_transfer".into(), serde_json::json!("OUTSIDE_AWENET"));
+                            obj.insert("created_at".into(), serde_json::json!(now_unix()));
+                        }
+                        offers.push(offer.clone());
+                        let response = serde_json::to_vec_pretty(&offers)
+                            .map_err(std::io::Error::other)
+                            .and_then(|bytes| fs::write(&onecoin_offers_path, bytes));
+                        match response {
+                            Ok(()) => ("200 OK", "application/json; charset=utf-8",
+                                serde_json::json!({
+                                    "status":"published",
+                                    "offer_id":offer_id,
+                                    "offer":offer,
+                                    "notice":"ONECOIN transfer is handled by AWENET wallet. Fiat is exchanged directly between people outside AWENET."
+                                }).to_string()),
+                            Err(error) => ("500 Internal Server Error", "application/json; charset=utf-8",
+                                serde_json::json!({"status":"error","error":error.to_string()}).to_string())
+                        }
+                    }
+                }
             }
         },
         "/api/node" => ("200 OK", "application/json; charset=utf-8", serde_json::json!({
