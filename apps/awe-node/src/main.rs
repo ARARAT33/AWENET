@@ -1038,62 +1038,73 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
             }
         },
         "/api/federation/leave" if method == "POST" => {
-            let input = match serde_json::from_str::<serde_json::Value>(&body) {
-                Ok(value) => value,
-                Err(error) => {
-                    return respond_json(
-                        &mut stream,
-                        origin,
-                        "400 Bad Request",
-                        serde_json::json!({"status":"error","error":error.to_string()}),
-                    )
-                    .await;
-                }
-            };
-            let kind = input.get("kind").and_then(|value| value.as_str()).unwrap_or("").trim().to_string();
-            let id = input.get("id").and_then(|value| value.as_str()).unwrap_or("").trim().to_string();
-            let local_node_id = node.identity.public.awe_id.to_string();
-            let mut state = match federation_state.lock() {
-                Ok(state) => state,
-                Err(_) => {
-                    return respond_json(
-                        &mut stream,
-                        origin,
-                        "500 Internal Server Error",
-                        serde_json::json!({"status":"error","error":"federation state lock poisoned"}),
-                    )
-                    .await;
-                }
-            };
-            let mut next = state.clone();
-            match leave_federation_membership(&mut next, &kind, &id, &local_node_id) {
-                Ok(()) => match federation::save_json(&next, &federation_path) {
-                    Ok(()) => {
-                        *state = next;
-                        respond_json(
-                            &mut stream,
-                            origin,
-                            "200 OK",
-                            serde_json::json!({"status":"left","kind":kind,"id":id}),
-                        )
-                        .await
+            match serde_json::from_str::<serde_json::Value>(&body) {
+                Err(error) => (
+                    "400 Bad Request",
+                    "application/json; charset=utf-8",
+                    serde_json::json!({"status":"error","error":error.to_string()}).to_string(),
+                ),
+                Ok(input) => {
+                    let kind = input
+                        .get("kind")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("")
+                        .trim()
+                        .to_string();
+                    let id = input
+                        .get("id")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("")
+                        .trim()
+                        .to_string();
+                    let local_node_id = node.identity.public.awe_id.to_string();
+                    match federation_state.lock() {
+                        Err(_) => (
+                            "500 Internal Server Error",
+                            "application/json; charset=utf-8",
+                            serde_json::json!({
+                                "status":"error",
+                                "error":"federation state lock poisoned"
+                            })
+                            .to_string(),
+                        ),
+                        Ok(mut state) => {
+                            let mut next = state.clone();
+                            match leave_federation_membership(
+                                &mut next,
+                                &kind,
+                                &id,
+                                &local_node_id,
+                            ) {
+                                Err(error) => (
+                                    "400 Bad Request",
+                                    "application/json; charset=utf-8",
+                                    serde_json::json!({"status":"error","error":error}).to_string(),
+                                ),
+                                Ok(()) => match federation::save_json(&next, &federation_path) {
+                                    Ok(()) => {
+                                        *state = next;
+                                        (
+                                            "200 OK",
+                                            "application/json; charset=utf-8",
+                                            serde_json::json!({
+                                                "status":"left",
+                                                "kind":kind,
+                                                "id":id
+                                            })
+                                            .to_string(),
+                                        )
+                                    }
+                                    Err(error) => (
+                                        "500 Internal Server Error",
+                                        "application/json; charset=utf-8",
+                                        serde_json::json!({"status":"error","error":error})
+                                            .to_string(),
+                                    ),
+                                },
+                            }
+                        }
                     }
-                    Err(error) => respond_json(
-                        &mut stream,
-                        origin,
-                        "500 Internal Server Error",
-                        serde_json::json!({"status":"error","error":error}),
-                    )
-                    .await,
-                },
-                Err(error) => {
-                    respond_json(
-                        &mut stream,
-                        origin,
-                        "400 Bad Request",
-                        serde_json::json!({"status":"error","error":error}),
-                    )
-                    .await
                 }
             }
         }
