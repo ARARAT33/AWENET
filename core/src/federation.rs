@@ -1,6 +1,6 @@
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeSet, fs, io::Write, path::Path};
+use std::{collections::{BTreeMap, BTreeSet}, fs, io::Write, path::Path};
 
 pub const FORMAT_VERSION: u16 = 1;
 
@@ -70,6 +70,10 @@ pub struct AweNetConfig {
     pub joined_data_groups: Vec<String>,
     #[serde(default)]
     pub joined_centre_groups: Vec<String>,
+    #[serde(default)]
+    pub data_centre_owners: BTreeMap<String, String>,
+    #[serde(default)]
+    pub data_group_owners: BTreeMap<String, String>,
     pub bootstrap_endpoints: Vec<String>,
 }
 
@@ -535,6 +539,8 @@ mod tests {
         let state: AweNetConfig = serde_json::from_value(legacy).unwrap();
         assert_eq!(state.local_centre_group_id, None);
         assert!(state.joined_centre_groups.is_empty());
+        assert!(state.data_centre_owners.is_empty());
+        assert!(state.data_group_owners.is_empty());
     }
 
     #[test]

@@ -398,6 +398,172 @@ fn is_valid_api_session(expected: &str, supplied: Option<&str>) -> bool {
     supplied == Some(expected)
 }
 
+fn sign_federation_invitation(
+    kind: &str,
+    payload: serde_json::Value,
+    identity: &Identity,
+) -> Result<String, String> {
+    if !matches!(kind, "awenode" | "awedc" | "dgc" | "cgc") {
+        return Err("unsupported federation invitation kind".into());
+    }
+    let owner_node_id = format_uid(identity.public.awe_id.as_bytes());
+    if kind == "awenode"
+        && payload.get("node_id").and_then(|value| value.as_str()) != Some(owner_node_id.as_str())
+    {
+        return Err("node invitation identity does not match its signer".into());
+    }
+    if kind == "awedc"
+        && payload.get("owner_node_id").and_then(|value| value.as_str())
+            != Some(owner_node_id.as_str())
+    {
+        return Err("data-centre owner does not match its signer".into());
+    }
+    let unsigned = serde_json::json!({
+        "format": "awenet-signed-federation-invitation",
+        "version": 1,
+        "kind": kind,
+        "owner_node_id": owner_node_id,
+        "owner_public_key": hex::encode(identity.public.public_key),
+        "payload": payload
+    });
+    let message = serde_json::to_vec(&unsigned).map_err(|error| error.to_string())?;
+    let signature = hex::encode(identity.sign(&message));
+    let mut envelope = unsigned;
+    envelope["signature"] = serde_json::Value::String(signature);
+    serde_json::to_string_pretty(&envelope).map_err(|error| error.to_string())
+}
+
+fn verify_signed_federation_invitation(
+    content: &str,
+    expected_kind: &str,
+) -> Result<(serde_json::Value, String), String> {
+    let envelope: serde_json::Value =
+        serde_json::from_str(content).map_err(|error| format!("invalid invitation JSON: {error}"))?;
+    if envelope.get("format").and_then(|value| value.as_str())
+        != Some("awenet-signed-federation-invitation")
+        || envelope.get("version").and_then(|value| value.as_u64()) != Some(1)
+    {
+        return Err("unsigned or unsupported federation invitation; regenerate it with this AWENET version".into());
+    }
+    if envelope.get("kind").and_then(|value| value.as_str()) != Some(expected_kind) {
+        return Err("invitation kind does not match the requested import kind".into());
+    }
+    let owner_node_id = envelope
+        .get("owner_node_id")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| "invitation owner identity is missing".to_string())?
+        .to_string();
+    let public_key_bytes = hex::decode(
+        envelope
+            .get("owner_public_key")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| "invitation owner public key is missing".to_string())?,
+    )
+    .map_err(|error| format!("invalid owner public key: {error}"))?;
+    let public_key: [u8; 32] = public_key_bytes
+        .try_into()
+        .map_err(|_| "owner public key must be 32 bytes".to_string())?;
+    if format_uid(AweId::from_public_key(&public_key).as_bytes()) != owner_node_id {
+        return Err("owner identity does not match the public key".into());
+    }
+    let signature_bytes = hex::decode(
+        envelope
+            .get("signature")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| "invitation signature is missing".to_string())?,
+    )
+    .map_err(|error| format!("invalid invitation signature: {error}"))?;
+    let signature: [u8; 64] = signature_bytes
+        .try_into()
+        .map_err(|_| "invitation signature must be 64 bytes".to_string())?;
+    let mut unsigned = envelope.clone();
+    unsigned
+        .as_object_mut()
+        .ok_or_else(|| "invitation must be a JSON object".to_string())?
+        .remove("signature");
+    let message = serde_json::to_vec(&unsigned).map_err(|error| error.to_string())?;
+    if !Identity::verify(&public_key, &message, &signature) {
+        return Err("federation invitation signature verification failed".into());
+    }
+    let payload = envelope
+        .get("payload")
+        .cloned()
+        .ok_or_else(|| "invitation payload is missing".to_string())?;
+    if expected_kind == "awenode"
+        && payload.get("node_id").and_then(|value| value.as_str()) != Some(owner_node_id.as_str())
+    {
+        return Err("node invitation identity does not match its signer".into());
+    }
+    if expected_kind == "awedc"
+        && payload.get("owner_node_id").and_then(|value| value.as_str())
+            != Some(owner_node_id.as_str())
+    {
+        return Err("data-centre owner does not match its signer".into());
+    }
+    Ok((payload, owner_node_id))
+}
+
+fn record_generated_federation_owner(
+    kind: &str,
+    payload: &serde_json::Value,
+    owner_node_id: &str,
+    state: &Arc<Mutex<AweNetConfig>>,
+    path: &PathBuf,
+) -> Result<(), String> {
+    if !matches!(kind, "awedc" | "dgc" | "cgc") {
+        return Ok(());
+    }
+    let mut current = state.lock().map_err(|_| "federation state lock poisoned".to_string())?;
+    let mut next = current.clone();
+    next.local_node_id = owner_node_id.to_string();
+    next.format = "awenet".into();
+    next.version = federation::FORMAT_VERSION;
+    match kind {
+        "awedc" => {
+            let id = payload.get("data_centre_id").and_then(|value| value.as_str())
+                .ok_or_else(|| "generated data-centre ID is missing".to_string())?;
+            if next.data_centre_owners.get(id).is_some_and(|owner| owner != owner_node_id) {
+                return Err("data-centre ID is already bound to a different owner".into());
+            }
+            next.data_centre_owners.insert(id.to_string(), owner_node_id.to_string());
+            if !next.joined_data_centres.iter().any(|joined| joined == id) {
+                next.joined_data_centres.push(id.to_string());
+            }
+            if next.local_data_centre_id.is_none() {
+                next.local_data_centre_id = Some(id.to_string());
+            }
+        }
+        "dgc" => {
+            let id = payload.get("data_group_id").and_then(|value| value.as_str())
+                .ok_or_else(|| "generated data-group ID is missing".to_string())?;
+            if next.data_group_owners.get(id).is_some_and(|owner| owner != owner_node_id) {
+                return Err("data-group ID is already bound to a different owner".into());
+            }
+            next.data_group_owners.insert(id.to_string(), owner_node_id.to_string());
+            if !next.joined_data_groups.iter().any(|joined| joined == id) {
+                next.joined_data_groups.push(id.to_string());
+            }
+            if next.local_data_group_id.is_none() {
+                next.local_data_group_id = Some(id.to_string());
+            }
+        }
+        "cgc" => {
+            let id = payload.get("centre_group_id").and_then(|value| value.as_str())
+                .ok_or_else(|| "generated centre-group ID is missing".to_string())?;
+            if !next.joined_centre_groups.iter().any(|joined| joined == id) {
+                next.joined_centre_groups.push(id.to_string());
+            }
+            if next.local_centre_group_id.is_none() {
+                next.local_centre_group_id = Some(id.to_string());
+            }
+        }
+        _ => {}
+    }
+    federation::save_json(&next, path)?;
+    *current = next;
+    Ok(())
+}
+
 fn leave_federation_membership(
     state: &mut AweNetConfig,
     kind: &str,
@@ -435,6 +601,16 @@ fn leave_federation_membership(
     joined.retain(|member| member != id);
     if local_id.as_deref() == Some(id) {
         *local_id = None;
+    }
+    match kind.as_str() {
+        "dc" | "awedc" => {
+            state.data_centre_owners.remove(id);
+            state.data_group_owners.clear();
+        }
+        "dg" | "dgc" => {
+            state.data_group_owners.remove(id);
+        }
+        _ => {}
     }
     state.local_node_id = local_node_id.to_string();
     Ok(())
@@ -995,55 +1171,130 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         "/api/federation/generate" if method == "POST" => {
             let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
             let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
-            let kind = parsed.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-            let name = parsed.get("name").and_then(|v| v.as_str()).unwrap_or("AWE");
+            let kind = parsed.get("kind").and_then(|value| value.as_str()).unwrap_or("");
+            let name = parsed.get("name").and_then(|value| value.as_str()).unwrap_or("AWE");
             let now = now_unix();
+            let owner_node_id = format_uid(node.identity.public.awe_id.as_bytes());
             let result: Result<(String, String), String> = match kind {
                 "awenode" => {
-                    let endpoint = parsed.get("endpoint").and_then(|v| v.as_str()).map(str::to_owned).unwrap_or_else(|| node.listen_addr.to_string());
-                    let bootstrap = parsed.get("bootstrap").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect()).unwrap_or_default();
-                    let dc_id = parsed.get("data_centre_id").and_then(|v| v.as_str()).map(str::to_owned).or_else(|| federation_state.lock().ok().and_then(|s| s.local_data_centre_id.clone())).unwrap_or_else(|| format!("dc-{}", &hex::encode(blake3::hash(format!("AWE/DC/{}", format_uid(node.identity.public.awe_id.as_bytes())).as_bytes()).as_bytes())[..24]));
-                    let cfg = federation::generate_awenode_for_dc(&format_uid(node.identity.public.awe_id.as_bytes()), &dc_id, name, &endpoint, bootstrap, now);
-                    federation::validate_awenode(&cfg).and_then(|_| {
-                        serde_json::to_string_pretty(&cfg).map(|s| ("awenode.awenode".into(), s)).map_err(|e| e.to_string())
+                    let endpoint = parsed.get("endpoint").and_then(|value| value.as_str())
+                        .map(str::to_owned).unwrap_or_else(|| node.listen_addr.to_string());
+                    let bootstrap = parsed.get("bootstrap").and_then(|value| value.as_array())
+                        .map(|items| items.iter().filter_map(|value| value.as_str().map(str::to_owned)).collect())
+                        .unwrap_or_default();
+                    let dc_id = parsed.get("data_centre_id").and_then(|value| value.as_str())
+                        .map(str::to_owned)
+                        .or_else(|| federation_state.lock().ok().and_then(|state| state.local_data_centre_id.clone()))
+                        .unwrap_or_else(|| format!("dc-{}", &hex::encode(blake3::hash(format!("AWE/DC/{owner_node_id}").as_bytes()).as_bytes())[..24]));
+                    let config = federation::generate_awenode_for_dc(&owner_node_id, &dc_id, name, &endpoint, bootstrap, now);
+                    federation::validate_awenode(&config).and_then(|_| {
+                        serde_json::to_string_pretty(&config)
+                            .map(|content| ("awenode.awenode".into(), content))
+                            .map_err(|error| error.to_string())
                     })
-                },
+                }
                 "awedc" => {
-                    let dc_id = parsed.get("data_centre_id").and_then(|v| v.as_str()).unwrap_or("");
-                    let endpoints = parsed.get("endpoints").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect()).unwrap_or_else(|| vec![node.listen_addr.to_string()]);
-                    let members = parsed.get("member_node_ids").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect()).unwrap_or_else(|| vec![format_uid(node.identity.public.awe_id.as_bytes())]);
-                    if dc_id.is_empty() { Err("data_centre_id is required".into()) } else {
-                        let cfg = federation::generate_awedc(&format_uid(node.identity.public.awe_id.as_bytes()), dc_id, name, endpoints, members, now);
-                        federation::validate_awedc(&cfg).and_then(|_| {
-                            serde_json::to_string_pretty(&cfg).map(|s| ("data-centre.awedc".into(), s)).map_err(|e| e.to_string())
+                    let dc_id = parsed.get("data_centre_id").and_then(|value| value.as_str()).unwrap_or("");
+                    let endpoints = parsed.get("endpoints").and_then(|value| value.as_array())
+                        .map(|items| items.iter().filter_map(|value| value.as_str().map(str::to_owned)).collect())
+                        .unwrap_or_else(|| vec![node.listen_addr.to_string()]);
+                    let members = parsed.get("member_node_ids").and_then(|value| value.as_array())
+                        .map(|items| items.iter().filter_map(|value| value.as_str().map(str::to_owned)).collect())
+                        .unwrap_or_else(|| vec![owner_node_id.clone()]);
+                    if dc_id.is_empty() {
+                        Err("data_centre_id is required".into())
+                    } else {
+                        let config = federation::generate_awedc(&owner_node_id, dc_id, name, endpoints, members, now);
+                        federation::validate_awedc(&config).and_then(|_| {
+                            serde_json::to_string_pretty(&config)
+                                .map(|content| ("data-centre.awedc".into(), content))
+                                .map_err(|error| error.to_string())
                         })
                     }
-                },
+                }
                 "dgc" => {
-                    let dc_id = parsed.get("owner_data_centre_id").and_then(|v| v.as_str()).unwrap_or("");
-                    let centres = parsed.get("data_centre_ids").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect()).unwrap_or_default();
-                    if dc_id.is_empty() { Err("owner_data_centre_id is required".into()) } else {
-                        let cfg = federation::generate_dgc(dc_id, name, centres, now);
-                        federation::validate_dgc(&cfg).and_then(|_| {
-                            serde_json::to_string_pretty(&cfg).map(|s| ("data-group.dgc".into(), s)).map_err(|e| e.to_string())
+                    let dc_id = parsed.get("owner_data_centre_id").and_then(|value| value.as_str()).unwrap_or("");
+                    let centres = parsed.get("data_centre_ids").and_then(|value| value.as_array())
+                        .map(|items| items.iter().filter_map(|value| value.as_str().map(str::to_owned)).collect())
+                        .unwrap_or_default();
+                    let owner = federation_state.lock().ok()
+                        .and_then(|state| state.data_centre_owners.get(dc_id).cloned());
+                    if dc_id.is_empty() {
+                        Err("owner_data_centre_id is required".into())
+                    } else if owner.as_deref() != Some(owner_node_id.as_str()) {
+                        Err("only the authenticated owner of the data centre may create a data group".into())
+                    } else {
+                        let config = federation::generate_dgc(dc_id, name, centres, now);
+                        federation::validate_dgc(&config).and_then(|_| {
+                            serde_json::to_string_pretty(&config)
+                                .map(|content| ("data-group.dgc".into(), content))
+                                .map_err(|error| error.to_string())
                         })
                     }
-                },
+                }
                 "cgc" => {
-                    let dg_id = parsed.get("owner_data_group_id").and_then(|v| v.as_str()).unwrap_or("");
-                    let groups = parsed.get("data_group_ids").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect()).unwrap_or_default();
-                    if dg_id.is_empty() { Err("owner_data_group_id is required".into()) } else {
-                        let cfg = federation::generate_cgc(dg_id, name, groups, now);
-                        federation::validate_cgc(&cfg).and_then(|_| {
-                            serde_json::to_string_pretty(&cfg).map(|s| ("centre-group.cgc".into(), s)).map_err(|e| e.to_string())
+                    let dg_id = parsed.get("owner_data_group_id").and_then(|value| value.as_str()).unwrap_or("");
+                    let groups = parsed.get("data_group_ids").and_then(|value| value.as_array())
+                        .map(|items| items.iter().filter_map(|value| value.as_str().map(str::to_owned)).collect())
+                        .unwrap_or_default();
+                    let owner = federation_state.lock().ok()
+                        .and_then(|state| state.data_group_owners.get(dg_id).cloned());
+                    if dg_id.is_empty() {
+                        Err("owner_data_group_id is required".into())
+                    } else if owner.as_deref() != Some(owner_node_id.as_str()) {
+                        Err("only the authenticated owner of the data group may create a centre group".into())
+                    } else {
+                        let config = federation::generate_cgc(dg_id, name, groups, now);
+                        federation::validate_cgc(&config).and_then(|_| {
+                            serde_json::to_string_pretty(&config)
+                                .map(|content| ("centre-group.cgc".into(), content))
+                                .map_err(|error| error.to_string())
                         })
                     }
-                },
+                }
                 _ => Err("kind must be awenode, awedc, dgc or cgc".to_string())
             };
             match result {
-                Ok((filename, content)) => ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"generated","filename":filename,"content":content}).to_string()),
-                Err(error) => ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":error.to_string()}).to_string())
+                Ok((filename, content)) => {
+                    let payload = match serde_json::from_str::<serde_json::Value>(&content) {
+                        Ok(payload) => payload,
+                        Err(error) => {
+                            return respond_json(
+                                &mut stream,
+                                origin,
+                                "500 Internal Server Error",
+                                serde_json::json!({"status":"error","error":error.to_string()}),
+                            )
+                            .await;
+                        }
+                    };
+                    match sign_federation_invitation(kind, payload.clone(), &node.identity) {
+                        Ok(signed_content) => match record_generated_federation_owner(
+                            kind, &payload, &owner_node_id, &federation_state, &federation_path,
+                        ) {
+                            Ok(()) => (
+                                "200 OK",
+                                "application/json; charset=utf-8",
+                                serde_json::json!({"status":"generated","filename":filename,"content":signed_content}).to_string(),
+                            ),
+                            Err(error) => (
+                                "500 Internal Server Error",
+                                "application/json; charset=utf-8",
+                                serde_json::json!({"status":"error","error":error}).to_string(),
+                            ),
+                        },
+                        Err(error) => (
+                            "400 Bad Request",
+                            "application/json; charset=utf-8",
+                            serde_json::json!({"status":"error","error":error}).to_string(),
+                        ),
+                    }
+                }
+                Err(error) => (
+                    "400 Bad Request",
+                    "application/json; charset=utf-8",
+                    serde_json::json!({"status":"error","error":error}).to_string(),
+                ),
             }
         },
         "/api/federation/leave" if method == "POST" => {
@@ -1121,73 +1372,120 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         "/api/federation/import" if method == "POST" => {
             let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
             let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
-            let kind = parsed.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-            let content = parsed.get("content").and_then(|v| v.as_str()).unwrap_or("");
-            let result: Result<(), anyhow::Error> = match kind {
-                "awenode" => {
-                    let cfg: AweNodeConfig = serde_json::from_str(content)?;
-                    federation::validate_awenode(&cfg).map_err(anyhow::Error::msg)?;
-                    let mut s = federation_state.lock().map_err(|_| anyhow::anyhow!("state lock poisoned"))?;
-                    s.local_node_id = format_uid(node.identity.public.awe_id.as_bytes());
-                    s.local_data_centre_id = Some(cfg.data_centre_id.clone());
-                    s.bootstrap_endpoints = cfg.bootstrap_endpoints.clone();
-                    if !s.bootstrap_endpoints.contains(&cfg.endpoint) {
-                        s.bootstrap_endpoints.push(cfg.endpoint.clone());
+            let kind = parsed.get("kind").and_then(|value| value.as_str()).unwrap_or("");
+            let content = parsed.get("content").and_then(|value| value.as_str()).unwrap_or("");
+            let local_node_id = format_uid(node.identity.public.awe_id.as_bytes());
+            let result: Result<(), anyhow::Error> = (|| {
+                let (payload, owner_node_id) = verify_signed_federation_invitation(content, kind)
+                    .map_err(anyhow::Error::msg)?;
+                let payload_content = serde_json::to_string(&payload)?;
+                let mut state = federation_state.lock()
+                    .map_err(|_| anyhow::anyhow!("federation state lock poisoned"))?;
+                let mut next = state.clone();
+                match kind {
+                    "awenode" => {
+                        let config: AweNodeConfig = serde_json::from_str(&payload_content)?;
+                        federation::validate_awenode(&config).map_err(anyhow::Error::msg)?;
+                        if config.node_id != owner_node_id {
+                            return Err(anyhow::anyhow!("node invitation identity does not match signer"));
+                        }
+                        next.local_node_id = local_node_id.clone();
+                        next.bootstrap_endpoints = config.bootstrap_endpoints.clone();
+                        if !next.bootstrap_endpoints.contains(&config.endpoint) {
+                            next.bootstrap_endpoints.push(config.endpoint.clone());
+                        }
+                        if !next.joined_data_centres.contains(&config.data_centre_id) {
+                            next.joined_data_centres.push(config.data_centre_id.clone());
+                        }
                     }
-                    if !s.joined_data_centres.contains(&cfg.data_centre_id) { s.joined_data_centres.push(cfg.data_centre_id); }
-                    s.format = "awenet".into(); s.version = federation::FORMAT_VERSION;
-                    Ok(())
-                },
-                "awedc" => {
-                    let cfg: DataCentreConfig = serde_json::from_str(content).map_err(anyhow::Error::msg)?;
-                    federation::validate_awedc(&cfg).map_err(anyhow::Error::msg)?;
-                    let mut s = federation_state.lock().map_err(|_| anyhow::anyhow!("state lock poisoned"))?;
-                    s.local_node_id = format_uid(node.identity.public.awe_id.as_bytes());
-                    // .awedc is a data-centre federation invitation: it adds the
-                    // remote DC as a peer, rather than silently changing this node's
-                    // own DC identity.
-                    if s.local_data_centre_id.is_none() {
-                        s.local_data_centre_id = Some(format!("dc-{}", &hex::encode(blake3::hash(format!("AWE/DC/{}", s.local_node_id).as_bytes()).as_bytes())[..24]));
+                    "awedc" => {
+                        let config: DataCentreConfig = serde_json::from_str(&payload_content)?;
+                        federation::validate_awedc(&config).map_err(anyhow::Error::msg)?;
+                        if config.owner_node_id != owner_node_id {
+                            return Err(anyhow::anyhow!("data-centre owner does not match signer"));
+                        }
+                        if next.data_centre_owners.get(&config.data_centre_id)
+                            .is_some_and(|owner| owner != &owner_node_id)
+                        {
+                            return Err(anyhow::anyhow!("data-centre ID is already bound to a different owner"));
+                        }
+                        next.local_node_id = local_node_id.clone();
+                        next.data_centre_owners.insert(config.data_centre_id.clone(), owner_node_id.clone());
+                        if next.local_data_centre_id.is_none() {
+                            next.local_data_centre_id = Some(format!(
+                                "dc-{}",
+                                &hex::encode(blake3::hash(format!("AWE/DC/{}", next.local_node_id).as_bytes()).as_bytes())[..24]
+                            ));
+                        }
+                        next.bootstrap_endpoints.extend(config.endpoints.clone());
+                        next.bootstrap_endpoints.sort();
+                        next.bootstrap_endpoints.dedup();
+                        if !next.joined_data_centres.contains(&config.data_centre_id) {
+                            next.joined_data_centres.push(config.data_centre_id.clone());
+                        }
                     }
-                    s.bootstrap_endpoints.extend(cfg.endpoints.clone());
-                    s.bootstrap_endpoints.sort(); s.bootstrap_endpoints.dedup();
-                    if !s.joined_data_centres.contains(&cfg.data_centre_id) { s.joined_data_centres.push(cfg.data_centre_id.clone()); }
-                    s.format = "awenet".into(); s.version = federation::FORMAT_VERSION;
-                    Ok(())
-                },
-                "cgc" => {
-                    let cfg: CentreGroupConfig = serde_json::from_str(content).map_err(anyhow::Error::msg)?;
-                    federation::validate_cgc(&cfg).map_err(anyhow::Error::msg)?;
-                    let mut s = federation_state.lock().map_err(|_| anyhow::anyhow!("state lock poisoned"))?;
-                    s.local_node_id = format_uid(node.identity.public.awe_id.as_bytes());
-                    s.local_centre_group_id = Some(cfg.centre_group_id.clone());
-                    for dg in &cfg.data_group_ids { if !s.joined_data_groups.contains(dg) { s.joined_data_groups.push(dg.clone()); } }
-                    if !s.joined_centre_groups.contains(&cfg.centre_group_id) { s.joined_centre_groups.push(cfg.centre_group_id); }
-                    s.format = "awenet".into(); s.version = federation::FORMAT_VERSION;
-                    Ok(())
-                },
-                "dgc" => {
-                    let cfg: DataGroupConfig = serde_json::from_str(content).map_err(anyhow::Error::msg)?;
-                    federation::validate_dgc(&cfg).map_err(anyhow::Error::msg)?;
-                    let mut s = federation_state.lock().map_err(|_| anyhow::anyhow!("state lock poisoned"))?;
-                    s.local_node_id = format_uid(node.identity.public.awe_id.as_bytes());
-                    s.local_data_group_id = Some(cfg.data_group_id.clone());
-                    for dc in cfg.data_centre_ids.clone() { if !s.joined_data_centres.contains(&dc) { s.joined_data_centres.push(dc); } }
-                    if !s.joined_data_groups.contains(&cfg.data_group_id) { s.joined_data_groups.push(cfg.data_group_id); }
-                    s.format = "awenet".into(); s.version = federation::FORMAT_VERSION;
-                    Ok(())
-                },
-                _ => Err(anyhow::anyhow!("kind must be awenode, awedc or dgc"))
-            };
+                    "dgc" => {
+                        let config: DataGroupConfig = serde_json::from_str(&payload_content)?;
+                        federation::validate_dgc(&config).map_err(anyhow::Error::msg)?;
+                        if next.data_centre_owners.get(&config.owner_data_centre_id) != Some(&owner_node_id) {
+                            return Err(anyhow::anyhow!("data-group invitation was not signed by the trusted data-centre owner"));
+                        }
+                        if next.data_group_owners.get(&config.data_group_id)
+                            .is_some_and(|owner| owner != &owner_node_id)
+                        {
+                            return Err(anyhow::anyhow!("data-group ID is already bound to a different owner"));
+                        }
+                        next.local_node_id = local_node_id.clone();
+                        next.data_group_owners.insert(config.data_group_id.clone(), owner_node_id.clone());
+                        next.local_data_group_id = Some(config.data_group_id.clone());
+                        for dc in &config.data_centre_ids {
+                            if !next.joined_data_centres.contains(dc) {
+                                next.joined_data_centres.push(dc.clone());
+                            }
+                        }
+                        if !next.joined_data_groups.contains(&config.data_group_id) {
+                            next.joined_data_groups.push(config.data_group_id.clone());
+                        }
+                    }
+                    "cgc" => {
+                        let config: CentreGroupConfig = serde_json::from_str(&payload_content)?;
+                        federation::validate_cgc(&config).map_err(anyhow::Error::msg)?;
+                        if next.data_group_owners.get(&config.owner_data_group_id) != Some(&owner_node_id) {
+                            return Err(anyhow::anyhow!("centre-group invitation was not signed by the trusted data-group owner"));
+                        }
+                        next.local_node_id = local_node_id.clone();
+                        next.local_centre_group_id = Some(config.centre_group_id.clone());
+                        for dg in &config.data_group_ids {
+                            if !next.joined_data_groups.contains(dg) {
+                                next.joined_data_groups.push(dg.clone());
+                            }
+                        }
+                        if !next.joined_centre_groups.contains(&config.centre_group_id) {
+                            next.joined_centre_groups.push(config.centre_group_id.clone());
+                        }
+                    }
+                    _ => return Err(anyhow::anyhow!("kind must be awenode, awedc, dgc or cgc")),
+                }
+                next.format = "awenet".into();
+                next.version = federation::FORMAT_VERSION;
+                federation::save_json(&next, &federation_path).map_err(anyhow::Error::msg)?;
+                *state = next;
+                Ok(())
+            })();
             match result {
                 Ok(()) => {
-                    let endpoints = federation_state.lock().map(|s| s.bootstrap_endpoints.clone()).unwrap_or_default();
-                    let addresses = endpoints.iter().filter_map(|x| x.parse::<SocketAddr>().ok()).collect::<Vec<_>>();
+                    let endpoints = federation_state.lock()
+                        .map(|state| state.bootstrap_endpoints.clone())
+                        .unwrap_or_default();
+                    let addresses = endpoints.iter()
+                        .filter_map(|endpoint| endpoint.parse::<SocketAddr>().ok())
+                        .collect::<Vec<_>>();
                     let discovered = if addresses.is_empty() { 0 } else { node.bootstrap(&addresses).await.unwrap_or(0) };
-                    if let Ok(state) = federation_state.lock() { let _ = federation::save_json(&*state, &federation_path); }
-                    ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"imported","connected_bootstrap_peers":discovered}).to_string())
-                },
-                Err(error) => ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":error.to_string()}).to_string())
+                    ("200 OK", "application/json; charset=utf-8",
+                        serde_json::json!({"status":"imported","connected_bootstrap_peers":discovered}).to_string())
+                }
+                Err(error) => ("400 Bad Request", "application/json; charset=utf-8",
+                    serde_json::json!({"status":"error","error":error.to_string()}).to_string())
             }
         },
         "/api/health" => ("200 OK", "application/json; charset=utf-8", serde_json::json!({
@@ -3296,8 +3594,9 @@ mod phase_two_backend_tests {
     use super::{
         append_bounded_json_entry, append_messenger_entry, is_allowed_ui_origin,
         is_valid_api_session, json_u16_field, json_u32_field, leave_federation_membership,
-        parse_content_length, parse_onecoin_atoms, storage_ack_matches, storage_upload_is_complete,
-        ui_html_with_session_token, validate_community_message, validate_community_title,
+        parse_content_length, parse_onecoin_atoms, sign_federation_invitation, storage_ack_matches,
+        storage_upload_is_complete, ui_html_with_session_token, validate_community_message,
+        validate_community_title, verify_signed_federation_invitation,
         validate_group_member_ids, validate_remote_channel, validate_remote_feed_message,
         validate_remote_group, validate_storage_file_id, AweNetConfig, StorageShardAck,
         ATOMS_PER_COIN, MAX_COMMUNITY_MESSAGES_PER_FEED, MAX_COMMUNITY_MESSAGE_BYTES,
@@ -3350,6 +3649,24 @@ mod phase_two_backend_tests {
         assert!(!is_valid_api_session("secret", Some("wrong")));
         assert!(!is_valid_api_session("secret", Some("secret ")));
         assert!(is_valid_api_session("secret", Some("secret")));
+    }
+
+    #[test]
+    fn signed_federation_invitation_rejects_tampering() {
+        let identity = awep2p_core::identity::Identity::generate(
+            awep2p_core::identity::Username::new("signed-invitation-test").unwrap(),
+        );
+        let owner_node_id = format_uid(identity.public.awe_id.as_bytes());
+        let payload = serde_json::json!({"node_id": owner_node_id});
+        let signed = sign_federation_invitation("awenode", payload.clone(), &identity).unwrap();
+        let (verified, signer) = verify_signed_federation_invitation(&signed, "awenode").unwrap();
+        assert_eq!(verified, payload);
+        assert_eq!(signer, owner_node_id);
+
+        let mut tampered: serde_json::Value = serde_json::from_str(&signed).unwrap();
+        tampered["payload"]["node_id"] = serde_json::Value::String("attacker-node".into());
+        let tampered = serde_json::to_string(&tampered).unwrap();
+        assert!(verify_signed_federation_invitation(&tampered, "awenode").is_err());
     }
 
     #[test]
