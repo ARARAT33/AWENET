@@ -1414,7 +1414,13 @@ impl Node {
             match result {
                 Ok(elapsed) => return Ok(elapsed),
                 Err(error) => {
-                    self.active.write().await.remove(peer_id);
+                    let mut active = self.active.write().await;
+                    if active
+                        .get(peer_id)
+                        .is_some_and(|current| Arc::ptr_eq(current, &connection))
+                    {
+                        active.remove(peer_id);
+                    }
                     last_error = Some(error);
                 }
             }
@@ -1499,7 +1505,13 @@ impl Node {
             .send_data_request_roundtrip(stream, payload)
             .await;
         if result.is_err() {
-            self.active.write().await.remove(peer_id);
+            let mut active = self.active.write().await;
+            if active
+                .get(peer_id)
+                .is_some_and(|current| Arc::ptr_eq(current, &connection))
+            {
+                active.remove(peer_id);
+            }
         }
         result
     }
