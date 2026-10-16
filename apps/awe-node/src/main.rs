@@ -796,7 +796,6 @@ fn json_u16_field(value: &serde_json::Value, field: &str) -> Result<u16, String>
         .map_err(|_| format!("{field} exceeds the supported range"))
 }
 
-#[allow(clippy::too_many_arguments)]
 fn onecoin_consensus_configured(config: &str) -> bool {
     config
         .split(',')
