@@ -163,6 +163,17 @@ pub struct PersistentOnecoinState {
 
 impl PersistentOnecoinState {
     fn validate_state(state: &OnecoinFinalizedState) -> io::Result<()> {
+        if state.local_votes.len() > 1
+            || state
+                .local_votes
+                .keys()
+                .any(|height| *height != state.height.saturating_add(1))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "ONECOIN local vote-lock invariant violated",
+            ));
+        }
         let ledger = &state.ledger;
         if ledger.members.len() != ledger.balances.len()
             || ledger.members.len() != ledger.nonces.len()
@@ -266,6 +277,27 @@ mod finalized_state_tests {
     use crate::onecoin::{OnecoinTransaction, INITIAL_GENESIS_ALLOCATION};
     use crate::onecoin_consensus::{OnecoinBlock, QuorumCertificate, SignedBlockVote};
     use std::collections::BTreeMap;
+
+    #[test]
+    fn old_finalized_state_without_vote_locks_remains_loadable() {
+        let dir =
+            std::env::temp_dir().join(format!("awe-onecoin-legacy-state-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("legacy-state.json");
+        let persistent = PersistentOnecoinState::open(&path).unwrap();
+        persistent.save().unwrap();
+        let bytes = fs::read(&path).unwrap();
+        let serialized = String::from_utf8(bytes[STATE_MAGIC.len()..].to_vec()).unwrap();
+        let legacy_serialized = serialized.replace(",\"local_votes\":{}", "");
+        let mut legacy_bytes = STATE_MAGIC.to_vec();
+        legacy_bytes.extend(legacy_serialized.as_bytes());
+        fs::write(&path, legacy_bytes).unwrap();
+
+        let loaded = PersistentOnecoinState::open(&path).unwrap();
+        assert!(loaded.state.local_votes.is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn finalized_state_round_trips_and_reloads() {

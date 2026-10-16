@@ -39,6 +39,7 @@ impl Default for NetworkPolicy {
                 MESSENGER_STREAM,
                 crate::data_plane::STORAGE_STREAM,
                 ONECOIN_TRANSFER_STREAM,
+                crate::onecoin_consensus_runtime::ONECOIN_CONSENSUS_STREAM,
             ],
         }
     }
@@ -78,12 +79,33 @@ impl NetworkPolicy {
     }
 }
 
+fn migrate_legacy_stream_ids(policy: &mut NetworkPolicy) -> bool {
+    let storage_stream_enabled = policy
+        .allowed_streams
+        .contains(&crate::data_plane::STORAGE_STREAM);
+    let consensus_stream = crate::onecoin_consensus_runtime::ONECOIN_CONSENSUS_STREAM;
+    if storage_stream_enabled && !policy.allowed_streams.contains(&consensus_stream) {
+        // Before the stream-ID collision was fixed, allowing storage stream 200
+        // also implicitly allowed consensus messages. Preserve that intent when
+        // upgrading an existing node policy.
+        policy.allowed_streams.push(consensus_stream);
+        policy.allowed_streams.sort_unstable();
+        policy.allowed_streams.dedup();
+        return true;
+    }
+    false
+}
+
 pub fn load_or_create(path: &Path) -> Result<NetworkPolicy, String> {
     if path.exists() {
-        let policy: NetworkPolicy =
+        let mut policy: NetworkPolicy =
             serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?)
                 .map_err(|e| e.to_string())?;
+        let migrated = migrate_legacy_stream_ids(&mut policy);
         policy.validate()?;
+        if migrated {
+            save(&policy, path)?;
+        }
         return Ok(policy);
     }
 
@@ -105,10 +127,14 @@ pub fn load_if_changed(path: &Path, previous: &NetworkPolicy) -> Result<NetworkP
     if !path.exists() {
         return Ok(previous.clone());
     }
-    let candidate: NetworkPolicy =
+    let mut candidate: NetworkPolicy =
         serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
+    let migrated = migrate_legacy_stream_ids(&mut candidate);
     candidate.validate()?;
+    if migrated {
+        save(&candidate, path)?;
+    }
     Ok(candidate)
 }
 
@@ -130,7 +156,31 @@ mod tests {
         assert!(policy.allows_stream(MESSENGER_STREAM));
         assert!(policy.allows_stream(crate::data_plane::STORAGE_STREAM));
         assert!(policy.allows_stream(ONECOIN_TRANSFER_STREAM));
+        assert!(policy.allows_stream(crate::onecoin_consensus_runtime::ONECOIN_CONSENSUS_STREAM));
+        assert_ne!(
+            crate::data_plane::STORAGE_STREAM,
+            crate::onecoin_consensus_runtime::ONECOIN_CONSENSUS_STREAM
+        );
         assert!(!policy.allows_stream(999_999));
+    }
+
+    #[test]
+    fn existing_policy_migrates_the_previously_colliding_consensus_stream() {
+        let dir =
+            std::env::temp_dir().join(format!("awenet-policy-migrate-{}", std::process::id()));
+        let path = dir.join("policy.json");
+        let mut legacy = NetworkPolicy::default();
+        legacy
+            .allowed_streams
+            .retain(|stream| *stream != crate::onecoin_consensus_runtime::ONECOIN_CONSENSUS_STREAM);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(&path, serde_json::to_vec_pretty(&legacy).unwrap()).unwrap();
+        let loaded = load_or_create(&path).unwrap();
+        assert!(loaded.allows_stream(crate::data_plane::STORAGE_STREAM));
+        assert!(loaded.allows_stream(crate::onecoin_consensus_runtime::ONECOIN_CONSENSUS_STREAM));
+        let persisted: NetworkPolicy = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert!(persisted.allows_stream(crate::onecoin_consensus_runtime::ONECOIN_CONSENSUS_STREAM));
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

@@ -123,13 +123,31 @@ impl AweHost {
         owner_key: Vec<u8>,
         files: Vec<HostedFile>,
     ) -> io::Result<SiteManifest> {
-        if domain.is_empty() || version == 0 {
+        if !crate::registry::valid_name(domain)
+            || version == 0
+            || owner_key.len() != 32
+            || files.is_empty()
+        {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "invalid site manifest",
             ));
         }
-        let total: u64 = files.iter().map(|f| f.size).sum();
+        let mut seen_paths = std::collections::BTreeSet::new();
+        for file in &files {
+            let normalized = normalize_path(&file.path)?;
+            if normalized != file.path || !seen_paths.insert(normalized) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "site manifest contains duplicate or non-normalized paths",
+                ));
+            }
+        }
+        let total = files.iter().try_fold(0u64, |total, file| {
+            total.checked_add(file.size).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "site size overflow")
+            })
+        })?;
         if total > self.policy.max_site_bytes {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -252,7 +270,7 @@ mod tests {
             .publish_file("/index.html", b"<h1>AWE</h1>", "text/html")
             .unwrap();
         let m = h
-            .publish_manifest("example.awe", 1, vec![1], vec![f])
+            .publish_manifest("example.awe", 1, vec![1; 32], vec![f])
             .unwrap();
         h.save_manifest(&m).unwrap();
         assert!(m.open());

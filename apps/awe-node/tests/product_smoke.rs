@@ -56,11 +56,27 @@ fn get(addr: &str, path: &str) -> String {
     )
 }
 
-fn post(addr: &str, path: &str, body: &str) -> String {
+fn post_without_session(addr: &str, path: &str, body: &str) -> String {
     request(
         addr,
         &format!(
             "POST {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        ),
+    )
+}
+
+fn post(addr: &str, path: &str, body: &str) -> String {
+    let html = get(addr, "/");
+    let token = html
+        .split("name=\"awenet-api-token\" content=\"")
+        .nth(1)
+        .and_then(|value| value.split('"').next())
+        .expect("session token in UI HTML");
+    request(
+        addr,
+        &format!(
+            "POST {path} HTTP/1.1\r\nHost: {addr}\r\nX-AWENET-Session: {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         ),
     )
@@ -133,6 +149,336 @@ fn three_node_product_smoke() {
                 "address {port}: {status}"
             );
         }
+
+        let unauthorized = post_without_session(
+            "127.0.0.1:46201",
+            "/api/federation/generate",
+            r#"{"kind":"awenode","name":"must-not-be-created"}"#,
+        );
+        assert!(
+            unauthorized.contains("valid AWENET session token required"),
+            "unauthenticated state change was not rejected: {unauthorized}"
+        );
+
+        let offers_before = get("127.0.0.1:46201", "/api/onebank/exchange/offers");
+        let malformed_offer = post("127.0.0.1:46201", "/api/onebank/exchange/offers", "{");
+        assert!(
+            malformed_offer.contains("JSON request body must be a valid object"),
+            "malformed JSON was not rejected: {malformed_offer}"
+        );
+        let offers_after = get("127.0.0.1:46201", "/api/onebank/exchange/offers");
+        assert_eq!(
+            offers_after, offers_before,
+            "malformed JSON unexpectedly changed the offer book"
+        );
+        let invalid_offer = post(
+            "127.0.0.1:46201",
+            "/api/onebank/exchange/offers",
+            r#"{"offer":{"id":"invalid-offer","side":"sell"}}"#,
+        );
+        assert!(
+            invalid_offer.contains("offer.amount must be a positive finite number"),
+            "incomplete offer was not rejected: {invalid_offer}"
+        );
+        let valid_offer: serde_json::Value = serde_json::from_str(&post(
+            "127.0.0.1:46201",
+            "/api/onebank/exchange/offers",
+            r#"{"offer":{"id":"smoke-offer-1","side":"sell","amount":2.5,"price":100,"currency":"USD","rail":"BankTransfer","created_at":0}}"#,
+        ))
+        .expect("valid exchange offer JSON");
+        assert_eq!(
+            valid_offer["status"], "published",
+            "valid offer: {valid_offer}"
+        );
+        assert_eq!(valid_offer["offer_id"], "smoke-offer-1");
+        assert_eq!(valid_offer["offer"]["side"], "sell");
+        assert_eq!(valid_offer["offer"]["amount"], 2.5);
+        assert!(valid_offer["offer"]["owner"].as_str().is_some());
+        assert_eq!(valid_offer["offer"]["fiat_transfer"], "OUTSIDE_AWENET");
+
+        let dc_generated: serde_json::Value = serde_json::from_str(&post(
+            "127.0.0.1:46201",
+            "/api/federation/generate",
+            &serde_json::json!({
+                "kind": "awedc",
+                "data_centre_id": "dc-smoke-owner-auth",
+                "name": "Signed smoke data centre"
+            })
+            .to_string(),
+        ))
+        .expect("signed data-centre generation JSON");
+        assert_eq!(
+            dc_generated["status"], "generated",
+            "DC generation: {dc_generated}"
+        );
+        let dc_content = dc_generated["content"]
+            .as_str()
+            .expect("signed data-centre content")
+            .to_string();
+        let dc_envelope: serde_json::Value =
+            serde_json::from_str(&dc_content).expect("signed DC envelope");
+        let dc_id = dc_envelope["payload"]["data_centre_id"]
+            .as_str()
+            .expect("signed DC ID")
+            .to_string();
+
+        let dc_import: serde_json::Value = serde_json::from_str(&post(
+            "127.0.0.1:46202",
+            "/api/federation/import",
+            &serde_json::json!({"kind":"awedc","content":dc_content.clone()}).to_string(),
+        ))
+        .expect("signed data-centre import JSON");
+        assert_eq!(dc_import["status"], "imported", "DC import: {dc_import}");
+
+        let dc2_generated: serde_json::Value = serde_json::from_str(&post(
+            "127.0.0.1:46201",
+            "/api/federation/generate",
+            &serde_json::json!({
+                "kind": "awedc",
+                "data_centre_id": "dc-smoke-owner-auth-2",
+                "name": "Second signed smoke data centre"
+            })
+            .to_string(),
+        ))
+        .expect("second signed data-centre generation JSON");
+        assert_eq!(dc2_generated["status"], "generated");
+        let dc2_content = dc2_generated["content"]
+            .as_str()
+            .expect("second signed data-centre content")
+            .to_string();
+        let dc2_envelope: serde_json::Value =
+            serde_json::from_str(&dc2_content).expect("second signed DC envelope");
+        let dc2_id = dc2_envelope["payload"]["data_centre_id"]
+            .as_str()
+            .expect("second signed DC ID")
+            .to_string();
+        let dc2_import: serde_json::Value = serde_json::from_str(&post(
+            "127.0.0.1:46202",
+            "/api/federation/import",
+            &serde_json::json!({"kind":"awedc","content":dc2_content}).to_string(),
+        ))
+        .expect("second signed data-centre import JSON");
+        assert_eq!(dc2_import["status"], "imported");
+
+        let untrusted_group: serde_json::Value = serde_json::from_str(&post(
+            "127.0.0.1:46201",
+            "/api/federation/generate",
+            &serde_json::json!({
+                "kind":"dgc",
+                "owner_data_centre_id":dc_id.clone(),
+                "data_centre_ids":[dc_id.clone(), "dc-not-trusted"],
+                "name":"untrusted reference must be denied"
+            })
+            .to_string(),
+        ))
+        .expect("untrusted data-group generation JSON");
+        assert_eq!(
+            untrusted_group["status"], "error",
+            "data group referenced an untrusted data centre: {untrusted_group}"
+        );
+
+        let mut tampered_dc: serde_json::Value =
+            serde_json::from_str(&dc_content).expect("tamper DC envelope");
+        tampered_dc["payload"]["name"] = serde_json::Value::String("forged data-centre".into());
+        let tampered_import: serde_json::Value = serde_json::from_str(&post(
+            "127.0.0.1:46202",
+            "/api/federation/import",
+            &serde_json::json!({
+                "kind":"awedc",
+                "content":serde_json::to_string(&tampered_dc).unwrap()
+            })
+            .to_string(),
+        ))
+        .expect("tampered import JSON");
+        assert_eq!(
+            tampered_import["status"], "error",
+            "tampered federation invitation was accepted: {tampered_import}"
+        );
+
+        let denied_group: serde_json::Value = serde_json::from_str(&post(
+            "127.0.0.1:46202",
+            "/api/federation/generate",
+            &serde_json::json!({
+                "kind":"dgc",
+                "owner_data_centre_id":dc_id.clone(),
+                "data_centre_ids":[dc_id.clone(), dc2_id.clone()],
+                "name":"should be denied"
+            })
+            .to_string(),
+        ))
+        .expect("non-owner group generation JSON");
+        assert_eq!(
+            denied_group["status"], "error",
+            "non-owner created a data group: {denied_group}"
+        );
+
+        let group_generated: serde_json::Value = serde_json::from_str(&post(
+            "127.0.0.1:46201",
+            "/api/federation/generate",
+            &serde_json::json!({
+                "kind":"dgc",
+                "owner_data_centre_id":dc_id.clone(),
+                "data_centre_ids":[dc_id.clone(), dc2_id.clone()],
+                "name":"Signed smoke data group"
+            })
+            .to_string(),
+        ))
+        .expect("signed data-group generation JSON");
+        assert_eq!(
+            group_generated["status"], "generated",
+            "DG generation: {group_generated}"
+        );
+        let group_content = group_generated["content"]
+            .as_str()
+            .expect("signed data-group content")
+            .to_string();
+        let group_envelope: serde_json::Value =
+            serde_json::from_str(&group_content).expect("signed DG envelope");
+        let group_id = group_envelope["payload"]["data_group_id"]
+            .as_str()
+            .expect("signed DG ID")
+            .to_string();
+
+        let group_import: serde_json::Value = serde_json::from_str(&post(
+            "127.0.0.1:46202",
+            "/api/federation/import",
+            &serde_json::json!({"kind":"dgc","content":group_content.clone()}).to_string(),
+        ))
+        .expect("signed data-group import JSON");
+        assert_eq!(
+            group_import["status"], "imported",
+            "DG import: {group_import}"
+        );
+
+        let group2_generated: serde_json::Value = serde_json::from_str(&post(
+            "127.0.0.1:46201",
+            "/api/federation/generate",
+            &serde_json::json!({
+                "kind":"dgc",
+                "owner_data_centre_id":dc_id.clone(),
+                "data_centre_ids":[dc_id.clone(), dc2_id.clone()],
+                "name":"Second signed smoke data group"
+            })
+            .to_string(),
+        ))
+        .expect("second signed data-group generation JSON");
+        assert_eq!(group2_generated["status"], "generated");
+        let group2_content = group2_generated["content"]
+            .as_str()
+            .expect("second signed data-group content")
+            .to_string();
+        let group2_envelope: serde_json::Value =
+            serde_json::from_str(&group2_content).expect("second signed DG envelope");
+        let group2_id = group2_envelope["payload"]["data_group_id"]
+            .as_str()
+            .expect("second signed DG ID")
+            .to_string();
+        let group2_import: serde_json::Value = serde_json::from_str(&post(
+            "127.0.0.1:46202",
+            "/api/federation/import",
+            &serde_json::json!({"kind":"dgc","content":group2_content}).to_string(),
+        ))
+        .expect("second signed data-group import JSON");
+        assert_eq!(group2_import["status"], "imported");
+
+        let untrusted_centre_group: serde_json::Value = serde_json::from_str(&post(
+            "127.0.0.1:46201",
+            "/api/federation/generate",
+            &serde_json::json!({
+                "kind":"cgc",
+                "owner_data_group_id":group_id.clone(),
+                "data_group_ids":[group_id.clone(), "dg-not-trusted"],
+                "name":"untrusted reference must be denied"
+            })
+            .to_string(),
+        ))
+        .expect("untrusted centre-group generation JSON");
+        assert_eq!(
+            untrusted_centre_group["status"], "error",
+            "centre group referenced an untrusted data group: {untrusted_centre_group}"
+        );
+
+        let denied_centre_group: serde_json::Value = serde_json::from_str(&post(
+            "127.0.0.1:46202",
+            "/api/federation/generate",
+            &serde_json::json!({
+                "kind":"cgc",
+                "owner_data_group_id":group_id.clone(),
+                "data_group_ids":[group_id.clone(), group2_id.clone()],
+                "name":"should be denied"
+            })
+            .to_string(),
+        ))
+        .expect("non-owner centre-group generation JSON");
+        assert_eq!(
+            denied_centre_group["status"], "error",
+            "non-owner created a centre group: {denied_centre_group}"
+        );
+
+        let centre_group_generated: serde_json::Value = serde_json::from_str(&post(
+            "127.0.0.1:46201",
+            "/api/federation/generate",
+            &serde_json::json!({
+                "kind":"cgc",
+                "owner_data_group_id":group_id.clone(),
+                "data_group_ids":[group_id.clone(), group2_id.clone()],
+                "name":"Signed smoke centre group"
+            })
+            .to_string(),
+        ))
+        .expect("signed centre-group generation JSON");
+        assert_eq!(
+            centre_group_generated["status"], "generated",
+            "CG generation: {centre_group_generated}"
+        );
+        let centre_group_content = centre_group_generated["content"]
+            .as_str()
+            .expect("signed centre-group content");
+        let centre_group_import: serde_json::Value = serde_json::from_str(&post(
+            "127.0.0.1:46202",
+            "/api/federation/import",
+            &serde_json::json!({"kind":"cgc","content":centre_group_content}).to_string(),
+        ))
+        .expect("signed centre-group import JSON");
+        assert_eq!(
+            centre_group_import["status"], "imported",
+            "CG import: {centre_group_import}"
+        );
+
+        let leave_dc: serde_json::Value = serde_json::from_str(&post(
+            "127.0.0.1:46202",
+            "/api/federation/leave",
+            &serde_json::json!({"kind":"dc","id":dc_id.clone()}).to_string(),
+        ))
+        .expect("leave data-centre JSON");
+        assert_eq!(leave_dc["status"], "left", "DC leave: {leave_dc}");
+        let after_leave: serde_json::Value =
+            serde_json::from_str(&get("127.0.0.1:46202", "/api/federation"))
+                .expect("federation state after leave");
+        assert!(
+            after_leave["data_centre_owners"]
+                .get(dc_id.as_str())
+                .is_none(),
+            "DC owner trust survived leave: {after_leave}"
+        );
+        assert!(
+            !after_leave["joined_data_centres"]
+                .as_array()
+                .expect("joined DC array")
+                .iter()
+                .any(|value| value.as_str() == Some(dc_id.as_str())),
+            "DC membership survived leave: {after_leave}"
+        );
+        let stale_group_import: serde_json::Value = serde_json::from_str(&post(
+            "127.0.0.1:46202",
+            "/api/federation/import",
+            &serde_json::json!({"kind":"dgc","content":group_content.clone()}).to_string(),
+        ))
+        .expect("stale group import JSON");
+        assert_eq!(
+            stale_group_import["status"], "error",
+            "group invitation remained trusted after leaving its DC: {stale_group_import}"
+        );
 
         let storage = get("127.0.0.1:46201", "/api/storage");
         assert!(
@@ -429,6 +775,34 @@ fn three_node_product_smoke() {
                 && downloaded.contains(&format!(r#""data_hex":"{hex}""#)),
             "storage get: {downloaded}"
         );
+
+        let site_publish = post(
+            "127.0.0.1:46201",
+            "/api/sites/publish",
+            r#"{"domain":"smoke-site","version":1,"files":[{"path":"/index.html","content_type":"text/html; charset=utf-8","content":"<!doctype html><title>AWENET site smoke</title>"}]}"#,
+        );
+        assert!(
+            site_publish.contains(r#""status":"published""#),
+            "site publish: {site_publish}"
+        );
+        let site: serde_json::Value =
+            serde_json::from_str(&site_publish).expect("site publish JSON");
+        let site_id = site
+            .get("site_id")
+            .and_then(|value| value.as_str())
+            .expect("published site ID");
+        let served_site = request(
+            "127.0.0.1:46201",
+            &format!(
+                "GET /site/{site_id}/index.html HTTP/1.1\r\nHost: {site_id}.localhost:46201\r\nConnection: close\r\n\r\n"
+            ),
+        );
+        assert!(
+            served_site.contains("AWENET site smoke"),
+            "published site content was not served: {served_site}"
+        );
+        let sites = get("127.0.0.1:46201", "/api/sites");
+        assert!(sites.contains(site_id), "published site was not listed: {sites}");
     });
 
     for child in &mut children {
