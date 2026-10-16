@@ -398,6 +398,39 @@ fn is_valid_api_session(expected: &str, supplied: Option<&str>) -> bool {
     supplied == Some(expected)
 }
 
+fn leave_federation_membership(
+    state: &mut AweNetConfig,
+    kind: &str,
+    id: &str,
+    local_node_id: &str,
+) -> Result<(), String> {
+    let id = id.trim();
+    if id.is_empty() {
+        return Err("membership ID must not be empty".into());
+    }
+    if !state.local_node_id.is_empty() && state.local_node_id != local_node_id {
+        return Err("federation state belongs to a different local node".into());
+    }
+
+    let kind = kind.trim().to_ascii_lowercase();
+    let (joined, local_id) = match kind.as_str() {
+        "dc" | "awedc" => (&mut state.joined_data_centres, &mut state.local_data_centre_id),
+        "dg" | "dgc" => (&mut state.joined_data_groups, &mut state.local_data_group_id),
+        "cg" | "cgc" => (&mut state.joined_centre_groups, &mut state.local_centre_group_id),
+        _ => return Err("kind must be dc, dg, or cg".into()),
+    };
+    let is_member = joined.iter().any(|member| member == id) || local_id.as_deref() == Some(id);
+    if !is_member {
+        return Err("membership is not joined by this node".into());
+    }
+    joined.retain(|member| member != id);
+    if local_id.as_deref() == Some(id) {
+        *local_id = None;
+    }
+    state.local_node_id = local_node_id.to_string();
+    Ok(())
+}
+
 fn ui_html_with_session_token(token: &str) -> String {
     let bootstrap = UI_SESSION_BOOTSTRAP.replace("__AWENET_API_TOKEN__", token);
     UI_HTML.replace("</head>", &format!("{bootstrap}\n</head>"))
@@ -1004,6 +1037,66 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                 Err(error) => ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":error.to_string()}).to_string())
             }
         },
+        "/api/federation/leave" if method == "POST" => {
+            let input = match serde_json::from_str::<serde_json::Value>(&body) {
+                Ok(value) => value,
+                Err(error) => {
+                    return respond_json(
+                        &mut stream,
+                        origin,
+                        "400 Bad Request",
+                        serde_json::json!({"status":"error","error":error.to_string()}),
+                    )
+                    .await;
+                }
+            };
+            let kind = input.get("kind").and_then(|value| value.as_str()).unwrap_or("").trim().to_string();
+            let id = input.get("id").and_then(|value| value.as_str()).unwrap_or("").trim().to_string();
+            let local_node_id = node.identity.public.awe_id.to_string();
+            let mut state = match federation_state.lock() {
+                Ok(state) => state,
+                Err(_) => {
+                    return respond_json(
+                        &mut stream,
+                        origin,
+                        "500 Internal Server Error",
+                        serde_json::json!({"status":"error","error":"federation state lock poisoned"}),
+                    )
+                    .await;
+                }
+            };
+            let mut next = state.clone();
+            match leave_federation_membership(&mut next, &kind, &id, &local_node_id) {
+                Ok(()) => match federation::save_json(&next, &federation_path) {
+                    Ok(()) => {
+                        *state = next;
+                        respond_json(
+                            &mut stream,
+                            origin,
+                            "200 OK",
+                            serde_json::json!({"status":"left","kind":kind,"id":id}),
+                        )
+                        .await
+                    }
+                    Err(error) => respond_json(
+                        &mut stream,
+                        origin,
+                        "500 Internal Server Error",
+                        serde_json::json!({"status":"error","error":error}),
+                    )
+                    .await,
+                },
+                Err(error) => {
+                    respond_json(
+                        &mut stream,
+                        origin,
+                        "400 Bad Request",
+                        serde_json::json!({"status":"error","error":error}),
+                    )
+                    .await
+                }
+            }
+        }
         "/api/federation/import" if method == "POST" => {
             let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
             let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
@@ -3181,8 +3274,8 @@ async fn main() -> Result<()> {
 mod phase_two_backend_tests {
     use super::{
         append_bounded_json_entry, append_messenger_entry, is_allowed_ui_origin,
-        is_valid_api_session, json_u16_field, json_u32_field, parse_content_length,
-        parse_onecoin_atoms, storage_ack_matches, storage_upload_is_complete,
+        is_valid_api_session, json_u16_field, json_u32_field, leave_federation_membership,
+        parse_content_length, parse_onecoin_atoms, storage_ack_matches, storage_upload_is_complete,
         ui_html_with_session_token, validate_community_message, validate_community_title,
         validate_group_member_ids, validate_remote_channel, validate_remote_feed_message,
         validate_remote_group, validate_storage_file_id, StorageShardAck, ATOMS_PER_COIN,
@@ -3236,6 +3329,41 @@ mod phase_two_backend_tests {
         assert!(!is_valid_api_session("secret", Some("wrong")));
         assert!(!is_valid_api_session("secret", Some("secret ")));
         assert!(is_valid_api_session("secret", Some("secret")));
+    }
+
+    #[test]
+    fn federation_leave_removes_membership_and_clears_local_owner_id() {
+        let mut state = AweNetConfig {
+            local_node_id: "node-a".into(),
+            local_data_centre_id: Some("dc-a".into()),
+            local_data_group_id: Some("dg-a".into()),
+            local_centre_group_id: Some("cg-a".into()),
+            joined_data_centres: vec!["dc-a".into(), "dc-b".into()],
+            joined_data_groups: vec!["dg-a".into()],
+            joined_centre_groups: vec!["cg-a".into()],
+            ..AweNetConfig::default()
+        };
+        leave_federation_membership(&mut state, "dc", "dc-a", "node-a").unwrap();
+        leave_federation_membership(&mut state, "dg", "dg-a", "node-a").unwrap();
+        leave_federation_membership(&mut state, "cg", "cg-a", "node-a").unwrap();
+        assert_eq!(state.joined_data_centres, vec!["dc-b"]);
+        assert!(state.joined_data_groups.is_empty());
+        assert!(state.joined_centre_groups.is_empty());
+        assert_eq!(state.local_data_centre_id, None);
+        assert_eq!(state.local_data_group_id, None);
+        assert_eq!(state.local_centre_group_id, None);
+    }
+
+    #[test]
+    fn federation_leave_rejects_unknown_membership_and_other_node_state() {
+        let mut state = AweNetConfig {
+            local_node_id: "node-a".into(),
+            joined_data_centres: vec!["dc-a".into()],
+            ..AweNetConfig::default()
+        };
+        assert!(leave_federation_membership(&mut state, "dc", "dc-missing", "node-a").is_err());
+        assert!(leave_federation_membership(&mut state, "dc", "dc-a", "node-b").is_err());
+        assert_eq!(state.joined_data_centres, vec!["dc-a"]);
     }
 
     #[test]

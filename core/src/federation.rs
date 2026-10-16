@@ -1,6 +1,6 @@
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeSet, fs, path::Path};
+use std::{collections::BTreeSet, fs, io::Write, path::Path};
 
 pub const FORMAT_VERSION: u16 = 1;
 
@@ -196,7 +196,23 @@ pub fn save_json<T: Serialize>(value: &T, path: &Path) -> Result<(), String> {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let data = serde_json::to_vec_pretty(value).map_err(|e| e.to_string())?;
-    fs::write(path, data).map_err(|e| e.to_string())
+    let file_name = path.file_name().and_then(|name| name.to_str()).unwrap_or("awenet.json");
+    let temporary = path.with_file_name(format!(".{file_name}.{}.tmp", std::process::id()));
+    {
+        let mut file = fs::File::create(&temporary).map_err(|e| e.to_string())?;
+        file.write_all(&data).map_err(|e| e.to_string())?;
+        file.sync_all().map_err(|e| e.to_string())?;
+    }
+    if let Err(error) = fs::rename(&temporary, path) {
+        let _ = fs::remove_file(&temporary);
+        return Err(error.to_string());
+    }
+    if let Some(parent) = path.parent() {
+        if let Ok(directory) = fs::File::open(parent) {
+            let _ = directory.sync_all();
+        }
+    }
+    Ok(())
 }
 
 pub fn load_awenode(path: &Path) -> Result<AweNodeConfig, String> {
@@ -482,6 +498,24 @@ mod tests {
         assert!(a.peer_centre_groups.contains(&b.centre_group_id));
         assert!(!a.peer_centre_groups.contains(&a.centre_group_id));
         assert!(validate_cgc(&a).is_ok());
+    }
+
+    #[test]
+    fn save_json_atomically_replaces_existing_state() {
+        let path = std::env::temp_dir().join(format!(
+            "awenet-federation-save-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        save_json(&serde_json::json!({"generation": 1}), &path).unwrap();
+        save_json(&serde_json::json!({"generation": 2}), &path).unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["generation"], 2);
+        fs::remove_file(path).unwrap();
     }
 
     #[test]
