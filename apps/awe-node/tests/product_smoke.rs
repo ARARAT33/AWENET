@@ -175,6 +175,27 @@ fn three_node_product_smoke() {
             offers_after, offers_before,
             "malformed JSON unexpectedly changed the offer book"
         );
+        let invalid_offer = post(
+            "127.0.0.1:46201",
+            "/api/onebank/exchange/offers",
+            r#"{"offer":{"id":"invalid-offer","side":"sell"}}"#,
+        );
+        assert!(
+            invalid_offer.contains("offer.amount must be a positive finite number"),
+            "incomplete offer was not rejected: {invalid_offer}"
+        );
+        let valid_offer: serde_json::Value = serde_json::from_str(&post(
+            "127.0.0.1:46201",
+            "/api/onebank/exchange/offers",
+            r#"{"offer":{"id":"smoke-offer-1","side":"sell","amount":2.5,"price":100,"currency":"USD","rail":"BankTransfer","created_at":0}}"#,
+        ))
+        .expect("valid exchange offer JSON");
+        assert_eq!(valid_offer["status"], "published", "valid offer: {valid_offer}");
+        assert_eq!(valid_offer["offer_id"], "smoke-offer-1");
+        assert_eq!(valid_offer["offer"]["side"], "sell");
+        assert_eq!(valid_offer["offer"]["amount"], 2.5);
+        assert!(valid_offer["offer"]["owner"].as_str().is_some());
+        assert_eq!(valid_offer["offer"]["fiat_transfer"], "OUTSIDE_AWENET");
 
         let dc_generated: serde_json::Value = serde_json::from_str(&post(
             "127.0.0.1:46201",
