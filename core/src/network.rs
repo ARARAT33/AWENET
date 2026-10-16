@@ -768,8 +768,8 @@ impl SecureConnection {
                     bytes,
                     response: Some(response),
                 })) if echoed == stream && bytes == expected => {
-                        return Ok((started.elapsed(), response));
-                    }
+                    return Ok((started.elapsed(), response));
+                }
                 Ok(Ok(Control::Ping { sequence })) => {
                     self.send(&Control::Pong { sequence }).await?;
                 }
@@ -785,9 +785,7 @@ impl SecureConnection {
                     })
                     .await?;
                 }
-                Ok(Ok(
-                    Control::Pong { .. } | Control::Nodes { .. } | Control::DataAck { .. }
-                )) => {}
+                Ok(Ok(Control::Pong { .. } | Control::Nodes { .. } | Control::DataAck { .. })) => {}
                 Ok(Ok(Control::FindNode { .. } | Control::Hello { .. })) => {
                     return Err(NetworkError::Protocol(
                         "unexpected control message during request".into(),
