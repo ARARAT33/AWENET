@@ -7,6 +7,7 @@ use awep2p_core::diagnostics::{NodeDiagnostics, NodeMetrics};
 use awep2p_core::federation::{
     self, AweNetConfig, AweNodeConfig, CentreGroupConfig, DataCentreConfig, DataGroupConfig,
 };
+use awep2p_core::host::{AweHost, HostPolicy, SiteManifest};
 use awep2p_core::identity::{AweId, AweSecret, Identity, LocalVault, Username};
 use awep2p_core::lan_mesh::LanPeerBeacon;
 use awep2p_core::messenger::format_uid;
@@ -257,6 +258,7 @@ fn validate_storage_file_id(value: &str) -> Result<[u8; 32], String> {
 }
 type FederationState = Arc<Mutex<AweNetConfig>>;
 type StorageState = Arc<LocalNodeStore>;
+type HostState = Arc<Mutex<AweHost>>;
 type PendingAcks = Arc<Mutex<BTreeMap<[u8; 16], ([u8; 32], StorageShardAck)>>>;
 type PolicyState = Arc<Mutex<NetworkPolicy>>;
 type CommunityState = Arc<Mutex<serde_json::Value>>;
@@ -279,6 +281,8 @@ struct UiState {
     federation_state: FederationState,
     federation_path: PathBuf,
     storage: StorageState,
+    host: HostState,
+    host_root: PathBuf,
     policy_state: PolicyState,
     community: CommunityState,
     consensus_state: ConsensusState,
@@ -673,6 +677,104 @@ fn leave_federation_membership(
     Ok(())
 }
 
+fn http_response_bytes(status: &str, content_type: &str, body: &[u8]) -> Vec<u8> {
+    let mut response = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nX-Content-Type-Options: nosniff\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    response.extend_from_slice(body);
+    response
+}
+
+fn valid_site_domain(value: &str) -> bool {
+    if value.is_empty() || value.len() > 253 || value.starts_with('.') || value.ends_with('.') {
+        return false;
+    }
+    value.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    })
+}
+
+fn valid_site_content_type(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b" /;=.+-_".contains(&byte))
+}
+
+fn find_site_manifest(host_root: &Path, site_id: &str) -> std::io::Result<SiteManifest> {
+    if site_id.len() != 64 || !site_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid AWE site ID",
+        ));
+    }
+    for entry in fs::read_dir(host_root)? {
+        let Ok(entry) = entry else { continue };
+        let path = entry.path();
+        let name = path.file_name().and_then(|value| value.to_str()).unwrap_or("");
+        if !name.ends_with(".manifest.json") {
+            continue;
+        }
+        let Ok(bytes) = fs::read(path) else { continue };
+        let Ok(manifest) = serde_json::from_slice::<SiteManifest>(&bytes) else {
+            continue;
+        };
+        if manifest.open() && hex::encode(manifest.root_hash).eq_ignore_ascii_case(site_id) {
+            return Ok(manifest);
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        "AWE site ID was not found on this node",
+    ))
+}
+
+fn save_site_manifest(
+    host: &AweHost,
+    host_root: &Path,
+    manifest: &SiteManifest,
+) -> std::io::Result<()> {
+    host.save_manifest(manifest)?;
+    let immutable_path = host_root.join(format!(
+        "id-{}.manifest.json",
+        hex::encode(manifest.root_hash)
+    ));
+    let bytes = serde_json::to_vec_pretty(manifest).map_err(|error| {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
+    })?;
+    fs::write(immutable_path, bytes)
+}
+
+fn decode_site_path(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            if index + 2 >= bytes.len() {
+                return None;
+            }
+            let high = (bytes[index + 1] as char).to_digit(16)?;
+            let low = (bytes[index + 2] as char).to_digit(16)?;
+            decoded.push(((high << 4) | low) as u8);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).ok()
+}
+
 fn ui_html_with_session_token(token: &str) -> String {
     let bootstrap = UI_SESSION_BOOTSTRAP.replace("__AWENET_API_TOKEN__", token);
     UI_HTML.replace("</head>", &format!("{bootstrap}\n</head>"))
@@ -848,6 +950,8 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         federation_state,
         federation_path,
         storage,
+        host,
+        host_root,
         policy_state,
         community,
         consensus_state,
@@ -892,12 +996,68 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or("GET");
     let path = parts.next().unwrap_or("/").split('?').next().unwrap_or("/");
+    let request_host = request
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("host")
+                .then(|| value.trim().to_ascii_lowercase())
+        });
+    let configured_port = env::var("AWE_UI_ADDR")
+        .ok()
+        .and_then(|address| address.rsplit_once(':').map(|(_, port)| port.to_string()))
+        .unwrap_or_else(|| "41800".to_string());
+    let site_suffix = format!(".localhost:{configured_port}");
+    if let Some(host_header) = request_host.as_deref() {
+        if let Some(site_host_id) = host_header.strip_suffix(&site_suffix) {
+            if site_host_id.len() == 64
+                && site_host_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+            {
+                let site_prefix = format!("/site/{site_host_id}");
+                let allowed_site_path = path == site_prefix
+                    || path
+                        .strip_prefix(&site_prefix)
+                        .is_some_and(|rest| rest.starts_with('/'));
+                if !allowed_site_path {
+                    let response = http_response(
+                        "404 Not Found",
+                        "text/plain; charset=utf-8",
+                        "Not Found",
+                        None,
+                    )
+                    .await;
+                    stream.write_all(&response).await?;
+                    stream.shutdown().await?;
+                    return Ok(());
+                }
+            }
+        }
+    }
     let origin = request.lines().find_map(|line| {
         let (name, value) = line.split_once(':')?;
         name.eq_ignore_ascii_case("origin").then(|| value.trim())
     });
+    let site_origin_allowed = origin
+        .zip(request_host.as_deref())
+        .is_some_and(|(origin, host_header)| {
+            let Some(site_host_id) = host_header.strip_suffix(&site_suffix) else {
+                return false;
+            };
+            if site_host_id.len() != 64
+                || !site_host_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+            {
+                return false;
+            }
+            let site_prefix = format!("/site/{site_host_id}");
+            let allowed_site_path = path == site_prefix
+                || path
+                    .strip_prefix(&site_prefix)
+                    .is_some_and(|rest| rest.starts_with('/'));
+            allowed_site_path
+                && origin.eq_ignore_ascii_case(&format!("http://{host_header}"))
+        });
     if let Some(origin) = origin {
-        if !is_allowed_ui_origin(origin) {
+        if !is_allowed_ui_origin(origin) && !site_origin_allowed {
             stream
                 .write_all(
                     &http_response(
@@ -974,6 +1134,76 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
             return Ok(());
         }
     }
+    if let Some(site_route) = path.strip_prefix("/site/") {
+        let mut parts = site_route.splitn(2, '/');
+        let site_id = parts.next().unwrap_or("");
+        let expected_host = format!("{}.localhost:{}", site_id.to_ascii_lowercase(), configured_port);
+        if site_id.len() == 64
+            && site_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+            && request_host.as_deref() != Some(expected_host.as_str())
+        {
+            let location = format!("http://{expected_host}/site/{site_route}");
+            let response = format!(
+                "HTTP/1.1 302 Found\r\nLocation: {location}\r\nCache-Control: no-store\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            stream.write_all(response.as_bytes()).await?;
+            return Ok(());
+        }
+        let encoded_path = parts.next().filter(|value| !value.is_empty()).unwrap_or("index.html");
+        let Some(decoded_path) = decode_site_path(encoded_path) else {
+            let response = http_response_bytes(
+                "400 Bad Request",
+                "text/plain; charset=utf-8",
+                b"Invalid site path",
+            );
+            stream.write_all(&response).await?;
+            return Ok(());
+        };
+        let requested_path = if decoded_path.starts_with('/') {
+            decoded_path
+        } else {
+            format!("/{decoded_path}")
+        };
+        let response = match find_site_manifest(&host_root, site_id) {
+            Ok(manifest) => {
+                let clean_path = awep2p_core::host::normalize_path(&requested_path)
+                    .unwrap_or_default();
+                let content_type = manifest
+                    .files
+                    .iter()
+                    .find(|file| file.path == clean_path)
+                    .map(|file| file.content_type.clone())
+                    .unwrap_or_else(|| "application/octet-stream".to_string());
+                match host.lock() {
+                    Ok(mut host) => match host.get_authorized(&manifest, &requested_path, None) {
+                        Ok(bytes) => http_response_bytes("200 OK", &content_type, &bytes),
+                        Err(error) => http_response_bytes(
+                            "404 Not Found",
+                            "text/plain; charset=utf-8",
+                            error.to_string().as_bytes(),
+                        ),
+                    },
+                    Err(_) => http_response_bytes(
+                        "500 Internal Server Error",
+                        "text/plain; charset=utf-8",
+                        b"AWE host is unavailable",
+                    ),
+                }
+            }
+            Err(error) => http_response_bytes(
+                if error.kind() == std::io::ErrorKind::InvalidInput {
+                    "400 Bad Request"
+                } else {
+                    "404 Not Found"
+                },
+                "text/plain; charset=utf-8",
+                error.to_string().as_bytes(),
+            ),
+        };
+        stream.write_all(&response).await?;
+        return Ok(());
+    }
+
     let (status, mime, body) = match path {
         "/" | "/index.html" => ("200 OK", "text/html; charset=utf-8", ui_html_with_session_token(&api_token)),
         "/style.css" => ("200 OK", "text/css; charset=utf-8", UI_CSS.to_string()),
@@ -981,6 +1211,215 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         "/onecoin.js" => ("200 OK", "application/javascript; charset=utf-8", ONECOIN_JS.to_string()),
         "/onecoin.css" => ("200 OK", "text/css; charset=utf-8", ONECOIN_CSS.to_string()),
         "/vendor/qrcode.js" => ("200 OK", "application/javascript; charset=utf-8", QR_JS.to_string()),
+        "/api/sites" if method == "GET" => {
+            let mut sites = BTreeMap::<String, serde_json::Value>::new();
+            if let Ok(entries) = fs::read_dir(&host_root) {
+                for entry in entries.flatten() {
+                    if !entry.file_name().to_string_lossy().ends_with(".manifest.json") {
+                        continue;
+                    }
+                    let Ok(bytes) = fs::read(entry.path()) else { continue };
+                    let Ok(manifest) = serde_json::from_slice::<SiteManifest>(&bytes) else {
+                        continue;
+                    };
+                    if !manifest.open() {
+                        continue;
+                    }
+                    let site_id = hex::encode(manifest.root_hash);
+                    sites.insert(
+                        site_id.clone(),
+                        serde_json::json!({
+                            "site_id": site_id,
+                            "name": manifest.domain,
+                            "version": manifest.version,
+                            "files": manifest.files.len(),
+                            "open": true
+                        }),
+                    );
+                }
+            }
+            (
+                "200 OK",
+                "application/json; charset=utf-8",
+                serde_json::json!({"status":"ok","sites":sites.into_values().collect::<Vec<_>>()})
+                    .to_string(),
+            )
+        },
+        "/api/sites/publish" if method == "POST" => {
+            let request_body = request
+                .split_once("\r\n\r\n")
+                .map(|(_, body)| body)
+                .unwrap_or("");
+            match serde_json::from_str::<serde_json::Value>(request_body) {
+                Err(_) => (
+                    "400 Bad Request",
+                    "application/json; charset=utf-8",
+                    serde_json::json!({"status":"error","error":"invalid JSON body"}).to_string(),
+                ),
+                Ok(payload) => {
+                    let domain = payload
+                        .get("domain")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("")
+                        .trim()
+                        .to_ascii_lowercase();
+                    let version = payload
+                        .get("version")
+                        .and_then(|value| value.as_u64())
+                        .unwrap_or(1);
+                    let files = payload
+                        .get("files")
+                        .and_then(|value| value.as_array())
+                        .cloned()
+                        .unwrap_or_default();
+                    if !valid_site_domain(&domain)
+                        || version == 0
+                        || files.is_empty()
+                        || files.len() > 256
+                    {
+                        (
+                            "400 Bad Request",
+                            "application/json; charset=utf-8",
+                            serde_json::json!({
+                                "status":"error",
+                                "error":"domain must be a valid site name and files must contain 1-256 entries"
+                            })
+                            .to_string(),
+                        )
+                    } else {
+                        match host.lock() {
+                            Err(_) => (
+                                "500 Internal Server Error",
+                                "application/json; charset=utf-8",
+                                serde_json::json!({"status":"error","error":"AWE host is unavailable"})
+                                    .to_string(),
+                            ),
+                            Ok(mut host) => {
+                                if host
+                                    .load_manifest(&domain)
+                                    .is_ok_and(|existing| version <= existing.version)
+                                {
+                                    (
+                                        "409 Conflict",
+                                        "application/json; charset=utf-8",
+                                        serde_json::json!({
+                                            "status":"error",
+                                            "error":"site version must increase when updating a site"
+                                        })
+                                        .to_string(),
+                                    )
+                                } else {
+                                    let mut hosted_files = Vec::with_capacity(files.len());
+                                    let mut seen_paths = std::collections::BTreeSet::new();
+                                    let mut error = None;
+                                    for file in files {
+                                        let path = file
+                                            .get("path")
+                                            .and_then(|value| value.as_str())
+                                            .unwrap_or("");
+                                        let content_type = file
+                                            .get("content_type")
+                                            .and_then(|value| value.as_str())
+                                            .unwrap_or("text/plain; charset=utf-8");
+                                        if !valid_site_content_type(content_type) {
+                                            error = Some("invalid content type");
+                                            break;
+                                        }
+                                        let normalized = match awep2p_core::host::normalize_path(path) {
+                                            Ok(path) => path,
+                                            Err(_) => {
+                                                error = Some("invalid file path");
+                                                break;
+                                            }
+                                        };
+                                        if !seen_paths.insert(normalized) {
+                                            error = Some("duplicate file path");
+                                            break;
+                                        }
+                                        let data = if let Some(content) =
+                                            file.get("content").and_then(|value| value.as_str())
+                                        {
+                                            Some(content.as_bytes().to_vec())
+                                        } else {
+                                            file.get("data_hex")
+                                                .and_then(|value| value.as_str())
+                                                .and_then(|value| hex::decode(value).ok())
+                                        };
+                                        let Some(data) = data else {
+                                            error = Some("each file requires content or valid data_hex");
+                                            break;
+                                        };
+                                        match host.publish_file(path, &data, content_type) {
+                                            Ok(file) => hosted_files.push(file),
+                                            Err(_) => {
+                                                error = Some(
+                                                    "invalid file path or host storage policy rejected the file",
+                                                );
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    if let Some(error) = error {
+                                        (
+                                            "400 Bad Request",
+                                            "application/json; charset=utf-8",
+                                            serde_json::json!({"status":"error","error":error})
+                                                .to_string(),
+                                        )
+                                    } else {
+                                        match host.publish_manifest(
+                                            &domain,
+                                            version,
+                                            node.identity.public.public_key.to_vec(),
+                                            hosted_files,
+                                        ) {
+                                            Err(error) => (
+                                                "400 Bad Request",
+                                                "application/json; charset=utf-8",
+                                                serde_json::json!({
+                                                    "status":"error",
+                                                    "error":error.to_string()
+                                                })
+                                                .to_string(),
+                                            ),
+                                            Ok(manifest) => {
+                                                match save_site_manifest(&host, &host_root, &manifest) {
+                                                    Err(error) => (
+                                                        "500 Internal Server Error",
+                                                        "application/json; charset=utf-8",
+                                                        serde_json::json!({
+                                                            "status":"error",
+                                                            "error":error.to_string()
+                                                        })
+                                                        .to_string(),
+                                                    ),
+                                                    Ok(()) => {
+                                                        let site_id = hex::encode(manifest.root_hash);
+                                                        (
+                                                            "200 OK",
+                                                            "application/json; charset=utf-8",
+                                                            serde_json::json!({
+                                                                "status":"published",
+                                                                "name":manifest.domain,
+                                                                "version":manifest.version,
+                                                                "site_id":site_id,
+                                                                "files":manifest.files.len(),
+                                                                "url":format!("awe://site-{site_id}")
+                                                            })
+                                                            .to_string(),
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/api/onebank/wallet" if method == "GET" => {
             let consensus_snapshot = consensus_state.lock().map(|guard| {
                 guard.as_ref().map(|runtime| (
@@ -3002,6 +3441,12 @@ async fn run_product() -> Result<()> {
         }
     }
     let onecoin_offers_path = data_dir.join("onecoin-exchange-offers.json");
+    let host_root = data_dir.join("host");
+    let host: HostState = Arc::new(Mutex::new(AweHost::open(
+        &host_root,
+        1 << 30,
+        HostPolicy::default(),
+    )?));
     let contribution_path = data_dir.join("resource-contribution.json");
     let contribution: ContributionState = Arc::new(Mutex::new(
         fs::read(&contribution_path)
@@ -3638,6 +4083,8 @@ async fn run_product() -> Result<()> {
             let api_onecoin_ledger = onecoin_ledger.clone();
             let api_onecoin_path = onecoin_path.clone();
             let api_onecoin_offers_path = onecoin_offers_path.clone();
+            let api_host = host.clone();
+            let api_host_root = host_root.clone();
             let api_contribution = contribution.clone();
             let api_contribution_path = contribution_path.clone();
             tokio::spawn(async move {
@@ -3650,6 +4097,8 @@ async fn run_product() -> Result<()> {
                         federation_state: api_federation,
                         federation_path: api_federation_path,
                         storage: api_storage,
+                        host: api_host,
+                        host_root: api_host_root,
                         policy_state: api_policy,
                         community: api_community,
                         consensus_state: api_consensus_state,
