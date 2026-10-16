@@ -510,6 +510,27 @@ fn verify_signed_federation_invitation(
     Ok((payload, owner_node_id))
 }
 
+fn record_bootstrap_endpoint(
+    state: &Arc<Mutex<AweNetConfig>>,
+    path: &PathBuf,
+    endpoint: &str,
+    local_node_id: &str,
+) -> Result<(), String> {
+    let mut current = state
+        .lock()
+        .map_err(|_| "federation state lock poisoned".to_string())?;
+    let mut next = current.clone();
+    next.local_node_id = local_node_id.to_string();
+    next.format = "awenet".into();
+    next.version = federation::FORMAT_VERSION;
+    if !next.bootstrap_endpoints.iter().any(|known| known == endpoint) {
+        next.bootstrap_endpoints.push(endpoint.to_string());
+    }
+    federation::save_json(&next, path)?;
+    *current = next;
+    Ok(())
+}
+
 fn record_generated_federation_owner(
     kind: &str,
     payload: &serde_json::Value,
@@ -1168,18 +1189,45 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
             }).to_string())
         },
         "/api/connect" if method == "POST" => {
-            let address = request.split("address=").nth(1).and_then(|x| x.split_whitespace().next()).unwrap_or("");
+            let address = request
+                .split("address=")
+                .nth(1)
+                .and_then(|value| value.split_whitespace().next())
+                .unwrap_or("");
             let address = address.replace("%3A", ":").replace("%3a", ":");
             match address.parse::<SocketAddr>() {
                 Ok(addr) => {
-                    let connect_node = node.clone();
-                    tokio::spawn(async move {
-                        let _ = connect_node.bootstrap(&[addr]).await;
-                    });
-                    ("202 Accepted", "application/json; charset=utf-8",
-                        serde_json::json!({"status":"connecting","address":addr.to_string()}).to_string())
-                },
-                Err(_) => ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":"invalid socket address"}).to_string())
+                    let endpoint = addr.to_string();
+                    let local_node_id = format_uid(node.identity.public.awe_id.as_bytes());
+                    match record_bootstrap_endpoint(
+                        &federation_state,
+                        &federation_path,
+                        &endpoint,
+                        &local_node_id,
+                    ) {
+                        Ok(()) => {
+                            let connect_node = node.clone();
+                            tokio::spawn(async move {
+                                let _ = connect_node.bootstrap(&[addr]).await;
+                            });
+                            (
+                                "202 Accepted",
+                                "application/json; charset=utf-8",
+                                serde_json::json!({"status":"connecting","address":endpoint}).to_string(),
+                            )
+                        }
+                        Err(error) => (
+                            "500 Internal Server Error",
+                            "application/json; charset=utf-8",
+                            serde_json::json!({"status":"error","error":error}).to_string(),
+                        ),
+                    }
+                }
+                Err(_) => (
+                    "400 Bad Request",
+                    "application/json; charset=utf-8",
+                    serde_json::json!({"status":"error","error":"invalid socket address"}).to_string(),
+                ),
             }
         },
         "/api/federation" => {
@@ -1190,6 +1238,8 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                 "centre_group_id": state.local_centre_group_id,
                 "joined_data_centres": state.joined_data_centres, "joined_data_groups": state.joined_data_groups,
                 "joined_centre_groups": state.joined_centre_groups,
+                "data_centre_owners": state.data_centre_owners,
+                "data_group_owners": state.data_group_owners,
                 "bootstrap_endpoints": state.bootstrap_endpoints
             }).to_string())
         },
@@ -1395,13 +1445,14 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
             let kind = parsed.get("kind").and_then(|value| value.as_str()).unwrap_or("");
             let content = parsed.get("content").and_then(|value| value.as_str()).unwrap_or("");
             let local_node_id = format_uid(node.identity.public.awe_id.as_bytes());
-            let result: Result<(), anyhow::Error> = (|| {
+            let result: Result<Vec<String>, anyhow::Error> = (|| {
                 let (payload, owner_node_id) = verify_signed_federation_invitation(content, kind)
                     .map_err(anyhow::Error::msg)?;
                 let payload_content = serde_json::to_string(&payload)?;
                 let mut state = federation_state.lock()
                     .map_err(|_| anyhow::anyhow!("federation state lock poisoned"))?;
                 let mut next = state.clone();
+                let mut new_endpoints = Vec::new();
                 match kind {
                     "awenode" => {
                         let config: AweNodeConfig = serde_json::from_str(&payload_content)?;
@@ -1410,9 +1461,11 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                             return Err(anyhow::anyhow!("node invitation identity does not match signer"));
                         }
                         next.local_node_id = local_node_id.clone();
-                        next.bootstrap_endpoints = config.bootstrap_endpoints.clone();
-                        if !next.bootstrap_endpoints.contains(&config.endpoint) {
-                            next.bootstrap_endpoints.push(config.endpoint.clone());
+                        for endpoint in config.bootstrap_endpoints.iter().chain(std::iter::once(&config.endpoint)) {
+                            if !next.bootstrap_endpoints.contains(endpoint) {
+                                next.bootstrap_endpoints.push(endpoint.clone());
+                                new_endpoints.push(endpoint.clone());
+                            }
                         }
                         if !next.joined_data_centres.contains(&config.data_centre_id) {
                             next.joined_data_centres.push(config.data_centre_id.clone());
@@ -1437,9 +1490,12 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                                 &hex::encode(blake3::hash(format!("AWE/DC/{}", next.local_node_id).as_bytes()).as_bytes())[..24]
                             ));
                         }
-                        next.bootstrap_endpoints.extend(config.endpoints.clone());
-                        next.bootstrap_endpoints.sort();
-                        next.bootstrap_endpoints.dedup();
+                        for endpoint in &config.endpoints {
+                            if !next.bootstrap_endpoints.contains(endpoint) {
+                                next.bootstrap_endpoints.push(endpoint.clone());
+                                new_endpoints.push(endpoint.clone());
+                            }
+                        }
                         if !next.joined_data_centres.contains(&config.data_centre_id) {
                             next.joined_data_centres.push(config.data_centre_id.clone());
                         }
@@ -1449,6 +1505,9 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                         federation::validate_dgc(&config).map_err(anyhow::Error::msg)?;
                         if next.data_centre_owners.get(&config.owner_data_centre_id) != Some(&owner_node_id) {
                             return Err(anyhow::anyhow!("data-group invitation was not signed by the trusted data-centre owner"));
+                        }
+                        if config.data_centre_ids.iter().any(|id| !next.data_centre_owners.contains_key(id)) {
+                            return Err(anyhow::anyhow!("data-group references a data centre whose signed invitation has not been imported"));
                         }
                         if next.data_group_owners.get(&config.data_group_id)
                             .is_some_and(|owner| owner != &owner_node_id)
@@ -1473,6 +1532,9 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                         if next.data_group_owners.get(&config.owner_data_group_id) != Some(&owner_node_id) {
                             return Err(anyhow::anyhow!("centre-group invitation was not signed by the trusted data-group owner"));
                         }
+                        if config.data_group_ids.iter().any(|id| !next.data_group_owners.contains_key(id)) {
+                            return Err(anyhow::anyhow!("centre group references a data group whose signed invitation has not been imported"));
+                        }
                         next.local_node_id = local_node_id.clone();
                         next.local_centre_group_id = Some(config.centre_group_id.clone());
                         for dg in &config.data_group_ids {
@@ -1490,14 +1552,11 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                 next.version = federation::FORMAT_VERSION;
                 federation::save_json(&next, &federation_path).map_err(anyhow::Error::msg)?;
                 *state = next;
-                Ok(())
+                Ok(new_endpoints)
             })();
             match result {
-                Ok(()) => {
-                    let endpoints = federation_state.lock()
-                        .map(|state| state.bootstrap_endpoints.clone())
-                        .unwrap_or_default();
-                    let addresses = endpoints.iter()
+                Ok(new_endpoints) => {
+                    let addresses = new_endpoints.iter()
                         .filter_map(|endpoint| endpoint.parse::<SocketAddr>().ok())
                         .collect::<Vec<_>>();
                     let discovered = if addresses.is_empty() { 0 } else { node.bootstrap(&addresses).await.unwrap_or(0) };
