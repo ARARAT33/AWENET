@@ -1048,7 +1048,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         },
         "/api/federation/leave" if method == "POST" => {
             let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
-            match serde_json::from_str::<serde_json::Value>(&body) {
+            match serde_json::from_str::<serde_json::Value>(body) {
                 Err(error) => (
                     "400 Bad Request",
                     "application/json; charset=utf-8",
