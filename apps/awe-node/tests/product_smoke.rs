@@ -420,7 +420,9 @@ fn three_node_product_smoke() {
             serde_json::from_str(&get("127.0.0.1:46202", "/api/federation"))
                 .expect("federation state after leave");
         assert!(
-            after_leave["data_centre_owners"].get(dc_id.as_str()).is_none(),
+            after_leave["data_centre_owners"]
+                .get(dc_id.as_str())
+                .is_none(),
             "DC owner trust survived leave: {after_leave}"
         );
         assert!(
