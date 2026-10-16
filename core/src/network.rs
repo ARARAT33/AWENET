@@ -732,6 +732,46 @@ impl SecureConnection {
         }
     }
 
+    /// Send an application request and wait for the peer's response over the same
+    /// authenticated connection. A transport-level ACK without an application response
+    /// is not treated as success.
+    pub async fn send_data_request_roundtrip(
+        &mut self,
+        stream: u32,
+        payload: Vec<u8>,
+    ) -> Result<(Duration, Vec<u8>), NetworkError> {
+        if payload.len() > MAX_FRAME / 2 {
+            return Err(NetworkError::FrameTooLarge);
+        }
+        let expected = payload.len() as u32;
+        let started = Instant::now();
+        self.send(&Control::Data { stream, payload, request: true }).await?;
+        loop {
+            match timeout(HELLO_TIMEOUT, self.recv()).await {
+                Ok(Ok(Control::DataAck { stream: echoed, bytes, response: Some(response) }))
+                    if echoed == stream && bytes == expected => {
+                        return Ok((started.elapsed(), response));
+                    }
+                Ok(Ok(Control::Ping { sequence })) => {
+                    self.send(&Control::Pong { sequence }).await?;
+                }
+                Ok(Ok(Control::Data { stream: incoming, payload, .. })) => {
+                    self.send(&Control::DataAck {
+                        stream: incoming,
+                        bytes: payload.len() as u32,
+                        response: None,
+                    }).await?;
+                }
+                Ok(Ok(Control::Pong { .. } | Control::Nodes { .. } | Control::DataAck { .. })) => {}
+                Ok(Ok(Control::FindNode { .. } | Control::Hello { .. })) => {
+                    return Err(NetworkError::Protocol("unexpected control message during request".into()));
+                }
+                Ok(Err(error)) => return Err(error),
+                Err(_) => return Err(NetworkError::Timeout),
+            }
+        }
+    }
+
     pub async fn recv_data(&mut self) -> Result<Option<(u32, Vec<u8>)>, NetworkError> {
         match self.recv().await? {
             Control::Data { stream, payload, .. } => Ok(Some((stream, payload))),
@@ -1359,6 +1399,41 @@ impl Node {
         Err(last_error.unwrap_or_else(|| {
             NetworkError::Protocol("peer has no usable authenticated address".into())
         }))
+    }
+
+    /// Send a request and receive the application's response on the same
+    /// authenticated peer session, reusing the active connection when possible.
+    pub async fn send_to_peer_request(
+        &self,
+        peer_id: &[u8; 32],
+        stream: u32,
+        payload: Vec<u8>,
+    ) -> Result<(std::time::Duration, Vec<u8>), NetworkError> {
+        let _outbound_permit = self.outbound_limit.acquire().await
+            .map_err(|_| NetworkError::Protocol("outbound limiter closed".into()))?;
+        let connection = if let Some(connection) = self.active.read().await.get(peer_id).cloned() {
+            connection
+        } else {
+            let mut active = self.active.write().await;
+            if let Some(connection) = active.get(peer_id).cloned() {
+                connection
+            } else {
+                let address = self.peers.read().await.get(peer_id)
+                    .and_then(|peer| peer.addresses.first().copied())
+                    .ok_or_else(|| NetworkError::Protocol("peer address is unknown".into()))?;
+                let connection = Arc::new(tokio::sync::Mutex::new(self.connect(address).await?));
+                if active.len() < MAX_ACTIVE_CONNECTIONS {
+                    active.insert(*peer_id, connection.clone());
+                }
+                connection
+            }
+        };
+        let mut connection = connection.lock().await;
+        let result = connection.send_data_request_roundtrip(stream, payload).await;
+        if result.is_err() {
+            self.active.write().await.remove(peer_id);
+        }
+        result
     }
 
     pub fn take_inbox(&self) -> Vec<([u8; 32], u32, Vec<u8>)> {
