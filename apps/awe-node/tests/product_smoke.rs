@@ -216,8 +216,8 @@ fn three_node_product_smoke() {
             "/api/federation/generate",
             &serde_json::json!({
                 "kind":"dgc",
-                "owner_data_centre_id":dc_id,
-                "data_centre_ids":[dc_id],
+                "owner_data_centre_id":dc_id.clone(),
+                "data_centre_ids":[dc_id.clone()],
                 "name":"should be denied"
             })
             .to_string(),
@@ -266,8 +266,8 @@ fn three_node_product_smoke() {
             "/api/federation/generate",
             &serde_json::json!({
                 "kind":"cgc",
-                "owner_data_group_id":group_id,
-                "data_group_ids":[group_id],
+                "owner_data_group_id":group_id.clone(),
+                "data_group_ids":[group_id.clone()],
                 "name":"should be denied"
             })
             .to_string(),
