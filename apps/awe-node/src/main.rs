@@ -2009,7 +2009,9 @@ async fn autonomous_repair_cycle(
                             .send_to_peer_request(source_id, STORAGE_STREAM, request_bytes)
                             .await
                         {
-                            if let Ok(response) = serde_json::from_slice::<StorageShardTransfer>(&response_bytes) {
+                            if let Ok(response) =
+                                serde_json::from_slice::<StorageShardTransfer>(&response_bytes)
+                            {
                                 if response.request_id == request_id
                                     && response.sender == *source_id
                                     && response.file_id == file_id
@@ -2088,7 +2090,9 @@ async fn autonomous_repair_cycle(
                             .send_to_peer_request(target_id, STORAGE_STREAM, transfer_bytes)
                             .await
                         {
-                            if let Ok(ack) = serde_json::from_slice::<StorageShardAck>(&response_bytes) {
+                            if let Ok(ack) =
+                                serde_json::from_slice::<StorageShardAck>(&response_bytes)
+                            {
                                 if ack.request_id == request_id
                                     && storage_ack_matches(
                                         target_id,
@@ -2841,7 +2845,9 @@ async fn run_product() -> Result<()> {
                         if inbound.expects_response() {
                             let _ = inbound.respond(bytes);
                         } else {
-                            let _ = dispatcher_node.send_to_peer(&sender, STORAGE_STREAM, bytes).await;
+                            let _ = dispatcher_node
+                                .send_to_peer(&sender, STORAGE_STREAM, bytes)
+                                .await;
                         }
                     }
                     continue;
