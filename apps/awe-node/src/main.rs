@@ -1603,11 +1603,12 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
 
             match (recipient_id, file_id, payload, usize::try_from(shard_index)) {
                 (Some(peer_id), Some(file_id), Some(payload), Ok(index)) if index < 1000 => {
+                    let request_id = blake3::hash(
+                        format!("{}:{}:{}", file_id_hex, shard_index, now_unix()).as_bytes()
+                    ).as_bytes()[..16].try_into().unwrap_or([0u8; 16]);
+                    let expected_hash = *blake3::hash(&payload).as_bytes();
                     let transfer = StorageShardTransfer::new(
-                        blake3::hash(format!("{}:{}:{}", file_id_hex, shard_index, now_unix()).as_bytes())
-                            .as_bytes()[..16]
-                            .try_into()
-                            .unwrap_or([0u8; 16]),
+                        request_id,
                         *node.identity.public.awe_id.as_bytes(),
                         file_id,
                         shard_index as u16,
@@ -1616,11 +1617,15 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                         payload,
                     );
                     match serde_json::to_vec(&transfer) {
-                        // This endpoint reports transport delivery only; durable storage is
-                        // confirmed by the receiving node's application-level ACK path.
-                        Ok(bytes) => match node.send_to_peer(&peer_id, STORAGE_STREAM, bytes).await {
-                            Ok(rtt) => ("200 OK", "application/json; charset=utf-8",
-                                serde_json::json!({"status":"sent","stream":STORAGE_STREAM,"shard_index":index,"rtt_ms":rtt.as_millis()}).to_string()),
+                        Ok(bytes) => match node.send_to_peer_request(&peer_id, STORAGE_STREAM, bytes).await {
+                            Ok((rtt, response)) => match serde_json::from_slice::<StorageShardAck>(&response) {
+                                Ok(ack) if ack.request_id == request_id
+                                    && storage_ack_matches(&peer_id, &peer_id, &ack, &file_id, index as u16, &expected_hash) =>
+                                    ("200 OK", "application/json; charset=utf-8",
+                                        serde_json::json!({"status":"stored","stream":STORAGE_STREAM,"shard_index":index,"rtt_ms":rtt.as_millis()}).to_string()),
+                                _ => ("502 Bad Gateway", "application/json; charset=utf-8",
+                                    serde_json::json!({"status":"error","error":"remote storage ACK was invalid"}).to_string())
+                            },
                             Err(error) => ("502 Bad Gateway", "application/json; charset=utf-8",
                                 serde_json::json!({"status":"error","error":error.to_string()}).to_string())
                         },
