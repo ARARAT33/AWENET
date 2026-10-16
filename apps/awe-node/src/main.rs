@@ -258,8 +258,6 @@ struct UiState {
     federation_state: FederationState,
     federation_path: PathBuf,
     storage: StorageState,
-    pending_acks: PendingAcks,
-    pending_shards: PendingShards,
     policy_state: PolicyState,
     community: CommunityState,
     consensus_state: ConsensusState,
@@ -540,8 +538,6 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         federation_state,
         federation_path,
         storage,
-        pending_acks,
-        pending_shards,
         policy_state,
         community,
         consensus_state,
@@ -1741,30 +1737,28 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                                     let Ok(bytes) = serde_json::to_vec(&request) else {
                                         continue;
                                     };
-                                    if node.send_to_peer(peer_id, STORAGE_STREAM, bytes).await.is_err() {
-                                        continue;
-                                    }
-                                    let deadline =
-                            tokio::time::Instant::now() + std::time::Duration::from_secs(5);
-                                    while tokio::time::Instant::now() < deadline {
-                                        if let Ok(mut responses) = pending_shards.lock() {
-                                            if let Some(response) = responses.remove(&request_id) {
-                                                if response.file_id == request.file_id
-                                                    && response.shard_index == index as u16
-                                                    && response.verify().is_ok()
-                                                    && response.payload_hash == expected_hash
-                                                {
-                                                    if let Ok(object_id) = storage.put(&response.payload) {
-                                                        if object_id == expected_hash {
-                                                            shards[index] = Some(response.payload);
-                                                            present += 1;
-                                                        }
+                                    if let Ok((_, response_bytes)) = node
+                                        .send_to_peer_request(peer_id, STORAGE_STREAM, bytes)
+                                        .await
+                                    {
+                                        if let Ok(response) =
+                                            serde_json::from_slice::<StorageShardTransfer>(&response_bytes)
+                                        {
+                                            if response.request_id == request_id
+                                                && response.sender == *peer_id
+                                                && response.file_id == request.file_id
+                                                && response.shard_index == index as u16
+                                                && response.verify().is_ok()
+                                                && response.payload_hash == expected_hash
+                                            {
+                                                if let Ok(object_id) = storage.put(&response.payload) {
+                                                    if object_id == expected_hash {
+                                                        shards[index] = Some(response.payload);
+                                                        present += 1;
                                                     }
                                                 }
-                                                break;
                                             }
                                         }
-                                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                                     }
                                     if shards[index].is_some() {
                                         break;
@@ -1880,8 +1874,6 @@ fn now_unix() -> u64 {
 async fn autonomous_repair_cycle(
     node: &Node,
     storage: &LocalNodeStore,
-    pending_shards: &PendingShards,
-    pending_acks: &PendingAcks,
     data_dir: &std::path::Path,
     policy: &NetworkPolicy,
 ) {
@@ -2276,8 +2268,6 @@ async fn run_product() -> Result<()> {
     }
     let repair_node = node.clone();
     let repair_storage = storage.clone();
-    let repair_pending_shards = pending_shards.clone();
-    let repair_pending_acks = pending_acks.clone();
     let repair_policy = policy_state.clone();
     let repair_data_dir = data_dir.clone();
     tokio::spawn(async move {
@@ -2286,8 +2276,6 @@ async fn run_product() -> Result<()> {
             autonomous_repair_cycle(
                 &repair_node,
                 &repair_storage,
-                &repair_pending_shards,
-                &repair_pending_acks,
                 &repair_data_dir,
                 &policy,
             )
@@ -2949,8 +2937,6 @@ async fn run_product() -> Result<()> {
             let api_messenger = messenger.clone();
             let api_federation = federation_state.clone();
             let api_storage = storage.clone();
-            let api_pending_acks = pending_acks.clone();
-            let api_pending_shards = pending_shards.clone();
             let api_federation_path = federation_path.clone();
             let api_policy = policy_state.clone();
             let api_community = community.clone();
@@ -2969,8 +2955,6 @@ async fn run_product() -> Result<()> {
                         federation_state: api_federation,
                         federation_path: api_federation_path,
                         storage: api_storage,
-                        pending_acks: api_pending_acks,
-                        pending_shards: api_pending_shards,
                         policy_state: api_policy,
                         community: api_community,
                         consensus_state: api_consensus_state,
