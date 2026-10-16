@@ -1,6 +1,5 @@
 mod native_ui;
 use anyhow::{Context, Result};
-use rand::{rngs::OsRng, RngCore};
 use awep2p_core::data_plane::{
     StorageShardAck, StorageShardRequest, StorageShardTransfer, STORAGE_STREAM,
 };
@@ -24,6 +23,7 @@ use awep2p_core::storage::{
 };
 use awep2p_core::store::{AppCapability, Store};
 use awep2p_core::supervisor::{PeerSupervisor, SupervisorConfig};
+use rand::{rngs::OsRng, RngCore};
 use std::{
     collections::BTreeMap,
     env, fs,
@@ -616,7 +616,8 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
     if method.eq_ignore_ascii_case("POST") && path.starts_with("/api/") {
         let supplied_token = request.lines().find_map(|line| {
             let (name, value) = line.split_once(':')?;
-            name.eq_ignore_ascii_case("x-awenet-session").then(|| value.trim())
+            name.eq_ignore_ascii_case("x-awenet-session")
+                .then(|| value.trim())
         });
         if !is_valid_api_session(&api_token, supplied_token) {
             stream
