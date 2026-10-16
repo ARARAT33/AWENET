@@ -160,6 +160,22 @@ fn three_node_product_smoke() {
             "unauthenticated state change was not rejected: {unauthorized}"
         );
 
+        let offers_before = get("127.0.0.1:46201", "/api/onebank/exchange/offers");
+        let malformed_offer = post(
+            "127.0.0.1:46201",
+            "/api/onebank/exchange/offers",
+            "{",
+        );
+        assert!(
+            malformed_offer.contains("JSON request body must be a valid object"),
+            "malformed JSON was not rejected: {malformed_offer}"
+        );
+        let offers_after = get("127.0.0.1:46201", "/api/onebank/exchange/offers");
+        assert_eq!(
+            offers_after, offers_before,
+            "malformed JSON unexpectedly changed the offer book"
+        );
+
         let dc_generated: serde_json::Value = serde_json::from_str(&post(
             "127.0.0.1:46201",
             "/api/federation/generate",
