@@ -257,7 +257,6 @@ fn validate_storage_file_id(value: &str) -> Result<[u8; 32], String> {
 type FederationState = Arc<Mutex<AweNetConfig>>;
 type StorageState = Arc<LocalNodeStore>;
 type PendingAcks = Arc<Mutex<BTreeMap<[u8; 16], ([u8; 32], StorageShardAck)>>>;
-type PendingShards = Arc<Mutex<BTreeMap<[u8; 16], StorageShardTransfer>>>;
 type PolicyState = Arc<Mutex<NetworkPolicy>>;
 type CommunityState = Arc<Mutex<serde_json::Value>>;
 type ConsensusState = Arc<Mutex<Option<OnecoinConsensusRuntime>>>;
@@ -2260,7 +2259,6 @@ async fn run_product() -> Result<()> {
         }
     });
     let pending_acks: PendingAcks = Arc::new(Mutex::new(BTreeMap::new()));
-    let pending_shards: PendingShards = Arc::new(Mutex::new(BTreeMap::new()));
     let federation_path = data_dir.join("awenet.json");
     let policy_path = data_dir.join("policy.json");
     let initial_policy = policy::load_or_create(&policy_path).map_err(anyhow::Error::msg)?;
