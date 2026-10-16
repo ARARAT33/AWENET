@@ -3826,7 +3826,8 @@ mod phase_two_backend_tests {
     use super::{
         append_bounded_json_entry, append_messenger_entry, format_uid, is_allowed_ui_origin,
         is_valid_api_session, json_u16_field, json_u32_field, leave_federation_membership,
-        parse_content_length, parse_onecoin_atoms, sign_federation_invitation, storage_ack_matches,
+        onecoin_consensus_configured, parse_content_length, parse_onecoin_atoms,
+        sign_federation_invitation, storage_ack_matches,
         storage_upload_is_complete, ui_html_with_session_token, validate_community_message,
         validate_community_title, validate_group_member_ids, validate_remote_channel,
         validate_remote_feed_message, validate_remote_group, validate_storage_file_id,
