@@ -798,7 +798,9 @@ fn json_u16_field(value: &serde_json::Value, field: &str) -> Result<u16, String>
 
 #[allow(clippy::too_many_arguments)]
 fn onecoin_consensus_configured(config: &str) -> bool {
-    config.split(',').any(|validator| !validator.trim().is_empty())
+    config
+        .split(',')
+        .any(|validator| !validator.trim().is_empty())
 }
 
 fn parse_onecoin_atoms(value: &serde_json::Value) -> Result<u128, String> {
@@ -858,34 +860,38 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
     } = state;
     // The UI listener is local, but a stalled client must not hold a task and socket forever.
     // Keep enough time for large local uploads while bounding slow-header/body resource use.
-    let request =
-        match tokio::time::timeout(Duration::from_secs(30), read_http_request(&mut stream)).await {
+    let request = match tokio::time::timeout(
+        Duration::from_secs(30),
+        read_http_request(&mut stream),
+    )
+    .await
+    {
         Ok(Ok(request)) => request,
         Ok(Err(error)) => {
-                let response = http_response(
-                    "400 Bad Request",
-                    "application/json; charset=utf-8",
-                    &serde_json::json!({"status":"error","error":error.to_string()}).to_string(),
-                    None,
-                )
-                .await;
-                stream.write_all(&response).await?;
-                stream.shutdown().await?;
-                return Ok(());
-            }
-            Err(_) => {
-                let response = http_response(
-                    "408 Request Timeout",
-                    "application/json; charset=utf-8",
-                    r#"{"status":"error","error":"request timed out while reading headers or body"}"#,
-                    None,
-                )
-                .await;
-                stream.write_all(&response).await?;
-                stream.shutdown().await?;
-                return Ok(());
-            }
-        };
+            let response = http_response(
+                "400 Bad Request",
+                "application/json; charset=utf-8",
+                &serde_json::json!({"status":"error","error":error.to_string()}).to_string(),
+                None,
+            )
+            .await;
+            stream.write_all(&response).await?;
+            stream.shutdown().await?;
+            return Ok(());
+        }
+        Err(_) => {
+            let response = http_response(
+                "408 Request Timeout",
+                "application/json; charset=utf-8",
+                r#"{"status":"error","error":"request timed out while reading headers or body"}"#,
+                None,
+            )
+            .await;
+            stream.write_all(&response).await?;
+            stream.shutdown().await?;
+            return Ok(());
+        }
+    };
     let request_line = request.lines().next().unwrap_or("");
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or("GET");
