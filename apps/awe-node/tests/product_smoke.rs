@@ -171,7 +171,10 @@ fn three_node_product_smoke() {
             .to_string(),
         ))
         .expect("signed data-centre generation JSON");
-        assert_eq!(dc_generated["status"], "generated", "DC generation: {dc_generated}");
+        assert_eq!(
+            dc_generated["status"], "generated",
+            "DC generation: {dc_generated}"
+        );
         let dc_content = dc_generated["content"]
             .as_str()
             .expect("signed data-centre content")
@@ -193,8 +196,7 @@ fn three_node_product_smoke() {
 
         let mut tampered_dc: serde_json::Value =
             serde_json::from_str(&dc_content).expect("tamper DC envelope");
-        tampered_dc["payload"]["name"] =
-            serde_json::Value::String("forged data-centre".into());
+        tampered_dc["payload"]["name"] = serde_json::Value::String("forged data-centre".into());
         let tampered_import: serde_json::Value = serde_json::from_str(&post(
             "127.0.0.1:46202",
             "/api/federation/import",
@@ -206,8 +208,7 @@ fn three_node_product_smoke() {
         ))
         .expect("tampered import JSON");
         assert_eq!(
-            tampered_import["status"],
-            "error",
+            tampered_import["status"], "error",
             "tampered federation invitation was accepted: {tampered_import}"
         );
 
@@ -224,8 +225,7 @@ fn three_node_product_smoke() {
         ))
         .expect("non-owner group generation JSON");
         assert_eq!(
-            denied_group["status"],
-            "error",
+            denied_group["status"], "error",
             "non-owner created a data group: {denied_group}"
         );
 
@@ -241,7 +241,10 @@ fn three_node_product_smoke() {
             .to_string(),
         ))
         .expect("signed data-group generation JSON");
-        assert_eq!(group_generated["status"], "generated", "DG generation: {group_generated}");
+        assert_eq!(
+            group_generated["status"], "generated",
+            "DG generation: {group_generated}"
+        );
         let group_content = group_generated["content"]
             .as_str()
             .expect("signed data-group content")
@@ -259,7 +262,10 @@ fn three_node_product_smoke() {
             &serde_json::json!({"kind":"dgc","content":group_content.clone()}).to_string(),
         ))
         .expect("signed data-group import JSON");
-        assert_eq!(group_import["status"], "imported", "DG import: {group_import}");
+        assert_eq!(
+            group_import["status"], "imported",
+            "DG import: {group_import}"
+        );
 
         let denied_centre_group: serde_json::Value = serde_json::from_str(&post(
             "127.0.0.1:46202",
@@ -274,8 +280,7 @@ fn three_node_product_smoke() {
         ))
         .expect("non-owner centre-group generation JSON");
         assert_eq!(
-            denied_centre_group["status"],
-            "error",
+            denied_centre_group["status"], "error",
             "non-owner created a centre group: {denied_centre_group}"
         );
 
@@ -292,8 +297,7 @@ fn three_node_product_smoke() {
         ))
         .expect("signed centre-group generation JSON");
         assert_eq!(
-            centre_group_generated["status"],
-            "generated",
+            centre_group_generated["status"], "generated",
             "CG generation: {centre_group_generated}"
         );
         let centre_group_content = centre_group_generated["content"]
@@ -306,8 +310,7 @@ fn three_node_product_smoke() {
         ))
         .expect("signed centre-group import JSON");
         assert_eq!(
-            centre_group_import["status"],
-            "imported",
+            centre_group_import["status"], "imported",
             "CG import: {centre_group_import}"
         );
 
