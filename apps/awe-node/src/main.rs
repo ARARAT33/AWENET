@@ -2273,13 +2273,7 @@ async fn run_product() -> Result<()> {
     tokio::spawn(async move {
         loop {
             let policy = repair_policy.lock().map(|p| p.clone()).unwrap_or_default();
-            autonomous_repair_cycle(
-                &repair_node,
-                &repair_storage,
-                &repair_data_dir,
-                &policy,
-            )
-            .await;
+            autonomous_repair_cycle(&repair_node, &repair_storage, &repair_data_dir, &policy).await;
             tokio::time::sleep(std::time::Duration::from_secs(30)).await;
         }
     });
