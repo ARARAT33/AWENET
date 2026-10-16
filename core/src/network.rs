@@ -1400,25 +1400,50 @@ impl Node {
             .filter(|addresses| !addresses.is_empty())
             .ok_or_else(|| NetworkError::Protocol("peer address is unknown".into()))?;
         let mut last_error = None;
+
+        // Reuse the authenticated connection when possible. Opening a fresh TCP
+        // connection for every confirmed send can race other transfers and make
+        // peers replace cached sessions while ACKs are still in flight.
+        if let Some(connection) = self.active.read().await.get(peer_id).cloned() {
+            let result = {
+                let mut connection = connection.lock().await;
+                connection
+                    .send_data_roundtrip(stream, payload.clone())
+                    .await
+            };
+            match result {
+                Ok(elapsed) => return Ok(elapsed),
+                Err(error) => {
+                    self.active.write().await.remove(peer_id);
+                    last_error = Some(error);
+                }
+            }
+        }
+
         for address in addresses {
             match self.connect(address).await {
-                Ok(mut connection) => {
-                    match connection
-                        .send_data_roundtrip(stream, payload.clone())
-                        .await
-                    {
-                        Ok(elapsed) => return Ok(elapsed),
-                        Err(error) => {
-                            eprintln!(
-                                "confirmed peer send failed: peer={}, address={}, stage=data-roundtrip, error={}",
-                                hex::encode(peer_id),
-                                address,
-                                error
-                            );
-                            last_error = Some(error);
+                Ok(mut connection) => match connection
+                    .send_data_roundtrip(stream, payload.clone())
+                    .await
+                {
+                    Ok(elapsed) => {
+                        let connection = Arc::new(tokio::sync::Mutex::new(connection));
+                        let mut active = self.active.write().await;
+                        if active.len() < MAX_ACTIVE_CONNECTIONS {
+                            active.entry(*peer_id).or_insert(connection);
                         }
+                        return Ok(elapsed);
                     }
-                }
+                    Err(error) => {
+                        eprintln!(
+                            "confirmed peer send failed: peer={}, address={}, stage=data-roundtrip, error={}",
+                            hex::encode(peer_id),
+                            address,
+                            error
+                        );
+                        last_error = Some(error);
+                    }
+                },
                 Err(error) => {
                     eprintln!(
                         "confirmed peer send failed: peer={}, address={}, stage=connect, error={}",
