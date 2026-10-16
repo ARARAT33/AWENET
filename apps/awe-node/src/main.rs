@@ -324,7 +324,7 @@ fn default_vault() -> PathBuf {
 }
 
 fn usage() -> ! {
-    eprintln!("AWEp2P\n\nUsage:\n  awe-node                 Start the complete local product\n  awe-node app             Start UI + local node\n  awe-node secret <username> [out-file]\n  awe-node init <username> [vault-file]\n  awe-node run <vault-file> <password> <listen-addr> [bootstrap-addr ...]\n  awe-node id <vault-file> <password> <username>\n  awe-node status [vault-file]\n  awe-node diagnostics\n  awe-node mesh <listen-port>\n  awe-node health\n  awe-node probe <address>");
+    eprintln!("AWENET\n\nUsage:\n  awe-node                 Start the complete local product\n  awe-node app             Start UI + local node\n  awe-node secret <username> [out-file]\n  awe-node init <username> [vault-file]\n  awe-node run <vault-file> <password> <listen-addr> [bootstrap-addr ...]\n  awe-node id <vault-file> <password> <username>\n  awe-node status [vault-file]\n  awe-node diagnostics\n  awe-node mesh <listen-port>\n  awe-node health\n  awe-node probe <address>");
     std::process::exit(2)
 }
 
@@ -1219,7 +1219,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                 "last_seen": p.last_seen_unix
             })).collect::<Vec<_>>();
             ("200 OK", "application/json; charset=utf-8", serde_json::json!({
-                "product": "AWEp2P", "status": "online",
+                "product": "AWENET", "status": "online",
                 "node_id": format_uid(node.identity.public.awe_id.as_bytes()),
                 "node_address": node.listen_addr.to_string(),
                 "transport": "AWE encrypted TCP", "ui": "connected", "peers": peer_json, "discovered_peers": peer_json.len(), "active_connections": node.active_peer_count().await
@@ -3493,8 +3493,8 @@ async fn run_product() -> Result<()> {
         .context("invalid AWE_UI_ADDR")?;
     let listener = tokio::net::TcpListener::bind(ui_addr)
         .await
-        .with_context(|| format!("cannot bind AWEp2P UI to {ui_addr}"))?;
-    println!("AWEp2P is running.");
+        .with_context(|| format!("cannot bind AWENET UI to {ui_addr}"))?;
+    println!("AWENET is running.");
     println!("Node: {node_id}");
     println!("Node transport: {listen}");
     println!("Native UI: AWENET desktop window");
