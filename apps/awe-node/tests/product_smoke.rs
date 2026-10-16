@@ -264,7 +264,7 @@ fn three_node_product_smoke() {
             "/api/federation/generate",
             &serde_json::json!({
                 "kind":"dgc",
-                "owner_data_centre_id":dc_id,
+                "owner_data_centre_id":dc_id.clone(),
                 "data_centre_ids":[dc_id.clone(), dc2_id.clone()],
                 "name":"Signed smoke data group"
             })
@@ -350,7 +350,7 @@ fn three_node_product_smoke() {
             "/api/federation/generate",
             &serde_json::json!({
                 "kind":"cgc",
-                "owner_data_group_id":group_id,
+                "owner_data_group_id":group_id.clone(),
                 "data_group_ids":[group_id.clone(), group2_id.clone()],
                 "name":"Signed smoke centre group"
             })
