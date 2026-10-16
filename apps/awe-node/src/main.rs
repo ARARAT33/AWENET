@@ -1426,7 +1426,6 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                                                     continue;
                                                 };
                                                 let task_node = node.clone();
-                                                let task_pending_acks = pending_acks.clone();
                                                 let task_limit = transfer_limit.clone();
                                                 let Some(peer_limit) = peer_transfer_limits.get(&peer_id).cloned() else {
                                                     failed.push(serde_json::json!({
@@ -1442,52 +1441,33 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                                                         .map_err(|_| "storage transfer scheduler closed".to_string())?;
                                                     let _peer_permit = peer_limit.acquire_owned().await
                                                         .map_err(|_| "per-peer storage transfer scheduler closed".to_string())?;
-                                                    match task_node.send_to_peer(&peer_id, STORAGE_STREAM, bytes).await {
-                                                        Ok(_) => {
-                                                            let deadline = tokio::time::Instant::now()
-                                                                + std::time::Duration::from_secs(5);
-                                                            let mut confirmed = false;
-                                                            let mut ack_received = false;
-                                                            let mut ack_identity_matches = false;
-                                                            let mut ack_payload_matches = false;
-                                                            while tokio::time::Instant::now() < deadline {
-                                                                if let Ok(mut acks) = task_pending_acks.lock() {
-                                                                    if let Some((ack_sender, ack)) = acks.remove(&request_id) {
-                                                                        ack_received = true;
-                                                                        ack_identity_matches = ack_sender == peer_id;
-                                                                        ack_payload_matches = ack.file_id == file_id
-                                                                            && ack.shard_index == index as u16
-                                                                            && ack.stored_object_id == shard_hash;
-                                                                        confirmed = storage_ack_matches(
-                                                                            &ack_sender,
-                                                                            &peer_id,
-                                                                            &ack,
-                                                                            &file_id,
-                                                                            index as u16,
-                                                                            &shard_hash,
-                                                                        );
-                                                                        break;
-                                                                    }
-                                                                }
-                                                                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-                                                            }
+                                                    match task_node.send_to_peer_request(&peer_id, STORAGE_STREAM, bytes).await {
+                                                        Ok((_, response)) => {
+                                                            let ack = serde_json::from_slice::<StorageShardAck>(&response).ok();
+                                                            let ack_received = ack.is_some();
+                                                            let ack_identity_matches = ack_received; // response came over this authenticated peer session
+                                                            let ack_payload_matches = ack.as_ref().map(|ack| {
+                                                                ack.request_id == request_id
+                                                                    && ack.file_id == file_id
+                                                                    && ack.shard_index == index as u16
+                                                                    && ack.stored_object_id == shard_hash
+                                                            }).unwrap_or(false);
+                                                            let confirmed = ack.as_ref().map(|ack| {
+                                                                ack.request_id == request_id && storage_ack_matches(
+                                                                    &peer_id, &peer_id, ack, &file_id, index as u16, &shard_hash
+                                                                )
+                                                            }).unwrap_or(false);
                                                             if confirmed {
                                                                 Ok((1usize, None))
                                                             } else {
-                                                                // A successful transport write is not proof of durable storage.
-                                                                // Include mismatch diagnostics so failed acceptance runs can distinguish
-                                                                // absent ACKs from identity or payload mismatches.
-                                                                Ok((
-                                                                    0usize,
-                                                                    Some(serde_json::json!({
-                                                                        "shard": index,
-                                                                        "node": target_name,
-                                                                        "error": "remote storage ACK not confirmed",
-                                                                        "ack_received": ack_received,
-                                                                        "ack_identity_matches": ack_identity_matches,
-                                                                        "ack_payload_matches": ack_payload_matches
-                                                                    })),
-                                                                ))
+                                                                Ok((0usize, Some(serde_json::json!({
+                                                                    "shard": index,
+                                                                    "node": target_name,
+                                                                    "error": "remote storage ACK response was invalid",
+                                                                    "ack_received": ack_received,
+                                                                    "ack_identity_matches": ack_identity_matches,
+                                                                    "ack_payload_matches": ack_payload_matches
+                                                                }))))
                                                             }
                                                         }
                                                         Err(error) => Ok((0usize, Some(serde_json::json!({
@@ -2421,7 +2401,10 @@ async fn run_product() -> Result<()> {
     let dispatcher_onecoin_path = onecoin_path.clone();
     tokio::spawn(async move {
         loop {
-            for (sender, stream, payload) in dispatcher_node.take_inbox() {
+            for mut inbound in dispatcher_node.take_inbox_messages() {
+                let sender = inbound.sender;
+                let stream = inbound.stream;
+                let payload = inbound.payload.clone();
                 let runtime_policy = dispatcher_policy
                     .lock()
                     .map(|p| p.clone())
@@ -2866,11 +2849,11 @@ async fn run_product() -> Result<()> {
                         continue;
                     }
                     if let Ok(bytes) = serde_json::to_vec(&transfer) {
-                        // The requester verifies this response through its pending-shard
-                        // state; avoid opening a fresh TCP session for every shard.
-                        let _ = dispatcher_node
-                            .send_to_peer(&sender, STORAGE_STREAM, bytes)
-                            .await;
+                        if inbound.expects_response() {
+                            let _ = inbound.respond(bytes);
+                        } else {
+                            let _ = dispatcher_node.send_to_peer(&sender, STORAGE_STREAM, bytes).await;
+                        }
                     }
                     continue;
                 }
@@ -2915,7 +2898,11 @@ async fn run_product() -> Result<()> {
                 );
                 match serde_json::to_vec(&ack) {
                     Ok(bytes) => {
-                        if let Err(error) = dispatcher_node
+                        if inbound.expects_response() {
+                            if !inbound.respond(bytes) {
+                                eprintln!("storage ACK response channel closed before reply");
+                            }
+                        } else if let Err(error) = dispatcher_node
                             .send_to_peer(&sender, STORAGE_STREAM, bytes)
                             .await
                         {
