@@ -3623,7 +3623,7 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod phase_two_backend_tests {
     use super::{
-        append_bounded_json_entry, append_messenger_entry, is_allowed_ui_origin,
+        append_bounded_json_entry, append_messenger_entry, format_uid, is_allowed_ui_origin,
         is_valid_api_session, json_u16_field, json_u32_field, leave_federation_membership,
         parse_content_length, parse_onecoin_atoms, sign_federation_invitation, storage_ack_matches,
         storage_upload_is_complete, ui_html_with_session_token, validate_community_message,
