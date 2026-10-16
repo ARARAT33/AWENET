@@ -3782,9 +3782,9 @@ mod phase_two_backend_tests {
             joined_centre_groups: vec!["cg-a".into()],
             ..AweNetConfig::default()
         };
-        leave_federation_membership(&mut state, "dc", "dc-a", "node-a").unwrap();
-        leave_federation_membership(&mut state, "dg", "dg-a", "node-a").unwrap();
         leave_federation_membership(&mut state, "cg", "cg-a", "node-a").unwrap();
+        leave_federation_membership(&mut state, "dg", "dg-a", "node-a").unwrap();
+        leave_federation_membership(&mut state, "dc", "dc-a", "node-a").unwrap();
         assert_eq!(state.joined_data_centres, vec!["dc-b"]);
         assert!(state.joined_data_groups.is_empty());
         assert!(state.joined_centre_groups.is_empty());
