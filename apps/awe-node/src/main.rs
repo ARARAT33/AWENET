@@ -1047,6 +1047,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
             }
         },
         "/api/federation/leave" if method == "POST" => {
+            let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
             match serde_json::from_str::<serde_json::Value>(&body) {
                 Err(error) => (
                     "400 Bad Request",
@@ -1066,7 +1067,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                         .unwrap_or("")
                         .trim()
                         .to_string();
-                    let local_node_id = node.identity.public.awe_id.to_string();
+                    let local_node_id = format_uid(node.identity.public.awe_id.as_bytes());
                     match federation_state.lock() {
                         Err(_) => (
                             "500 Internal Server Error",
@@ -3296,6 +3297,7 @@ mod phase_two_backend_tests {
         append_bounded_json_entry, append_messenger_entry, is_allowed_ui_origin,
         is_valid_api_session, json_u16_field, json_u32_field, leave_federation_membership,
         parse_content_length, parse_onecoin_atoms, storage_ack_matches, storage_upload_is_complete,
+        AweNetConfig,
         ui_html_with_session_token, validate_community_message, validate_community_title,
         validate_group_member_ids, validate_remote_channel, validate_remote_feed_message,
         validate_remote_group, validate_storage_file_id, StorageShardAck, ATOMS_PER_COIN,
