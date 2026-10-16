@@ -1636,7 +1636,9 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                         payload,
                     );
                     match serde_json::to_vec(&transfer) {
-                        Ok(bytes) => match node.send_to_peer_confirmed(&peer_id, STORAGE_STREAM, bytes).await {
+                        // This endpoint reports transport delivery only; durable storage is
+                        // confirmed by the receiving node's application-level ACK path.
+                        Ok(bytes) => match node.send_to_peer(&peer_id, STORAGE_STREAM, bytes).await {
                             Ok(rtt) => ("200 OK", "application/json; charset=utf-8",
                                 serde_json::json!({"status":"sent","stream":STORAGE_STREAM,"shard_index":index,"rtt_ms":rtt.as_millis()}).to_string()),
                             Err(error) => ("502 Bad Gateway", "application/json; charset=utf-8",
@@ -2019,7 +2021,7 @@ async fn autonomous_repair_cycle(
                             continue;
                         };
                         if node
-                            .send_to_peer_confirmed(source_id, STORAGE_STREAM, request_bytes)
+                            .send_to_peer(source_id, STORAGE_STREAM, request_bytes)
                             .await
                             .is_err()
                         {
@@ -2106,7 +2108,7 @@ async fn autonomous_repair_cycle(
                             continue;
                         };
                         if node
-                            .send_to_peer_confirmed(target_id, STORAGE_STREAM, transfer_bytes)
+                            .send_to_peer(target_id, STORAGE_STREAM, transfer_bytes)
                             .await
                             .is_err()
                         {
@@ -2864,8 +2866,10 @@ async fn run_product() -> Result<()> {
                         continue;
                     }
                     if let Ok(bytes) = serde_json::to_vec(&transfer) {
+                        // The requester verifies this response through its pending-shard
+                        // state; avoid opening a fresh TCP session for every shard.
                         let _ = dispatcher_node
-                            .send_to_peer_confirmed(&sender, STORAGE_STREAM, bytes)
+                            .send_to_peer(&sender, STORAGE_STREAM, bytes)
                             .await;
                     }
                     continue;
@@ -2912,7 +2916,7 @@ async fn run_product() -> Result<()> {
                 match serde_json::to_vec(&ack) {
                     Ok(bytes) => {
                         if let Err(error) = dispatcher_node
-                            .send_to_peer_confirmed(&sender, STORAGE_STREAM, bytes)
+                            .send_to_peer(&sender, STORAGE_STREAM, bytes)
                             .await
                         {
                             eprintln!("storage ACK send failed: {error}");
