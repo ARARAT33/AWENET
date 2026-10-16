@@ -413,7 +413,9 @@ fn sign_federation_invitation(
         return Err("node invitation identity does not match its signer".into());
     }
     if kind == "awedc"
-        && payload.get("owner_node_id").and_then(|value| value.as_str())
+        && payload
+            .get("owner_node_id")
+            .and_then(|value| value.as_str())
             != Some(owner_node_id.as_str())
     {
         return Err("data-centre owner does not match its signer".into());
@@ -437,13 +439,16 @@ fn verify_signed_federation_invitation(
     content: &str,
     expected_kind: &str,
 ) -> Result<(serde_json::Value, String), String> {
-    let envelope: serde_json::Value =
-        serde_json::from_str(content).map_err(|error| format!("invalid invitation JSON: {error}"))?;
+    let envelope: serde_json::Value = serde_json::from_str(content)
+        .map_err(|error| format!("invalid invitation JSON: {error}"))?;
     if envelope.get("format").and_then(|value| value.as_str())
         != Some("awenet-signed-federation-invitation")
         || envelope.get("version").and_then(|value| value.as_u64()) != Some(1)
     {
-        return Err("unsigned or unsupported federation invitation; regenerate it with this AWENET version".into());
+        return Err(
+            "unsigned or unsupported federation invitation; regenerate it with this AWENET version"
+                .into(),
+        );
     }
     if envelope.get("kind").and_then(|value| value.as_str()) != Some(expected_kind) {
         return Err("invitation kind does not match the requested import kind".into());
@@ -495,7 +500,9 @@ fn verify_signed_federation_invitation(
         return Err("node invitation identity does not match its signer".into());
     }
     if expected_kind == "awedc"
-        && payload.get("owner_node_id").and_then(|value| value.as_str())
+        && payload
+            .get("owner_node_id")
+            .and_then(|value| value.as_str())
             != Some(owner_node_id.as_str())
     {
         return Err("data-centre owner does not match its signer".into());
@@ -513,19 +520,28 @@ fn record_generated_federation_owner(
     if !matches!(kind, "awedc" | "dgc" | "cgc") {
         return Ok(());
     }
-    let mut current = state.lock().map_err(|_| "federation state lock poisoned".to_string())?;
+    let mut current = state
+        .lock()
+        .map_err(|_| "federation state lock poisoned".to_string())?;
     let mut next = current.clone();
     next.local_node_id = owner_node_id.to_string();
     next.format = "awenet".into();
     next.version = federation::FORMAT_VERSION;
     match kind {
         "awedc" => {
-            let id = payload.get("data_centre_id").and_then(|value| value.as_str())
+            let id = payload
+                .get("data_centre_id")
+                .and_then(|value| value.as_str())
                 .ok_or_else(|| "generated data-centre ID is missing".to_string())?;
-            if next.data_centre_owners.get(id).is_some_and(|owner| owner != owner_node_id) {
+            if next
+                .data_centre_owners
+                .get(id)
+                .is_some_and(|owner| owner != owner_node_id)
+            {
                 return Err("data-centre ID is already bound to a different owner".into());
             }
-            next.data_centre_owners.insert(id.to_string(), owner_node_id.to_string());
+            next.data_centre_owners
+                .insert(id.to_string(), owner_node_id.to_string());
             if !next.joined_data_centres.iter().any(|joined| joined == id) {
                 next.joined_data_centres.push(id.to_string());
             }
@@ -534,12 +550,19 @@ fn record_generated_federation_owner(
             }
         }
         "dgc" => {
-            let id = payload.get("data_group_id").and_then(|value| value.as_str())
+            let id = payload
+                .get("data_group_id")
+                .and_then(|value| value.as_str())
                 .ok_or_else(|| "generated data-group ID is missing".to_string())?;
-            if next.data_group_owners.get(id).is_some_and(|owner| owner != owner_node_id) {
+            if next
+                .data_group_owners
+                .get(id)
+                .is_some_and(|owner| owner != owner_node_id)
+            {
                 return Err("data-group ID is already bound to a different owner".into());
             }
-            next.data_group_owners.insert(id.to_string(), owner_node_id.to_string());
+            next.data_group_owners
+                .insert(id.to_string(), owner_node_id.to_string());
             if !next.joined_data_groups.iter().any(|joined| joined == id) {
                 next.joined_data_groups.push(id.to_string());
             }
@@ -548,7 +571,9 @@ fn record_generated_federation_owner(
             }
         }
         "cgc" => {
-            let id = payload.get("centre_group_id").and_then(|value| value.as_str())
+            let id = payload
+                .get("centre_group_id")
+                .and_then(|value| value.as_str())
                 .ok_or_else(|| "generated centre-group ID is missing".to_string())?;
             if !next.joined_centre_groups.iter().any(|joined| joined == id) {
                 next.joined_centre_groups.push(id.to_string());
@@ -3596,11 +3621,11 @@ mod phase_two_backend_tests {
         is_valid_api_session, json_u16_field, json_u32_field, leave_federation_membership,
         parse_content_length, parse_onecoin_atoms, sign_federation_invitation, storage_ack_matches,
         storage_upload_is_complete, ui_html_with_session_token, validate_community_message,
-        validate_community_title, verify_signed_federation_invitation,
-        validate_group_member_ids, validate_remote_channel, validate_remote_feed_message,
-        validate_remote_group, validate_storage_file_id, AweNetConfig, StorageShardAck,
-        ATOMS_PER_COIN, MAX_COMMUNITY_MESSAGES_PER_FEED, MAX_COMMUNITY_MESSAGE_BYTES,
-        MAX_COMMUNITY_TITLE_BYTES, MAX_GROUP_MEMBERS, MAX_MESSENGER_LOG_ENTRIES,
+        validate_community_title, validate_group_member_ids, validate_remote_channel,
+        validate_remote_feed_message, validate_remote_group, validate_storage_file_id,
+        verify_signed_federation_invitation, AweNetConfig, StorageShardAck, ATOMS_PER_COIN,
+        MAX_COMMUNITY_MESSAGES_PER_FEED, MAX_COMMUNITY_MESSAGE_BYTES, MAX_COMMUNITY_TITLE_BYTES,
+        MAX_GROUP_MEMBERS, MAX_MESSENGER_LOG_ENTRIES,
     };
     use serde_json::json;
 
