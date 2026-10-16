@@ -797,6 +797,10 @@ fn json_u16_field(value: &serde_json::Value, field: &str) -> Result<u16, String>
 }
 
 #[allow(clippy::too_many_arguments)]
+fn onecoin_consensus_configured(config: &str) -> bool {
+    config.split(',').any(|validator| !validator.trim().is_empty())
+}
+
 fn parse_onecoin_atoms(value: &serde_json::Value) -> Result<u128, String> {
     let raw = if let Some(text) = value.as_str() {
         text.trim().to_owned()
@@ -1053,8 +1057,14 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
             let recipient_hex = parsed.get("recipient").and_then(|v| v.as_str()).unwrap_or("");
             let amount_value = parsed.get("amount_coins").cloned().unwrap_or(serde_json::Value::Null);
             let memo = parsed.get("memo").and_then(|v| v.as_str()).map(str::to_owned);
-            // A poisoned consensus lock must fail closed, never fall back to the non-finalized ledger.
-            if consensus_state.lock().map(|guard| guard.is_some()).unwrap_or(true) {
+            // Configured consensus must never silently fall back to a separate local ledger while
+            // validator discovery/recovery is incomplete. That would create conflicting balances.
+            let consensus_configured = onecoin_consensus_configured(
+                &env::var("AWE_ONECOIN_VALIDATORS").unwrap_or_default(),
+            );
+            if consensus_state.lock().map(|guard| guard.is_some()).unwrap_or(true)
+                || consensus_configured
+            {
                 let consensus_result: Result<ConsensusSendResult, String> = (|| {
                     let recipient = AweId::from_hex(recipient_hex)?;
                     if recipient == node.identity.public.awe_id {
@@ -1132,7 +1142,15 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                             "note": if finalized { "Transaction is in finalized consensus state." } else { "Transaction sent to consensus peers; wallet balance changes only after quorum finality." }
                         }).to_string())
                     },
-                    Err(error) => ("409 Conflict", "application/json; charset=utf-8", serde_json::json!({"status":"rejected","finality_mode":"CONSENSUS","error":error}).to_string())
+                    Err(error) => (
+                        if error == "ONECOIN consensus is unavailable" {
+                            "503 Service Unavailable"
+                        } else {
+                            "409 Conflict"
+                        },
+                        "application/json; charset=utf-8",
+                        serde_json::json!({"status":"rejected","finality_mode":"CONSENSUS","error":error}).to_string()
+                    )
                 }
             } else {
             let result: Result<(String, u128, OnecoinTransaction), String> = (|| {
@@ -3807,6 +3825,14 @@ mod phase_two_backend_tests {
         MAX_GROUP_MEMBERS, MAX_MESSENGER_LOG_ENTRIES,
     };
     use serde_json::json;
+
+    #[test]
+    fn configured_onecoin_consensus_never_falls_back_to_local_ledger() {
+        assert!(!onecoin_consensus_configured(""));
+        assert!(!onecoin_consensus_configured(" ,  , "));
+        assert!(onecoin_consensus_configured("validator-a"));
+        assert!(onecoin_consensus_configured("validator-a, validator-b"));
+    }
 
     #[test]
     fn parses_coin_amounts_using_full_18_decimal_precision() {
