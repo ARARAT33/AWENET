@@ -1,5 +1,6 @@
 mod native_ui;
 use anyhow::{Context, Result};
+use rand::{rngs::OsRng, RngCore};
 use awep2p_core::data_plane::{
     StorageShardAck, StorageShardRequest, StorageShardTransfer, STORAGE_STREAM,
 };
@@ -38,6 +39,25 @@ const UI_JS: &str = include_str!("../../awe-desktop/ui/app.js");
 const ONECOIN_JS: &str = include_str!("../../awe-desktop/ui/onecoin.js");
 const ONECOIN_CSS: &str = include_str!("../../awe-desktop/ui/onecoin.css");
 const QR_JS: &str = include_str!("../../awe-desktop/ui/vendor/qrcode.js");
+const UI_SESSION_BOOTSTRAP: &str = r#"<meta name="awenet-api-token" content="__AWENET_API_TOKEN__">
+<script>
+(() => {
+    const meta = document.querySelector('meta[name="awenet-api-token"]');
+    const token = meta ? meta.content : "";
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = (input, init = {}) => {
+        const rawUrl = typeof input === "string" ? input : input.url;
+        const target = new URL(rawUrl, window.location.href);
+        if (target.origin === window.location.origin && target.pathname.startsWith("/api/")) {
+            const sourceHeaders = init.headers || (input instanceof Request ? input.headers : undefined);
+            const headers = new Headers(sourceHeaders);
+            headers.set("X-AWENET-Session", token);
+            init = { ...init, headers };
+        }
+        return originalFetch(input, init);
+    };
+})();
+</script>"#;
 const DEFAULT_UI_ADDR: &str = "127.0.0.1:41800";
 
 type MessengerLog = Arc<Mutex<Vec<serde_json::Value>>>;
@@ -254,6 +274,7 @@ type ConsensusSendResult = (
 #[derive(Clone)]
 struct UiState {
     node: Node,
+    api_token: String,
     messenger: MessengerLog,
     federation_state: FederationState,
     federation_path: PathBuf,
@@ -374,6 +395,15 @@ fn is_allowed_ui_origin(origin: &str) -> bool {
     )
 }
 
+fn is_valid_api_session(expected: &str, supplied: Option<&str>) -> bool {
+    supplied == Some(expected)
+}
+
+fn ui_html_with_session_token(token: &str) -> String {
+    let bootstrap = UI_SESSION_BOOTSTRAP.replace("__AWENET_API_TOKEN__", token);
+    UI_HTML.replace("</head>", &format!("{bootstrap}\n</head>"))
+}
+
 async fn http_response(
     status: &str,
     content_type: &str,
@@ -384,7 +414,7 @@ async fn http_response(
         .filter(|value| is_allowed_ui_origin(value))
         .map(|value| {
             format!(
-                "Access-Control-Allow-Origin: {value}\r\nVary: Origin\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: content-type\r\n"
+                "Access-Control-Allow-Origin: {value}\r\nVary: Origin\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: content-type, x-awenet-session\r\n"
             )
         })
         .unwrap_or_default();
@@ -534,6 +564,7 @@ fn parse_onecoin_atoms(value: &serde_json::Value) -> Result<u128, String> {
 async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<()> {
     let UiState {
         node,
+        api_token,
         messenger,
         federation_state,
         federation_path,
@@ -582,8 +613,29 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         stream.shutdown().await?;
         return Ok(());
     }
+    if method.eq_ignore_ascii_case("POST") && path.starts_with("/api/") {
+        let supplied_token = request.lines().find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("x-awenet-session").then(|| value.trim())
+        });
+        if !is_valid_api_session(&api_token, supplied_token) {
+            stream
+                .write_all(
+                    &http_response(
+                        "401 Unauthorized",
+                        "application/json; charset=utf-8",
+                        r#"{"status":"error","error":"valid AWENET session token required"}"#,
+                        origin,
+                    )
+                    .await,
+                )
+                .await?;
+            stream.shutdown().await?;
+            return Ok(());
+        }
+    }
     let (status, mime, body) = match path {
-        "/" | "/index.html" => ("200 OK", "text/html; charset=utf-8", UI_HTML.to_string()),
+        "/" | "/index.html" => ("200 OK", "text/html; charset=utf-8", ui_html_with_session_token(&api_token)),
         "/style.css" => ("200 OK", "text/css; charset=utf-8", UI_CSS.to_string()),
         "/app.js" => ("200 OK", "application/javascript; charset=utf-8", UI_JS.to_string()),
         "/onecoin.js" => ("200 OK", "application/javascript; charset=utf-8", ONECOIN_JS.to_string()),
@@ -2131,6 +2183,9 @@ async fn run_product() -> Result<()> {
         PathBuf::from(".awep2p")
     };
     fs::create_dir_all(&data_dir)?;
+    let mut api_token_bytes = [0u8; 32];
+    OsRng.fill_bytes(&mut api_token_bytes);
+    let api_token = hex::encode(api_token_bytes);
     let secret_path = data_dir.join("node.awesecret");
     let identity = if secret_path.exists() {
         AweSecret::from_bytes(&fs::read(&secret_path)?)
@@ -2906,6 +2961,7 @@ async fn run_product() -> Result<()> {
     println!("Native UI: AWENET desktop window");
 
     let native_ui_addr = ui_addr;
+    let api_token_for_server = api_token.clone();
     tokio::spawn(async move {
         loop {
             let (mut stream, peer_addr) = match listener.accept().await {
@@ -2927,6 +2983,7 @@ async fn run_product() -> Result<()> {
                 let _ = stream.shutdown().await;
                 continue;
             }
+            let api_token = api_token_for_server.clone();
             let api_node = node.clone();
             let api_messenger = messenger.clone();
             let api_federation = federation_state.clone();
@@ -2945,6 +3002,7 @@ async fn run_product() -> Result<()> {
                     stream,
                     UiState {
                         node: api_node,
+                        api_token,
                         messenger: api_messenger,
                         federation_state: api_federation,
                         federation_path: api_federation_path,
@@ -2973,7 +3031,7 @@ async fn run_product() -> Result<()> {
         }
     }
 
-    native_ui::run(native_ui_addr).map_err(anyhow::Error::msg)?;
+    native_ui::run(native_ui_addr, api_token).map_err(anyhow::Error::msg)?;
     Ok(())
 }
 
@@ -3170,6 +3228,21 @@ mod phase_two_backend_tests {
             parse_content_length("POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n").is_err()
         );
         assert!(parse_content_length("POST / HTTP/1.1\r\nContent-Length: -1\r\n\r\n").is_err());
+    }
+
+    #[test]
+    fn api_session_token_is_required_and_exact() {
+        assert!(!is_valid_api_session("secret", None));
+        assert!(!is_valid_api_session("secret", Some("wrong")));
+        assert!(!is_valid_api_session("secret", Some("secret ")));
+        assert!(is_valid_api_session("secret", Some("secret")));
+    }
+
+    #[test]
+    fn ui_html_injects_session_token_and_fetch_header_wrapper() {
+        let html = ui_html_with_session_token("test-session-token");
+        assert!(html.contains("content=\"test-session-token\""));
+        assert!(html.contains("X-AWENET-Session"));
     }
 
     #[test]

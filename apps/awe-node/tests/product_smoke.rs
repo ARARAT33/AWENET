@@ -56,11 +56,27 @@ fn get(addr: &str, path: &str) -> String {
     )
 }
 
-fn post(addr: &str, path: &str, body: &str) -> String {
+fn post_without_session(addr: &str, path: &str, body: &str) -> String {
     request(
         addr,
         &format!(
             "POST {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        ),
+    )
+}
+
+fn post(addr: &str, path: &str, body: &str) -> String {
+    let html = get(addr, "/");
+    let token = html
+        .split("name=\"awenet-api-token\" content=\"")
+        .nth(1)
+        .and_then(|value| value.split('"').next())
+        .expect("session token in UI HTML");
+    request(
+        addr,
+        &format!(
+            "POST {path} HTTP/1.1\r\nHost: {addr}\r\nX-AWENET-Session: {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         ),
     )
@@ -133,6 +149,16 @@ fn three_node_product_smoke() {
                 "address {port}: {status}"
             );
         }
+
+        let unauthorized = post_without_session(
+            "127.0.0.1:46201",
+            "/api/federation/generate",
+            r#"{"kind":"awenode","name":"must-not-be-created"}"#,
+        );
+        assert!(
+            unauthorized.contains("valid AWENET session token required"),
+            "unauthenticated state change was not rejected: {unauthorized}"
+        );
 
         let storage = get("127.0.0.1:46201", "/api/storage");
         assert!(
