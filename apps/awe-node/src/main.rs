@@ -28,7 +28,7 @@ use std::{
     collections::BTreeMap,
     env, fs,
     net::SocketAddr,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -512,7 +512,7 @@ fn verify_signed_federation_invitation(
 
 fn record_bootstrap_endpoint(
     state: &Arc<Mutex<AweNetConfig>>,
-    path: &PathBuf,
+    path: &Path,
     endpoint: &str,
     local_node_id: &str,
 ) -> Result<(), String> {
@@ -540,7 +540,7 @@ fn record_generated_federation_owner(
     payload: &serde_json::Value,
     owner_node_id: &str,
     state: &Arc<Mutex<AweNetConfig>>,
-    path: &PathBuf,
+    path: &Path,
 ) -> Result<(), String> {
     if !matches!(kind, "awedc" | "dgc" | "cgc") {
         return Ok(());
