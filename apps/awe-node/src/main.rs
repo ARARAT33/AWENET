@@ -523,7 +523,11 @@ fn record_bootstrap_endpoint(
     next.local_node_id = local_node_id.to_string();
     next.format = "awenet".into();
     next.version = federation::FORMAT_VERSION;
-    if !next.bootstrap_endpoints.iter().any(|known| known == endpoint) {
+    if !next
+        .bootstrap_endpoints
+        .iter()
+        .any(|known| known == endpoint)
+    {
         next.bootstrap_endpoints.push(endpoint.to_string());
     }
     federation::save_json(&next, path)?;
