@@ -2000,29 +2000,21 @@ async fn autonomous_repair_cycle(
                         let Ok(request_bytes) = serde_json::to_vec(&request) else {
                             continue;
                         };
-                        if node
-                            .send_to_peer(source_id, STORAGE_STREAM, request_bytes)
+                        if let Ok((_, response_bytes)) = node
+                            .send_to_peer_request(source_id, STORAGE_STREAM, request_bytes)
                             .await
-                            .is_err()
                         {
-                            continue;
-                        }
-                        let deadline =
-                            tokio::time::Instant::now() + std::time::Duration::from_secs(5);
-                        while tokio::time::Instant::now() < deadline {
-                            if let Ok(mut pending) = pending_shards.lock() {
-                                if let Some(response) = pending.remove(&request_id) {
-                                    if response.file_id == file_id
-                                        && response.shard_index == index as u16
-                                        && response.payload_hash == expected_hash
-                                        && response.verify().is_ok()
-                                    {
-                                        source_data = Some(response.payload);
-                                    }
-                                    break;
+                            if let Ok(response) = serde_json::from_slice::<StorageShardTransfer>(&response_bytes) {
+                                if response.request_id == request_id
+                                    && response.sender == *source_id
+                                    && response.file_id == file_id
+                                    && response.shard_index == index as u16
+                                    && response.payload_hash == expected_hash
+                                    && response.verify().is_ok()
+                                {
+                                    source_data = Some(response.payload);
                                 }
                             }
-                            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                         }
                         if source_data.is_some() {
                             break;
@@ -2087,33 +2079,25 @@ async fn autonomous_repair_cycle(
                         let Ok(transfer_bytes) = serde_json::to_vec(&transfer) else {
                             continue;
                         };
-                        if node
-                            .send_to_peer(target_id, STORAGE_STREAM, transfer_bytes)
+                        if let Ok((_, response_bytes)) = node
+                            .send_to_peer_request(target_id, STORAGE_STREAM, transfer_bytes)
                             .await
-                            .is_err()
                         {
-                            continue;
-                        }
-                        let deadline =
-                            tokio::time::Instant::now() + std::time::Duration::from_secs(5);
-                        while tokio::time::Instant::now() < deadline {
-                            if let Ok(mut acks) = pending_acks.lock() {
-                                if let Some((ack_sender, ack)) = acks.remove(&request_id) {
-                                    if storage_ack_matches(
-                                        &ack_sender,
+                            if let Ok(ack) = serde_json::from_slice::<StorageShardAck>(&response_bytes) {
+                                if ack.request_id == request_id
+                                    && storage_ack_matches(
+                                        target_id,
                                         target_id,
                                         &ack,
                                         &file_id,
                                         index as u16,
                                         &expected_hash,
-                                    ) {
-                                        nodes_value.push(serde_json::Value::String(target.clone()));
-                                        repaired = true;
-                                    }
-                                    break;
+                                    )
+                                {
+                                    nodes_value.push(serde_json::Value::String(target.clone()));
+                                    repaired = true;
                                 }
                             }
-                            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                         }
                     }
 
