@@ -935,6 +935,31 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
             return Ok(());
         }
     }
+    // Reject malformed/non-object JSON before route handlers can silently replace it
+    // with an empty object via unwrap_or_default(). Form-encoded bootstrap requests are
+    // intentionally excluded.
+    if method.eq_ignore_ascii_case("POST")
+        && path.starts_with("/api/")
+        && request.lines().find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-type").then(|| value.trim())
+        }).is_some_and(|value| value.to_ascii_lowercase().starts_with("application/json"))
+    {
+        let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+        let valid_object = serde_json::from_str::<serde_json::Value>(body)
+            .is_ok_and(|value| value.is_object());
+        if !valid_object {
+            let response = http_response(
+                "400 Bad Request",
+                "application/json; charset=utf-8",
+                r#"{"status":"error","error":"JSON request body must be a valid object"}"#,
+                origin,
+            ).await;
+            stream.write_all(&response).await?;
+            stream.shutdown().await?;
+            return Ok(());
+        }
+    }
     let (status, mime, body) = match path {
         "/" | "/index.html" => ("200 OK", "text/html; charset=utf-8", ui_html_with_session_token(&api_token)),
         "/style.css" => ("200 OK", "text/css; charset=utf-8", UI_CSS.to_string()),
