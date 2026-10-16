@@ -194,6 +194,36 @@ fn three_node_product_smoke() {
         .expect("signed data-centre import JSON");
         assert_eq!(dc_import["status"], "imported", "DC import: {dc_import}");
 
+        let dc2_generated: serde_json::Value = serde_json::from_str(&post(
+            "127.0.0.1:46201",
+            "/api/federation/generate",
+            &serde_json::json!({
+                "kind": "awedc",
+                "data_centre_id": "dc-smoke-owner-auth-2",
+                "name": "Second signed smoke data centre"
+            })
+            .to_string(),
+        ))
+        .expect("second signed data-centre generation JSON");
+        assert_eq!(dc2_generated["status"], "generated");
+        let dc2_content = dc2_generated["content"]
+            .as_str()
+            .expect("second signed data-centre content")
+            .to_string();
+        let dc2_envelope: serde_json::Value =
+            serde_json::from_str(&dc2_content).expect("second signed DC envelope");
+        let dc2_id = dc2_envelope["payload"]["data_centre_id"]
+            .as_str()
+            .expect("second signed DC ID")
+            .to_string();
+        let dc2_import: serde_json::Value = serde_json::from_str(&post(
+            "127.0.0.1:46202",
+            "/api/federation/import",
+            &serde_json::json!({"kind":"awedc","content":dc2_content}).to_string(),
+        ))
+        .expect("second signed data-centre import JSON");
+        assert_eq!(dc2_import["status"], "imported");
+
         let mut tampered_dc: serde_json::Value =
             serde_json::from_str(&dc_content).expect("tamper DC envelope");
         tampered_dc["payload"]["name"] = serde_json::Value::String("forged data-centre".into());
@@ -218,7 +248,7 @@ fn three_node_product_smoke() {
             &serde_json::json!({
                 "kind":"dgc",
                 "owner_data_centre_id":dc_id.clone(),
-                "data_centre_ids":[dc_id.clone()],
+                "data_centre_ids":[dc_id.clone(), dc2_id.clone()],
                 "name":"should be denied"
             })
             .to_string(),
@@ -235,7 +265,7 @@ fn three_node_product_smoke() {
             &serde_json::json!({
                 "kind":"dgc",
                 "owner_data_centre_id":dc_id,
-                "data_centre_ids":[dc_id],
+                "data_centre_ids":[dc_id.clone(), dc2_id.clone()],
                 "name":"Signed smoke data group"
             })
             .to_string(),
