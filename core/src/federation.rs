@@ -196,7 +196,10 @@ pub fn save_json<T: Serialize>(value: &T, path: &Path) -> Result<(), String> {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let data = serde_json::to_vec_pretty(value).map_err(|e| e.to_string())?;
-    let file_name = path.file_name().and_then(|name| name.to_str()).unwrap_or("awenet.json");
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("awenet.json");
     let temporary = path.with_file_name(format!(".{file_name}.{}.tmp", std::process::id()));
     {
         let mut file = fs::File::create(&temporary).map_err(|e| e.to_string())?;
@@ -512,8 +515,7 @@ mod tests {
         ));
         save_json(&serde_json::json!({"generation": 1}), &path).unwrap();
         save_json(&serde_json::json!({"generation": 2}), &path).unwrap();
-        let saved: serde_json::Value =
-            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(saved["generation"], 2);
         fs::remove_file(path).unwrap();
     }

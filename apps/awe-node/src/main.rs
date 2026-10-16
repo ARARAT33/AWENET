@@ -414,9 +414,18 @@ fn leave_federation_membership(
 
     let kind = kind.trim().to_ascii_lowercase();
     let (joined, local_id) = match kind.as_str() {
-        "dc" | "awedc" => (&mut state.joined_data_centres, &mut state.local_data_centre_id),
-        "dg" | "dgc" => (&mut state.joined_data_groups, &mut state.local_data_group_id),
-        "cg" | "cgc" => (&mut state.joined_centre_groups, &mut state.local_centre_group_id),
+        "dc" | "awedc" => (
+            &mut state.joined_data_centres,
+            &mut state.local_data_centre_id,
+        ),
+        "dg" | "dgc" => (
+            &mut state.joined_data_groups,
+            &mut state.local_data_group_id,
+        ),
+        "cg" | "cgc" => (
+            &mut state.joined_centre_groups,
+            &mut state.local_centre_group_id,
+        ),
         _ => return Err("kind must be dc, dg, or cg".into()),
     };
     let is_member = joined.iter().any(|member| member == id) || local_id.as_deref() == Some(id);
