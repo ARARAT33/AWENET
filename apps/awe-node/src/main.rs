@@ -656,9 +656,15 @@ fn leave_federation_membership(
         "dc" | "awedc" => {
             state.data_centre_owners.remove(id);
             state.data_group_owners.clear();
+            state.joined_data_groups.clear();
+            state.local_data_group_id = None;
+            state.joined_centre_groups.clear();
+            state.local_centre_group_id = None;
         }
         "dg" | "dgc" => {
             state.data_group_owners.remove(id);
+            state.joined_centre_groups.clear();
+            state.local_centre_group_id = None;
         }
         _ => {}
     }
@@ -1296,12 +1302,18 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                     let centres = parsed.get("data_centre_ids").and_then(|value| value.as_array())
                         .map(|items| items.iter().filter_map(|value| value.as_str().map(str::to_owned)).collect())
                         .unwrap_or_default();
-                    let owner = federation_state.lock().ok()
-                        .and_then(|state| state.data_centre_owners.get(dc_id).cloned());
+                    let (owner, all_centres_trusted) = federation_state.lock().ok()
+                        .map(|state| (
+                            state.data_centre_owners.get(dc_id).cloned(),
+                            centres.iter().all(|id| state.data_centre_owners.contains_key(id)),
+                        ))
+                        .unwrap_or((None, false));
                     if dc_id.is_empty() {
                         Err("owner_data_centre_id is required".into())
                     } else if owner.as_deref() != Some(owner_node_id.as_str()) {
                         Err("only the authenticated owner of the data centre may create a data group".into())
+                    } else if !all_centres_trusted {
+                        Err("all data centres in a data group must have verified signed invitations".into())
                     } else {
                         let config = federation::generate_dgc(dc_id, name, centres, now);
                         federation::validate_dgc(&config).and_then(|_| {
@@ -1316,12 +1328,18 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                     let groups = parsed.get("data_group_ids").and_then(|value| value.as_array())
                         .map(|items| items.iter().filter_map(|value| value.as_str().map(str::to_owned)).collect())
                         .unwrap_or_default();
-                    let owner = federation_state.lock().ok()
-                        .and_then(|state| state.data_group_owners.get(dg_id).cloned());
+                    let (owner, all_groups_trusted) = federation_state.lock().ok()
+                        .map(|state| (
+                            state.data_group_owners.get(dg_id).cloned(),
+                            groups.iter().all(|id| state.data_group_owners.contains_key(id)),
+                        ))
+                        .unwrap_or((None, false));
                     if dg_id.is_empty() {
                         Err("owner_data_group_id is required".into())
                     } else if owner.as_deref() != Some(owner_node_id.as_str()) {
                         Err("only the authenticated owner of the data group may create a centre group".into())
+                    } else if !all_groups_trusted {
+                        Err("all data groups in a centre group must have verified signed invitations".into())
                     } else {
                         let config = federation::generate_cgc(dg_id, name, groups, now);
                         federation::validate_cgc(&config).and_then(|_| {

@@ -224,6 +224,23 @@ fn three_node_product_smoke() {
         .expect("second signed data-centre import JSON");
         assert_eq!(dc2_import["status"], "imported");
 
+        let untrusted_group: serde_json::Value = serde_json::from_str(&post(
+            "127.0.0.1:46201",
+            "/api/federation/generate",
+            &serde_json::json!({
+                "kind":"dgc",
+                "owner_data_centre_id":dc_id.clone(),
+                "data_centre_ids":[dc_id.clone(), "dc-not-trusted"],
+                "name":"untrusted reference must be denied"
+            })
+            .to_string(),
+        ))
+        .expect("untrusted data-group generation JSON");
+        assert_eq!(
+            untrusted_group["status"], "error",
+            "data group referenced an untrusted data centre: {untrusted_group}"
+        );
+
         let mut tampered_dc: serde_json::Value =
             serde_json::from_str(&dc_content).expect("tamper DC envelope");
         tampered_dc["payload"]["name"] = serde_json::Value::String("forged data-centre".into());
@@ -328,6 +345,23 @@ fn three_node_product_smoke() {
         .expect("second signed data-group import JSON");
         assert_eq!(group2_import["status"], "imported");
 
+        let untrusted_centre_group: serde_json::Value = serde_json::from_str(&post(
+            "127.0.0.1:46201",
+            "/api/federation/generate",
+            &serde_json::json!({
+                "kind":"cgc",
+                "owner_data_group_id":group_id.clone(),
+                "data_group_ids":[group_id.clone(), "dg-not-trusted"],
+                "name":"untrusted reference must be denied"
+            })
+            .to_string(),
+        ))
+        .expect("untrusted centre-group generation JSON");
+        assert_eq!(
+            untrusted_centre_group["status"], "error",
+            "centre group referenced an untrusted data group: {untrusted_centre_group}"
+        );
+
         let denied_centre_group: serde_json::Value = serde_json::from_str(&post(
             "127.0.0.1:46202",
             "/api/federation/generate",
@@ -373,6 +407,39 @@ fn three_node_product_smoke() {
         assert_eq!(
             centre_group_import["status"], "imported",
             "CG import: {centre_group_import}"
+        );
+
+        let leave_dc: serde_json::Value = serde_json::from_str(&post(
+            "127.0.0.1:46202",
+            "/api/federation/leave",
+            &serde_json::json!({"kind":"dc","id":dc_id.clone()}).to_string(),
+        ))
+        .expect("leave data-centre JSON");
+        assert_eq!(leave_dc["status"], "left", "DC leave: {leave_dc}");
+        let after_leave: serde_json::Value =
+            serde_json::from_str(&get("127.0.0.1:46202", "/api/federation"))
+                .expect("federation state after leave");
+        assert!(
+            after_leave["data_centre_owners"].get(dc_id.as_str()).is_none(),
+            "DC owner trust survived leave: {after_leave}"
+        );
+        assert!(
+            !after_leave["joined_data_centres"]
+                .as_array()
+                .expect("joined DC array")
+                .iter()
+                .any(|value| value.as_str() == Some(dc_id.as_str())),
+            "DC membership survived leave: {after_leave}"
+        );
+        let stale_group_import: serde_json::Value = serde_json::from_str(&post(
+            "127.0.0.1:46202",
+            "/api/federation/import",
+            &serde_json::json!({"kind":"dgc","content":group_content.clone()}).to_string(),
+        ))
+        .expect("stale group import JSON");
+        assert_eq!(
+            stale_group_import["status"], "error",
+            "group invitation remained trusted after leaving its DC: {stale_group_import}"
         );
 
         let storage = get("127.0.0.1:46201", "/api/storage");
