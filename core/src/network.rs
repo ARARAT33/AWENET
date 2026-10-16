@@ -1500,8 +1500,8 @@ impl Node {
                 connection
             }
         };
-        let mut connection = connection.lock().await;
-        let result = connection
+        let mut connection_guard = connection.lock().await;
+        let result = connection_guard
             .send_data_request_roundtrip(stream, payload)
             .await;
         if result.is_err() {
