@@ -23,7 +23,7 @@ use thiserror::Error;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
-    sync::RwLock,
+    sync::{oneshot, RwLock},
     task::JoinSet,
     time::timeout,
 };
@@ -347,10 +347,14 @@ enum Control {
     Data {
         stream: u32,
         payload: Vec<u8>,
+        #[serde(default)]
+        request: bool,
     },
     DataAck {
         stream: u32,
         bytes: u32,
+        #[serde(default)]
+        response: Option<Vec<u8>>,
     },
     FindNode {
         target: [u8; 32],
@@ -646,7 +650,7 @@ impl SecureConnection {
         if payload.len() > MAX_FRAME / 2 {
             return Err(NetworkError::FrameTooLarge);
         }
-        self.send(&Control::Data { stream, payload }).await
+        self.send(&Control::Data { stream, payload, request: false }).await
     }
     pub async fn ping(&mut self, sequence: u64) -> Result<(), NetworkError> {
         self.send(&Control::Ping { sequence }).await
@@ -690,12 +694,13 @@ impl SecureConnection {
         }
         let expected = payload.len() as u32;
         let started = Instant::now();
-        self.send(&Control::Data { stream, payload }).await?;
+        self.send(&Control::Data { stream, payload, request: false }).await?;
         loop {
             match timeout(HELLO_TIMEOUT, self.recv()).await {
                 Ok(Ok(Control::DataAck {
                     stream: echoed,
                     bytes,
+                    ..
                 })) if echoed == stream && bytes == expected => {
                     return Ok(started.elapsed());
                 }
@@ -706,10 +711,12 @@ impl SecureConnection {
                 Ok(Ok(Control::Data {
                     stream: incoming,
                     payload,
+                    ..
                 })) => {
                     self.send(&Control::DataAck {
                         stream: incoming,
                         bytes: payload.len() as u32,
+                        response: None,
                     })
                     .await?;
                 }
@@ -727,7 +734,7 @@ impl SecureConnection {
 
     pub async fn recv_data(&mut self) -> Result<Option<(u32, Vec<u8>)>, NetworkError> {
         match self.recv().await? {
-            Control::Data { stream, payload } => Ok(Some((stream, payload))),
+            Control::Data { stream, payload, .. } => Ok(Some((stream, payload))),
             Control::Ping { sequence } => {
                 self.send(&Control::Pong { sequence }).await?;
                 Ok(None)
@@ -819,7 +826,27 @@ fn xor_distance(a: &[u8; 32], b: &[u8; 32]) -> [u8; 32] {
 }
 
 type ActiveConnections = Arc<RwLock<HashMap<[u8; 32], Arc<tokio::sync::Mutex<SecureConnection>>>>>;
-type InboxQueue = Arc<Mutex<Vec<([u8; 32], u32, Vec<u8>)>>>;
+type InboxQueue = Arc<Mutex<Vec<InboundMessage>>>;
+
+/// A data-plane message delivered to the application. Request messages carry a
+/// one-shot reply channel so the application can return its durable result over
+/// the same authenticated connection, without opening another TCP connection.
+pub struct InboundMessage {
+    pub sender: [u8; 32],
+    pub stream: u32,
+    pub payload: Vec<u8>,
+    reply: Option<oneshot::Sender<Vec<u8>>>,
+}
+
+impl InboundMessage {
+    pub fn expects_response(&self) -> bool {
+        self.reply.is_some()
+    }
+
+    pub fn respond(&mut self, payload: Vec<u8>) -> bool {
+        self.reply.take().map(|reply| reply.send(payload).is_ok()).unwrap_or(false)
+    }
+}
 
 #[derive(Clone)]
 #[allow(clippy::type_complexity)]
@@ -966,7 +993,13 @@ impl Node {
                                 break;
                             }
                         }
-                        Control::Data { stream, payload } => {
+                        Control::Data { stream, payload, request } => {
+                            let (reply, response_rx) = if request {
+                                let (tx, rx) = oneshot::channel();
+                                (Some(tx), Some(rx))
+                            } else {
+                                (None, None)
+                            };
                             let accepted = if let Ok(mut bytes) = inbox_bytes.lock() {
                                 let message_bytes = payload.len();
                                 if message_bytes > MAX_INBOX_BYTES
@@ -977,7 +1010,12 @@ impl Node {
                                     if queue.len() >= MAX_INBOX_MESSAGES {
                                         false
                                     } else {
-                                        queue.push((c.remote_id, stream, payload.clone()));
+                                        queue.push(InboundMessage {
+                                            sender: c.remote_id,
+                                            stream,
+                                            payload: payload.clone(),
+                                            reply,
+                                        });
                                         *bytes += message_bytes;
                                         true
                                     }
@@ -991,9 +1029,18 @@ impl Node {
                                 eprintln!("inbound data rejected by queue bounds: peer={}, stream={}, bytes={}", hex::encode(c.remote_id), stream, payload.len());
                                 break;
                             }
+                            let response = if let Some(response_rx) = response_rx {
+                                match timeout(Duration::from_secs(15), response_rx).await {
+                                    Ok(Ok(response)) => Some(response),
+                                    _ => None,
+                                }
+                            } else {
+                                None
+                            };
                             if c.send(&Control::DataAck {
                                 stream,
                                 bytes: payload.len() as u32,
+                                response,
                             })
                             .await
                             .is_err()
@@ -1315,6 +1362,13 @@ impl Node {
     }
 
     pub fn take_inbox(&self) -> Vec<([u8; 32], u32, Vec<u8>)> {
+        self.take_inbox_messages()
+            .into_iter()
+            .map(|message| (message.sender, message.stream, message.payload))
+            .collect()
+    }
+
+    pub fn take_inbox_messages(&self) -> Vec<InboundMessage> {
         let queue = self
             .inbox
             .lock()
@@ -1529,11 +1583,12 @@ mod tests {
             let mut server = handshake(s, si, a, false).await.unwrap();
             loop {
                 match server.recv().await.unwrap() {
-                    Control::Data { stream, payload } => {
+                    Control::Data { stream, payload, .. } => {
                         server
                             .send(&Control::DataAck {
                                 stream,
                                 bytes: payload.len() as u32,
+                                response: None,
                             })
                             .await
                             .unwrap();
@@ -1646,6 +1701,7 @@ mod tests {
         let message = Control::Data {
             stream: 1,
             payload: vec![0; MAX_FRAME / 2 + 1],
+            request: false,
         };
         let encoded = encode(&message).unwrap();
         assert!(matches!(decode(&encoded), Err(NetworkError::FrameTooLarge)));
