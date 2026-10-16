@@ -297,13 +297,44 @@ fn three_node_product_smoke() {
             "DG import: {group_import}"
         );
 
+        let group2_generated: serde_json::Value = serde_json::from_str(&post(
+            "127.0.0.1:46201",
+            "/api/federation/generate",
+            &serde_json::json!({
+                "kind":"dgc",
+                "owner_data_centre_id":dc_id.clone(),
+                "data_centre_ids":[dc_id.clone(), dc2_id.clone()],
+                "name":"Second signed smoke data group"
+            })
+            .to_string(),
+        ))
+        .expect("second signed data-group generation JSON");
+        assert_eq!(group2_generated["status"], "generated");
+        let group2_content = group2_generated["content"]
+            .as_str()
+            .expect("second signed data-group content")
+            .to_string();
+        let group2_envelope: serde_json::Value =
+            serde_json::from_str(&group2_content).expect("second signed DG envelope");
+        let group2_id = group2_envelope["payload"]["data_group_id"]
+            .as_str()
+            .expect("second signed DG ID")
+            .to_string();
+        let group2_import: serde_json::Value = serde_json::from_str(&post(
+            "127.0.0.1:46202",
+            "/api/federation/import",
+            &serde_json::json!({"kind":"dgc","content":group2_content}).to_string(),
+        ))
+        .expect("second signed data-group import JSON");
+        assert_eq!(group2_import["status"], "imported");
+
         let denied_centre_group: serde_json::Value = serde_json::from_str(&post(
             "127.0.0.1:46202",
             "/api/federation/generate",
             &serde_json::json!({
                 "kind":"cgc",
                 "owner_data_group_id":group_id.clone(),
-                "data_group_ids":[group_id.clone()],
+                "data_group_ids":[group_id.clone(), group2_id.clone()],
                 "name":"should be denied"
             })
             .to_string(),
@@ -320,7 +351,7 @@ fn three_node_product_smoke() {
             &serde_json::json!({
                 "kind":"cgc",
                 "owner_data_group_id":group_id,
-                "data_group_ids":[group_id],
+                "data_group_ids":[group_id.clone(), group2_id.clone()],
                 "name":"Signed smoke centre group"
             })
             .to_string(),
