@@ -1299,7 +1299,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                 }
                 "dgc" => {
                     let dc_id = parsed.get("owner_data_centre_id").and_then(|value| value.as_str()).unwrap_or("");
-                    let centres = parsed.get("data_centre_ids").and_then(|value| value.as_array())
+                    let centres: Vec<String> = parsed.get("data_centre_ids").and_then(|value| value.as_array())
                         .map(|items| items.iter().filter_map(|value| value.as_str().map(str::to_owned)).collect())
                         .unwrap_or_default();
                     let (owner, all_centres_trusted) = federation_state.lock().ok()
@@ -1325,7 +1325,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                 }
                 "cgc" => {
                     let dg_id = parsed.get("owner_data_group_id").and_then(|value| value.as_str()).unwrap_or("");
-                    let groups = parsed.get("data_group_ids").and_then(|value| value.as_array())
+                    let groups: Vec<String> = parsed.get("data_group_ids").and_then(|value| value.as_array())
                         .map(|items| items.iter().filter_map(|value| value.as_str().map(str::to_owned)).collect())
                         .unwrap_or_default();
                     let (owner, all_groups_trusted) = federation_state.lock().ok()
