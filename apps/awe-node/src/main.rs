@@ -860,12 +860,12 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
     } = state;
     // The UI listener is local, but a stalled client must not hold a task and socket forever.
     // Keep enough time for large local uploads while bounding slow-header/body resource use.
-    let request = match tokio::time::timeout(
+    let request_result = tokio::time::timeout(
         Duration::from_secs(30),
         read_http_request(&mut stream),
     )
-    .await
-    {
+    .await;
+    let request = match request_result {
         Ok(Ok(request)) => request,
         Ok(Err(error)) => {
             let response = http_response(
