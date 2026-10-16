@@ -161,11 +161,7 @@ fn three_node_product_smoke() {
         );
 
         let offers_before = get("127.0.0.1:46201", "/api/onebank/exchange/offers");
-        let malformed_offer = post(
-            "127.0.0.1:46201",
-            "/api/onebank/exchange/offers",
-            "{",
-        );
+        let malformed_offer = post("127.0.0.1:46201", "/api/onebank/exchange/offers", "{");
         assert!(
             malformed_offer.contains("JSON request body must be a valid object"),
             "malformed JSON was not rejected: {malformed_offer}"
@@ -190,7 +186,10 @@ fn three_node_product_smoke() {
             r#"{"offer":{"id":"smoke-offer-1","side":"sell","amount":2.5,"price":100,"currency":"USD","rail":"BankTransfer","created_at":0}}"#,
         ))
         .expect("valid exchange offer JSON");
-        assert_eq!(valid_offer["status"], "published", "valid offer: {valid_offer}");
+        assert_eq!(
+            valid_offer["status"], "published",
+            "valid offer: {valid_offer}"
+        );
         assert_eq!(valid_offer["offer_id"], "smoke-offer-1");
         assert_eq!(valid_offer["offer"]["side"], "sell");
         assert_eq!(valid_offer["offer"]["amount"], 2.5);
