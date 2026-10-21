@@ -1036,7 +1036,8 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         let (name, value) = line.split_once(':')?;
         name.eq_ignore_ascii_case("origin").then(|| value.trim())
     });
-    let site_origin_allowed = origin
+    let site_origin_allowed =
+        origin
         .zip(request_host.as_deref())
         .is_some_and(|(origin, host_header)| {
             let Some(site_host_id) = host_header.strip_suffix(&site_suffix) else {
