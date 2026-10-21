@@ -1,27 +1,3 @@
-pub mod serde_bytes_64 {
-    use serde::{Deserialize, Deserializer, Serializer};
-    pub fn serialize<S>(value: &[u8; 64], serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_bytes(value)
-    }
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<[u8; 64], D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let bytes = Vec::<u8>::deserialize(deserializer)?;
-        if bytes.len() != 64 {
-            return Err(serde::de::Error::invalid_length(
-                bytes.len(),
-                &"64-byte signature",
-            ));
-        }
-        let mut value = [0u8; 64];
-        value.copy_from_slice(&bytes);
-        Ok(value)
-    }
-}
 pub mod access;
 pub mod awenet;
 pub mod calls;
@@ -38,6 +14,7 @@ pub mod host_directory;
 pub mod identity;
 pub mod lan_mesh;
 pub mod limits;
+pub mod mesh_optimizer;
 pub mod messenger;
 pub mod messenger_runtime;
 pub mod namespace;
