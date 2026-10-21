@@ -1038,24 +1038,24 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
     });
     let site_origin_allowed =
         origin
-        .zip(request_host.as_deref())
-        .is_some_and(|(origin, host_header)| {
-            let Some(site_host_id) = host_header.strip_suffix(&site_suffix) else {
-                return false;
-            };
-            if site_host_id.len() != 64
-                || !site_host_id.bytes().all(|byte| byte.is_ascii_hexdigit())
-            {
-                return false;
-            }
-            let site_prefix = format!("/site/{site_host_id}");
-            let allowed_site_path = path == site_prefix
-                || path
-                    .strip_prefix(&site_prefix)
-                    .is_some_and(|rest| rest.starts_with('/'));
-            allowed_site_path
-                && origin.eq_ignore_ascii_case(&format!("http://{host_header}"))
-        });
+            .zip(request_host.as_deref())
+            .is_some_and(|(origin, host_header)| {
+                let Some(site_host_id) = host_header.strip_suffix(&site_suffix) else {
+                    return false;
+                };
+                if site_host_id.len() != 64
+                    || !site_host_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+                {
+                    return false;
+                }
+                let site_prefix = format!("/site/{site_host_id}");
+                let allowed_site_path = path == site_prefix
+                    || path
+                        .strip_prefix(&site_prefix)
+                        .is_some_and(|rest| rest.starts_with('/'));
+                allowed_site_path
+                    && origin.eq_ignore_ascii_case(&format!("http://{host_header}"))
+            });
     if let Some(origin) = origin {
         if !is_allowed_ui_origin(origin) && !site_origin_allowed {
             stream
