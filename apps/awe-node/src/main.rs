@@ -1053,8 +1053,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                     || path
                         .strip_prefix(&site_prefix)
                         .is_some_and(|rest| rest.starts_with('/'));
-                allowed_site_path
-                    && origin.eq_ignore_ascii_case(&format!("http://{host_header}"))
+                allowed_site_path && origin.eq_ignore_ascii_case(&format!("http://{host_header}"))
             });
     if let Some(origin) = origin {
         if !is_allowed_ui_origin(origin) && !site_origin_allowed {
