@@ -720,7 +720,10 @@ fn find_site_manifest(host_root: &Path, site_id: &str) -> std::io::Result<SiteMa
     for entry in fs::read_dir(host_root)? {
         let Ok(entry) = entry else { continue };
         let path = entry.path();
-        let name = path.file_name().and_then(|value| value.to_str()).unwrap_or("");
+        let name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("");
         if !name.ends_with(".manifest.json") {
             continue;
         }
@@ -748,9 +751,8 @@ fn save_site_manifest(
         "id-{}.manifest.json",
         hex::encode(manifest.root_hash)
     ));
-    let bytes = serde_json::to_vec_pretty(manifest).map_err(|error| {
-        std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
-    })?;
+    let bytes = serde_json::to_vec_pretty(manifest)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string()))?;
     fs::write(immutable_path, bytes)
 }
 
@@ -996,13 +998,11 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or("GET");
     let path = parts.next().unwrap_or("/").split('?').next().unwrap_or("/");
-    let request_host = request
-        .lines()
-        .find_map(|line| {
-            let (name, value) = line.split_once(':')?;
-            name.eq_ignore_ascii_case("host")
-                .then(|| value.trim().to_ascii_lowercase())
-        });
+    let request_host = request.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("host")
+            .then(|| value.trim().to_ascii_lowercase())
+    });
     let configured_port = env::var("AWE_UI_ADDR")
         .ok()
         .and_then(|address| address.rsplit_once(':').map(|(_, port)| port.to_string()))
@@ -1010,8 +1010,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
     let site_suffix = format!(".localhost:{configured_port}");
     if let Some(host_header) = request_host.as_deref() {
         if let Some(site_host_id) = host_header.strip_suffix(&site_suffix) {
-            if site_host_id.len() == 64
-                && site_host_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+            if site_host_id.len() == 64 && site_host_id.bytes().all(|byte| byte.is_ascii_hexdigit())
             {
                 let site_prefix = format!("/site/{site_host_id}");
                 let allowed_site_path = path == site_prefix
@@ -1137,7 +1136,11 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
     if let Some(site_route) = path.strip_prefix("/site/") {
         let mut parts = site_route.splitn(2, '/');
         let site_id = parts.next().unwrap_or("");
-        let expected_host = format!("{}.localhost:{}", site_id.to_ascii_lowercase(), configured_port);
+        let expected_host = format!(
+            "{}.localhost:{}",
+            site_id.to_ascii_lowercase(),
+            configured_port
+        );
         if site_id.len() == 64
             && site_id.bytes().all(|byte| byte.is_ascii_hexdigit())
             && request_host.as_deref() != Some(expected_host.as_str())
@@ -1149,7 +1152,10 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
             stream.write_all(response.as_bytes()).await?;
             return Ok(());
         }
-        let encoded_path = parts.next().filter(|value| !value.is_empty()).unwrap_or("index.html");
+        let encoded_path = parts
+            .next()
+            .filter(|value| !value.is_empty())
+            .unwrap_or("index.html");
         let Some(decoded_path) = decode_site_path(encoded_path) else {
             let response = http_response_bytes(
                 "400 Bad Request",
@@ -1166,8 +1172,8 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         };
         let response = match find_site_manifest(&host_root, site_id) {
             Ok(manifest) => {
-                let clean_path = awep2p_core::host::normalize_path(&requested_path)
-                    .unwrap_or_default();
+                let clean_path =
+                    awep2p_core::host::normalize_path(&requested_path).unwrap_or_default();
                 let content_type = manifest
                     .files
                     .iter()

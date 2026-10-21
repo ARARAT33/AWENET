@@ -802,7 +802,10 @@ fn three_node_product_smoke() {
             "published site content was not served: {served_site}"
         );
         let sites = get("127.0.0.1:46201", "/api/sites");
-        assert!(sites.contains(site_id), "published site was not listed: {sites}");
+        assert!(
+            sites.contains(site_id),
+            "published site was not listed: {sites}"
+        );
     });
 
     for child in &mut children {

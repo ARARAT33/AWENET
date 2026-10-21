@@ -144,9 +144,9 @@ impl AweHost {
             }
         }
         let total = files.iter().try_fold(0u64, |total, file| {
-            total.checked_add(file.size).ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidInput, "site size overflow")
-            })
+            total
+                .checked_add(file.size)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "site size overflow"))
         })?;
         if total > self.policy.max_site_bytes {
             return Err(io::Error::new(
