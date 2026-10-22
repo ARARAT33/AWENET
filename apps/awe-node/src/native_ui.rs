@@ -3,6 +3,8 @@ use serde_json::Value;
 use std::{
     io::{Read, Write},
     net::{SocketAddr, TcpStream},
+    sync::mpsc::{self, Receiver},
+    thread,
     time::{Duration, Instant},
 };
 
@@ -59,7 +61,11 @@ struct AweNetDesktop {
     search: String,
     message: String,
     last_refresh: Instant,
+    refresh_rx: Option<Receiver<RefreshResult>>,
+    refreshing: bool,
 }
+
+type RefreshResult = (Result<Value, String>, Result<Value, String>);
 
 impl AweNetDesktop {
     fn new(addr: SocketAddr) -> Self {
@@ -75,13 +81,20 @@ impl AweNetDesktop {
             search: String::new(),
             message: String::new(),
             last_refresh: Instant::now() - Duration::from_secs(10),
+            refresh_rx: None,
+            refreshing: false,
         };
         app.refresh();
         app
     }
 
-    fn request(&self, method: &str, path: &str, body: Option<&str>) -> Result<Value, String> {
-        let mut stream = TcpStream::connect_timeout(&self.addr, Duration::from_secs(2))
+    fn request_at(
+        addr: SocketAddr,
+        method: &str,
+        path: &str,
+        body: Option<&str>,
+    ) -> Result<Value, String> {
+        let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(2))
             .map_err(|e| format!("AWENET backend unavailable: {e}"))?;
         stream
             .set_read_timeout(Some(Duration::from_secs(3)))
@@ -107,18 +120,46 @@ impl AweNetDesktop {
         serde_json::from_str(body).map_err(|e| format!("invalid backend response: {e}"))
     }
 
+    fn request(&self, method: &str, path: &str, body: Option<&str>) -> Result<Value, String> {
+        Self::request_at(self.addr, method, path, body)
+    }
+
     fn refresh(&mut self) {
+        if let Some(receiver) = self.refresh_rx.take() {
+            match receiver.try_recv() {
+                Ok((status, wallet)) => {
+                    self.refreshing = false;
+                    match status {
+                        Ok(value) => self.status = value,
+                        Err(error) => self.message = error,
+                    }
+                    if let Ok(value) = wallet {
+                        self.wallet = value;
+                    }
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    self.refresh_rx = Some(receiver);
+                    return;
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.refreshing = false;
+                    self.message = "AWENET refresh worker stopped unexpectedly.".into();
+                }
+            }
+        }
         if self.last_refresh.elapsed() < Duration::from_millis(700) {
             return;
         }
         self.last_refresh = Instant::now();
-        match self.request("GET", "/api/status", None) {
-            Ok(value) => self.status = value,
-            Err(error) => self.message = error,
-        }
-        if let Ok(value) = self.request("GET", "/api/onebank/wallet", None) {
-            self.wallet = value;
-        }
+        let addr = self.addr;
+        let (sender, receiver) = mpsc::channel();
+        self.refresh_rx = Some(receiver);
+        self.refreshing = true;
+        thread::spawn(move || {
+            let status = Self::request_at(addr, "GET", "/api/status", None);
+            let wallet = Self::request_at(addr, "GET", "/api/onebank/wallet", None);
+            let _ = sender.send((status, wallet));
+        });
     }
 
     fn send_onecoin(&mut self) {
@@ -342,54 +383,62 @@ impl AweNetDesktop {
 }
 
 impl eframe::App for AweNetDesktop {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.refresh();
 
-        ui.horizontal(|ui| {
-            ui.heading("AWENET");
-            ui.separator();
-            ui.label(self.page.title());
-            if ui.button("Refresh").clicked() {
-                self.last_refresh = Instant::now() - Duration::from_secs(2);
-                self.refresh();
-            }
-            if !self.message.is_empty() {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.heading("AWENET");
                 ui.separator();
-                ui.label(&self.message);
-            }
-        });
-        ui.separator();
-
-        ui.horizontal(|ui| {
-            for (page, label) in [
-                (Page::Home, "Home"),
-                (Page::Network, "Network"),
-                (Page::Wallet, "ONECOIN"),
-                (Page::Messenger, "Messenger"),
-                (Page::Browser, "AWENET Browser"),
-                (Page::Node, "Node"),
-                (Page::Settings, "Settings"),
-            ] {
-                if ui.selectable_label(self.page == page, label).clicked() {
-                    self.page = page;
-                    self.message.clear();
+                ui.label(self.page.title());
+                if ui
+                    .add_enabled(!self.refreshing, egui::Button::new("Refresh"))
+                    .clicked()
+                {
+                    self.last_refresh = Instant::now() - Duration::from_secs(2);
+                    self.refresh();
                 }
-            }
-        });
-        ui.separator();
+                if self.refreshing {
+                    ui.weak("Refreshing…");
+                }
+                if !self.message.is_empty() {
+                    ui.separator();
+                    ui.label(&self.message);
+                }
+            });
+            ui.separator();
 
-        egui::ScrollArea::vertical().show(ui, |ui| match self.page {
-            Page::Home => self.home(ui),
-            Page::Network => self.network(ui),
-            Page::Wallet => self.wallet(ui),
-            Page::Messenger => self.messenger(ui),
-            Page::Browser => self.browser(ui),
-            Page::Node => self.node(ui),
-            Page::Settings => self.settings(ui),
-        });
+            ui.horizontal(|ui| {
+                for (page, label) in [
+                    (Page::Home, "Home"),
+                    (Page::Network, "Network"),
+                    (Page::Wallet, "ONECOIN"),
+                    (Page::Messenger, "Messenger"),
+                    (Page::Browser, "AWENET Browser"),
+                    (Page::Node, "Node"),
+                    (Page::Settings, "Settings"),
+                ] {
+                    if ui.selectable_label(self.page == page, label).clicked() {
+                        self.page = page;
+                        self.message.clear();
+                    }
+                }
+            });
+            ui.separator();
 
-        ui.separator();
-        ui.small(format!("Native desktop mode • backend {}", self.addr));
-        ui.ctx().request_repaint_after(Duration::from_millis(500));
+            egui::ScrollArea::vertical().show(ui, |ui| match self.page {
+                Page::Home => self.home(ui),
+                Page::Network => self.network(ui),
+                Page::Wallet => self.wallet(ui),
+                Page::Messenger => self.messenger(ui),
+                Page::Browser => self.browser(ui),
+                Page::Node => self.node(ui),
+                Page::Settings => self.settings(ui),
+            });
+
+            ui.separator();
+            ui.small(format!("Native desktop mode • backend {}", self.addr));
+        });
+        ctx.request_repaint_after(Duration::from_millis(500));
     }
 }
