@@ -185,8 +185,7 @@ fn three_node_product_smoke() {
             missing_content_type.contains("Content-Type application/json is required"),
             "state-changing JSON request without Content-Type was not rejected: {missing_content_type}"
         );
-        let federation_after_missing_content_type =
-            get("127.0.0.1:46201", "/api/federation");
+        let federation_after_missing_content_type = get("127.0.0.1:46201", "/api/federation");
         assert!(
             !federation_after_missing_content_type.contains("dc-smoke-missing-content-type"),
             "request without JSON Content-Type unexpectedly mutated federation state"
