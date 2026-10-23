@@ -82,6 +82,22 @@ fn post(addr: &str, path: &str, body: &str) -> String {
     )
 }
 
+fn post_without_content_type(addr: &str, path: &str, body: &str) -> String {
+    let html = get(addr, "/");
+    let token = html
+        .split("name=\"awenet-api-token\" content=\"")
+        .nth(1)
+        .and_then(|value| value.split('\"').next())
+        .expect("session token in UI HTML");
+    request(
+        addr,
+        &format!(
+            "POST {path} HTTP/1.1\r\nHost: {addr}\r\nX-AWENET-Session: {token}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        ),
+    )
+}
+
 fn wait_for_health(addr: &str) {
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
@@ -158,6 +174,22 @@ fn three_node_product_smoke() {
         assert!(
             unauthorized.contains("valid AWENET session token required"),
             "unauthenticated state change was not rejected: {unauthorized}"
+        );
+
+        let missing_content_type = post_without_content_type(
+            "127.0.0.1:46201",
+            "/api/federation/generate",
+            r#"{"kind":"awedc","data_centre_id":"dc-smoke-missing-content-type","name":"Must not be created"}"#,
+        );
+        assert!(
+            missing_content_type.contains("Content-Type application/json is required"),
+            "state-changing JSON request without Content-Type was not rejected: {missing_content_type}"
+        );
+        let federation_after_missing_content_type =
+            get("127.0.0.1:46201", "/api/federation");
+        assert!(
+            !federation_after_missing_content_type.contains("dc-smoke-missing-content-type"),
+            "request without JSON Content-Type unexpectedly mutated federation state"
         );
 
         let offers_before = get("127.0.0.1:46201", "/api/onebank/exchange/offers");
