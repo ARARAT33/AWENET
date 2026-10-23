@@ -1138,7 +1138,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         let (name, value) = line.split_once(':')?;
         name.eq_ignore_ascii_case("content-type").then(|| value.trim())
     });
-    let body = request.split("\\r\\n\\r\\n").nth(1).unwrap_or("");
+    let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
     if let Err(error) = validate_json_api_request(method, path, content_type, body) {
         let response = http_response(
             "400 Bad Request",
