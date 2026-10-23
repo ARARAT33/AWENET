@@ -777,6 +777,35 @@ fn decode_site_path(value: &str) -> Option<String> {
     String::from_utf8(decoded).ok()
 }
 
+fn validate_json_api_request(
+    method: &str,
+    path: &str,
+    content_type: Option<&str>,
+    body: &str,
+) -> Result<(), &'static str> {
+    let route = path.split('?').next().unwrap_or(path);
+    if !method.eq_ignore_ascii_case("POST")
+        || !route.starts_with("/api/")
+        || route == "/api/connect"
+    {
+        return Ok(());
+    }
+
+    let is_json = content_type.is_some_and(|value| {
+        value
+            .split(';')
+            .next()
+            .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("application/json"))
+    });
+    if !is_json {
+        return Err("Content-Type application/json is required");
+    }
+    if !serde_json::from_str::<serde_json::Value>(body).is_ok_and(|value| value.is_object()) {
+        return Err("JSON request body must be a valid object");
+    }
+    Ok(())
+}
+
 fn ui_html_with_session_token(token: &str) -> String {
     let bootstrap = UI_SESSION_BOOTSTRAP.replace("__AWENET_API_TOKEN__", token);
     UI_HTML.replace("</head>", &format!("{bootstrap}\n</head>"))
@@ -1103,35 +1132,24 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
             return Ok(());
         }
     }
-    // Reject malformed/non-object JSON before route handlers can silently replace it
-    // with an empty object via unwrap_or_default(). Form-encoded bootstrap requests are
-    // intentionally excluded.
-    if method.eq_ignore_ascii_case("POST")
-        && path.starts_with("/api/")
-        && request
-            .lines()
-            .find_map(|line| {
-                let (name, value) = line.split_once(':')?;
-                name.eq_ignore_ascii_case("content-type")
-                    .then(|| value.trim())
-            })
-            .is_some_and(|value| value.to_ascii_lowercase().starts_with("application/json"))
-    {
-        let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
-        let valid_object =
-            serde_json::from_str::<serde_json::Value>(body).is_ok_and(|value| value.is_object());
-        if !valid_object {
-            let response = http_response(
-                "400 Bad Request",
-                "application/json; charset=utf-8",
-                r#"{"status":"error","error":"JSON request body must be a valid object"}"#,
-                origin,
-            )
-            .await;
-            stream.write_all(&response).await?;
-            stream.shutdown().await?;
-            return Ok(());
-        }
+    // All state-changing JSON API routes require an explicit JSON content type and
+    // a valid object body. The bootstrap connect route uses its query string instead.
+    let content_type = request.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("content-type").then(|| value.trim())
+    });
+    let body = request.split("\\r\\n\\r\\n").nth(1).unwrap_or("");
+    if let Err(error) = validate_json_api_request(method, path, content_type, body) {
+        let response = http_response(
+            "400 Bad Request",
+            "application/json; charset=utf-8",
+            &serde_json::json!({"status":"error","error":error}).to_string(),
+            origin,
+        )
+        .await;
+        stream.write_all(&response).await?;
+        stream.shutdown().await?;
+        return Ok(());
     }
     if let Some(site_route) = path.strip_prefix("/site/") {
         let mut parts = site_route.splitn(2, '/');
@@ -4283,7 +4301,7 @@ mod phase_two_backend_tests {
         is_valid_api_session, json_u16_field, json_u32_field, leave_federation_membership,
         onecoin_consensus_configured, parse_content_length, parse_onecoin_atoms,
         sign_federation_invitation, storage_ack_matches, storage_upload_is_complete,
-        ui_html_with_session_token, validate_community_message, validate_community_title,
+        ui_html_with_session_token, validate_json_api_request, validate_community_message, validate_community_title,
         validate_group_member_ids, validate_remote_channel, validate_remote_feed_message,
         validate_remote_group, validate_storage_file_id, verify_signed_federation_invitation,
         AweNetConfig, StorageShardAck, ATOMS_PER_COIN, MAX_COMMUNITY_MESSAGES_PER_FEED,
@@ -4345,6 +4363,50 @@ mod phase_two_backend_tests {
         assert!(!is_valid_api_session("secret", Some("wrong")));
         assert!(!is_valid_api_session("secret", Some("secret ")));
         assert!(is_valid_api_session("secret", Some("secret")));
+    }
+
+    #[test]
+    fn state_changing_json_api_requires_json_content_type_and_object_body() {
+        assert!(validate_json_api_request(
+            "POST",
+            "/api/federation/import",
+            Some("application/json; charset=utf-8"),
+            r#"{"kind":"awedc"}"#,
+        )
+        .is_ok());
+        assert_eq!(
+            validate_json_api_request("POST", "/api/federation/import", None, r#"{"kind":"awedc"}"#),
+            Err("Content-Type application/json is required")
+        );
+        assert_eq!(
+            validate_json_api_request(
+                "POST",
+                "/api/federation/import",
+                Some("text/plain"),
+                r#"{"kind":"awedc"}"#,
+            ),
+            Err("Content-Type application/json is required")
+        );
+        assert_eq!(
+            validate_json_api_request(
+                "POST",
+                "/api/federation/import",
+                Some("application/json"),
+                "{",
+            ),
+            Err("JSON request body must be a valid object")
+        );
+        assert_eq!(
+            validate_json_api_request(
+                "POST",
+                "/api/federation/import",
+                Some("application/json"),
+                "[]",
+            ),
+            Err("JSON request body must be a valid object")
+        );
+        assert!(validate_json_api_request("POST", "/api/connect?address=127.0.0.1%3A1", None, "").is_ok());
+        assert!(validate_json_api_request("GET", "/api/federation", None, "").is_ok());
     }
 
     #[test]
