@@ -1136,7 +1136,8 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
     // a valid object body. The bootstrap connect route uses its query string instead.
     let content_type = request.lines().find_map(|line| {
         let (name, value) = line.split_once(':')?;
-        name.eq_ignore_ascii_case("content-type").then(|| value.trim())
+        name.eq_ignore_ascii_case("content-type")
+            .then(|| value.trim())
     });
     let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
     if let Err(error) = validate_json_api_request(method, path, content_type, body) {
@@ -4301,12 +4302,12 @@ mod phase_two_backend_tests {
         is_valid_api_session, json_u16_field, json_u32_field, leave_federation_membership,
         onecoin_consensus_configured, parse_content_length, parse_onecoin_atoms,
         sign_federation_invitation, storage_ack_matches, storage_upload_is_complete,
-        ui_html_with_session_token, validate_json_api_request, validate_community_message, validate_community_title,
-        validate_group_member_ids, validate_remote_channel, validate_remote_feed_message,
-        validate_remote_group, validate_storage_file_id, verify_signed_federation_invitation,
-        AweNetConfig, StorageShardAck, ATOMS_PER_COIN, MAX_COMMUNITY_MESSAGES_PER_FEED,
-        MAX_COMMUNITY_MESSAGE_BYTES, MAX_COMMUNITY_TITLE_BYTES, MAX_GROUP_MEMBERS,
-        MAX_MESSENGER_LOG_ENTRIES,
+        ui_html_with_session_token, validate_community_message, validate_community_title,
+        validate_group_member_ids, validate_json_api_request, validate_remote_channel,
+        validate_remote_feed_message, validate_remote_group, validate_storage_file_id,
+        verify_signed_federation_invitation, AweNetConfig, StorageShardAck, ATOMS_PER_COIN,
+        MAX_COMMUNITY_MESSAGES_PER_FEED, MAX_COMMUNITY_MESSAGE_BYTES, MAX_COMMUNITY_TITLE_BYTES,
+        MAX_GROUP_MEMBERS, MAX_MESSENGER_LOG_ENTRIES,
     };
     use serde_json::json;
 
@@ -4375,7 +4376,12 @@ mod phase_two_backend_tests {
         )
         .is_ok());
         assert_eq!(
-            validate_json_api_request("POST", "/api/federation/import", None, r#"{"kind":"awedc"}"#),
+            validate_json_api_request(
+                "POST",
+                "/api/federation/import",
+                None,
+                r#"{"kind":"awedc"}"#
+            ),
             Err("Content-Type application/json is required")
         );
         assert_eq!(
@@ -4405,7 +4411,10 @@ mod phase_two_backend_tests {
             ),
             Err("JSON request body must be a valid object")
         );
-        assert!(validate_json_api_request("POST", "/api/connect?address=127.0.0.1%3A1", None, "").is_ok());
+        assert!(
+            validate_json_api_request("POST", "/api/connect?address=127.0.0.1%3A1", None, "")
+                .is_ok()
+        );
         assert!(validate_json_api_request("GET", "/api/federation", None, "").is_ok());
     }
 
