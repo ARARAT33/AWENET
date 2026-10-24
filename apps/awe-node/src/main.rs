@@ -30,7 +30,10 @@ use std::{
     env, fs,
     net::SocketAddr,
     path::{Path, PathBuf},
-    sync::{atomic::{AtomicU64, Ordering}, Arc, Mutex},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
     time::Duration,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -917,14 +920,18 @@ static ATOMIC_WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write as _;
 
-    let file_name = path.file_name().and_then(|name| name.to_str()).ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::InvalidInput, "destination has no valid file name")
-    })?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "destination has no valid file name",
+            )
+        })?;
     let sequence = ATOMIC_WRITE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let temporary_path = path.with_file_name(format!(
-        "{file_name}.tmp-{}-{sequence}",
-        std::process::id()
-    ));
+    let temporary_path =
+        path.with_file_name(format!("{file_name}.tmp-{}-{sequence}", std::process::id()));
 
     let result = (|| {
         let mut temporary = fs::OpenOptions::new()
@@ -945,9 +952,8 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 fn write_json_atomic<T: serde::Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
-    let bytes = serde_json::to_vec_pretty(value).map_err(|error| {
-        std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
-    })?;
+    let bytes = serde_json::to_vec_pretty(value)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string()))?;
     write_atomic(path, &bytes)
 }
 
@@ -4344,25 +4350,22 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod phase_two_backend_tests {
     use super::{
-        append_bounded_json_entry, append_messenger_entry, format_uid, is_allowed_ui_origin, write_atomic,
+        append_bounded_json_entry, append_messenger_entry, format_uid, is_allowed_ui_origin,
         is_valid_api_session, json_u16_field, json_u32_field, leave_federation_membership,
         onecoin_consensus_configured, parse_content_length, parse_onecoin_atoms,
         sign_federation_invitation, storage_ack_matches, storage_upload_is_complete,
         ui_html_with_session_token, validate_community_message, validate_community_title,
         validate_group_member_ids, validate_json_api_request, validate_remote_channel,
         validate_remote_feed_message, validate_remote_group, validate_storage_file_id,
-        verify_signed_federation_invitation, AweNetConfig, StorageShardAck, ATOMS_PER_COIN,
-        MAX_COMMUNITY_MESSAGES_PER_FEED, MAX_COMMUNITY_MESSAGE_BYTES, MAX_COMMUNITY_TITLE_BYTES,
-        MAX_GROUP_MEMBERS, MAX_MESSENGER_LOG_ENTRIES,
+        verify_signed_federation_invitation, write_atomic, AweNetConfig, StorageShardAck,
+        ATOMS_PER_COIN, MAX_COMMUNITY_MESSAGES_PER_FEED, MAX_COMMUNITY_MESSAGE_BYTES,
+        MAX_COMMUNITY_TITLE_BYTES, MAX_GROUP_MEMBERS, MAX_MESSENGER_LOG_ENTRIES,
     };
     use serde_json::json;
 
     #[test]
     fn atomic_file_write_replaces_complete_content_and_cleans_up_failed_temp_files() {
-        let dir = std::env::temp_dir().join(format!(
-            "awenet-atomic-write-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("awenet-atomic-write-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
 
@@ -4381,7 +4384,10 @@ mod phase_two_backend_tests {
             .map(|entry| entry.file_name().to_string_lossy().into_owned())
             .filter(|name| name.starts_with("blocked.tmp-"))
             .collect();
-        assert!(leftovers.is_empty(), "temporary files leaked: {leftovers:?}");
+        assert!(
+            leftovers.is_empty(),
+            "temporary files leaked: {leftovers:?}"
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }
