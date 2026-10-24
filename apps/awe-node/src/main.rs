@@ -30,7 +30,7 @@ use std::{
     env, fs,
     net::SocketAddr,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{atomic::{AtomicU64, Ordering}, Arc, Mutex},
     time::Duration,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -910,6 +910,47 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> Result<String>
     String::from_utf8(data).context("HTTP request must be UTF-8")
 }
 
+static ATOMIC_WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+/// Persist a complete file by writing and syncing a sibling temporary file, then
+/// renaming it into place. Failed writes leave the previous destination intact.
+fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+
+    let file_name = path.file_name().and_then(|name| name.to_str()).ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "destination has no valid file name")
+    })?;
+    let sequence = ATOMIC_WRITE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let temporary_path = path.with_file_name(format!(
+        "{file_name}.tmp-{}-{sequence}",
+        std::process::id()
+    ));
+
+    let result = (|| {
+        let mut temporary = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary_path)?;
+        temporary.write_all(bytes)?;
+        temporary.sync_all()?;
+        drop(temporary);
+        fs::rename(&temporary_path, path)?;
+        Ok(())
+    })();
+
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary_path);
+    }
+    result
+}
+
+fn write_json_atomic<T: serde::Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
+    let bytes = serde_json::to_vec_pretty(value).map_err(|error| {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
+    })?;
+    write_atomic(path, &bytes)
+}
+
 fn json_u64_field(value: &serde_json::Value, field: &str) -> Result<u64, String> {
     match value.get(field) {
         None => Ok(0),
@@ -1511,14 +1552,16 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
             });
             match contribution_result {
                 Ok(r) => {
-                    if let Ok(mut guard) = contribution.lock() { *guard = r.clone(); }
-                    match fs::write(&contribution_path, serde_json::to_vec_pretty(&r).unwrap_or_default()) {
-                        Ok(()) => ("200 OK", "application/json; charset=utf-8", serde_json::json!({
-                            "status":"accepted_for_verification",
-                            "tier": classify_tier(&r).wire_name(),
-                            "verified":false,
-                            "reward_status":"requires_signed_usage_receipt"
-                        }).to_string()),
+                    match write_json_atomic(&contribution_path, &r) {
+                        Ok(()) => {
+                            if let Ok(mut guard) = contribution.lock() { *guard = r.clone(); }
+                            ("200 OK", "application/json; charset=utf-8", serde_json::json!({
+                                "status":"accepted_for_verification",
+                                "tier": classify_tier(&r).wire_name(),
+                                "verified":false,
+                                "reward_status":"requires_signed_usage_receipt"
+                            }).to_string())
+                        },
                         Err(e) => ("500 Internal Server Error", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":e.to_string()}).to_string())
                     }
                 },
@@ -1639,7 +1682,10 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                 if recipient == node.identity.public.awe_id {
                     return Err("cannot transfer ONECOIN to the same wallet".into());
                 }
-                let mut ledger = onecoin_ledger.lock().map_err(|_| "ONECOIN ledger lock failed".to_string())?;
+                let mut ledger_guard = onecoin_ledger.lock().map_err(|_| "ONECOIN ledger lock failed".to_string())?;
+                // Work on a private snapshot so failed persistence cannot expose a
+                // transfer in memory that was not durably recorded on disk.
+                let mut ledger = ledger_guard.clone();
                 let sender = node.identity.public.awe_id.clone();
                 if ledger.members.is_empty() {
                     ledger.initialize_genesis(std::slice::from_ref(&sender))?;
@@ -1651,8 +1697,8 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                 let nonce = ledger.nonces.get(&sender.to_hex()).copied().unwrap_or(0);
                 let tx = OnecoinTransaction::new(&node.identity, nonce, &recipient, amount_atoms, memo);
                 let (tx_id, fee_atoms) = ledger.apply_transfer_with_fee(&tx, &node.identity.public.public_key, 100)?;
-                fs::write(&onecoin_path, serde_json::to_vec_pretty(&*ledger).map_err(|_| "ONECOIN ledger serialization failed".to_string())?)
-                    .map_err(|e| e.to_string())?;
+                write_json_atomic(&onecoin_path, &ledger).map_err(|e| e.to_string())?;
+                *ledger_guard = ledger;
                 Ok((hex::encode(tx_id), fee_atoms, tx))
             })();
             match result {
@@ -4298,7 +4344,7 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod phase_two_backend_tests {
     use super::{
-        append_bounded_json_entry, append_messenger_entry, format_uid, is_allowed_ui_origin,
+        append_bounded_json_entry, append_messenger_entry, format_uid, is_allowed_ui_origin, write_atomic,
         is_valid_api_session, json_u16_field, json_u32_field, leave_federation_membership,
         onecoin_consensus_configured, parse_content_length, parse_onecoin_atoms,
         sign_federation_invitation, storage_ack_matches, storage_upload_is_complete,
@@ -4310,6 +4356,35 @@ mod phase_two_backend_tests {
         MAX_GROUP_MEMBERS, MAX_MESSENGER_LOG_ENTRIES,
     };
     use serde_json::json;
+
+    #[test]
+    fn atomic_file_write_replaces_complete_content_and_cleans_up_failed_temp_files() {
+        let dir = std::env::temp_dir().join(format!(
+            "awenet-atomic-write-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let path = dir.join("state.json");
+        write_atomic(&path, b"old-state").unwrap();
+        write_atomic(&path, b"new-state").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"new-state");
+
+        let blocked_destination = dir.join("blocked");
+        fs::create_dir(&blocked_destination).unwrap();
+        assert!(write_atomic(&blocked_destination, b"must-not-replace-directory").is_err());
+        assert!(blocked_destination.is_dir());
+        let leftovers: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with("blocked.tmp-"))
+            .collect();
+        assert!(leftovers.is_empty(), "temporary files leaked: {leftovers:?}");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn configured_onecoin_consensus_never_falls_back_to_local_ledger() {
