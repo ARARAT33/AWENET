@@ -4362,6 +4362,7 @@ mod phase_two_backend_tests {
         MAX_COMMUNITY_TITLE_BYTES, MAX_GROUP_MEMBERS, MAX_MESSENGER_LOG_ENTRIES,
     };
     use serde_json::json;
+    use std::fs;
 
     #[test]
     fn atomic_file_write_replaces_complete_content_and_cleans_up_failed_temp_files() {
