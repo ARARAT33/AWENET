@@ -5,8 +5,9 @@ use awep2p_core::data_plane::{
 };
 use awep2p_core::diagnostics::{NodeDiagnostics, NodeMetrics};
 use awep2p_core::federation::{
-    self, AweNetConfig, AweNodeConfig, DataCentreConfig, DataGroupConfig,
+    self, AweNetConfig, AweNodeConfig, CentreGroupConfig, DataCentreConfig, DataGroupConfig,
 };
+use awep2p_core::host::{AweHost, HostPolicy, SiteManifest};
 use awep2p_core::identity::{AweId, AweSecret, Identity, LocalVault, Username};
 use awep2p_core::lan_mesh::LanPeerBeacon;
 use awep2p_core::messenger::format_uid;
@@ -18,15 +19,22 @@ use awep2p_core::onecoin_consensus_runtime::{
 };
 use awep2p_core::policy::{self, NetworkPolicy};
 use awep2p_core::reputation::NodeReputation;
-use awep2p_core::storage::{encode_shards, recover_shards, LocalNodeStore, StoragePolicy};
+use awep2p_core::storage::{
+    encode_shards, recover_shards, save_manifest, LocalNodeStore, StoragePolicy,
+};
 use awep2p_core::store::{AppCapability, Store};
 use awep2p_core::supervisor::{PeerSupervisor, SupervisorConfig};
+use rand::{rngs::OsRng, RngCore};
 use std::{
     collections::BTreeMap,
     env, fs,
     net::SocketAddr,
-    path::PathBuf,
-    sync::{Arc, Mutex},
+    path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
+    time::Duration,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -36,30 +44,251 @@ const UI_JS: &str = include_str!("../../awe-desktop/ui/app.js");
 const ONECOIN_JS: &str = include_str!("../../awe-desktop/ui/onecoin.js");
 const ONECOIN_CSS: &str = include_str!("../../awe-desktop/ui/onecoin.css");
 const QR_JS: &str = include_str!("../../awe-desktop/ui/vendor/qrcode.js");
+const UI_SESSION_BOOTSTRAP: &str = r#"<meta name="awenet-api-token" content="__AWENET_API_TOKEN__">
+<script>
+(() => {
+    const meta = document.querySelector('meta[name="awenet-api-token"]');
+    const token = meta ? meta.content : "";
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = (input, init = {}) => {
+        const rawUrl = typeof input === "string" ? input : input.url;
+        const target = new URL(rawUrl, window.location.href);
+        if (target.origin === window.location.origin && target.pathname.startsWith("/api/")) {
+            const sourceHeaders = init.headers || (input instanceof Request ? input.headers : undefined);
+            const headers = new Headers(sourceHeaders);
+            headers.set("X-AWENET-Session", token);
+            init = { ...init, headers };
+        }
+        return originalFetch(input, init);
+    };
+})();
+</script>"#;
 const DEFAULT_UI_ADDR: &str = "127.0.0.1:41800";
 
 type MessengerLog = Arc<Mutex<Vec<serde_json::Value>>>;
+const MAX_MESSENGER_LOG_ENTRIES: usize = 5_000;
+const MAX_COMMUNITY_TITLE_BYTES: usize = 128;
+const MAX_COMMUNITY_MESSAGE_BYTES: usize = 16 * 1024;
+const MAX_GROUP_MEMBERS: usize = 512;
+const MAX_COMMUNITY_MESSAGES_PER_FEED: usize = 5_000;
+
+fn append_bounded_json_entry(entries: &mut Vec<serde_json::Value>, value: serde_json::Value) {
+    if entries.len() >= MAX_COMMUNITY_MESSAGES_PER_FEED {
+        let remove_count = (MAX_COMMUNITY_MESSAGES_PER_FEED / 10).max(1);
+        entries.drain(..remove_count.min(entries.len()));
+    }
+    entries.push(value);
+}
+
+fn validate_community_title(value: &str) -> Result<(), String> {
+    if value.trim().is_empty() {
+        return Err("title is required".into());
+    }
+    if value.len() > MAX_COMMUNITY_TITLE_BYTES {
+        return Err(format!(
+            "title must not exceed {MAX_COMMUNITY_TITLE_BYTES} bytes"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_community_message(value: &str) -> Result<(), String> {
+    if value.trim().is_empty() {
+        return Err("message text is required".into());
+    }
+    if value.len() > MAX_COMMUNITY_MESSAGE_BYTES {
+        return Err(format!(
+            "message text must not exceed {MAX_COMMUNITY_MESSAGE_BYTES} bytes"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_group_member_ids(members: &[String]) -> Result<(), String> {
+    if members.len() > MAX_GROUP_MEMBERS {
+        return Err(format!("group cannot exceed {MAX_GROUP_MEMBERS} members"));
+    }
+    if members
+        .iter()
+        .any(|member| AweId::from_hex(member).is_err())
+    {
+        return Err("group member IDs must be 64-character hexadecimal AWEIDs".into());
+    }
+    Ok(())
+}
+
+fn validate_remote_group(
+    group: &serde_json::Value,
+    authenticated_sender: &str,
+) -> Result<(), String> {
+    if group.get("owner").and_then(|v| v.as_str()) != Some(authenticated_sender) {
+        return Err("group owner does not match authenticated transport identity".into());
+    }
+    let id = group.get("id").and_then(|v| v.as_str()).unwrap_or("");
+    if id.is_empty() || id.len() > 128 {
+        return Err("invalid group ID".into());
+    }
+    validate_community_title(group.get("title").and_then(|v| v.as_str()).unwrap_or(""))?;
+    let members = group
+        .get("members")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "group members must be an array".to_string())?
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| "group member ID must be text".to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if members.is_empty() || !members.iter().any(|member| member == authenticated_sender) {
+        return Err("group owner must be a group member".into());
+    }
+    validate_group_member_ids(&members)?;
+    if group
+        .get("messages")
+        .and_then(|v| v.as_array())
+        .map(|items| items.len() > MAX_COMMUNITY_MESSAGES_PER_FEED)
+        .unwrap_or(true)
+    {
+        return Err("group message history is missing or exceeds the allowed limit".into());
+    }
+    Ok(())
+}
+
+fn validate_remote_feed_message(
+    message: &serde_json::Value,
+    authenticated_sender: &str,
+) -> Result<(), String> {
+    if message.get("sender").and_then(|v| v.as_str()) != Some(authenticated_sender) {
+        return Err("message sender does not match authenticated transport identity".into());
+    }
+    let id = message.get("id").and_then(|v| v.as_str()).unwrap_or("");
+    if id.is_empty() || id.len() > 128 {
+        return Err("invalid community message ID".into());
+    }
+    validate_community_message(message.get("text").and_then(|v| v.as_str()).unwrap_or(""))?;
+    if message.get("timestamp").and_then(|v| v.as_u64()).is_none() {
+        return Err("message timestamp is required".into());
+    }
+    Ok(())
+}
+
+fn validate_remote_channel(
+    channel: &serde_json::Value,
+    authenticated_sender: &str,
+) -> Result<(), String> {
+    if channel.get("owner").and_then(|v| v.as_str()) != Some(authenticated_sender) {
+        return Err("channel owner does not match authenticated transport identity".into());
+    }
+    let id = channel.get("id").and_then(|v| v.as_str()).unwrap_or("");
+    if id.is_empty() || id.len() > 128 {
+        return Err("invalid channel ID".into());
+    }
+    validate_community_title(channel.get("title").and_then(|v| v.as_str()).unwrap_or(""))?;
+    let subscribers = channel
+        .get("subscribers")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "channel subscribers must be an array".to_string())?;
+    if subscribers.len() > 10_000
+        || subscribers.iter().any(|value| {
+            value
+                .as_str()
+                .and_then(|id| AweId::from_hex(id).ok())
+                .is_none()
+        })
+    {
+        return Err("invalid or excessive channel subscriber list".into());
+    }
+    if !subscribers
+        .iter()
+        .any(|value| value.as_str() == Some(authenticated_sender))
+    {
+        return Err("channel owner must be subscribed".into());
+    }
+    if channel
+        .get("messages")
+        .and_then(|v| v.as_array())
+        .map(|items| items.len() > MAX_COMMUNITY_MESSAGES_PER_FEED)
+        .unwrap_or(true)
+    {
+        return Err("channel message history is missing or exceeds the allowed limit".into());
+    }
+    Ok(())
+}
+
+fn append_messenger_entry(log: &mut Vec<serde_json::Value>, item: serde_json::Value) {
+    if log.len() >= MAX_MESSENGER_LOG_ENTRIES {
+        let remove_count = (MAX_MESSENGER_LOG_ENTRIES / 10).max(1);
+        log.drain(..remove_count.min(log.len()));
+    }
+    log.push(item);
+}
+
+fn storage_upload_is_complete(
+    stored_local: usize,
+    sent_remote: usize,
+    required_placements: usize,
+    failed_transfers: usize,
+) -> bool {
+    failed_transfers == 0 && stored_local.checked_add(sent_remote) == Some(required_placements)
+}
+
+fn storage_ack_matches(
+    ack_sender: &[u8; 32],
+    expected_sender: &[u8; 32],
+    ack: &StorageShardAck,
+    file_id: &[u8; 32],
+    shard_index: u16,
+    expected_hash: &[u8; 32],
+) -> bool {
+    ack_sender == expected_sender
+        && ack.file_id == *file_id
+        && ack.shard_index == shard_index
+        && ack.stored_object_id == *expected_hash
+}
+
+fn validate_storage_file_id(value: &str) -> Result<[u8; 32], String> {
+    let bytes =
+        hex::decode(value).map_err(|_| "file_id must be 64 hexadecimal characters".to_string())?;
+    let id: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| "file_id must be 64 hexadecimal characters".to_string())?;
+    if value.len() != 64 {
+        return Err("file_id must be 64 hexadecimal characters".into());
+    }
+    Ok(id)
+}
 type FederationState = Arc<Mutex<AweNetConfig>>;
 type StorageState = Arc<LocalNodeStore>;
-type PendingAcks = Arc<Mutex<BTreeMap<[u8; 16], StorageShardAck>>>;
-type PendingShards = Arc<Mutex<BTreeMap<[u8; 16], StorageShardTransfer>>>;
+type HostState = Arc<Mutex<AweHost>>;
+type PendingAcks = Arc<Mutex<BTreeMap<[u8; 16], ([u8; 32], StorageShardAck)>>>;
 type PolicyState = Arc<Mutex<NetworkPolicy>>;
 type CommunityState = Arc<Mutex<serde_json::Value>>;
 type ConsensusState = Arc<Mutex<Option<OnecoinConsensusRuntime>>>;
 type OnecoinLedgerState = Arc<Mutex<OnecoinLedger>>;
 type ContributionState = Arc<Mutex<ResourceContribution>>;
+type ConsensusSendResult = (
+    String,
+    u128,
+    Vec<([u8; 32], OnecoinConsensusMessage)>,
+    u64,
+    bool,
+);
 
 #[derive(Clone)]
 struct UiState {
     node: Node,
+    api_token: String,
     messenger: MessengerLog,
     federation_state: FederationState,
     federation_path: PathBuf,
     storage: StorageState,
-    pending_acks: PendingAcks,
-    pending_shards: PendingShards,
+    host: HostState,
+    host_root: PathBuf,
     policy_state: PolicyState,
     community: CommunityState,
+    consensus_state: ConsensusState,
     onecoin_ledger: OnecoinLedgerState,
     onecoin_path: PathBuf,
     onecoin_offers_path: PathBuf,
@@ -102,7 +331,7 @@ fn default_vault() -> PathBuf {
 }
 
 fn usage() -> ! {
-    eprintln!("AWEp2P\n\nUsage:\n  awe-node                 Start the complete local product\n  awe-node app             Start UI + local node\n  awe-node secret <username> [out-file]\n  awe-node init <username> [vault-file]\n  awe-node run <vault-file> <password> <listen-addr> [bootstrap-addr ...]\n  awe-node id <vault-file> <password> <username>\n  awe-node status [vault-file]\n  awe-node diagnostics\n  awe-node mesh <listen-port>\n  awe-node health\n  awe-node probe <address>");
+    eprintln!("AWENET\n\nUsage:\n  awe-node                 Start the complete local product\n  awe-node app             Start UI + local node\n  awe-node secret <username> [out-file]\n  awe-node init <username> [vault-file]\n  awe-node run <vault-file> <password> <listen-addr> [bootstrap-addr ...]\n  awe-node id <vault-file> <password> <username>\n  awe-node status [vault-file]\n  awe-node diagnostics\n  awe-node mesh <listen-port>\n  awe-node health\n  awe-node probe <address>");
     std::process::exit(2)
 }
 
@@ -162,8 +391,480 @@ fn load_identity(path: &PathBuf, password: &str, username: &str) -> Result<Ident
     .map_err(anyhow::Error::msg)
 }
 
-async fn http_response(status: &str, content_type: &str, body: &str) -> Vec<u8> {
-    format!("HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: content-type\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}", body.len()).into_bytes()
+fn is_allowed_ui_origin(origin: &str) -> bool {
+    matches!(
+        origin,
+        "tauri://localhost"
+            | "http://tauri.localhost"
+            | "https://tauri.localhost"
+            | "http://127.0.0.1:41800"
+            | "http://localhost:41800"
+    )
+}
+
+fn is_valid_api_session(expected: &str, supplied: Option<&str>) -> bool {
+    supplied == Some(expected)
+}
+
+fn sign_federation_invitation(
+    kind: &str,
+    payload: serde_json::Value,
+    identity: &Identity,
+) -> Result<String, String> {
+    if !matches!(kind, "awenode" | "awedc" | "dgc" | "cgc") {
+        return Err("unsupported federation invitation kind".into());
+    }
+    let owner_node_id = format_uid(identity.public.awe_id.as_bytes());
+    if kind == "awenode"
+        && payload.get("node_id").and_then(|value| value.as_str()) != Some(owner_node_id.as_str())
+    {
+        return Err("node invitation identity does not match its signer".into());
+    }
+    if kind == "awedc"
+        && payload
+            .get("owner_node_id")
+            .and_then(|value| value.as_str())
+            != Some(owner_node_id.as_str())
+    {
+        return Err("data-centre owner does not match its signer".into());
+    }
+    let unsigned = serde_json::json!({
+        "format": "awenet-signed-federation-invitation",
+        "version": 1,
+        "kind": kind,
+        "owner_node_id": owner_node_id,
+        "owner_public_key": hex::encode(identity.public.public_key),
+        "payload": payload
+    });
+    let message = serde_json::to_vec(&unsigned).map_err(|error| error.to_string())?;
+    let signature = hex::encode(identity.sign(&message));
+    let mut envelope = unsigned;
+    envelope["signature"] = serde_json::Value::String(signature);
+    serde_json::to_string_pretty(&envelope).map_err(|error| error.to_string())
+}
+
+fn verify_signed_federation_invitation(
+    content: &str,
+    expected_kind: &str,
+) -> Result<(serde_json::Value, String), String> {
+    let envelope: serde_json::Value = serde_json::from_str(content)
+        .map_err(|error| format!("invalid invitation JSON: {error}"))?;
+    if envelope.get("format").and_then(|value| value.as_str())
+        != Some("awenet-signed-federation-invitation")
+        || envelope.get("version").and_then(|value| value.as_u64()) != Some(1)
+    {
+        return Err(
+            "unsigned or unsupported federation invitation; regenerate it with this AWENET version"
+                .into(),
+        );
+    }
+    if envelope.get("kind").and_then(|value| value.as_str()) != Some(expected_kind) {
+        return Err("invitation kind does not match the requested import kind".into());
+    }
+    let owner_node_id = envelope
+        .get("owner_node_id")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| "invitation owner identity is missing".to_string())?
+        .to_string();
+    let public_key_bytes = hex::decode(
+        envelope
+            .get("owner_public_key")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| "invitation owner public key is missing".to_string())?,
+    )
+    .map_err(|error| format!("invalid owner public key: {error}"))?;
+    let public_key: [u8; 32] = public_key_bytes
+        .try_into()
+        .map_err(|_| "owner public key must be 32 bytes".to_string())?;
+    if format_uid(AweId::from_public_key(&public_key).as_bytes()) != owner_node_id {
+        return Err("owner identity does not match the public key".into());
+    }
+    let signature_bytes = hex::decode(
+        envelope
+            .get("signature")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| "invitation signature is missing".to_string())?,
+    )
+    .map_err(|error| format!("invalid invitation signature: {error}"))?;
+    let signature: [u8; 64] = signature_bytes
+        .try_into()
+        .map_err(|_| "invitation signature must be 64 bytes".to_string())?;
+    let mut unsigned = envelope.clone();
+    unsigned
+        .as_object_mut()
+        .ok_or_else(|| "invitation must be a JSON object".to_string())?
+        .remove("signature");
+    let message = serde_json::to_vec(&unsigned).map_err(|error| error.to_string())?;
+    if !Identity::verify(&public_key, &message, &signature) {
+        return Err("federation invitation signature verification failed".into());
+    }
+    let payload = envelope
+        .get("payload")
+        .cloned()
+        .ok_or_else(|| "invitation payload is missing".to_string())?;
+    if expected_kind == "awenode"
+        && payload.get("node_id").and_then(|value| value.as_str()) != Some(owner_node_id.as_str())
+    {
+        return Err("node invitation identity does not match its signer".into());
+    }
+    if expected_kind == "awedc"
+        && payload
+            .get("owner_node_id")
+            .and_then(|value| value.as_str())
+            != Some(owner_node_id.as_str())
+    {
+        return Err("data-centre owner does not match its signer".into());
+    }
+    Ok((payload, owner_node_id))
+}
+
+fn record_bootstrap_endpoint(
+    state: &Arc<Mutex<AweNetConfig>>,
+    path: &Path,
+    endpoint: &str,
+    local_node_id: &str,
+) -> Result<(), String> {
+    let mut current = state
+        .lock()
+        .map_err(|_| "federation state lock poisoned".to_string())?;
+    let mut next = current.clone();
+    next.local_node_id = local_node_id.to_string();
+    next.format = "awenet".into();
+    next.version = federation::FORMAT_VERSION;
+    if !next
+        .bootstrap_endpoints
+        .iter()
+        .any(|known| known == endpoint)
+    {
+        next.bootstrap_endpoints.push(endpoint.to_string());
+    }
+    federation::save_json(&next, path)?;
+    *current = next;
+    Ok(())
+}
+
+fn record_generated_federation_owner(
+    kind: &str,
+    payload: &serde_json::Value,
+    owner_node_id: &str,
+    state: &Arc<Mutex<AweNetConfig>>,
+    path: &Path,
+) -> Result<(), String> {
+    if !matches!(kind, "awedc" | "dgc" | "cgc") {
+        return Ok(());
+    }
+    let mut current = state
+        .lock()
+        .map_err(|_| "federation state lock poisoned".to_string())?;
+    let mut next = current.clone();
+    next.local_node_id = owner_node_id.to_string();
+    next.format = "awenet".into();
+    next.version = federation::FORMAT_VERSION;
+    match kind {
+        "awedc" => {
+            let id = payload
+                .get("data_centre_id")
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| "generated data-centre ID is missing".to_string())?;
+            if next
+                .data_centre_owners
+                .get(id)
+                .is_some_and(|owner| owner != owner_node_id)
+            {
+                return Err("data-centre ID is already bound to a different owner".into());
+            }
+            next.data_centre_owners
+                .insert(id.to_string(), owner_node_id.to_string());
+            if !next.joined_data_centres.iter().any(|joined| joined == id) {
+                next.joined_data_centres.push(id.to_string());
+            }
+            if next.local_data_centre_id.is_none() {
+                next.local_data_centre_id = Some(id.to_string());
+            }
+        }
+        "dgc" => {
+            let id = payload
+                .get("data_group_id")
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| "generated data-group ID is missing".to_string())?;
+            if next
+                .data_group_owners
+                .get(id)
+                .is_some_and(|owner| owner != owner_node_id)
+            {
+                return Err("data-group ID is already bound to a different owner".into());
+            }
+            next.data_group_owners
+                .insert(id.to_string(), owner_node_id.to_string());
+            if !next.joined_data_groups.iter().any(|joined| joined == id) {
+                next.joined_data_groups.push(id.to_string());
+            }
+            if next.local_data_group_id.is_none() {
+                next.local_data_group_id = Some(id.to_string());
+            }
+        }
+        "cgc" => {
+            let id = payload
+                .get("centre_group_id")
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| "generated centre-group ID is missing".to_string())?;
+            if !next.joined_centre_groups.iter().any(|joined| joined == id) {
+                next.joined_centre_groups.push(id.to_string());
+            }
+            if next.local_centre_group_id.is_none() {
+                next.local_centre_group_id = Some(id.to_string());
+            }
+        }
+        _ => {}
+    }
+    federation::save_json(&next, path)?;
+    *current = next;
+    Ok(())
+}
+
+fn leave_federation_membership(
+    state: &mut AweNetConfig,
+    kind: &str,
+    id: &str,
+    local_node_id: &str,
+) -> Result<(), String> {
+    let id = id.trim();
+    if id.is_empty() {
+        return Err("membership ID must not be empty".into());
+    }
+    if !state.local_node_id.is_empty() && state.local_node_id != local_node_id {
+        return Err("federation state belongs to a different local node".into());
+    }
+
+    let kind = kind.trim().to_ascii_lowercase();
+    let (joined, local_id) = match kind.as_str() {
+        "dc" | "awedc" => (
+            &mut state.joined_data_centres,
+            &mut state.local_data_centre_id,
+        ),
+        "dg" | "dgc" => (
+            &mut state.joined_data_groups,
+            &mut state.local_data_group_id,
+        ),
+        "cg" | "cgc" => (
+            &mut state.joined_centre_groups,
+            &mut state.local_centre_group_id,
+        ),
+        _ => return Err("kind must be dc, dg, or cg".into()),
+    };
+    let is_member = joined.iter().any(|member| member == id) || local_id.as_deref() == Some(id);
+    if !is_member {
+        return Err("membership is not joined by this node".into());
+    }
+    joined.retain(|member| member != id);
+    if local_id.as_deref() == Some(id) {
+        *local_id = None;
+    }
+    match kind.as_str() {
+        "dc" | "awedc" => {
+            state.data_centre_owners.remove(id);
+            state.data_group_owners.clear();
+            state.joined_data_groups.clear();
+            state.local_data_group_id = None;
+            state.joined_centre_groups.clear();
+            state.local_centre_group_id = None;
+        }
+        "dg" | "dgc" => {
+            state.data_group_owners.remove(id);
+            state.joined_centre_groups.clear();
+            state.local_centre_group_id = None;
+        }
+        _ => {}
+    }
+    state.local_node_id = local_node_id.to_string();
+    Ok(())
+}
+
+fn http_response_bytes(status: &str, content_type: &str, body: &[u8]) -> Vec<u8> {
+    let mut response = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nX-Content-Type-Options: nosniff\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    response.extend_from_slice(body);
+    response
+}
+
+fn valid_site_domain(value: &str) -> bool {
+    if value.is_empty() || value.len() > 253 || value.starts_with('.') || value.ends_with('.') {
+        return false;
+    }
+    value.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    })
+}
+
+fn valid_site_content_type(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b" /;=.+-_".contains(&byte))
+}
+
+fn find_site_manifest(host_root: &Path, site_id: &str) -> std::io::Result<SiteManifest> {
+    if site_id.len() != 64 || !site_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid AWE site ID",
+        ));
+    }
+    for entry in fs::read_dir(host_root)? {
+        let Ok(entry) = entry else { continue };
+        let path = entry.path();
+        let name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("");
+        if !name.ends_with(".manifest.json") {
+            continue;
+        }
+        let Ok(bytes) = fs::read(path) else { continue };
+        let Ok(manifest) = serde_json::from_slice::<SiteManifest>(&bytes) else {
+            continue;
+        };
+        if manifest.open() && hex::encode(manifest.root_hash).eq_ignore_ascii_case(site_id) {
+            return Ok(manifest);
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        "AWE site ID was not found on this node",
+    ))
+}
+
+fn save_site_manifest(
+    host: &AweHost,
+    host_root: &Path,
+    manifest: &SiteManifest,
+) -> std::io::Result<()> {
+    host.save_manifest(manifest)?;
+    let immutable_path = host_root.join(format!(
+        "id-{}.manifest.json",
+        hex::encode(manifest.root_hash)
+    ));
+    let bytes = serde_json::to_vec_pretty(manifest)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string()))?;
+    fs::write(immutable_path, bytes)
+}
+
+fn decode_site_path(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            if index + 2 >= bytes.len() {
+                return None;
+            }
+            let high = (bytes[index + 1] as char).to_digit(16)?;
+            let low = (bytes[index + 2] as char).to_digit(16)?;
+            decoded.push(((high << 4) | low) as u8);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).ok()
+}
+
+fn validate_json_api_request(
+    method: &str,
+    path: &str,
+    content_type: Option<&str>,
+    body: &str,
+) -> Result<(), &'static str> {
+    let route = path.split('?').next().unwrap_or(path);
+    if !method.eq_ignore_ascii_case("POST")
+        || !route.starts_with("/api/")
+        || route == "/api/connect"
+    {
+        return Ok(());
+    }
+
+    let is_json = content_type.is_some_and(|value| {
+        value
+            .split(';')
+            .next()
+            .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("application/json"))
+    });
+    if !is_json {
+        return Err("Content-Type application/json is required");
+    }
+    if !serde_json::from_str::<serde_json::Value>(body).is_ok_and(|value| value.is_object()) {
+        return Err("JSON request body must be a valid object");
+    }
+    Ok(())
+}
+
+fn ui_html_with_session_token(token: &str) -> String {
+    let bootstrap = UI_SESSION_BOOTSTRAP.replace("__AWENET_API_TOKEN__", token);
+    UI_HTML.replace("</head>", &format!("{bootstrap}\n</head>"))
+}
+
+async fn http_response(
+    status: &str,
+    content_type: &str,
+    body: &str,
+    origin: Option<&str>,
+) -> Vec<u8> {
+    let cors = origin
+        .filter(|value| is_allowed_ui_origin(value))
+        .map(|value| {
+            format!(
+                "Access-Control-Allow-Origin: {value}\r\nVary: Origin\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: content-type, x-awenet-session\r\n"
+            )
+        })
+        .unwrap_or_default();
+    format!(
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n{cors}Cache-Control: no-store\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+    .into_bytes()
+}
+
+fn parse_content_length(headers: &str) -> Result<usize, &'static str> {
+    let mut content_length = None;
+    for line in headers.lines().skip(1) {
+        let line = line.trim_end_matches('\r');
+        if line.is_empty() {
+            continue;
+        }
+        let (name, value) = line.split_once(':').ok_or("malformed HTTP header")?;
+        if name.trim().is_empty() {
+            return Err("malformed HTTP header name");
+        }
+        if name.eq_ignore_ascii_case("transfer-encoding") {
+            return Err("Transfer-Encoding is unsupported");
+        }
+        if name.eq_ignore_ascii_case("content-length") {
+            if content_length.is_some() {
+                return Err("duplicate Content-Length header");
+            }
+            let value = value.trim();
+            if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+                return Err("invalid Content-Length header");
+            }
+            content_length = Some(
+                value
+                    .parse::<usize>()
+                    .map_err(|_| "invalid Content-Length header")?,
+            );
+        }
+    }
+    Ok(content_length.unwrap_or(0))
 }
 
 async fn read_http_request(stream: &mut tokio::net::TcpStream) -> Result<String> {
@@ -178,32 +879,23 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> Result<String>
             anyhow::bail!("client closed connection before HTTP headers");
         }
         data.extend_from_slice(&chunk[..n]);
-        if data.len() > HEADER_LIMIT {
-            anyhow::bail!("HTTP headers too large");
-        }
-        if let Some(pos) = data.windows(4).position(|w| w == b"\r\n\r\n") {
+        if let Some(pos) = data.windows(4).position(|window| window == b"\r\n\r\n") {
+            if pos + 4 > HEADER_LIMIT {
+                anyhow::bail!("HTTP headers too large");
+            }
             header_end = pos + 4;
             break;
+        }
+        if data.len() > HEADER_LIMIT {
+            anyhow::bail!("HTTP headers too large");
         }
     }
 
     let headers = String::from_utf8_lossy(&data[..header_end]);
-    let content_length = headers
-        .lines()
-        .find_map(|line| {
-            let (name, value) = line.split_once(':')?;
-            if name.eq_ignore_ascii_case("content-length") {
-                value.trim().parse::<usize>().ok()
-            } else {
-                None
-            }
-        })
-        .unwrap_or(0);
-
+    let content_length = parse_content_length(&headers).map_err(anyhow::Error::msg)?;
     if content_length > BODY_LIMIT {
         anyhow::bail!("HTTP request body too large");
     }
-
     let target = header_end + content_length;
     if data.len() < target {
         let mut filled = data.len();
@@ -218,11 +910,78 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> Result<String>
     } else if data.len() > target {
         data.truncate(target);
     }
-
     String::from_utf8(data).context("HTTP request must be UTF-8")
 }
 
-#[allow(clippy::too_many_arguments)]
+static ATOMIC_WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+/// Persist a complete file by writing and syncing a sibling temporary file, then
+/// renaming it into place. Failed writes leave the previous destination intact.
+fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "destination has no valid file name",
+            )
+        })?;
+    let sequence = ATOMIC_WRITE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let temporary_path =
+        path.with_file_name(format!("{file_name}.tmp-{}-{sequence}", std::process::id()));
+
+    let result = (|| {
+        let mut temporary = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary_path)?;
+        temporary.write_all(bytes)?;
+        temporary.sync_all()?;
+        drop(temporary);
+        fs::rename(&temporary_path, path)?;
+        Ok(())
+    })();
+
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary_path);
+    }
+    result
+}
+
+fn write_json_atomic<T: serde::Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
+    let bytes = serde_json::to_vec_pretty(value)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string()))?;
+    write_atomic(path, &bytes)
+}
+
+fn json_u64_field(value: &serde_json::Value, field: &str) -> Result<u64, String> {
+    match value.get(field) {
+        None => Ok(0),
+        Some(raw) => raw
+            .as_u64()
+            .ok_or_else(|| format!("{field} must be a non-negative integer")),
+    }
+}
+
+fn json_u32_field(value: &serde_json::Value, field: &str) -> Result<u32, String> {
+    u32::try_from(json_u64_field(value, field)?)
+        .map_err(|_| format!("{field} exceeds the supported range"))
+}
+
+fn json_u16_field(value: &serde_json::Value, field: &str) -> Result<u16, String> {
+    u16::try_from(json_u64_field(value, field)?)
+        .map_err(|_| format!("{field} exceeds the supported range"))
+}
+
+fn onecoin_consensus_configured(config: &str) -> bool {
+    config
+        .split(',')
+        .any(|validator| !validator.trim().is_empty())
+}
+
 fn parse_onecoin_atoms(value: &serde_json::Value) -> Result<u128, String> {
     let raw = if let Some(text) = value.as_str() {
         text.trim().to_owned()
@@ -240,15 +999,15 @@ fn parse_onecoin_atoms(value: &serde_json::Value) -> Result<u128, String> {
     if parts.next().is_some() || whole.is_empty() || !whole.chars().all(|c| c.is_ascii_digit()) {
         return Err("amount_coins has invalid decimal syntax".into());
     }
-    if fraction.len() > 8 || !fraction.chars().all(|c| c.is_ascii_digit()) {
-        return Err("amount_coins supports at most 8 decimal places".into());
+    if fraction.len() > 18 || !fraction.chars().all(|c| c.is_ascii_digit()) {
+        return Err("amount_coins supports at most 18 decimal places".into());
     }
     let whole_atoms = whole
         .parse::<u128>()
         .map_err(|_| "amount_coins is too large".to_string())?
         .checked_mul(ATOMS_PER_COIN)
         .ok_or_else(|| "amount_coins is too large".to_string())?;
-    let padded = format!("{fraction:0<8}");
+    let padded = format!("{fraction:0<18}");
     let fraction_atoms = if padded.is_empty() {
         0
     } else {
@@ -264,34 +1023,491 @@ fn parse_onecoin_atoms(value: &serde_json::Value) -> Result<u128, String> {
 async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<()> {
     let UiState {
         node,
+        api_token,
         messenger,
         federation_state,
         federation_path,
         storage,
-        pending_acks,
-        pending_shards,
+        host,
+        host_root,
         policy_state,
         community,
+        consensus_state,
         onecoin_ledger,
         onecoin_path,
         onecoin_offers_path,
         contribution,
         contribution_path,
     } = state;
-    let request = read_http_request(&mut stream).await?;
+    // The UI listener is local, but a stalled client must not hold a task and socket forever.
+    // Keep enough time for large local uploads while bounding slow-header/body resource use.
+    let request_result =
+        tokio::time::timeout(Duration::from_secs(30), read_http_request(&mut stream)).await;
+    let request = match request_result {
+        Ok(Ok(request)) => request,
+        Ok(Err(error)) => {
+            let response = http_response(
+                "400 Bad Request",
+                "application/json; charset=utf-8",
+                &serde_json::json!({"status":"error","error":error.to_string()}).to_string(),
+                None,
+            )
+            .await;
+            stream.write_all(&response).await?;
+            stream.shutdown().await?;
+            return Ok(());
+        }
+        Err(_) => {
+            let response = http_response(
+                "408 Request Timeout",
+                "application/json; charset=utf-8",
+                r#"{"status":"error","error":"request timed out while reading headers or body"}"#,
+                None,
+            )
+            .await;
+            stream.write_all(&response).await?;
+            stream.shutdown().await?;
+            return Ok(());
+        }
+    };
     let request_line = request.lines().next().unwrap_or("");
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or("GET");
     let path = parts.next().unwrap_or("/").split('?').next().unwrap_or("/");
+    let request_host = request.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("host")
+            .then(|| value.trim().to_ascii_lowercase())
+    });
+    let configured_port = env::var("AWE_UI_ADDR")
+        .ok()
+        .and_then(|address| address.rsplit_once(':').map(|(_, port)| port.to_string()))
+        .unwrap_or_else(|| "41800".to_string());
+    let site_suffix = format!(".localhost:{configured_port}");
+    if let Some(host_header) = request_host.as_deref() {
+        if let Some(site_host_id) = host_header.strip_suffix(&site_suffix) {
+            if site_host_id.len() == 64 && site_host_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+            {
+                let site_prefix = format!("/site/{site_host_id}");
+                let allowed_site_path = path == site_prefix
+                    || path
+                        .strip_prefix(&site_prefix)
+                        .is_some_and(|rest| rest.starts_with('/'));
+                if !allowed_site_path {
+                    let response = http_response(
+                        "404 Not Found",
+                        "text/plain; charset=utf-8",
+                        "Not Found",
+                        None,
+                    )
+                    .await;
+                    stream.write_all(&response).await?;
+                    stream.shutdown().await?;
+                    return Ok(());
+                }
+            }
+        }
+    }
+    let origin = request.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("origin").then(|| value.trim())
+    });
+    let site_origin_allowed =
+        origin
+            .zip(request_host.as_deref())
+            .is_some_and(|(origin, host_header)| {
+                let Some(site_host_id) = host_header.strip_suffix(&site_suffix) else {
+                    return false;
+                };
+                if site_host_id.len() != 64
+                    || !site_host_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+                {
+                    return false;
+                }
+                let site_prefix = format!("/site/{site_host_id}");
+                let allowed_site_path = path == site_prefix
+                    || path
+                        .strip_prefix(&site_prefix)
+                        .is_some_and(|rest| rest.starts_with('/'));
+                allowed_site_path && origin.eq_ignore_ascii_case(&format!("http://{host_header}"))
+            });
+    if let Some(origin) = origin {
+        if !is_allowed_ui_origin(origin) && !site_origin_allowed {
+            stream
+                .write_all(
+                    &http_response(
+                        "403 Forbidden",
+                        "application/json; charset=utf-8",
+                        r#"{"status":"error","error":"origin not allowed"}"#,
+                        None,
+                    )
+                    .await,
+                )
+                .await?;
+            stream.shutdown().await?;
+            return Ok(());
+        }
+    }
+    if method.eq_ignore_ascii_case("OPTIONS") {
+        stream
+            .write_all(
+                &http_response("204 No Content", "text/plain; charset=utf-8", "", origin).await,
+            )
+            .await?;
+        stream.shutdown().await?;
+        return Ok(());
+    }
+    if method.eq_ignore_ascii_case("POST") && path.starts_with("/api/") {
+        let supplied_token = request.lines().find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("x-awenet-session")
+                .then(|| value.trim())
+        });
+        if !is_valid_api_session(&api_token, supplied_token) {
+            stream
+                .write_all(
+                    &http_response(
+                        "401 Unauthorized",
+                        "application/json; charset=utf-8",
+                        r#"{"status":"error","error":"valid AWENET session token required"}"#,
+                        origin,
+                    )
+                    .await,
+                )
+                .await?;
+            stream.shutdown().await?;
+            return Ok(());
+        }
+    }
+    // All state-changing JSON API routes require an explicit JSON content type and
+    // a valid object body. The bootstrap connect route uses its query string instead.
+    let content_type = request.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("content-type")
+            .then(|| value.trim())
+    });
+    let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+    if let Err(error) = validate_json_api_request(method, path, content_type, body) {
+        let response = http_response(
+            "400 Bad Request",
+            "application/json; charset=utf-8",
+            &serde_json::json!({"status":"error","error":error}).to_string(),
+            origin,
+        )
+        .await;
+        stream.write_all(&response).await?;
+        stream.shutdown().await?;
+        return Ok(());
+    }
+    if let Some(site_route) = path.strip_prefix("/site/") {
+        let mut parts = site_route.splitn(2, '/');
+        let site_id = parts.next().unwrap_or("");
+        let expected_host = format!(
+            "{}.localhost:{}",
+            site_id.to_ascii_lowercase(),
+            configured_port
+        );
+        if site_id.len() == 64
+            && site_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+            && request_host.as_deref() != Some(expected_host.as_str())
+        {
+            let location = format!("http://{expected_host}/site/{site_route}");
+            let response = format!(
+                "HTTP/1.1 302 Found\r\nLocation: {location}\r\nCache-Control: no-store\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            stream.write_all(response.as_bytes()).await?;
+            return Ok(());
+        }
+        let encoded_path = parts
+            .next()
+            .filter(|value| !value.is_empty())
+            .unwrap_or("index.html");
+        let Some(decoded_path) = decode_site_path(encoded_path) else {
+            let response = http_response_bytes(
+                "400 Bad Request",
+                "text/plain; charset=utf-8",
+                b"Invalid site path",
+            );
+            stream.write_all(&response).await?;
+            return Ok(());
+        };
+        let requested_path = if decoded_path.starts_with('/') {
+            decoded_path
+        } else {
+            format!("/{decoded_path}")
+        };
+        let response = match find_site_manifest(&host_root, site_id) {
+            Ok(manifest) => {
+                let clean_path =
+                    awep2p_core::host::normalize_path(&requested_path).unwrap_or_default();
+                let content_type = manifest
+                    .files
+                    .iter()
+                    .find(|file| file.path == clean_path)
+                    .map(|file| file.content_type.clone())
+                    .unwrap_or_else(|| "application/octet-stream".to_string());
+                match host.lock() {
+                    Ok(mut host) => match host.get_authorized(&manifest, &requested_path, None) {
+                        Ok(bytes) => http_response_bytes("200 OK", &content_type, &bytes),
+                        Err(error) => http_response_bytes(
+                            "404 Not Found",
+                            "text/plain; charset=utf-8",
+                            error.to_string().as_bytes(),
+                        ),
+                    },
+                    Err(_) => http_response_bytes(
+                        "500 Internal Server Error",
+                        "text/plain; charset=utf-8",
+                        b"AWE host is unavailable",
+                    ),
+                }
+            }
+            Err(error) => http_response_bytes(
+                if error.kind() == std::io::ErrorKind::InvalidInput {
+                    "400 Bad Request"
+                } else {
+                    "404 Not Found"
+                },
+                "text/plain; charset=utf-8",
+                error.to_string().as_bytes(),
+            ),
+        };
+        stream.write_all(&response).await?;
+        return Ok(());
+    }
+
     let (status, mime, body) = match path {
-        "/" | "/index.html" => ("200 OK", "text/html; charset=utf-8", UI_HTML.to_string()),
+        "/" | "/index.html" => ("200 OK", "text/html; charset=utf-8", ui_html_with_session_token(&api_token)),
         "/style.css" => ("200 OK", "text/css; charset=utf-8", UI_CSS.to_string()),
         "/app.js" => ("200 OK", "application/javascript; charset=utf-8", UI_JS.to_string()),
         "/onecoin.js" => ("200 OK", "application/javascript; charset=utf-8", ONECOIN_JS.to_string()),
         "/onecoin.css" => ("200 OK", "text/css; charset=utf-8", ONECOIN_CSS.to_string()),
         "/vendor/qrcode.js" => ("200 OK", "application/javascript; charset=utf-8", QR_JS.to_string()),
+        "/api/sites" if method == "GET" => {
+            let mut sites = BTreeMap::<String, serde_json::Value>::new();
+            if let Ok(entries) = fs::read_dir(&host_root) {
+                for entry in entries.flatten() {
+                    if !entry.file_name().to_string_lossy().ends_with(".manifest.json") {
+                        continue;
+                    }
+                    let Ok(bytes) = fs::read(entry.path()) else { continue };
+                    let Ok(manifest) = serde_json::from_slice::<SiteManifest>(&bytes) else {
+                        continue;
+                    };
+                    if !manifest.open() {
+                        continue;
+                    }
+                    let site_id = hex::encode(manifest.root_hash);
+                    sites.insert(
+                        site_id.clone(),
+                        serde_json::json!({
+                            "site_id": site_id,
+                            "name": manifest.domain,
+                            "version": manifest.version,
+                            "files": manifest.files.len(),
+                            "open": true
+                        }),
+                    );
+                }
+            }
+            (
+                "200 OK",
+                "application/json; charset=utf-8",
+                serde_json::json!({"status":"ok","sites":sites.into_values().collect::<Vec<_>>()})
+                    .to_string(),
+            )
+        },
+        "/api/sites/publish" if method == "POST" => {
+            let request_body = request
+                .split_once("\r\n\r\n")
+                .map(|(_, body)| body)
+                .unwrap_or("");
+            match serde_json::from_str::<serde_json::Value>(request_body) {
+                Err(_) => (
+                    "400 Bad Request",
+                    "application/json; charset=utf-8",
+                    serde_json::json!({"status":"error","error":"invalid JSON body"}).to_string(),
+                ),
+                Ok(payload) => {
+                    let domain = payload
+                        .get("domain")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("")
+                        .trim()
+                        .to_ascii_lowercase();
+                    let version = payload
+                        .get("version")
+                        .and_then(|value| value.as_u64())
+                        .unwrap_or(1);
+                    let files = payload
+                        .get("files")
+                        .and_then(|value| value.as_array())
+                        .cloned()
+                        .unwrap_or_default();
+                    if !valid_site_domain(&domain)
+                        || version == 0
+                        || files.is_empty()
+                        || files.len() > 256
+                    {
+                        (
+                            "400 Bad Request",
+                            "application/json; charset=utf-8",
+                            serde_json::json!({
+                                "status":"error",
+                                "error":"domain must be a valid site name and files must contain 1-256 entries"
+                            })
+                            .to_string(),
+                        )
+                    } else {
+                        match host.lock() {
+                            Err(_) => (
+                                "500 Internal Server Error",
+                                "application/json; charset=utf-8",
+                                serde_json::json!({"status":"error","error":"AWE host is unavailable"})
+                                    .to_string(),
+                            ),
+                            Ok(mut host) => {
+                                if host
+                                    .load_manifest(&domain)
+                                    .is_ok_and(|existing| version <= existing.version)
+                                {
+                                    (
+                                        "409 Conflict",
+                                        "application/json; charset=utf-8",
+                                        serde_json::json!({
+                                            "status":"error",
+                                            "error":"site version must increase when updating a site"
+                                        })
+                                        .to_string(),
+                                    )
+                                } else {
+                                    let mut hosted_files = Vec::with_capacity(files.len());
+                                    let mut seen_paths = std::collections::BTreeSet::new();
+                                    let mut error = None;
+                                    for file in files {
+                                        let path = file
+                                            .get("path")
+                                            .and_then(|value| value.as_str())
+                                            .unwrap_or("");
+                                        let content_type = file
+                                            .get("content_type")
+                                            .and_then(|value| value.as_str())
+                                            .unwrap_or("text/plain; charset=utf-8");
+                                        if !valid_site_content_type(content_type) {
+                                            error = Some("invalid content type");
+                                            break;
+                                        }
+                                        let normalized = match awep2p_core::host::normalize_path(path) {
+                                            Ok(path) => path,
+                                            Err(_) => {
+                                                error = Some("invalid file path");
+                                                break;
+                                            }
+                                        };
+                                        if !seen_paths.insert(normalized) {
+                                            error = Some("duplicate file path");
+                                            break;
+                                        }
+                                        let data = if let Some(content) =
+                                            file.get("content").and_then(|value| value.as_str())
+                                        {
+                                            Some(content.as_bytes().to_vec())
+                                        } else {
+                                            file.get("data_hex")
+                                                .and_then(|value| value.as_str())
+                                                .and_then(|value| hex::decode(value).ok())
+                                        };
+                                        let Some(data) = data else {
+                                            error = Some("each file requires content or valid data_hex");
+                                            break;
+                                        };
+                                        match host.publish_file(path, &data, content_type) {
+                                            Ok(file) => hosted_files.push(file),
+                                            Err(_) => {
+                                                error = Some(
+                                                    "invalid file path or host storage policy rejected the file",
+                                                );
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    if let Some(error) = error {
+                                        (
+                                            "400 Bad Request",
+                                            "application/json; charset=utf-8",
+                                            serde_json::json!({"status":"error","error":error})
+                                                .to_string(),
+                                        )
+                                    } else {
+                                        match host.publish_manifest(
+                                            &domain,
+                                            version,
+                                            node.identity.public.public_key.to_vec(),
+                                            hosted_files,
+                                        ) {
+                                            Err(error) => (
+                                                "400 Bad Request",
+                                                "application/json; charset=utf-8",
+                                                serde_json::json!({
+                                                    "status":"error",
+                                                    "error":error.to_string()
+                                                })
+                                                .to_string(),
+                                            ),
+                                            Ok(manifest) => {
+                                                match save_site_manifest(&host, &host_root, &manifest) {
+                                                    Err(error) => (
+                                                        "500 Internal Server Error",
+                                                        "application/json; charset=utf-8",
+                                                        serde_json::json!({
+                                                            "status":"error",
+                                                            "error":error.to_string()
+                                                        })
+                                                        .to_string(),
+                                                    ),
+                                                    Ok(()) => {
+                                                        let site_id = hex::encode(manifest.root_hash);
+                                                        (
+                                                            "200 OK",
+                                                            "application/json; charset=utf-8",
+                                                            serde_json::json!({
+                                                                "status":"published",
+                                                                "name":manifest.domain,
+                                                                "version":manifest.version,
+                                                                "site_id":site_id,
+                                                                "files":manifest.files.len(),
+                                                                "url":format!("awe://site-{site_id}")
+                                                            })
+                                                            .to_string(),
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/api/onebank/wallet" if method == "GET" => {
-            let ledger = onecoin_ledger.lock().map(|l| l.clone()).unwrap_or_default();
+            let consensus_snapshot = consensus_state.lock().map(|guard| {
+                guard.as_ref().map(|runtime| (
+                    runtime.persisted_state().ledger.clone(),
+                    runtime.persisted_state().height,
+                ))
+            });
+            let (ledger, finality_mode, consensus_height) = match consensus_snapshot {
+                Ok(Some((ledger, height))) => (ledger, "CONSENSUS_FINALIZED", Some(height)),
+                Ok(None) => (
+                    onecoin_ledger.lock().map(|l| l.clone()).unwrap_or_default(),
+                    "LOCAL_LEDGER",
+                    None,
+                ),
+                Err(_) => (OnecoinLedger::default(), "CONSENSUS_UNAVAILABLE", None),
+            };
             let id = node.identity.public.awe_id.clone();
             let balance_atoms = ledger.balance_atoms(&id);
             let contribution_snapshot = contribution.lock().map(|r| r.clone()).unwrap_or_default();
@@ -302,6 +1518,8 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                 "balance_coins": balance_atoms / ATOMS_PER_COIN,
                 "tier": tier,
                 "fee_bps": 100,
+                "finality_mode": finality_mode,
+                "consensus_height": consensus_height,
                 "resource_score": contribution_snapshot.score(),
                 "resource": contribution_snapshot,
                 "resource_verified": false,
@@ -320,29 +1538,36 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         },
         "/api/onebank/contribution" if method == "POST" => {
             let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
-            let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
-            let r = ResourceContribution {
-                storage_bytes: parsed.get("storage_bytes").and_then(|v| v.as_u64()).unwrap_or(0),
-                cpu_cores: parsed.get("cpu_cores").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-                ram_bytes: parsed.get("ram_bytes").and_then(|v| v.as_u64()).unwrap_or(0),
-                gpu_units: parsed.get("gpu_units").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-                bandwidth_bytes: parsed.get("bandwidth_bytes").and_then(|v| v.as_u64()).unwrap_or(0),
-                online_hours: parsed.get("online_hours").and_then(|v| v.as_u64()).unwrap_or(0) as u16,
-                node_count: parsed.get("node_count").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-                server_count: parsed.get("server_count").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-                uptime_bps: parsed.get("uptime_bps").and_then(|v| v.as_u64()).unwrap_or(0) as u16,
-                utilization_bps: parsed.get("utilization_bps").and_then(|v| v.as_u64()).unwrap_or(0) as u16,
-            };
-            match r.validate() {
-                Ok(()) => {
-                    if let Ok(mut guard) = contribution.lock() { *guard = r.clone(); }
-                    match fs::write(&contribution_path, serde_json::to_vec_pretty(&r).unwrap_or_default()) {
-                        Ok(()) => ("200 OK", "application/json; charset=utf-8", serde_json::json!({
-                            "status":"accepted_for_verification",
-                            "tier": classify_tier(&r).wire_name(),
-                            "verified":false,
-                            "reward_status":"requires_signed_usage_receipt"
-                        }).to_string()),
+            let parsed: Result<serde_json::Value, String> = serde_json::from_str(body)
+                .map_err(|_| "contribution body must be valid JSON".to_string());
+            let contribution_result: Result<ResourceContribution, String> = parsed.and_then(|parsed| {
+                let resource = ResourceContribution {
+                    storage_bytes: json_u64_field(&parsed, "storage_bytes")?,
+                    cpu_cores: json_u32_field(&parsed, "cpu_cores")?,
+                    ram_bytes: json_u64_field(&parsed, "ram_bytes")?,
+                    gpu_units: json_u32_field(&parsed, "gpu_units")?,
+                    bandwidth_bytes: json_u64_field(&parsed, "bandwidth_bytes")?,
+                    online_hours: json_u16_field(&parsed, "online_hours")?,
+                    node_count: json_u32_field(&parsed, "node_count")?,
+                    server_count: json_u32_field(&parsed, "server_count")?,
+                    uptime_bps: json_u16_field(&parsed, "uptime_bps")?,
+                    utilization_bps: json_u16_field(&parsed, "utilization_bps")?,
+                };
+                resource.validate()?;
+                Ok(resource)
+            });
+            match contribution_result {
+                Ok(r) => {
+                    match write_json_atomic(&contribution_path, &r) {
+                        Ok(()) => {
+                            if let Ok(mut guard) = contribution.lock() { *guard = r.clone(); }
+                            ("200 OK", "application/json; charset=utf-8", serde_json::json!({
+                                "status":"accepted_for_verification",
+                                "tier": classify_tier(&r).wire_name(),
+                                "verified":false,
+                                "reward_status":"requires_signed_usage_receipt"
+                            }).to_string())
+                        },
                         Err(e) => ("500 Internal Server Error", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":e.to_string()}).to_string())
                     }
                 },
@@ -355,6 +1580,102 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
             let recipient_hex = parsed.get("recipient").and_then(|v| v.as_str()).unwrap_or("");
             let amount_value = parsed.get("amount_coins").cloned().unwrap_or(serde_json::Value::Null);
             let memo = parsed.get("memo").and_then(|v| v.as_str()).map(str::to_owned);
+            // Configured consensus must never silently fall back to a separate local ledger while
+            // validator discovery/recovery is incomplete. That would create conflicting balances.
+            let consensus_configured = onecoin_consensus_configured(
+                &env::var("AWE_ONECOIN_VALIDATORS").unwrap_or_default(),
+            );
+            if consensus_state.lock().map(|guard| guard.is_some()).unwrap_or(true)
+                || consensus_configured
+            {
+                let consensus_result: Result<ConsensusSendResult, String> = (|| {
+                    let recipient = AweId::from_hex(recipient_hex)?;
+                    if recipient == node.identity.public.awe_id {
+                        return Err("cannot transfer ONECOIN to the same wallet".into());
+                    }
+                    let amount_atoms = parse_onecoin_atoms(&amount_value)?;
+                    if amount_atoms == 0 {
+                        return Err("amount_coins must be positive".into());
+                    }
+                    let mut guard = consensus_state.lock().map_err(|_| "ONECOIN consensus lock failed".to_string())?;
+                    let runtime = guard.as_mut().ok_or("ONECOIN consensus is unavailable")?;
+                    let ledger = &runtime.persisted_state().ledger;
+                    let recipient_key = recipient.to_hex();
+                    if !ledger.members.contains_key(&recipient_key) {
+                        return Err("recipient is not yet a member of finalized ONECOIN state".into());
+                    }
+                    let sender = node.identity.public.awe_id.clone();
+                    if !ledger.members.contains_key(&sender.to_hex()) {
+                        return Err("sender is not a member of finalized ONECOIN state".into());
+                    }
+                    let old_height = runtime.persisted_state().height;
+                    let nonce = ledger.nonces.get(&sender.to_hex()).copied().unwrap_or(0);
+                    let tx = OnecoinTransaction::new(&node.identity, nonce, &recipient, amount_atoms, memo);
+                    let tx_id = hex::encode(tx.id());
+                    let fee_atoms = amount_atoms.saturating_mul(100).saturating_div(10_000);
+                    let outbound = if runtime.local_is_validator(&node.identity) {
+                        runtime.propose(&node.identity, vec![tx], now_unix())?
+                    } else {
+                        // Wallets may submit signed transactions to configured validators without
+                        // being validators themselves. The validator rechecks membership, nonce,
+                        // signature, balance, and fee against its own finalized state.
+                        let mut submissions = Vec::new();
+                        for (validator_id, public_key) in &runtime.validators {
+                            if public_key == &node.identity.public.public_key {
+                                continue;
+                            }
+                            let decoded = hex::decode(validator_id)
+                                .map_err(|_| "invalid configured validator AWEID".to_string())?;
+                            let peer_id: [u8; 32] = decoded
+                                .try_into()
+                                .map_err(|_| "invalid configured validator AWEID length".to_string())?;
+                            submissions.push((
+                                peer_id,
+                                OnecoinConsensusMessage::TransactionSubmission(tx.clone()),
+                            ));
+                        }
+                        if submissions.is_empty() {
+                            return Err("no remote ONECOIN validator is currently available".into());
+                        }
+                        submissions
+                    };
+                    let height = runtime.persisted_state().height;
+                    Ok((tx_id, fee_atoms, outbound, height, height > old_height))
+                })();
+                match consensus_result {
+                    Ok((tx_id, fee_atoms, outbound, height, finalized)) => {
+                        let mut delivered = 0usize;
+                        for (peer, message) in outbound {
+                            if peer == *node.identity.public.awe_id.as_bytes() { continue; }
+                            if let Ok(bytes) = message.encode() {
+                                if node.send_to_peer(&peer, ONECOIN_CONSENSUS_STREAM, bytes).await.is_ok() {
+                                    delivered += 1;
+                                }
+                            }
+                        }
+                        let status = if finalized { "finalized" } else { "submitted_to_consensus" };
+                        (if finalized { "200 OK" } else { "202 Accepted" }, "application/json; charset=utf-8", serde_json::json!({
+                            "status": status,
+                            "tx_id": tx_id,
+                            "fee_atoms": fee_atoms,
+                            "fee_bps": 100,
+                            "finality_mode": "CONSENSUS",
+                            "consensus_height": height,
+                            "outbound_messages_delivered": delivered,
+                            "note": if finalized { "Transaction is in finalized consensus state." } else { "Transaction sent to consensus peers; wallet balance changes only after quorum finality." }
+                        }).to_string())
+                    },
+                    Err(error) => (
+                        if error == "ONECOIN consensus is unavailable" {
+                            "503 Service Unavailable"
+                        } else {
+                            "409 Conflict"
+                        },
+                        "application/json; charset=utf-8",
+                        serde_json::json!({"status":"rejected","finality_mode":"CONSENSUS","error":error}).to_string()
+                    )
+                }
+            } else {
             let result: Result<(String, u128, OnecoinTransaction), String> = (|| {
                 if recipient_hex.len() != 64 || !recipient_hex.chars().all(|c| c.is_ascii_hexdigit()) {
                     return Err("recipient must be a 64-character AWE-ID".into());
@@ -367,7 +1688,10 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                 if recipient == node.identity.public.awe_id {
                     return Err("cannot transfer ONECOIN to the same wallet".into());
                 }
-                let mut ledger = onecoin_ledger.lock().map_err(|_| "ONECOIN ledger lock failed".to_string())?;
+                let mut ledger_guard = onecoin_ledger.lock().map_err(|_| "ONECOIN ledger lock failed".to_string())?;
+                // Work on a private snapshot so failed persistence cannot expose a
+                // transfer in memory that was not durably recorded on disk.
+                let mut ledger = ledger_guard.clone();
                 let sender = node.identity.public.awe_id.clone();
                 if ledger.members.is_empty() {
                     ledger.initialize_genesis(std::slice::from_ref(&sender))?;
@@ -379,8 +1703,8 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                 let nonce = ledger.nonces.get(&sender.to_hex()).copied().unwrap_or(0);
                 let tx = OnecoinTransaction::new(&node.identity, nonce, &recipient, amount_atoms, memo);
                 let (tx_id, fee_atoms) = ledger.apply_transfer_with_fee(&tx, &node.identity.public.public_key, 100)?;
-                fs::write(&onecoin_path, serde_json::to_vec_pretty(&*ledger).map_err(|_| "ONECOIN ledger serialization failed".to_string())?)
-                    .map_err(|e| e.to_string())?;
+                write_json_atomic(&onecoin_path, &ledger).map_err(|e| e.to_string())?;
+                *ledger_guard = ledger;
                 Ok((hex::encode(tx_id), fee_atoms, tx))
             })();
             match result {
@@ -412,7 +1736,8 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                     } else {
                         false
                     }; ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"accepted","tx_id":tx_id,"fee_atoms":fee_atoms,"fee_bps":100,"recipient_delivered":delivered,"recipient_pending":!delivered}).to_string()) },
-                Err(error) => ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"rejected","error":error}).to_string())
+                Err(error) => ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"rejected","error":error,"finality_mode":"LOCAL_LEDGER"}).to_string())
+            }
             }
         },
         "/api/onebank/exchange/offers" if method == "GET" => {
@@ -424,24 +1749,75 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         },
         "/api/onebank/exchange/offers" if method == "POST" => {
             let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
-            let mut offer: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
-            if !offer.is_object() {
-                offer = serde_json::json!({});
-            }
-            if let Some(obj) = offer.as_object_mut() {
-                obj.insert("owner".into(), serde_json::json!(node.identity.public.awe_id.to_hex()));
-                obj.insert("settlement".into(), serde_json::json!("DIRECT_PERSON_TO_PERSON"));
-                obj.insert("coin_transfer".into(), serde_json::json!("AWENET_WALLET"));
-                obj.insert("fiat_transfer".into(), serde_json::json!("OUTSIDE_AWENET"));
-                obj.insert("created_at".into(), serde_json::json!(now_unix()));
-            }
-            let mut offers: Vec<serde_json::Value> = fs::read(&onecoin_offers_path)
-                .ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-            offers.push(offer.clone());
-            let response = fs::write(&onecoin_offers_path, serde_json::to_vec_pretty(&offers).unwrap_or_default());
-            match response {
-                Ok(()) => ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"published","offer":offer,"notice":"ONECOIN transfer is handled by AWENET wallet. Fiat is exchanged directly between people outside AWENET."}).to_string()),
-                Err(error) => ("500 Internal Server Error", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":error.to_string()}).to_string())
+            let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+            let mut offer = parsed.get("offer").cloned().unwrap_or(parsed);
+            let validation = (|| -> Result<String, String> {
+                let obj = offer.as_object().ok_or_else(|| "offer must be a JSON object".to_string())?;
+                let id = obj.get("id").and_then(|v| v.as_str()).unwrap_or("").trim();
+                if id.is_empty() || id.len() > 128 {
+                    return Err("offer.id must be 1..128 characters".into());
+                }
+                let side = obj.get("side").and_then(|v| v.as_str()).unwrap_or("");
+                if !matches!(side, "buy" | "sell") {
+                    return Err("offer.side must be buy or sell".into());
+                }
+                let amount = obj.get("amount").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                if !amount.is_finite() || amount <= 0.0 {
+                    return Err("offer.amount must be a positive finite number".into());
+                }
+                let price = obj.get("price").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                if !price.is_finite() || price <= 0.0 {
+                    return Err("offer.price must be a positive finite number".into());
+                }
+                let currency = obj.get("currency").and_then(|v| v.as_str()).unwrap_or("");
+                if !matches!(currency, "USD" | "EUR" | "AMD" | "GBP") {
+                    return Err("offer.currency must be USD, EUR, AMD, or GBP".into());
+                }
+                let rail = obj.get("rail").and_then(|v| v.as_str()).unwrap_or("");
+                if !matches!(rail, "ExternalPayment" | "BankTransfer" | "Cash") {
+                    return Err("offer.rail must be ExternalPayment, BankTransfer, or Cash".into());
+                }
+                Ok(id.to_string())
+            })();
+            match validation {
+                Err(error) => ("400 Bad Request", "application/json; charset=utf-8",
+                    serde_json::json!({"status":"error","error":error}).to_string()),
+                Ok(offer_id) => {
+                    let mut offers: Vec<serde_json::Value> = fs::read(&onecoin_offers_path)
+                        .ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+                    if offers.len() >= 10_000 {
+                        ("507 Insufficient Storage", "application/json; charset=utf-8",
+                            serde_json::json!({"status":"error","error":"offer book limit reached"}).to_string())
+                    } else if offers.iter().any(|known| {
+                        known.get("id").and_then(|v| v.as_str()) == Some(offer_id.as_str())
+                    }) {
+                        ("409 Conflict", "application/json; charset=utf-8",
+                            serde_json::json!({"status":"error","error":"offer ID already exists"}).to_string())
+                    } else {
+                        if let Some(obj) = offer.as_object_mut() {
+                            obj.insert("owner".into(), serde_json::json!(node.identity.public.awe_id.to_hex()));
+                            obj.insert("settlement".into(), serde_json::json!("DIRECT_PERSON_TO_PERSON"));
+                            obj.insert("coin_transfer".into(), serde_json::json!("AWENET_WALLET"));
+                            obj.insert("fiat_transfer".into(), serde_json::json!("OUTSIDE_AWENET"));
+                            obj.insert("created_at".into(), serde_json::json!(now_unix()));
+                        }
+                        offers.push(offer.clone());
+                        let response = serde_json::to_vec_pretty(&offers)
+                            .map_err(std::io::Error::other)
+                            .and_then(|bytes| fs::write(&onecoin_offers_path, bytes));
+                        match response {
+                            Ok(()) => ("200 OK", "application/json; charset=utf-8",
+                                serde_json::json!({
+                                    "status":"published",
+                                    "offer_id":offer_id,
+                                    "offer":offer,
+                                    "notice":"ONECOIN transfer is handled by AWENET wallet. Fiat is exchanged directly between people outside AWENET."
+                                }).to_string()),
+                            Err(error) => ("500 Internal Server Error", "application/json; charset=utf-8",
+                                serde_json::json!({"status":"error","error":error.to_string()}).to_string())
+                        }
+                    }
+                }
             }
         },
         "/api/node" => ("200 OK", "application/json; charset=utf-8", serde_json::json!({
@@ -463,25 +1839,52 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                 "last_seen": p.last_seen_unix
             })).collect::<Vec<_>>();
             ("200 OK", "application/json; charset=utf-8", serde_json::json!({
-                "product": "AWEp2P", "status": "online",
+                "product": "AWENET", "status": "online",
                 "node_id": format_uid(node.identity.public.awe_id.as_bytes()),
                 "node_address": node.listen_addr.to_string(),
                 "transport": "AWE encrypted TCP", "ui": "connected", "peers": peer_json, "discovered_peers": peer_json.len(), "active_connections": node.active_peer_count().await
             }).to_string())
         },
         "/api/connect" if method == "POST" => {
-            let address = request.split("address=").nth(1).and_then(|x| x.split_whitespace().next()).unwrap_or("");
+            let address = request
+                .split("address=")
+                .nth(1)
+                .and_then(|value| value.split_whitespace().next())
+                .unwrap_or("");
             let address = address.replace("%3A", ":").replace("%3a", ":");
             match address.parse::<SocketAddr>() {
                 Ok(addr) => {
-                    let connect_node = node.clone();
-                    tokio::spawn(async move {
-                        let _ = connect_node.bootstrap(&[addr]).await;
-                    });
-                    ("202 Accepted", "application/json; charset=utf-8",
-                        serde_json::json!({"status":"connecting","address":addr.to_string()}).to_string())
-                },
-                Err(_) => ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":"invalid socket address"}).to_string())
+                    let endpoint = addr.to_string();
+                    let local_node_id = format_uid(node.identity.public.awe_id.as_bytes());
+                    match record_bootstrap_endpoint(
+                        &federation_state,
+                        &federation_path,
+                        &endpoint,
+                        &local_node_id,
+                    ) {
+                        Ok(()) => {
+                            let connect_node = node.clone();
+                            tokio::spawn(async move {
+                                let _ = connect_node.bootstrap(&[addr]).await;
+                            });
+                            (
+                                "202 Accepted",
+                                "application/json; charset=utf-8",
+                                serde_json::json!({"status":"connecting","address":endpoint}).to_string(),
+                            )
+                        }
+                        Err(error) => (
+                            "500 Internal Server Error",
+                            "application/json; charset=utf-8",
+                            serde_json::json!({"status":"error","error":error}).to_string(),
+                        ),
+                    }
+                }
+                Err(_) => (
+                    "400 Bad Request",
+                    "application/json; charset=utf-8",
+                    serde_json::json!({"status":"error","error":"invalid socket address"}).to_string(),
+                ),
             }
         },
         "/api/federation" => {
@@ -489,107 +1892,348 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
             ("200 OK", "application/json; charset=utf-8", serde_json::json!({
                 "format": state.format, "version": state.version, "local_node_id": state.local_node_id,
                 "data_centre_id": state.local_data_centre_id, "data_group_id": state.local_data_group_id,
+                "centre_group_id": state.local_centre_group_id,
                 "joined_data_centres": state.joined_data_centres, "joined_data_groups": state.joined_data_groups,
+                "joined_centre_groups": state.joined_centre_groups,
+                "data_centre_owners": state.data_centre_owners,
+                "data_group_owners": state.data_group_owners,
                 "bootstrap_endpoints": state.bootstrap_endpoints
             }).to_string())
         },
         "/api/federation/generate" if method == "POST" => {
             let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
             let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
-            let kind = parsed.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-            let name = parsed.get("name").and_then(|v| v.as_str()).unwrap_or("AWE");
+            let kind = parsed.get("kind").and_then(|value| value.as_str()).unwrap_or("");
+            let name = parsed.get("name").and_then(|value| value.as_str()).unwrap_or("AWE");
             let now = now_unix();
+            let owner_node_id = format_uid(node.identity.public.awe_id.as_bytes());
             let result: Result<(String, String), String> = match kind {
                 "awenode" => {
-                    let endpoint = parsed.get("endpoint").and_then(|v| v.as_str()).map(str::to_owned).unwrap_or_else(|| node.listen_addr.to_string());
-                    let bootstrap = parsed.get("bootstrap").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect()).unwrap_or_default();
-                    let dc_id = parsed.get("data_centre_id").and_then(|v| v.as_str()).map(str::to_owned).or_else(|| federation_state.lock().ok().and_then(|s| s.local_data_centre_id.clone())).unwrap_or_else(|| format!("dc-{}", &hex::encode(blake3::hash(format!("AWE/DC/{}", format_uid(node.identity.public.awe_id.as_bytes())).as_bytes()).as_bytes())[..24]));
-                    let cfg = federation::generate_awenode_for_dc(&format_uid(node.identity.public.awe_id.as_bytes()), &dc_id, name, &endpoint, bootstrap, now);
-                    serde_json::to_string_pretty(&cfg).map(|s| ("awenode.awenode".into(), s)).map_err(|e| e.to_string())
-                },
+                    let endpoint = parsed.get("endpoint").and_then(|value| value.as_str())
+                        .map(str::to_owned).unwrap_or_else(|| node.listen_addr.to_string());
+                    let bootstrap = parsed.get("bootstrap").and_then(|value| value.as_array())
+                        .map(|items| items.iter().filter_map(|value| value.as_str().map(str::to_owned)).collect())
+                        .unwrap_or_default();
+                    let dc_id = parsed.get("data_centre_id").and_then(|value| value.as_str())
+                        .map(str::to_owned)
+                        .or_else(|| federation_state.lock().ok().and_then(|state| state.local_data_centre_id.clone()))
+                        .unwrap_or_else(|| format!("dc-{}", &hex::encode(blake3::hash(format!("AWE/DC/{owner_node_id}").as_bytes()).as_bytes())[..24]));
+                    let config = federation::generate_awenode_for_dc(&owner_node_id, &dc_id, name, &endpoint, bootstrap, now);
+                    federation::validate_awenode(&config).and_then(|_| {
+                        serde_json::to_string_pretty(&config)
+                            .map(|content| ("awenode.awenode".into(), content))
+                            .map_err(|error| error.to_string())
+                    })
+                }
                 "awedc" => {
-                    let dc_id = parsed.get("data_centre_id").and_then(|v| v.as_str()).unwrap_or("");
-                    let endpoints = parsed.get("endpoints").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect()).unwrap_or_else(|| vec![node.listen_addr.to_string()]);
-                    let members = parsed.get("member_node_ids").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect()).unwrap_or_else(|| vec![format_uid(node.identity.public.awe_id.as_bytes())]);
-                    if dc_id.is_empty() { Err("data_centre_id is required".into()) } else {
-                        let cfg = federation::generate_awedc(&format_uid(node.identity.public.awe_id.as_bytes()), dc_id, name, endpoints, members, now);
-                        serde_json::to_string_pretty(&cfg).map(|s| ("data-centre.awedc".into(), s)).map_err(|e| e.to_string())
+                    let dc_id = parsed.get("data_centre_id").and_then(|value| value.as_str()).unwrap_or("");
+                    let endpoints = parsed.get("endpoints").and_then(|value| value.as_array())
+                        .map(|items| items.iter().filter_map(|value| value.as_str().map(str::to_owned)).collect())
+                        .unwrap_or_else(|| vec![node.listen_addr.to_string()]);
+                    let members = parsed.get("member_node_ids").and_then(|value| value.as_array())
+                        .map(|items| items.iter().filter_map(|value| value.as_str().map(str::to_owned)).collect())
+                        .unwrap_or_else(|| vec![owner_node_id.clone()]);
+                    if dc_id.is_empty() {
+                        Err("data_centre_id is required".into())
+                    } else {
+                        let config = federation::generate_awedc(&owner_node_id, dc_id, name, endpoints, members, now);
+                        federation::validate_awedc(&config).and_then(|_| {
+                            serde_json::to_string_pretty(&config)
+                                .map(|content| ("data-centre.awedc".into(), content))
+                                .map_err(|error| error.to_string())
+                        })
                     }
-                },
+                }
                 "dgc" => {
-                    let dc_id = parsed.get("owner_data_centre_id").and_then(|v| v.as_str()).unwrap_or("");
-                    let centres = parsed.get("data_centre_ids").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect()).unwrap_or_default();
-                    if dc_id.is_empty() { Err("owner_data_centre_id is required".into()) } else {
-                        let cfg = federation::generate_dgc(dc_id, name, centres, now);
-                        serde_json::to_string_pretty(&cfg).map(|s| ("data-group.dgc".into(), s)).map_err(|e| e.to_string())
+                    let dc_id = parsed.get("owner_data_centre_id").and_then(|value| value.as_str()).unwrap_or("");
+                    let centres: Vec<String> = parsed.get("data_centre_ids").and_then(|value| value.as_array())
+                        .map(|items| items.iter().filter_map(|value| value.as_str().map(str::to_owned)).collect())
+                        .unwrap_or_default();
+                    let (owner, all_centres_trusted) = federation_state.lock().ok()
+                        .map(|state| (
+                            state.data_centre_owners.get(dc_id).cloned(),
+                            centres.iter().all(|id| state.data_centre_owners.contains_key(id)),
+                        ))
+                        .unwrap_or((None, false));
+                    if dc_id.is_empty() {
+                        Err("owner_data_centre_id is required".into())
+                    } else if owner.as_deref() != Some(owner_node_id.as_str()) {
+                        Err("only the authenticated owner of the data centre may create a data group".into())
+                    } else if !all_centres_trusted {
+                        Err("all data centres in a data group must have verified signed invitations".into())
+                    } else {
+                        let config = federation::generate_dgc(dc_id, name, centres, now);
+                        federation::validate_dgc(&config).and_then(|_| {
+                            serde_json::to_string_pretty(&config)
+                                .map(|content| ("data-group.dgc".into(), content))
+                                .map_err(|error| error.to_string())
+                        })
                     }
-                },
-                _ => Err("kind must be awenode, awedc or dgc".to_string())
+                }
+                "cgc" => {
+                    let dg_id = parsed.get("owner_data_group_id").and_then(|value| value.as_str()).unwrap_or("");
+                    let groups: Vec<String> = parsed.get("data_group_ids").and_then(|value| value.as_array())
+                        .map(|items| items.iter().filter_map(|value| value.as_str().map(str::to_owned)).collect())
+                        .unwrap_or_default();
+                    let (owner, all_groups_trusted) = federation_state.lock().ok()
+                        .map(|state| (
+                            state.data_group_owners.get(dg_id).cloned(),
+                            groups.iter().all(|id| state.data_group_owners.contains_key(id)),
+                        ))
+                        .unwrap_or((None, false));
+                    if dg_id.is_empty() {
+                        Err("owner_data_group_id is required".into())
+                    } else if owner.as_deref() != Some(owner_node_id.as_str()) {
+                        Err("only the authenticated owner of the data group may create a centre group".into())
+                    } else if !all_groups_trusted {
+                        Err("all data groups in a centre group must have verified signed invitations".into())
+                    } else {
+                        let config = federation::generate_cgc(dg_id, name, groups, now);
+                        federation::validate_cgc(&config).and_then(|_| {
+                            serde_json::to_string_pretty(&config)
+                                .map(|content| ("centre-group.cgc".into(), content))
+                                .map_err(|error| error.to_string())
+                        })
+                    }
+                }
+                _ => Err("kind must be awenode, awedc, dgc or cgc".to_string())
             };
             match result {
-                Ok((filename, content)) => ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"generated","filename":filename,"content":content}).to_string()),
-                Err(error) => ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":error.to_string()}).to_string())
+                Ok((filename, content)) => {
+                    match serde_json::from_str::<serde_json::Value>(&content) {
+                        Ok(payload) => match sign_federation_invitation(kind, payload.clone(), &node.identity) {
+                            Ok(signed_content) => match record_generated_federation_owner(
+                                kind, &payload, &owner_node_id, &federation_state, &federation_path,
+                            ) {
+                                Ok(()) => (
+                                    "200 OK",
+                                    "application/json; charset=utf-8",
+                                    serde_json::json!({"status":"generated","filename":filename,"content":signed_content}).to_string(),
+                                ),
+                                Err(error) => (
+                                    "500 Internal Server Error",
+                                    "application/json; charset=utf-8",
+                                    serde_json::json!({"status":"error","error":error}).to_string(),
+                                ),
+                            },
+                            Err(error) => (
+                                "400 Bad Request",
+                                "application/json; charset=utf-8",
+                                serde_json::json!({"status":"error","error":error}).to_string(),
+                            ),
+                        },
+                        Err(error) => (
+                            "500 Internal Server Error",
+                            "application/json; charset=utf-8",
+                            serde_json::json!({"status":"error","error":error.to_string()}).to_string(),
+                        ),
+                    }
+                }
+                Err(error) => (
+                    "400 Bad Request",
+                    "application/json; charset=utf-8",
+                    serde_json::json!({"status":"error","error":error}).to_string(),
+                ),
             }
         },
+        "/api/federation/leave" if method == "POST" => {
+            let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+            match serde_json::from_str::<serde_json::Value>(body) {
+                Err(error) => (
+                    "400 Bad Request",
+                    "application/json; charset=utf-8",
+                    serde_json::json!({"status":"error","error":error.to_string()}).to_string(),
+                ),
+                Ok(input) => {
+                    let kind = input
+                        .get("kind")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("")
+                        .trim()
+                        .to_string();
+                    let id = input
+                        .get("id")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("")
+                        .trim()
+                        .to_string();
+                    let local_node_id = format_uid(node.identity.public.awe_id.as_bytes());
+                    match federation_state.lock() {
+                        Err(_) => (
+                            "500 Internal Server Error",
+                            "application/json; charset=utf-8",
+                            serde_json::json!({
+                                "status":"error",
+                                "error":"federation state lock poisoned"
+                            })
+                            .to_string(),
+                        ),
+                        Ok(mut state) => {
+                            let mut next = state.clone();
+                            match leave_federation_membership(
+                                &mut next,
+                                &kind,
+                                &id,
+                                &local_node_id,
+                            ) {
+                                Err(error) => (
+                                    "400 Bad Request",
+                                    "application/json; charset=utf-8",
+                                    serde_json::json!({"status":"error","error":error}).to_string(),
+                                ),
+                                Ok(()) => match federation::save_json(&next, &federation_path) {
+                                    Ok(()) => {
+                                        *state = next;
+                                        (
+                                            "200 OK",
+                                            "application/json; charset=utf-8",
+                                            serde_json::json!({
+                                                "status":"left",
+                                                "kind":kind,
+                                                "id":id
+                                            })
+                                            .to_string(),
+                                        )
+                                    }
+                                    Err(error) => (
+                                        "500 Internal Server Error",
+                                        "application/json; charset=utf-8",
+                                        serde_json::json!({"status":"error","error":error})
+                                            .to_string(),
+                                    ),
+                                },
+                            }
+                        }
+                    }
+                }
+            }
+        }
         "/api/federation/import" if method == "POST" => {
             let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
             let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
-            let kind = parsed.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-            let content = parsed.get("content").and_then(|v| v.as_str()).unwrap_or("");
-            let result: Result<(), anyhow::Error> = match kind {
-                "awenode" => {
-                    let cfg: AweNodeConfig = serde_json::from_str(content)?;
-                    federation::validate_awenode(&cfg).map_err(anyhow::Error::msg)?;
-                    let mut s = federation_state.lock().map_err(|_| anyhow::anyhow!("state lock poisoned"))?;
-                    s.local_node_id = format_uid(node.identity.public.awe_id.as_bytes());
-                    s.local_data_centre_id = Some(cfg.data_centre_id.clone());
-                    s.bootstrap_endpoints = cfg.bootstrap_endpoints.clone();
-                    if !s.bootstrap_endpoints.contains(&cfg.endpoint) {
-                        s.bootstrap_endpoints.push(cfg.endpoint.clone());
+            let kind = parsed.get("kind").and_then(|value| value.as_str()).unwrap_or("");
+            let content = parsed.get("content").and_then(|value| value.as_str()).unwrap_or("");
+            let local_node_id = format_uid(node.identity.public.awe_id.as_bytes());
+            let result: Result<Vec<String>, anyhow::Error> = (|| {
+                let (payload, owner_node_id) = verify_signed_federation_invitation(content, kind)
+                    .map_err(anyhow::Error::msg)?;
+                let payload_content = serde_json::to_string(&payload)?;
+                let mut state = federation_state.lock()
+                    .map_err(|_| anyhow::anyhow!("federation state lock poisoned"))?;
+                let mut next = state.clone();
+                let mut new_endpoints = Vec::new();
+                match kind {
+                    "awenode" => {
+                        let config: AweNodeConfig = serde_json::from_str(&payload_content)?;
+                        federation::validate_awenode(&config).map_err(anyhow::Error::msg)?;
+                        if config.node_id != owner_node_id {
+                            return Err(anyhow::anyhow!("node invitation identity does not match signer"));
+                        }
+                        next.local_node_id = local_node_id.clone();
+                        for endpoint in config.bootstrap_endpoints.iter().chain(std::iter::once(&config.endpoint)) {
+                            if !next.bootstrap_endpoints.contains(endpoint) {
+                                next.bootstrap_endpoints.push(endpoint.clone());
+                                new_endpoints.push(endpoint.clone());
+                            }
+                        }
+                        if !next.joined_data_centres.contains(&config.data_centre_id) {
+                            next.joined_data_centres.push(config.data_centre_id.clone());
+                        }
                     }
-                    if !s.joined_data_centres.contains(&cfg.data_centre_id) { s.joined_data_centres.push(cfg.data_centre_id); }
-                    s.format = "awenet".into(); s.version = federation::FORMAT_VERSION;
-                    Ok(())
-                },
-                "awedc" => {
-                    let cfg: DataCentreConfig = serde_json::from_str(content).map_err(anyhow::Error::msg)?;
-                    federation::validate_awedc(&cfg).map_err(anyhow::Error::msg)?;
-                    let mut s = federation_state.lock().map_err(|_| anyhow::anyhow!("state lock poisoned"))?;
-                    s.local_node_id = format_uid(node.identity.public.awe_id.as_bytes());
-                    // .awedc is a data-centre federation invitation: it adds the
-                    // remote DC as a peer, rather than silently changing this node's
-                    // own DC identity.
-                    if s.local_data_centre_id.is_none() {
-                        s.local_data_centre_id = Some(format!("dc-{}", &hex::encode(blake3::hash(format!("AWE/DC/{}", s.local_node_id).as_bytes()).as_bytes())[..24]));
+                    "awedc" => {
+                        let config: DataCentreConfig = serde_json::from_str(&payload_content)?;
+                        federation::validate_awedc(&config).map_err(anyhow::Error::msg)?;
+                        if config.owner_node_id != owner_node_id {
+                            return Err(anyhow::anyhow!("data-centre owner does not match signer"));
+                        }
+                        if next.data_centre_owners.get(&config.data_centre_id)
+                            .is_some_and(|owner| owner != &owner_node_id)
+                        {
+                            return Err(anyhow::anyhow!("data-centre ID is already bound to a different owner"));
+                        }
+                        next.local_node_id = local_node_id.clone();
+                        next.data_centre_owners.insert(config.data_centre_id.clone(), owner_node_id.clone());
+                        if next.local_data_centre_id.is_none() {
+                            next.local_data_centre_id = Some(format!(
+                                "dc-{}",
+                                &hex::encode(blake3::hash(format!("AWE/DC/{}", next.local_node_id).as_bytes()).as_bytes())[..24]
+                            ));
+                        }
+                        for endpoint in &config.endpoints {
+                            if !next.bootstrap_endpoints.contains(endpoint) {
+                                next.bootstrap_endpoints.push(endpoint.clone());
+                                new_endpoints.push(endpoint.clone());
+                            }
+                        }
+                        if !next.joined_data_centres.contains(&config.data_centre_id) {
+                            next.joined_data_centres.push(config.data_centre_id.clone());
+                        }
                     }
-                    s.bootstrap_endpoints.extend(cfg.endpoints.clone());
-                    s.bootstrap_endpoints.sort(); s.bootstrap_endpoints.dedup();
-                    if !s.joined_data_centres.contains(&cfg.data_centre_id) { s.joined_data_centres.push(cfg.data_centre_id.clone()); }
-                    s.format = "awenet".into(); s.version = federation::FORMAT_VERSION;
-                    Ok(())
-                },
-                "dgc" => {
-                    let cfg: DataGroupConfig = serde_json::from_str(content).map_err(anyhow::Error::msg)?;
-                    federation::validate_dgc(&cfg).map_err(anyhow::Error::msg)?;
-                    let mut s = federation_state.lock().map_err(|_| anyhow::anyhow!("state lock poisoned"))?;
-                    s.local_node_id = format_uid(node.identity.public.awe_id.as_bytes());
-                    s.local_data_group_id = Some(cfg.data_group_id.clone());
-                    for dc in cfg.data_centre_ids.clone() { if !s.joined_data_centres.contains(&dc) { s.joined_data_centres.push(dc); } }
-                    if !s.joined_data_groups.contains(&cfg.data_group_id) { s.joined_data_groups.push(cfg.data_group_id); }
-                    s.format = "awenet".into(); s.version = federation::FORMAT_VERSION;
-                    Ok(())
-                },
-                _ => Err(anyhow::anyhow!("kind must be awenode, awedc or dgc"))
-            };
+                    "dgc" => {
+                        let config: DataGroupConfig = serde_json::from_str(&payload_content)?;
+                        federation::validate_dgc(&config).map_err(anyhow::Error::msg)?;
+                        if next.data_centre_owners.get(&config.owner_data_centre_id) != Some(&owner_node_id) {
+                            return Err(anyhow::anyhow!("data-group invitation was not signed by the trusted data-centre owner"));
+                        }
+                        if config.data_centre_ids.iter().any(|id| !next.data_centre_owners.contains_key(id)) {
+                            return Err(anyhow::anyhow!("data-group references a data centre whose signed invitation has not been imported"));
+                        }
+                        if next.data_group_owners.get(&config.data_group_id)
+                            .is_some_and(|owner| owner != &owner_node_id)
+                        {
+                            return Err(anyhow::anyhow!("data-group ID is already bound to a different owner"));
+                        }
+                        next.local_node_id = local_node_id.clone();
+                        next.data_group_owners.insert(config.data_group_id.clone(), owner_node_id.clone());
+                        next.local_data_group_id = Some(config.data_group_id.clone());
+                        for dc in &config.data_centre_ids {
+                            if !next.joined_data_centres.contains(dc) {
+                                next.joined_data_centres.push(dc.clone());
+                            }
+                        }
+                        if !next.joined_data_groups.contains(&config.data_group_id) {
+                            next.joined_data_groups.push(config.data_group_id.clone());
+                        }
+                    }
+                    "cgc" => {
+                        let config: CentreGroupConfig = serde_json::from_str(&payload_content)?;
+                        federation::validate_cgc(&config).map_err(anyhow::Error::msg)?;
+                        if next.data_group_owners.get(&config.owner_data_group_id) != Some(&owner_node_id) {
+                            return Err(anyhow::anyhow!("centre-group invitation was not signed by the trusted data-group owner"));
+                        }
+                        if config.data_group_ids.iter().any(|id| !next.data_group_owners.contains_key(id)) {
+                            return Err(anyhow::anyhow!("centre group references a data group whose signed invitation has not been imported"));
+                        }
+                        next.local_node_id = local_node_id.clone();
+                        next.local_centre_group_id = Some(config.centre_group_id.clone());
+                        for dg in &config.data_group_ids {
+                            if !next.joined_data_groups.contains(dg) {
+                                next.joined_data_groups.push(dg.clone());
+                            }
+                        }
+                        if !next.joined_centre_groups.contains(&config.centre_group_id) {
+                            next.joined_centre_groups.push(config.centre_group_id.clone());
+                        }
+                    }
+                    _ => return Err(anyhow::anyhow!("kind must be awenode, awedc, dgc or cgc")),
+                }
+                next.format = "awenet".into();
+                next.version = federation::FORMAT_VERSION;
+                federation::save_json(&next, &federation_path).map_err(anyhow::Error::msg)?;
+                *state = next;
+                Ok(new_endpoints)
+            })();
             match result {
-                Ok(()) => {
-                    let endpoints = federation_state.lock().map(|s| s.bootstrap_endpoints.clone()).unwrap_or_default();
-                    let addresses = endpoints.iter().filter_map(|x| x.parse::<SocketAddr>().ok()).collect::<Vec<_>>();
+                Ok(new_endpoints) => {
+                    let addresses = new_endpoints.iter()
+                        .filter_map(|endpoint| endpoint.parse::<SocketAddr>().ok())
+                        .collect::<Vec<_>>();
                     let discovered = if addresses.is_empty() { 0 } else { node.bootstrap(&addresses).await.unwrap_or(0) };
-                    if let Ok(state) = federation_state.lock() { let _ = federation::save_json(&*state, &federation_path); }
-                    ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"imported","connected_bootstrap_peers":discovered}).to_string())
-                },
-                Err(error) => ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":error.to_string()}).to_string())
+                    ("200 OK", "application/json; charset=utf-8",
+                        serde_json::json!({"status":"imported","connected_bootstrap_peers":discovered}).to_string())
+                }
+                Err(error) => ("400 Bad Request", "application/json; charset=utf-8",
+                    serde_json::json!({"status":"error","error":error.to_string()}).to_string())
             }
         },
         "/api/health" => ("200 OK", "application/json; charset=utf-8", serde_json::json!({
@@ -635,7 +2279,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                         match serde_json::to_vec(&envelope) {
                             Ok(payload) => match node.send_to_peer(&recipient_id, 100, payload).await {
                                 Ok(_) => {
-                                    if let Ok(mut log)=messenger.lock(){ log.push(envelope.clone()); }
+                                    if let Ok(mut log)=messenger.lock(){ append_messenger_entry(&mut log, envelope.clone()); }
                                     ("200 OK","application/json; charset=utf-8",serde_json::json!({"status":"sent","signal":envelope}).to_string())
                                 },
                                 Err(error)=>("502 Bad Gateway","application/json; charset=utf-8",serde_json::json!({"status":"error","error":error.to_string()}).to_string())
@@ -656,7 +2300,19 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
             let title=p.get("title").and_then(|v|v.as_str()).unwrap_or("").trim().to_string();
             let mut members=p.get("members").and_then(|v|v.as_array()).cloned().unwrap_or_default().into_iter().filter_map(|v|v.as_str().map(str::to_string)).filter(|v|!v.is_empty()).collect::<Vec<_>>();
             let local=node.identity.public.awe_id.to_hex();
-            if title.is_empty(){("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"title is required"}).to_string())}else{
+            let title_validation = validate_community_title(&title);
+            let final_member_count =
+                members.len() + (if members.contains(&local) { 0 } else { 1 });
+            let members_validation = if final_member_count > MAX_GROUP_MEMBERS {
+                Err(format!("group cannot exceed {MAX_GROUP_MEMBERS} members"))
+            } else {
+                validate_group_member_ids(&members)
+            };
+            if let Err(error) = title_validation {
+                ("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":error}).to_string())
+            } else if let Err(error) = members_validation {
+                ("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":error}).to_string())
+            } else {
                 if !members.contains(&local){members.push(local.clone());} members.sort();members.dedup();
                 let id=format!("gid-{}",hex::encode(&blake3::hash(format!("{}:{}:{}",local,title,now_unix()).as_bytes()).as_bytes()[..12]));
                 let group=serde_json::json!({"id":id,"title":title,"owner":local,"members":members,"created_at":now_unix(),"messages":[]});
@@ -670,14 +2326,18 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         "/api/groups/send" if method == "POST" => {
             let body=request.split("\r\n\r\n").nth(1).unwrap_or(""); let p:serde_json::Value=serde_json::from_str(body).unwrap_or_default();
             let gid=p.get("group_id").and_then(|v|v.as_str()).unwrap_or("").trim(); let text=p.get("text").and_then(|v|v.as_str()).unwrap_or("").trim(); let local=node.identity.public.awe_id.to_hex();
-            if gid.is_empty()||text.is_empty(){("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"group_id and text are required"}).to_string())}else{
+            if gid.is_empty() {
+                ("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"group_id is required"}).to_string())
+            } else if let Err(error) = validate_community_message(text) {
+                ("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":error}).to_string())
+            } else {
                 let group=community.lock().ok().and_then(|s|s.get("groups").and_then(|v|v.as_array()).and_then(|a|a.iter().find(|g|g.get("id").and_then(|v|v.as_str())==Some(gid)).cloned()));
                 match group{
                     None=>("404 Not Found","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"group not found"}).to_string()),
                     Some(group) if !group.get("members").and_then(|v|v.as_array()).map(|a|a.iter().any(|v|v.as_str()==Some(local.as_str()))).unwrap_or(false)=>("403 Forbidden","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"not a group member"}).to_string()),
                     Some(group)=>{
                         let timestamp=now_unix(); let message=serde_json::json!({"id":hex::encode(&blake3::hash(format!("group:{}:{}:{}",gid,local,timestamp).as_bytes()).as_bytes()[..16]),"sender":local,"text":text,"timestamp":timestamp});
-                        if let Ok(mut st)=community.lock(){if let Some(g)=st.get_mut("groups").and_then(|v|v.as_array_mut()).and_then(|a|a.iter_mut().find(|g|g.get("id").and_then(|v|v.as_str())==Some(gid))){if let Some(a)=g.get_mut("messages").and_then(|v|v.as_array_mut()){a.push(message.clone());}}}
+                        if let Ok(mut st)=community.lock(){if let Some(g)=st.get_mut("groups").and_then(|v|v.as_array_mut()).and_then(|a|a.iter_mut().find(|g|g.get("id").and_then(|v|v.as_str())==Some(gid))){if let Some(a)=g.get_mut("messages").and_then(|v|v.as_array_mut()){append_bounded_json_entry(a, message.clone());}}}
                         let env=serde_json::json!({"kind":"awe.group.v1","event":"message","group_id":gid,"message":message,"sender":local}); let members=group.get("members").and_then(|v|v.as_array()).cloned().unwrap_or_default(); let mut delivered=0usize;
                         if let Ok(payload)=serde_json::to_vec(&env){for peer in node.peers().await{let pid=hex::encode(peer.awe_id);if pid!=local&&members.iter().any(|v|v.as_str()==Some(pid.as_str())){let sent=node.send_to_peer_confirmed(&peer.awe_id,100,payload.clone()).await.is_ok()||node.send_to_peer(&peer.awe_id,100,payload.clone()).await.is_ok();if sent{delivered+=1;}}}}
                         ("200 OK","application/json; charset=utf-8",serde_json::json!({"status":"sent","message":message,"delivered_members":delivered}).to_string())
@@ -691,7 +2351,9 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         },
         "/api/channels/create" if method == "POST" => {
             let body=request.split("\r\n\r\n").nth(1).unwrap_or(""); let p:serde_json::Value=serde_json::from_str(body).unwrap_or_default(); let title=p.get("title").and_then(|v|v.as_str()).unwrap_or("").trim().to_string(); let local=node.identity.public.awe_id.to_hex();
-            if title.is_empty(){("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"title is required"}).to_string())}else{
+            if let Err(error) = validate_community_title(&title) {
+                ("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":error}).to_string())
+            } else {
                 let id=format!("cid-{}",hex::encode(&blake3::hash(format!("{}:{}:{}",local,title,now_unix()).as_bytes()).as_bytes()[..12])); let channel=serde_json::json!({"id":id,"title":title,"owner":local,"subscribers":[local],"created_at":now_unix(),"messages":[]});
                 if let Ok(mut st)=community.lock(){if let Some(a)=st.get_mut("channels").and_then(|v|v.as_array_mut()){a.push(channel.clone());}}
                 let env=serde_json::json!({"kind":"awe.channel.v1","event":"upsert","channel":channel,"sender":local}); let mut delivered=0usize;
@@ -742,10 +2404,10 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
             match channel{
                 None=>("404 Not Found","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"channel not found"}).to_string()),
                 Some(channel) if channel.get("owner").and_then(|v|v.as_str())!=Some(local.as_str())=>("403 Forbidden","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"only channel owner may publish"}).to_string()),
-                Some(_channel) if text.is_empty()=>("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"text is required"}).to_string()),
+                Some(_channel) if validate_community_message(text).is_err()=>("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":validate_community_message(text).unwrap_err()}).to_string()),
                 Some(_channel)=>{
                     let message=serde_json::json!({"id":hex::encode(&blake3::hash(format!("channel:{}:{}:{}",cid,local,now_unix()).as_bytes()).as_bytes()[..16]),"sender":local,"text":text,"timestamp":now_unix()});
-                    if let Ok(mut st)=community.lock(){if let Some(ch)=st.get_mut("channels").and_then(|v|v.as_array_mut()).and_then(|a|a.iter_mut().find(|c|c.get("id").and_then(|v|v.as_str())==Some(cid))){if let Some(a)=ch.get_mut("messages").and_then(|v|v.as_array_mut()){a.push(message.clone());}}}
+                    if let Ok(mut st)=community.lock(){if let Some(ch)=st.get_mut("channels").and_then(|v|v.as_array_mut()).and_then(|a|a.iter_mut().find(|c|c.get("id").and_then(|v|v.as_str())==Some(cid))){if let Some(a)=ch.get_mut("messages").and_then(|v|v.as_array_mut()){append_bounded_json_entry(a, message.clone());}}}
                     let env=serde_json::json!({"kind":"awe.channel.v1","event":"message","channel_id":cid,"message":message,"sender":local}); let mut delivered=0usize;
                     let active=node.active_peers().await;
                     for peer_id in active{let pid=format_uid(&peer_id);if pid!=local{let send_node=node.clone();let bytes=serde_json::to_vec(&env).unwrap_or_default();let fallback=serde_json::json!({"kind":"awe.messenger.v1","id":message.get("id").cloned().unwrap_or_else(||serde_json::json!("")),"sender":local,"recipient":pid,"text":text,"timestamp":message.get("timestamp").cloned().unwrap_or_else(||serde_json::json!(now_unix())),"channel_id":cid,"channel_message":message.clone(),"silent":true});let fallback_bytes=serde_json::to_vec(&fallback).unwrap_or_default();tokio::spawn(async move{if send_node.send_to_peer(&peer_id,100,bytes).await.is_err(){let _=send_node.send_to_peer_confirmed(&peer_id,100,fallback_bytes.clone()).await;}else{let _=send_node.send_to_peer(&peer_id,100,fallback_bytes).await;}});delivered+=1;}}
@@ -855,7 +2517,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                                 "rtt_ms": rtt.as_millis()
                             });
                             if let Ok(mut log) = messenger.lock() {
-                                log.push(item.clone());
+                                append_messenger_entry(&mut log, item.clone());
                             }
                             ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"sent","message":item}).to_string())
                         }
@@ -870,7 +2532,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                                 "error": error.to_string()
                             });
                             if let Ok(mut log) = messenger.lock() {
-                                log.push(item.clone());
+                                append_messenger_entry(&mut log, item.clone());
                             }
                             ("502 Bad Gateway", "application/json; charset=utf-8", serde_json::json!({"status":"failed","message":item}).to_string())
                         }
@@ -930,6 +2592,15 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                                     let mut sent_remote = 0usize;
                                     let mut failed = Vec::new();
                                     let transfer_limit = Arc::new(tokio::sync::Semaphore::new(32));
+                                    // A peer must have at most one first-connect/upload operation
+                                    // in flight. Otherwise concurrent sends can all observe an empty
+                                    // active-connection cache, race to create sockets, and replace one
+                                    // another's cached connection before ACKs are returned.
+                                    let peer_transfer_limits = peer_ids
+                                        .values()
+                                        .copied()
+                                        .map(|peer_id| (peer_id, Arc::new(tokio::sync::Semaphore::new(1))))
+                                        .collect::<std::collections::BTreeMap<_, _>>();
                                     let mut remote_jobs: tokio::task::JoinSet<Result<(usize, Option<serde_json::Value>), String>> = tokio::task::JoinSet::new();
 
                                     for (index, shard) in shards.into_iter().enumerate() {
@@ -963,43 +2634,48 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                                                     continue;
                                                 };
                                                 let task_node = node.clone();
-                                                let task_pending_acks = pending_acks.clone();
                                                 let task_limit = transfer_limit.clone();
+                                                let Some(peer_limit) = peer_transfer_limits.get(&peer_id).cloned() else {
+                                                    failed.push(serde_json::json!({
+                                                        "shard": index,
+                                                        "node": target,
+                                                        "error": "missing per-peer storage transfer limit"
+                                                    }));
+                                                    continue;
+                                                };
                                                 let target_name = target.clone();
                                                 remote_jobs.spawn(async move {
                                                     let _permit = task_limit.acquire_owned().await
                                                         .map_err(|_| "storage transfer scheduler closed".to_string())?;
-                                                    match task_node.send_to_peer(&peer_id, STORAGE_STREAM, bytes).await {
-                                                        Ok(_) => {
-                                                            let deadline = tokio::time::Instant::now()
-                                                                + std::time::Duration::from_secs(5);
-                                                            let mut confirmed = false;
-                                                            while tokio::time::Instant::now() < deadline {
-                                                                if let Ok(mut acks) = task_pending_acks.lock() {
-                                                                    if let Some(ack) = acks.remove(&request_id) {
-                                                                        confirmed = ack.file_id == file_id
-                                                                            && ack.shard_index == index as u16
-                                                                            && ack.stored_object_id == shard_hash;
-                                                                        break;
-                                                                    }
-                                                                }
-                                                                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-                                                            }
+                                                    let _peer_permit = peer_limit.acquire_owned().await
+                                                        .map_err(|_| "per-peer storage transfer scheduler closed".to_string())?;
+                                                    match task_node.send_to_peer_request(&peer_id, STORAGE_STREAM, bytes).await {
+                                                        Ok((_, response)) => {
+                                                            let ack = serde_json::from_slice::<StorageShardAck>(&response).ok();
+                                                            let ack_received = ack.is_some();
+                                                            let ack_identity_matches = ack_received; // response came over this authenticated peer session
+                                                            let ack_payload_matches = ack.as_ref().map(|ack| {
+                                                                ack.request_id == request_id
+                                                                    && ack.file_id == file_id
+                                                                    && ack.shard_index == index as u16
+                                                                    && ack.stored_object_id == shard_hash
+                                                            }).unwrap_or(false);
+                                                            let confirmed = ack.as_ref().map(|ack| {
+                                                                ack.request_id == request_id && storage_ack_matches(
+                                                                    &peer_id, &peer_id, ack, &file_id, index as u16, &shard_hash
+                                                                )
+                                                            }).unwrap_or(false);
                                                             if confirmed {
                                                                 Ok((1usize, None))
                                                             } else {
-                                                                // The transport accepted the shard and the receiver's data-plane
-                                                                // handler persists it before attempting the application ACK.
-                                                                // Keep the transfer successful when only the ACK callback is
-                                                                // unavailable, while exposing that the application ACK was missed.
-                                                                Ok((
-                                                                    1usize,
-                                                                    Some(serde_json::json!({
-                                                                        "shard": index,
-                                                                        "node": target_name,
-                                                                        "warning": "remote storage ACK not confirmed"
-                                                                    })),
-                                                                ))
+                                                                Ok((0usize, Some(serde_json::json!({
+                                                                    "shard": index,
+                                                                    "node": target_name,
+                                                                    "error": "remote storage ACK response was invalid",
+                                                                    "ack_received": ack_received,
+                                                                    "ack_identity_matches": ack_identity_matches,
+                                                                    "ack_payload_matches": ack_payload_matches
+                                                                }))))
                                                             }
                                                         }
                                                         Err(error) => Ok((0usize, Some(serde_json::json!({
@@ -1032,10 +2708,20 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                                         }
                                     }
 
+                                    let required_placements = plan
+                                        .placements
+                                        .iter()
+                                        .map(|placement| placement.nodes.len())
+                                        .sum::<usize>();
+                                    let complete = storage_upload_is_complete(
+                                        stored_local,
+                                        sent_remote,
+                                        required_placements,
+                                        failed.len(),
+                                    );
                                     let manifest_path = PathBuf::from(data_dir_for_api())
                                         .join("storage")
                                         .join("manifests");
-                                    let _ = fs::create_dir_all(&manifest_path);
                                     let manifest = serde_json::json!({
                                         "version": 1,
                                         "file_id": hex::encode(file_id),
@@ -1050,31 +2736,53 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                                         "stored_local": stored_local,
                                         "sent_remote": sent_remote
                                     });
-                                    let _ = fs::write(
-                                        manifest_path.join(format!("{}.json", hex::encode(file_id))),
-                                        serde_json::to_vec_pretty(&manifest).unwrap_or_default(),
-                                    );
-
-                                    let status = if failed
-                                        .iter()
-                                        .all(|entry| entry.get("error").is_none())
-                                    {
-                                        "stored"
+                                    let persist_result = if complete {
+                                        fs::create_dir_all(&manifest_path).and_then(|()| {
+                                            let bytes = serde_json::to_vec_pretty(&manifest)
+                                                .map_err(std::io::Error::other)?;
+                                            save_manifest(
+                                                manifest_path.join(format!("{}.json", hex::encode(file_id))),
+                                                &bytes,
+                                            )
+                                        })
                                     } else {
-                                        "partial"
+                                        Ok(())
                                     };
-                                    ("200 OK", "application/json; charset=utf-8",
-                                        serde_json::json!({
-                                            "status": status,
-                                            "file_id": hex::encode(file_id),
-                                            "filename": filename,
-                                            "original_size": data.len(),
-                                            "shards": 1000,
-                                            "replicas": 3,
-                                            "stored_local": stored_local,
-                                            "sent_remote": sent_remote,
-                                            "failures": failed
-                                        }).to_string())
+
+                                    if !complete {
+                                        ("503 Service Unavailable", "application/json; charset=utf-8",
+                                            serde_json::json!({
+                                                "status": "partial",
+                                                "error": "not all planned shard replicas were durably acknowledged; manifest was not committed",
+                                                "file_id": hex::encode(file_id),
+                                                "filename": filename,
+                                                "original_size": data.len(),
+                                                "required_placements": required_placements,
+                                                "stored_local": stored_local,
+                                                "sent_remote": sent_remote,
+                                                "failures": failed
+                                            }).to_string())
+                                    } else if let Err(error) = persist_result {
+                                        ("500 Internal Server Error", "application/json; charset=utf-8",
+                                            serde_json::json!({
+                                                "status": "error",
+                                                "error": format!("all replicas stored but manifest persistence failed: {error}"),
+                                                "file_id": hex::encode(file_id)
+                                            }).to_string())
+                                    } else {
+                                        ("200 OK", "application/json; charset=utf-8",
+                                            serde_json::json!({
+                                                "status": "stored",
+                                                "file_id": hex::encode(file_id),
+                                                "filename": filename,
+                                                "original_size": data.len(),
+                                                "shards": policy.total_shards(),
+                                                "replicas": 3,
+                                                "stored_local": stored_local,
+                                                "sent_remote": sent_remote,
+                                                "failures": failed
+                                            }).to_string())
+                                    }
                                 }
                             }
                         }
@@ -1103,11 +2811,12 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
 
             match (recipient_id, file_id, payload, usize::try_from(shard_index)) {
                 (Some(peer_id), Some(file_id), Some(payload), Ok(index)) if index < 1000 => {
+                    let request_id = blake3::hash(
+                        format!("{}:{}:{}", file_id_hex, shard_index, now_unix()).as_bytes()
+                    ).as_bytes()[..16].try_into().unwrap_or([0u8; 16]);
+                    let expected_hash = *blake3::hash(&payload).as_bytes();
                     let transfer = StorageShardTransfer::new(
-                        blake3::hash(format!("{}:{}:{}", file_id_hex, shard_index, now_unix()).as_bytes())
-                            .as_bytes()[..16]
-                            .try_into()
-                            .unwrap_or([0u8; 16]),
+                        request_id,
                         *node.identity.public.awe_id.as_bytes(),
                         file_id,
                         shard_index as u16,
@@ -1116,9 +2825,15 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                         payload,
                     );
                     match serde_json::to_vec(&transfer) {
-                        Ok(bytes) => match node.send_to_peer(&peer_id, STORAGE_STREAM, bytes).await {
-                            Ok(rtt) => ("200 OK", "application/json; charset=utf-8",
-                                serde_json::json!({"status":"sent","stream":STORAGE_STREAM,"shard_index":index,"rtt_ms":rtt.as_millis()}).to_string()),
+                        Ok(bytes) => match node.send_to_peer_request(&peer_id, STORAGE_STREAM, bytes).await {
+                            Ok((rtt, response)) => match serde_json::from_slice::<StorageShardAck>(&response) {
+                                Ok(ack) if ack.request_id == request_id
+                                    && storage_ack_matches(&peer_id, &peer_id, &ack, &file_id, index as u16, &expected_hash) =>
+                                    ("200 OK", "application/json; charset=utf-8",
+                                        serde_json::json!({"status":"stored","stream":STORAGE_STREAM,"shard_index":index,"rtt_ms":rtt.as_millis()}).to_string()),
+                                _ => ("502 Bad Gateway", "application/json; charset=utf-8",
+                                    serde_json::json!({"status":"error","error":"remote storage ACK was invalid"}).to_string())
+                            },
                             Err(error) => ("502 Bad Gateway", "application/json; charset=utf-8",
                                 serde_json::json!({"status":"error","error":error.to_string()}).to_string())
                         },
@@ -1136,9 +2851,19 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                 .and_then(|path| path.split('?').nth(1))
                 .and_then(|q| q.split('&').find_map(|p| p.strip_prefix("file_id=")))
                 .unwrap_or("");
-            let manifest_path = PathBuf::from(data_dir_for_api())
-                .join("storage").join("manifests")
-                .join(format!("{file_id_hex}.json"));
+            let manifest_path = match validate_storage_file_id(file_id_hex) {
+                Ok(_) => PathBuf::from(data_dir_for_api())
+                    .join("storage")
+                    .join("manifests")
+                    .join(format!("{file_id_hex}.json")),
+                Err(error) => {
+                    let response = ("400 Bad Request", "application/json; charset=utf-8",
+                        serde_json::json!({"status":"error","error":error}).to_string());
+                    stream.write_all(&http_response(response.0, response.1, &response.2, origin).await).await?;
+                    stream.shutdown().await?;
+                    return Ok(());
+                }
+            };
             match fs::read(&manifest_path) {
                 Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes) {
                     Ok(manifest) => {
@@ -1224,30 +2949,28 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                                     let Ok(bytes) = serde_json::to_vec(&request) else {
                                         continue;
                                     };
-                                    if node.send_to_peer(peer_id, STORAGE_STREAM, bytes).await.is_err() {
-                                        continue;
-                                    }
-                                    let deadline =
-                            tokio::time::Instant::now() + std::time::Duration::from_secs(5);
-                                    while tokio::time::Instant::now() < deadline {
-                                        if let Ok(mut responses) = pending_shards.lock() {
-                                            if let Some(response) = responses.remove(&request_id) {
-                                                if response.file_id == request.file_id
-                                                    && response.shard_index == index as u16
-                                                    && response.verify().is_ok()
-                                                    && response.payload_hash == expected_hash
-                                                {
-                                                    if let Ok(object_id) = storage.put(&response.payload) {
-                                                        if object_id == expected_hash {
-                                                            shards[index] = Some(response.payload);
-                                                            present += 1;
-                                                        }
+                                    if let Ok((_, response_bytes)) = node
+                                        .send_to_peer_request(peer_id, STORAGE_STREAM, bytes)
+                                        .await
+                                    {
+                                        if let Ok(response) =
+                                            serde_json::from_slice::<StorageShardTransfer>(&response_bytes)
+                                        {
+                                            if response.request_id == request_id
+                                                && response.sender == *peer_id
+                                                && response.file_id == request.file_id
+                                                && response.shard_index == index as u16
+                                                && response.verify().is_ok()
+                                                && response.payload_hash == expected_hash
+                                            {
+                                                if let Ok(object_id) = storage.put(&response.payload) {
+                                                    if object_id == expected_hash {
+                                                        shards[index] = Some(response.payload);
+                                                        present += 1;
                                                     }
                                                 }
-                                                break;
                                             }
                                         }
-                                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                                     }
                                     if shards[index].is_some() {
                                         break;
@@ -1336,7 +3059,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         _ => ("404 Not Found", "text/plain; charset=utf-8", "Not Found".to_string()),
     };
     stream
-        .write_all(&http_response(status, mime, &body).await)
+        .write_all(&http_response(status, mime, &body, origin).await)
         .await?;
     stream.shutdown().await?;
     Ok(())
@@ -1363,8 +3086,6 @@ fn now_unix() -> u64 {
 async fn autonomous_repair_cycle(
     node: &Node,
     storage: &LocalNodeStore,
-    pending_shards: &PendingShards,
-    pending_acks: &PendingAcks,
     data_dir: &std::path::Path,
     policy: &NetworkPolicy,
 ) {
@@ -1488,29 +3209,23 @@ async fn autonomous_repair_cycle(
                         let Ok(request_bytes) = serde_json::to_vec(&request) else {
                             continue;
                         };
-                        if node
-                            .send_to_peer(source_id, STORAGE_STREAM, request_bytes)
+                        if let Ok((_, response_bytes)) = node
+                            .send_to_peer_request(source_id, STORAGE_STREAM, request_bytes)
                             .await
-                            .is_err()
                         {
-                            continue;
-                        }
-                        let deadline =
-                            tokio::time::Instant::now() + std::time::Duration::from_secs(5);
-                        while tokio::time::Instant::now() < deadline {
-                            if let Ok(mut pending) = pending_shards.lock() {
-                                if let Some(response) = pending.remove(&request_id) {
-                                    if response.file_id == file_id
-                                        && response.shard_index == index as u16
-                                        && response.payload_hash == expected_hash
-                                        && response.verify().is_ok()
-                                    {
-                                        source_data = Some(response.payload);
-                                    }
-                                    break;
+                            if let Ok(response) =
+                                serde_json::from_slice::<StorageShardTransfer>(&response_bytes)
+                            {
+                                if response.request_id == request_id
+                                    && response.sender == *source_id
+                                    && response.file_id == file_id
+                                    && response.shard_index == index as u16
+                                    && response.payload_hash == expected_hash
+                                    && response.verify().is_ok()
+                                {
+                                    source_data = Some(response.payload);
                                 }
                             }
-                            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                         }
                         if source_data.is_some() {
                             break;
@@ -1575,29 +3290,27 @@ async fn autonomous_repair_cycle(
                         let Ok(transfer_bytes) = serde_json::to_vec(&transfer) else {
                             continue;
                         };
-                        if node
-                            .send_to_peer(target_id, STORAGE_STREAM, transfer_bytes)
+                        if let Ok((_, response_bytes)) = node
+                            .send_to_peer_request(target_id, STORAGE_STREAM, transfer_bytes)
                             .await
-                            .is_err()
                         {
-                            continue;
-                        }
-                        let deadline =
-                            tokio::time::Instant::now() + std::time::Duration::from_secs(5);
-                        while tokio::time::Instant::now() < deadline {
-                            if let Ok(mut acks) = pending_acks.lock() {
-                                if let Some(ack) = acks.remove(&request_id) {
-                                    if ack.file_id == file_id
-                                        && ack.shard_index == index as u16
-                                        && ack.stored_object_id == expected_hash
-                                    {
-                                        nodes_value.push(serde_json::Value::String(target.clone()));
-                                        repaired = true;
-                                    }
-                                    break;
+                            if let Ok(ack) =
+                                serde_json::from_slice::<StorageShardAck>(&response_bytes)
+                            {
+                                if ack.request_id == request_id
+                                    && storage_ack_matches(
+                                        target_id,
+                                        target_id,
+                                        &ack,
+                                        &file_id,
+                                        index as u16,
+                                        &expected_hash,
+                                    )
+                                {
+                                    nodes_value.push(serde_json::Value::String(target.clone()));
+                                    repaired = true;
                                 }
                             }
-                            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                         }
                     }
 
@@ -1630,6 +3343,9 @@ async fn run_product() -> Result<()> {
         PathBuf::from(".awep2p")
     };
     fs::create_dir_all(&data_dir)?;
+    let mut api_token_bytes = [0u8; 32];
+    OsRng.fill_bytes(&mut api_token_bytes);
+    let api_token = hex::encode(api_token_bytes);
     let secret_path = data_dir.join("node.awesecret");
     let identity = if secret_path.exists() {
         AweSecret::from_bytes(&fs::read(&secret_path)?)
@@ -1657,7 +3373,32 @@ async fn run_product() -> Result<()> {
         anyhow::bail!("node storage has no available capacity");
     }
     let storage: StorageState = Arc::new(LocalNodeStore::open(&storage_root, storage_quota)?);
-    let messenger: MessengerLog = Arc::new(Mutex::new(Vec::new()));
+    let messenger_path = data_dir.join("messenger.json");
+    let messenger: MessengerLog = Arc::new(Mutex::new(
+        fs::read(&messenger_path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Vec<serde_json::Value>>(&bytes).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .rev()
+            .take(MAX_MESSENGER_LOG_ENTRIES)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect(),
+    ));
+    let messenger_save = messenger.clone();
+    let messenger_save_path = messenger_path.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            if let Ok(log) = messenger_save.lock() {
+                if let Ok(bytes) = serde_json::to_vec(&*log) {
+                    let _ = fs::write(&messenger_save_path, bytes);
+                }
+            }
+        }
+    });
     let community_path = data_dir.join("community.json");
     let community: CommunityState = Arc::new(Mutex::new(
         fs::read(&community_path)
@@ -1678,7 +3419,6 @@ async fn run_product() -> Result<()> {
         }
     });
     let pending_acks: PendingAcks = Arc::new(Mutex::new(BTreeMap::new()));
-    let pending_shards: PendingShards = Arc::new(Mutex::new(BTreeMap::new()));
     let federation_path = data_dir.join("awenet.json");
     let policy_path = data_dir.join("policy.json");
     let initial_policy = policy::load_or_create(&policy_path).map_err(anyhow::Error::msg)?;
@@ -1742,22 +3482,12 @@ async fn run_product() -> Result<()> {
     }
     let repair_node = node.clone();
     let repair_storage = storage.clone();
-    let repair_pending_shards = pending_shards.clone();
-    let repair_pending_acks = pending_acks.clone();
     let repair_policy = policy_state.clone();
     let repair_data_dir = data_dir.clone();
     tokio::spawn(async move {
         loop {
             let policy = repair_policy.lock().map(|p| p.clone()).unwrap_or_default();
-            autonomous_repair_cycle(
-                &repair_node,
-                &repair_storage,
-                &repair_pending_shards,
-                &repair_pending_acks,
-                &repair_data_dir,
-                &policy,
-            )
-            .await;
+            autonomous_repair_cycle(&repair_node, &repair_storage, &repair_data_dir, &policy).await;
             tokio::time::sleep(std::time::Duration::from_secs(30)).await;
         }
     });
@@ -1788,6 +3518,12 @@ async fn run_product() -> Result<()> {
         }
     }
     let onecoin_offers_path = data_dir.join("onecoin-exchange-offers.json");
+    let host_root = data_dir.join("host");
+    let host: HostState = Arc::new(Mutex::new(AweHost::open(
+        &host_root,
+        1 << 30,
+        HostPolicy::default(),
+    )?));
     let contribution_path = data_dir.join("resource-contribution.json");
     let contribution: ContributionState = Arc::new(Mutex::new(
         fs::read(&contribution_path)
@@ -1860,12 +3596,21 @@ async fn run_product() -> Result<()> {
     let dispatcher_onecoin_path = onecoin_path.clone();
     tokio::spawn(async move {
         loop {
-            for (sender, stream, payload) in dispatcher_node.take_inbox() {
+            for mut inbound in dispatcher_node.take_inbox_messages() {
+                let sender = inbound.sender;
+                let stream = inbound.stream;
+                let payload = inbound.payload.clone();
                 let runtime_policy = dispatcher_policy
                     .lock()
                     .map(|p| p.clone())
                     .unwrap_or_default();
                 if !runtime_policy.allows_stream(stream) {
+                    if stream == STORAGE_STREAM || stream == ONECOIN_CONSENSUS_STREAM {
+                        eprintln!(
+                            "application stream rejected by local policy: stream={}, allowed={:?}",
+                            stream, runtime_policy.allowed_streams
+                        );
+                    }
                     continue;
                 }
                 if stream == ONECOIN_CONSENSUS_STREAM {
@@ -1893,6 +3638,15 @@ async fn run_product() -> Result<()> {
                     continue;
                 }
                 if stream == policy::ONECOIN_TRANSFER_STREAM {
+                    // Once consensus is configured, legacy direct transfers must not mutate a
+                    // separate non-finalized ledger behind the wallet's finalized balance.
+                    if dispatcher_consensus
+                        .lock()
+                        .map(|state| state.is_some())
+                        .unwrap_or(true)
+                    {
+                        continue;
+                    }
                     if let Ok(tx) = serde_json::from_slice::<OnecoinTransaction>(&payload) {
                         if tx.recipient == *dispatcher_node.identity.public.awe_id.as_bytes() {
                             if let Ok(mut ledger) = dispatcher_onecoin_ledger.lock() {
@@ -1951,7 +3705,7 @@ async fn run_product() -> Result<()> {
                                                 serde_json::json!(format_uid(&sender)),
                                             );
                                         }
-                                        log.push(item);
+                                        append_messenger_entry(&mut log, item);
                                     }
                                 }
                             }
@@ -1968,7 +3722,9 @@ async fn run_product() -> Result<()> {
                                             .get("owner")
                                             .and_then(|v| v.as_str())
                                             .unwrap_or("");
-                                        if owner == sender_uid {
+                                        if owner == sender_uid
+                                            && validate_remote_group(&group, &sender_uid).is_ok()
+                                        {
                                             let gid = group
                                                 .get("id")
                                                 .and_then(|v| v.as_str())
@@ -2015,11 +3771,15 @@ async fn run_product() -> Result<()> {
                                             .unwrap_or(false);
                                         if member {
                                             if let Some(m) = message.get("message").cloned() {
-                                                if let Some(a) = g
-                                                    .get_mut("messages")
-                                                    .and_then(|v| v.as_array_mut())
+                                                if validate_remote_feed_message(&m, &sender_uid)
+                                                    .is_ok()
                                                 {
-                                                    a.push(m);
+                                                    if let Some(a) = g
+                                                        .get_mut("messages")
+                                                        .and_then(|v| v.as_array_mut())
+                                                    {
+                                                        append_bounded_json_entry(a, m);
+                                                    }
                                                 }
                                             }
                                         }
@@ -2039,7 +3799,10 @@ async fn run_product() -> Result<()> {
                                             .get("owner")
                                             .and_then(|v| v.as_str())
                                             .unwrap_or("");
-                                        if owner == sender_uid {
+                                        if owner == sender_uid
+                                            && validate_remote_channel(&channel, &sender_uid)
+                                                .is_ok()
+                                        {
                                             let cid = channel
                                                 .get("id")
                                                 .and_then(|v| v.as_str())
@@ -2139,11 +3902,15 @@ async fn run_product() -> Result<()> {
                                                 == Some(sender_uid.as_str());
                                         if subscriber {
                                             if let Some(m) = message.get("message").cloned() {
-                                                if let Some(a) = ch
-                                                    .get_mut("messages")
-                                                    .and_then(|v| v.as_array_mut())
+                                                if validate_remote_feed_message(&m, &sender_uid)
+                                                    .is_ok()
                                                 {
-                                                    a.push(m);
+                                                    if let Some(a) = ch
+                                                        .get_mut("messages")
+                                                        .and_then(|v| v.as_array_mut())
+                                                    {
+                                                        append_bounded_json_entry(a, m);
+                                                    }
                                                 }
                                             }
                                         }
@@ -2226,7 +3993,7 @@ async fn run_product() -> Result<()> {
                                         if !log.iter().any(|existing| {
                                             existing.get("id").and_then(|v| v.as_str()) == Some(id)
                                         }) {
-                                            log.push(item);
+                                            append_messenger_entry(&mut log, item);
                                         }
                                     }
                                 }
@@ -2238,10 +4005,15 @@ async fn run_product() -> Result<()> {
                 if stream != STORAGE_STREAM {
                     continue;
                 }
+                eprintln!(
+                    "storage stream payload received: peer={}, bytes={}",
+                    hex::encode(sender),
+                    payload.len()
+                );
                 if let Ok(ack) = serde_json::from_slice::<StorageShardAck>(&payload) {
                     if ack.version == awep2p_core::data_plane::STORAGE_PROTOCOL_VERSION {
                         if let Ok(mut pending) = dispatcher_acks.lock() {
-                            pending.insert(ack.request_id, ack);
+                            pending.insert(ack.request_id, (sender, ack));
                         }
                     }
                     continue;
@@ -2272,9 +4044,13 @@ async fn run_product() -> Result<()> {
                         continue;
                     }
                     if let Ok(bytes) = serde_json::to_vec(&transfer) {
-                        let _ = dispatcher_node
-                            .send_to_peer(&sender, STORAGE_STREAM, bytes)
-                            .await;
+                        if inbound.expects_response() {
+                            let _ = inbound.respond(bytes);
+                        } else {
+                            let _ = dispatcher_node
+                                .send_to_peer(&sender, STORAGE_STREAM, bytes)
+                                .await;
+                        }
                     }
                     continue;
                 }
@@ -2282,11 +4058,34 @@ async fn run_product() -> Result<()> {
                 let Ok(transfer) = serde_json::from_slice::<StorageShardTransfer>(&payload) else {
                     continue;
                 };
-                if transfer.sender != sender || transfer.verify().is_err() {
+                if transfer.sender != sender {
+                    eprintln!(
+                        "storage transfer rejected: authenticated sender mismatch (peer={}, claimed={})",
+                        hex::encode(sender),
+                        hex::encode(transfer.sender)
+                    );
                     continue;
                 }
-                let Ok(object_id) = dispatcher_storage.put(&transfer.payload) else {
+                if let Err(error) = transfer.verify() {
+                    eprintln!("storage transfer rejected by validation: {error}");
                     continue;
+                }
+                if !runtime_policy.allows_shard(transfer.payload.len())
+                    || transfer.original_size > runtime_policy.max_upload_bytes
+                {
+                    eprintln!(
+                        "storage transfer rejected by local size policy: shard_bytes={}, original_bytes={}",
+                        transfer.payload.len(),
+                        transfer.original_size
+                    );
+                    continue;
+                }
+                let object_id = match dispatcher_storage.put(&transfer.payload) {
+                    Ok(object_id) => object_id,
+                    Err(error) => {
+                        eprintln!("storage shard durable write failed: {error}");
+                        continue;
+                    }
                 };
                 let ack = StorageShardAck::new(
                     transfer.request_id,
@@ -2294,10 +4093,20 @@ async fn run_product() -> Result<()> {
                     transfer.shard_index,
                     object_id,
                 );
-                if let Ok(bytes) = serde_json::to_vec(&ack) {
-                    let _ = dispatcher_node
-                        .send_to_peer(&sender, STORAGE_STREAM, bytes)
-                        .await;
+                match serde_json::to_vec(&ack) {
+                    Ok(bytes) => {
+                        if inbound.expects_response() {
+                            if !inbound.respond(bytes) {
+                                eprintln!("storage ACK response channel closed before reply");
+                            }
+                        } else if let Err(error) = dispatcher_node
+                            .send_to_peer(&sender, STORAGE_STREAM, bytes)
+                            .await
+                        {
+                            eprintln!("storage ACK send failed: {error}");
+                        }
+                    }
+                    Err(error) => eprintln!("storage ACK serialization failed: {error}"),
                 }
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -2310,34 +4119,49 @@ async fn run_product() -> Result<()> {
         .context("invalid AWE_UI_ADDR")?;
     let listener = tokio::net::TcpListener::bind(ui_addr)
         .await
-        .with_context(|| format!("cannot bind AWEp2P UI to {ui_addr}"))?;
-    println!("AWEp2P is running.");
+        .with_context(|| format!("cannot bind AWENET UI to {ui_addr}"))?;
+    println!("AWENET is running.");
     println!("Node: {node_id}");
     println!("Node transport: {listen}");
     println!("Native UI: AWENET desktop window");
 
     let native_ui_addr = ui_addr;
+    let api_token_for_server = api_token.clone();
     tokio::spawn(async move {
         loop {
-            let (stream, _) = match listener.accept().await {
+            let (mut stream, peer_addr) = match listener.accept().await {
                 Ok(value) => value,
                 Err(error) => {
                     eprintln!("UI listener error: {error}");
                     continue;
                 }
             };
+            if !peer_addr.ip().is_loopback() {
+                let response = http_response(
+                    "403 Forbidden",
+                    "application/json; charset=utf-8",
+                    r#"{"status":"error","error":"local UI API accepts loopback clients only"}"#,
+                    None,
+                )
+                .await;
+                let _ = stream.write_all(&response).await;
+                let _ = stream.shutdown().await;
+                continue;
+            }
+            let api_token = api_token_for_server.clone();
             let api_node = node.clone();
             let api_messenger = messenger.clone();
             let api_federation = federation_state.clone();
             let api_storage = storage.clone();
-            let api_pending_acks = pending_acks.clone();
-            let api_pending_shards = pending_shards.clone();
             let api_federation_path = federation_path.clone();
             let api_policy = policy_state.clone();
             let api_community = community.clone();
+            let api_consensus_state = consensus_state.clone();
             let api_onecoin_ledger = onecoin_ledger.clone();
             let api_onecoin_path = onecoin_path.clone();
             let api_onecoin_offers_path = onecoin_offers_path.clone();
+            let api_host = host.clone();
+            let api_host_root = host_root.clone();
             let api_contribution = contribution.clone();
             let api_contribution_path = contribution_path.clone();
             tokio::spawn(async move {
@@ -2345,14 +4169,16 @@ async fn run_product() -> Result<()> {
                     stream,
                     UiState {
                         node: api_node,
+                        api_token,
                         messenger: api_messenger,
                         federation_state: api_federation,
                         federation_path: api_federation_path,
                         storage: api_storage,
-                        pending_acks: api_pending_acks,
-                        pending_shards: api_pending_shards,
+                        host: api_host,
+                        host_root: api_host_root,
                         policy_state: api_policy,
                         community: api_community,
+                        consensus_state: api_consensus_state,
                         onecoin_ledger: api_onecoin_ledger,
                         onecoin_path: api_onecoin_path,
                         onecoin_offers_path: api_onecoin_offers_path,
@@ -2374,7 +4200,7 @@ async fn run_product() -> Result<()> {
         }
     }
 
-    native_ui::run(native_ui_addr).map_err(anyhow::Error::msg)?;
+    native_ui::run(native_ui_addr, api_token).map_err(anyhow::Error::msg)?;
     Ok(())
 }
 
@@ -2518,5 +4344,411 @@ async fn main() -> Result<()> {
             .await
         }
         _ => usage(),
+    }
+}
+
+#[cfg(test)]
+mod phase_two_backend_tests {
+    use super::{
+        append_bounded_json_entry, append_messenger_entry, format_uid, is_allowed_ui_origin,
+        is_valid_api_session, json_u16_field, json_u32_field, leave_federation_membership,
+        onecoin_consensus_configured, parse_content_length, parse_onecoin_atoms,
+        sign_federation_invitation, storage_ack_matches, storage_upload_is_complete,
+        ui_html_with_session_token, validate_community_message, validate_community_title,
+        validate_group_member_ids, validate_json_api_request, validate_remote_channel,
+        validate_remote_feed_message, validate_remote_group, validate_storage_file_id,
+        verify_signed_federation_invitation, write_atomic, AweNetConfig, StorageShardAck,
+        ATOMS_PER_COIN, MAX_COMMUNITY_MESSAGES_PER_FEED, MAX_COMMUNITY_MESSAGE_BYTES,
+        MAX_COMMUNITY_TITLE_BYTES, MAX_GROUP_MEMBERS, MAX_MESSENGER_LOG_ENTRIES,
+    };
+    use serde_json::json;
+    use std::fs;
+
+    #[test]
+    fn atomic_file_write_replaces_complete_content_and_cleans_up_failed_temp_files() {
+        let dir = std::env::temp_dir().join(format!("awenet-atomic-write-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let path = dir.join("state.json");
+        write_atomic(&path, b"old-state").unwrap();
+        write_atomic(&path, b"new-state").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"new-state");
+
+        let blocked_destination = dir.join("blocked");
+        fs::create_dir(&blocked_destination).unwrap();
+        assert!(write_atomic(&blocked_destination, b"must-not-replace-directory").is_err());
+        assert!(blocked_destination.is_dir());
+        let leftovers: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with("blocked.tmp-"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "temporary files leaked: {leftovers:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn configured_onecoin_consensus_never_falls_back_to_local_ledger() {
+        assert!(!onecoin_consensus_configured(""));
+        assert!(!onecoin_consensus_configured(" ,  , "));
+        assert!(onecoin_consensus_configured("validator-a"));
+        assert!(onecoin_consensus_configured("validator-a, validator-b"));
+    }
+
+    #[test]
+    fn parses_coin_amounts_using_full_18_decimal_precision() {
+        assert_eq!(parse_onecoin_atoms(&json!("1")).unwrap(), ATOMS_PER_COIN);
+        assert_eq!(
+            parse_onecoin_atoms(&json!("1.5")).unwrap(),
+            ATOMS_PER_COIN + ATOMS_PER_COIN / 2
+        );
+        assert_eq!(
+            parse_onecoin_atoms(&json!("0.000000000000000001")).unwrap(),
+            1
+        );
+        assert_eq!(
+            parse_onecoin_atoms(&json!("0.00000001")).unwrap(),
+            ATOMS_PER_COIN / 100_000_000
+        );
+    }
+
+    #[test]
+    fn rejects_coin_amounts_with_more_than_18_decimals_or_exponent_notation() {
+        assert!(parse_onecoin_atoms(&json!("0.0000000000000000001")).is_err());
+        assert!(parse_onecoin_atoms(&json!("1e-3")).is_err());
+    }
+
+    #[test]
+    fn rejects_ambiguous_or_unsupported_http_framing() {
+        assert_eq!(
+            parse_content_length("POST / HTTP/1.1\r\nContent-Length: 12\r\n\r\n").unwrap(),
+            12
+        );
+        assert!(parse_content_length(
+            "POST / HTTP/1.1\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\n"
+        )
+        .is_err());
+        assert!(
+            parse_content_length("POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n").is_err()
+        );
+        assert!(parse_content_length("POST / HTTP/1.1\r\nContent-Length: -1\r\n\r\n").is_err());
+    }
+
+    #[test]
+    fn api_session_token_is_required_and_exact() {
+        assert!(!is_valid_api_session("secret", None));
+        assert!(!is_valid_api_session("secret", Some("wrong")));
+        assert!(!is_valid_api_session("secret", Some("secret ")));
+        assert!(is_valid_api_session("secret", Some("secret")));
+    }
+
+    #[test]
+    fn state_changing_json_api_requires_json_content_type_and_object_body() {
+        assert!(validate_json_api_request(
+            "POST",
+            "/api/federation/import",
+            Some("application/json; charset=utf-8"),
+            r#"{"kind":"awedc"}"#,
+        )
+        .is_ok());
+        assert_eq!(
+            validate_json_api_request(
+                "POST",
+                "/api/federation/import",
+                None,
+                r#"{"kind":"awedc"}"#
+            ),
+            Err("Content-Type application/json is required")
+        );
+        assert_eq!(
+            validate_json_api_request(
+                "POST",
+                "/api/federation/import",
+                Some("text/plain"),
+                r#"{"kind":"awedc"}"#,
+            ),
+            Err("Content-Type application/json is required")
+        );
+        assert_eq!(
+            validate_json_api_request(
+                "POST",
+                "/api/federation/import",
+                Some("application/json"),
+                "{",
+            ),
+            Err("JSON request body must be a valid object")
+        );
+        assert_eq!(
+            validate_json_api_request(
+                "POST",
+                "/api/federation/import",
+                Some("application/json"),
+                "[]",
+            ),
+            Err("JSON request body must be a valid object")
+        );
+        assert!(
+            validate_json_api_request("POST", "/api/connect?address=127.0.0.1%3A1", None, "")
+                .is_ok()
+        );
+        assert!(validate_json_api_request("GET", "/api/federation", None, "").is_ok());
+    }
+
+    #[test]
+    fn signed_federation_invitation_rejects_tampering() {
+        let identity = awep2p_core::identity::Identity::generate(
+            awep2p_core::identity::Username::new("signed-invitation-test").unwrap(),
+        );
+        let owner_node_id = format_uid(identity.public.awe_id.as_bytes());
+        let payload = serde_json::json!({"node_id": owner_node_id});
+        let signed = sign_federation_invitation("awenode", payload.clone(), &identity).unwrap();
+        let (verified, signer) = verify_signed_federation_invitation(&signed, "awenode").unwrap();
+        assert_eq!(verified, payload);
+        assert_eq!(signer, owner_node_id);
+
+        let mut tampered: serde_json::Value = serde_json::from_str(&signed).unwrap();
+        tampered["payload"]["node_id"] = serde_json::Value::String("attacker-node".into());
+        let tampered = serde_json::to_string(&tampered).unwrap();
+        assert!(verify_signed_federation_invitation(&tampered, "awenode").is_err());
+    }
+
+    #[test]
+    fn federation_leave_removes_membership_and_clears_local_owner_id() {
+        let mut state = AweNetConfig {
+            local_node_id: "node-a".into(),
+            local_data_centre_id: Some("dc-a".into()),
+            local_data_group_id: Some("dg-a".into()),
+            local_centre_group_id: Some("cg-a".into()),
+            joined_data_centres: vec!["dc-a".into(), "dc-b".into()],
+            joined_data_groups: vec!["dg-a".into()],
+            joined_centre_groups: vec!["cg-a".into()],
+            ..AweNetConfig::default()
+        };
+        leave_federation_membership(&mut state, "cg", "cg-a", "node-a").unwrap();
+        leave_federation_membership(&mut state, "dg", "dg-a", "node-a").unwrap();
+        leave_federation_membership(&mut state, "dc", "dc-a", "node-a").unwrap();
+        assert_eq!(state.joined_data_centres, vec!["dc-b"]);
+        assert!(state.joined_data_groups.is_empty());
+        assert!(state.joined_centre_groups.is_empty());
+        assert_eq!(state.local_data_centre_id, None);
+        assert_eq!(state.local_data_group_id, None);
+        assert_eq!(state.local_centre_group_id, None);
+    }
+
+    #[test]
+    fn federation_leave_rejects_unknown_membership_and_other_node_state() {
+        let mut state = AweNetConfig {
+            local_node_id: "node-a".into(),
+            joined_data_centres: vec!["dc-a".into()],
+            ..AweNetConfig::default()
+        };
+        assert!(leave_federation_membership(&mut state, "dc", "dc-missing", "node-a").is_err());
+        assert!(leave_federation_membership(&mut state, "dc", "dc-a", "node-b").is_err());
+        assert_eq!(state.joined_data_centres, vec!["dc-a"]);
+    }
+
+    #[test]
+    fn ui_html_injects_session_token_and_fetch_header_wrapper() {
+        let html = ui_html_with_session_token("test-session-token");
+        assert!(html.contains("content=\"test-session-token\""));
+        assert!(html.contains("X-AWENET-Session"));
+    }
+
+    #[test]
+    fn allows_only_known_local_desktop_origins() {
+        for origin in [
+            "tauri://localhost",
+            "http://tauri.localhost",
+            "https://tauri.localhost",
+            "http://127.0.0.1:41800",
+            "http://localhost:41800",
+        ] {
+            assert!(
+                is_allowed_ui_origin(origin),
+                "expected allowed origin: {origin}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_untrusted_web_origins_and_null_origin() {
+        for origin in [
+            "https://evil.example",
+            "http://localhost.evil.example:41800",
+            "null",
+            "*",
+        ] {
+            assert!(
+                !is_allowed_ui_origin(origin),
+                "expected rejected origin: {origin}"
+            );
+        }
+    }
+
+    #[test]
+    fn remote_group_requires_authenticated_owner_and_valid_members() {
+        let owner = "ab".repeat(32);
+        let member = "cd".repeat(32);
+        let group = json!({
+            "id":"gid-1","title":"AWE group","owner":owner,
+            "members":[owner,member],"messages":[]
+        });
+        assert!(validate_remote_group(&group, &owner).is_ok());
+        assert!(validate_remote_group(&group, &member).is_err());
+        let mut malformed = group.clone();
+        malformed["members"] = json!(["uid-not-an-aweid"]);
+        assert!(validate_remote_group(&malformed, &owner).is_err());
+    }
+
+    #[test]
+    fn community_message_must_match_authenticated_sender_and_limits() {
+        let sender = "ab".repeat(32);
+        let message = json!({"id":"msg-1","sender":sender,"text":"hello","timestamp":1});
+        assert!(validate_remote_feed_message(&message, &sender).is_ok());
+        assert!(validate_remote_feed_message(&message, &"cd".repeat(32)).is_err());
+        let mut malformed = message.clone();
+        malformed["text"] = json!("x".repeat(MAX_COMMUNITY_MESSAGE_BYTES + 1));
+        assert!(validate_remote_feed_message(&malformed, &sender).is_err());
+    }
+
+    #[test]
+    fn remote_channel_requires_authenticated_owner_and_valid_subscribers() {
+        let owner = "ab".repeat(32);
+        let channel = json!({
+            "id":"cid-1","title":"AWE channel","owner":owner,
+            "subscribers":[owner],"messages":[]
+        });
+        assert!(validate_remote_channel(&channel, &owner).is_ok());
+        assert!(validate_remote_channel(&channel, &"cd".repeat(32)).is_err());
+        let mut malformed = channel.clone();
+        malformed["subscribers"] = json!(["uid-not-an-aweid"]);
+        assert!(validate_remote_channel(&malformed, &owner).is_err());
+    }
+
+    #[test]
+    fn community_titles_and_messages_have_explicit_size_limits() {
+        assert!(validate_community_title("AWE").is_ok());
+        assert!(validate_community_title("  ").is_err());
+        assert!(validate_community_title(&"x".repeat(MAX_COMMUNITY_TITLE_BYTES)).is_ok());
+        assert!(validate_community_title(&"x".repeat(MAX_COMMUNITY_TITLE_BYTES + 1)).is_err());
+        assert!(validate_community_message("hello").is_ok());
+        assert!(validate_community_message(" ").is_err());
+        assert!(validate_community_message(&"x".repeat(MAX_COMMUNITY_MESSAGE_BYTES)).is_ok());
+        assert!(validate_community_message(&"x".repeat(MAX_COMMUNITY_MESSAGE_BYTES + 1)).is_err());
+    }
+
+    #[test]
+    fn group_members_must_be_bounded_valid_aweids() {
+        assert!(validate_group_member_ids(&[]).is_ok());
+        assert!(validate_group_member_ids(&["ab".repeat(32)]).is_ok());
+        assert!(validate_group_member_ids(&["uid-not-an-aweid".to_string()]).is_err());
+        assert!(validate_group_member_ids(&vec!["ab".repeat(32); MAX_GROUP_MEMBERS + 1]).is_err());
+    }
+
+    #[test]
+    fn community_feed_history_is_bounded() {
+        let mut entries = Vec::new();
+        for index in 0..=MAX_COMMUNITY_MESSAGES_PER_FEED {
+            append_bounded_json_entry(&mut entries, json!({"index": index}));
+        }
+        assert!(entries.len() <= MAX_COMMUNITY_MESSAGES_PER_FEED);
+        assert_eq!(
+            entries
+                .last()
+                .and_then(|entry| entry.get("index"))
+                .and_then(|v| v.as_u64()),
+            Some(MAX_COMMUNITY_MESSAGES_PER_FEED as u64)
+        );
+        assert_eq!(
+            entries
+                .first()
+                .and_then(|entry| entry.get("index"))
+                .and_then(|v| v.as_u64()),
+            Some((MAX_COMMUNITY_MESSAGES_PER_FEED / 10) as u64)
+        );
+    }
+
+    #[test]
+    fn messenger_history_is_bounded_and_keeps_recent_entries() {
+        let mut log = Vec::new();
+        for index in 0..=MAX_MESSENGER_LOG_ENTRIES {
+            append_messenger_entry(&mut log, json!({"index": index}));
+        }
+        assert!(log.len() <= MAX_MESSENGER_LOG_ENTRIES);
+        assert_eq!(
+            log.last()
+                .and_then(|entry| entry.get("index"))
+                .and_then(|v| v.as_u64()),
+            Some(MAX_MESSENGER_LOG_ENTRIES as u64)
+        );
+        assert_eq!(
+            log.first()
+                .and_then(|entry| entry.get("index"))
+                .and_then(|v| v.as_u64()),
+            Some((MAX_MESSENGER_LOG_ENTRIES / 10) as u64)
+        );
+    }
+
+    #[test]
+    fn storage_manifest_requires_all_durable_placements() {
+        assert!(storage_upload_is_complete(1, 2, 3, 0));
+        assert!(!storage_upload_is_complete(1, 1, 3, 0));
+        assert!(!storage_upload_is_complete(1, 2, 3, 1));
+        assert!(!storage_upload_is_complete(usize::MAX, 1, 3, 0));
+    }
+
+    #[test]
+    fn storage_ack_must_match_the_authenticated_target() {
+        let expected_sender = [7u8; 32];
+        let attacker = [8u8; 32];
+        let file_id = [9u8; 32];
+        let hash = [10u8; 32];
+        let ack = StorageShardAck::new([1u8; 16], file_id, 4, hash);
+        assert!(storage_ack_matches(
+            &expected_sender,
+            &expected_sender,
+            &ack,
+            &file_id,
+            4,
+            &hash
+        ));
+        assert!(!storage_ack_matches(
+            &attacker,
+            &expected_sender,
+            &ack,
+            &file_id,
+            4,
+            &hash
+        ));
+        assert!(!storage_ack_matches(
+            &expected_sender,
+            &expected_sender,
+            &ack,
+            &file_id,
+            5,
+            &hash
+        ));
+    }
+
+    #[test]
+    fn storage_object_ids_must_be_exactly_32_bytes_of_hex() {
+        let valid = "ab".repeat(32);
+        assert!(validate_storage_file_id(&valid).is_ok());
+        assert!(validate_storage_file_id("../etc/passwd").is_err());
+        assert!(validate_storage_file_id(&"a".repeat(63)).is_err());
+        assert!(validate_storage_file_id(&"g".repeat(64)).is_err());
+    }
+
+    #[test]
+    fn rejects_overflowing_resource_contribution_fields() {
+        assert!(json_u32_field(&json!({"cpu_cores": 4_294_967_296u64}), "cpu_cores").is_err());
+        assert!(json_u16_field(&json!({"online_hours": 65_536}), "online_hours").is_err());
+        assert!(json_u32_field(&json!({"node_count": -1}), "node_count").is_err());
     }
 }
