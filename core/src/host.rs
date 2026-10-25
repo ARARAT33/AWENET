@@ -10,7 +10,10 @@ use std::{
     collections::BTreeMap,
     fs, io,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
 };
+
+static MANIFEST_WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HostPolicy {
@@ -219,12 +222,10 @@ impl AweHost {
     }
     pub fn save_manifest(&self, manifest: &SiteManifest) -> io::Result<()> {
         let p = self.manifest_path(&manifest.domain);
-        fs::write(
-            p,
-            serde_json::to_vec_pretty(manifest).map_err(|_| {
-                io::Error::new(io::ErrorKind::InvalidData, "manifest serialization failed")
-            })?,
-        )
+        let bytes = serde_json::to_vec_pretty(manifest).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidData, "manifest serialization failed")
+        })?;
+        write_atomic(&p, &bytes)
     }
     pub fn load_manifest(&self, domain: &str) -> io::Result<SiteManifest> {
         let b = fs::read(self.manifest_path(domain))?;
@@ -236,6 +237,59 @@ impl AweHost {
             .join(format!("{}.manifest.json", domain.replace('/', "_")))
     }
 }
+/// Write a complete file beside its destination, sync it, then replace the destination.
+/// A failed write leaves the previous manifest untouched and cleans up its temporary file.
+fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    use std::io::Write as _;
+
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "destination has no valid file name"))?;
+
+    // A previous process may have crashed with a temporary file left behind. Try a few
+    // unique sequence numbers rather than treating that stale file as a permanent failure.
+    for _ in 0..16 {
+        let sequence = MANIFEST_WRITE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let temporary_path =
+            path.with_file_name(format!("{file_name}.tmp-{}-{sequence}", std::process::id()));
+        let mut temporary = match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary_path)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        };
+
+        let result = (|| {
+            temporary.write_all(bytes)?;
+            temporary.sync_all()?;
+            drop(temporary);
+            fs::rename(&temporary_path, path)?;
+            // On Unix, syncing the parent directory helps persist the rename across a crash.
+            #[cfg(unix)]
+            if let Some(parent) = path.parent() {
+                if let Ok(directory) = fs::File::open(parent) {
+                    let _ = directory.sync_all();
+                }
+            }
+            Ok(())
+        })();
+
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary_path);
+        }
+        return result;
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "could not allocate a unique temporary manifest file",
+    ))
+}
+
 pub fn normalize_path(path: &str) -> io::Result<String> {
     if path.is_empty()
         || !path.starts_with('/')
@@ -262,6 +316,35 @@ mod tests {
         assert!(normalize_path("/index.html").is_ok());
         assert!(normalize_path("/../secret").is_err())
     }
+    #[test]
+    fn atomic_manifest_write_replaces_complete_content_and_cleans_up_failed_temp_files() {
+        let root = std::env::temp_dir().join(format!(
+            "awe-host-atomic-write-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+
+        let path = root.join("state.json");
+        write_atomic(&path, b"old-state").unwrap();
+        write_atomic(&path, b"new-state").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"new-state");
+
+        let blocked = root.join("blocked");
+        fs::create_dir(&blocked).unwrap();
+        assert!(write_atomic(&blocked, b"must-not-replace-directory").is_err());
+        assert!(blocked.is_dir());
+        let leftovers: Vec<_> = fs::read_dir(&root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with("blocked.tmp-"))
+            .collect();
+        assert!(leftovers.is_empty(), "temporary files leaked: {leftovers:?}");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn host_roundtrip() {
         let r = std::env::temp_dir().join(format!("awe-host-{}", std::process::id()));
