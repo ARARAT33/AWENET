@@ -756,7 +756,7 @@ fn save_site_manifest(
     ));
     let bytes = serde_json::to_vec_pretty(manifest)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string()))?;
-    fs::write(immutable_path, bytes)
+    write_atomic(&immutable_path, &bytes)
 }
 
 fn decode_site_path(value: &str) -> Option<String> {
