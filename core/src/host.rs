@@ -245,7 +245,12 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let file_name = path
         .file_name()
         .and_then(|name| name.to_str())
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "destination has no valid file name"))?;
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "destination has no valid file name",
+            )
+        })?;
 
     // A previous process may have crashed with a temporary file left behind. Try a few
     // unique sequence numbers rather than treating that stale file as a permanent failure.
@@ -318,10 +323,8 @@ mod tests {
     }
     #[test]
     fn atomic_manifest_write_replaces_complete_content_and_cleans_up_failed_temp_files() {
-        let root = std::env::temp_dir().join(format!(
-            "awe-host-atomic-write-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("awe-host-atomic-write-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
 
@@ -340,7 +343,10 @@ mod tests {
             .map(|entry| entry.file_name().to_string_lossy().into_owned())
             .filter(|name| name.starts_with("blocked.tmp-"))
             .collect();
-        assert!(leftovers.is_empty(), "temporary files leaked: {leftovers:?}");
+        assert!(
+            leftovers.is_empty(),
+            "temporary files leaked: {leftovers:?}"
+        );
 
         let _ = fs::remove_dir_all(&root);
     }
