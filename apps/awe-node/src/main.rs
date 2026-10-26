@@ -3326,10 +3326,9 @@ async fn autonomous_repair_cycle(
         }
 
         if manifest_changed {
-            let _ = fs::write(
-                &path,
-                serde_json::to_vec_pretty(&manifest).unwrap_or_default(),
-            );
+            if let Err(error) = write_json_atomic(&path, &manifest) {
+                eprintln!("failed to persist repaired storage manifest {}: {error}", path.display());
+            }
         }
     }
 }
@@ -3393,8 +3392,8 @@ async fn run_product() -> Result<()> {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             if let Ok(log) = messenger_save.lock() {
-                if let Ok(bytes) = serde_json::to_vec(&*log) {
-                    let _ = fs::write(&messenger_save_path, bytes);
+                if let Err(error) = write_json_atomic(&messenger_save_path, &*log) {
+                    eprintln!("failed to persist messenger history: {error}");
                 }
             }
         }
@@ -3412,8 +3411,8 @@ async fn run_product() -> Result<()> {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             if let Ok(state) = community_save.lock() {
-                if let Ok(bytes) = serde_json::to_vec_pretty(&*state) {
-                    let _ = fs::write(&community_save_path, bytes);
+                if let Err(error) = write_json_atomic(&community_save_path, &*state) {
+                    eprintln!("failed to persist group/channel state: {error}");
                 }
             }
         }
