@@ -3327,7 +3327,10 @@ async fn autonomous_repair_cycle(
 
         if manifest_changed {
             if let Err(error) = write_json_atomic(&path, &manifest) {
-                eprintln!("failed to persist repaired storage manifest {}: {error}", path.display());
+                eprintln!(
+                    "failed to persist repaired storage manifest {}: {error}",
+                    path.display()
+                );
             }
         }
     }
