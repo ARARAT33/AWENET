@@ -23,7 +23,7 @@ use thiserror::Error;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
-    sync::RwLock,
+    sync::{oneshot, RwLock},
     task::JoinSet,
     time::timeout,
 };
@@ -347,10 +347,14 @@ enum Control {
     Data {
         stream: u32,
         payload: Vec<u8>,
+        #[serde(default)]
+        request: bool,
     },
     DataAck {
         stream: u32,
         bytes: u32,
+        #[serde(default)]
+        response: Option<Vec<u8>>,
     },
     FindNode {
         target: [u8; 32],
@@ -646,7 +650,12 @@ impl SecureConnection {
         if payload.len() > MAX_FRAME / 2 {
             return Err(NetworkError::FrameTooLarge);
         }
-        self.send(&Control::Data { stream, payload }).await
+        self.send(&Control::Data {
+            stream,
+            payload,
+            request: false,
+        })
+        .await
     }
     pub async fn ping(&mut self, sequence: u64) -> Result<(), NetworkError> {
         self.send(&Control::Ping { sequence }).await
@@ -690,12 +699,18 @@ impl SecureConnection {
         }
         let expected = payload.len() as u32;
         let started = Instant::now();
-        self.send(&Control::Data { stream, payload }).await?;
+        self.send(&Control::Data {
+            stream,
+            payload,
+            request: false,
+        })
+        .await?;
         loop {
             match timeout(HELLO_TIMEOUT, self.recv()).await {
                 Ok(Ok(Control::DataAck {
                     stream: echoed,
                     bytes,
+                    ..
                 })) if echoed == stream && bytes == expected => {
                     return Ok(started.elapsed());
                 }
@@ -706,10 +721,12 @@ impl SecureConnection {
                 Ok(Ok(Control::Data {
                     stream: incoming,
                     payload,
+                    ..
                 })) => {
                     self.send(&Control::DataAck {
                         stream: incoming,
                         bytes: payload.len() as u32,
+                        response: None,
                     })
                     .await?;
                 }
@@ -725,9 +742,66 @@ impl SecureConnection {
         }
     }
 
+    /// Send an application request and wait for the peer's response over the same
+    /// authenticated connection. A transport-level ACK without an application response
+    /// is not treated as success.
+    pub async fn send_data_request_roundtrip(
+        &mut self,
+        stream: u32,
+        payload: Vec<u8>,
+    ) -> Result<(Duration, Vec<u8>), NetworkError> {
+        if payload.len() > MAX_FRAME / 2 {
+            return Err(NetworkError::FrameTooLarge);
+        }
+        let expected = payload.len() as u32;
+        let started = Instant::now();
+        self.send(&Control::Data {
+            stream,
+            payload,
+            request: true,
+        })
+        .await?;
+        loop {
+            match timeout(HELLO_TIMEOUT, self.recv()).await {
+                Ok(Ok(Control::DataAck {
+                    stream: echoed,
+                    bytes,
+                    response: Some(response),
+                })) if echoed == stream && bytes == expected => {
+                    return Ok((started.elapsed(), response));
+                }
+                Ok(Ok(Control::Ping { sequence })) => {
+                    self.send(&Control::Pong { sequence }).await?;
+                }
+                Ok(Ok(Control::Data {
+                    stream: incoming,
+                    payload,
+                    ..
+                })) => {
+                    self.send(&Control::DataAck {
+                        stream: incoming,
+                        bytes: payload.len() as u32,
+                        response: None,
+                    })
+                    .await?;
+                }
+                Ok(Ok(Control::Pong { .. } | Control::Nodes { .. } | Control::DataAck { .. })) => {}
+                Ok(Ok(Control::FindNode { .. } | Control::Hello { .. })) => {
+                    return Err(NetworkError::Protocol(
+                        "unexpected control message during request".into(),
+                    ));
+                }
+                Ok(Err(error)) => return Err(error),
+                Err(_) => return Err(NetworkError::Timeout),
+            }
+        }
+    }
+
     pub async fn recv_data(&mut self) -> Result<Option<(u32, Vec<u8>)>, NetworkError> {
         match self.recv().await? {
-            Control::Data { stream, payload } => Ok(Some((stream, payload))),
+            Control::Data {
+                stream, payload, ..
+            } => Ok(Some((stream, payload))),
             Control::Ping { sequence } => {
                 self.send(&Control::Pong { sequence }).await?;
                 Ok(None)
@@ -819,7 +893,30 @@ fn xor_distance(a: &[u8; 32], b: &[u8; 32]) -> [u8; 32] {
 }
 
 type ActiveConnections = Arc<RwLock<HashMap<[u8; 32], Arc<tokio::sync::Mutex<SecureConnection>>>>>;
-type InboxQueue = Arc<Mutex<Vec<([u8; 32], u32, Vec<u8>)>>>;
+type InboxQueue = Arc<Mutex<Vec<InboundMessage>>>;
+
+/// A data-plane message delivered to the application. Request messages carry a
+/// one-shot reply channel so the application can return its durable result over
+/// the same authenticated connection, without opening another TCP connection.
+pub struct InboundMessage {
+    pub sender: [u8; 32],
+    pub stream: u32,
+    pub payload: Vec<u8>,
+    reply: Option<oneshot::Sender<Vec<u8>>>,
+}
+
+impl InboundMessage {
+    pub fn expects_response(&self) -> bool {
+        self.reply.is_some()
+    }
+
+    pub fn respond(&mut self, payload: Vec<u8>) -> bool {
+        self.reply
+            .take()
+            .map(|reply| reply.send(payload).is_ok())
+            .unwrap_or(false)
+    }
+}
 
 #[derive(Clone)]
 #[allow(clippy::type_complexity)]
@@ -875,14 +972,22 @@ impl Node {
         inbox: InboxQueue,
         inbox_bytes: Arc<Mutex<usize>>,
     ) {
-        let Ok(mut c) = handshake(stream, identity, listen_addr, false).await else {
-            return;
+        let mut c = match handshake(stream, identity, listen_addr, false).await {
+            Ok(connection) => connection,
+            Err(error) => {
+                eprintln!("inbound peer handshake rejected: {error}");
+                return;
+            }
         };
         if !admission
             .lock()
             .expect("admission lock poisoned")
             .allow(c.remote_id, 1, now())
         {
+            eprintln!(
+                "inbound peer connection rate-limited: {}",
+                hex::encode(c.remote_id)
+            );
             let _ = defense
                 .lock()
                 .expect("defense lock poisoned")
@@ -931,6 +1036,11 @@ impl Node {
                         cost,
                         now(),
                     ) {
+                        eprintln!(
+                            "inbound peer message rate-limited: peer={}, message_cost={}",
+                            hex::encode(c.remote_id),
+                            cost
+                        );
                         let _ = defense
                             .lock()
                             .expect("defense lock poisoned")
@@ -953,7 +1063,17 @@ impl Node {
                                 break;
                             }
                         }
-                        Control::Data { stream, payload } => {
+                        Control::Data {
+                            stream,
+                            payload,
+                            request,
+                        } => {
+                            let (reply, response_rx) = if request {
+                                let (tx, rx) = oneshot::channel();
+                                (Some(tx), Some(rx))
+                            } else {
+                                (None, None)
+                            };
                             let accepted = if let Ok(mut bytes) = inbox_bytes.lock() {
                                 let message_bytes = payload.len();
                                 if message_bytes > MAX_INBOX_BYTES
@@ -964,7 +1084,12 @@ impl Node {
                                     if queue.len() >= MAX_INBOX_MESSAGES {
                                         false
                                     } else {
-                                        queue.push((c.remote_id, stream, payload.clone()));
+                                        queue.push(InboundMessage {
+                                            sender: c.remote_id,
+                                            stream,
+                                            payload: payload.clone(),
+                                            reply,
+                                        });
                                         *bytes += message_bytes;
                                         true
                                     }
@@ -975,11 +1100,21 @@ impl Node {
                                 false
                             };
                             if !accepted {
+                                eprintln!("inbound data rejected by queue bounds: peer={}, stream={}, bytes={}", hex::encode(c.remote_id), stream, payload.len());
                                 break;
                             }
+                            let response = if let Some(response_rx) = response_rx {
+                                match timeout(Duration::from_secs(15), response_rx).await {
+                                    Ok(Ok(response)) => Some(response),
+                                    _ => None,
+                                }
+                            } else {
+                                None
+                            };
                             if c.send(&Control::DataAck {
                                 stream,
                                 bytes: payload.len() as u32,
+                                response,
                             })
                             .await
                             .is_err()
@@ -1027,6 +1162,10 @@ impl Node {
             let _ = s.set_nodelay(true);
             let Ok(permit) = Arc::clone(&semaphore).try_acquire_owned() else {
                 // Bounded admission: do not spawn unlimited tasks under connection floods.
+                eprintln!(
+                    "inbound connection concurrency limit reached: ip={}",
+                    a.ip()
+                );
                 drop(s);
                 continue;
             };
@@ -1036,6 +1175,7 @@ impl Node {
                 .expect("preauth lock poisoned")
                 .allow(a.ip(), now());
             if !ip_allowed {
+                eprintln!("inbound connection preauth rate-limited: ip={}", a.ip());
                 drop(s);
                 drop(permit);
                 continue;
@@ -1203,19 +1343,27 @@ impl Node {
         let connection = if let Some(connection) = self.active.read().await.get(peer_id).cloned() {
             connection
         } else {
-            let address = self
-                .peers
-                .read()
-                .await
-                .get(peer_id)
-                .and_then(|peer| peer.addresses.first().copied())
-                .ok_or_else(|| NetworkError::Protocol("peer address is unknown".into()))?;
-            let connection = Arc::new(tokio::sync::Mutex::new(self.connect(address).await?));
+            // Serialize cold-connection creation through the active-map write lock,
+            // then recheck the cache. Without the second check, concurrent sends to
+            // one peer can open many handshakes, replace each other's cached sockets,
+            // and lose application ACKs while the receiver enforces connection limits.
             let mut active = self.active.write().await;
-            if active.len() < MAX_ACTIVE_CONNECTIONS {
-                active.insert(*peer_id, connection.clone());
+            if let Some(connection) = active.get(peer_id).cloned() {
+                connection
+            } else {
+                let address = self
+                    .peers
+                    .read()
+                    .await
+                    .get(peer_id)
+                    .and_then(|peer| peer.addresses.first().copied())
+                    .ok_or_else(|| NetworkError::Protocol("peer address is unknown".into()))?;
+                let connection = Arc::new(tokio::sync::Mutex::new(self.connect(address).await?));
+                if active.len() < MAX_ACTIVE_CONNECTIONS {
+                    active.insert(*peer_id, connection.clone());
+                }
+                connection
             }
-            connection
         };
         let mut connection = connection.lock().await;
         let started = Instant::now();
@@ -1243,18 +1391,139 @@ impl Node {
             .acquire()
             .await
             .map_err(|_| NetworkError::Protocol("outbound limiter closed".into()))?;
-        let address = self
+        let addresses = self
             .peers
             .read()
             .await
             .get(peer_id)
-            .and_then(|peer| peer.addresses.first().copied())
+            .map(|peer| peer.addresses.clone())
+            .filter(|addresses| !addresses.is_empty())
             .ok_or_else(|| NetworkError::Protocol("peer address is unknown".into()))?;
-        let mut connection = self.connect(address).await?;
-        connection.send_data_roundtrip(stream, payload).await
+        let mut last_error = None;
+
+        // Reuse the authenticated connection when possible. Opening a fresh TCP
+        // connection for every confirmed send can race other transfers and make
+        // peers replace cached sessions while ACKs are still in flight.
+        if let Some(connection) = self.active.read().await.get(peer_id).cloned() {
+            let result = {
+                let mut connection = connection.lock().await;
+                connection
+                    .send_data_roundtrip(stream, payload.clone())
+                    .await
+            };
+            match result {
+                Ok(elapsed) => return Ok(elapsed),
+                Err(error) => {
+                    let mut active = self.active.write().await;
+                    if active
+                        .get(peer_id)
+                        .is_some_and(|current| Arc::ptr_eq(current, &connection))
+                    {
+                        active.remove(peer_id);
+                    }
+                    last_error = Some(error);
+                }
+            }
+        }
+
+        for address in addresses {
+            match self.connect(address).await {
+                Ok(mut connection) => match connection
+                    .send_data_roundtrip(stream, payload.clone())
+                    .await
+                {
+                    Ok(elapsed) => {
+                        let connection = Arc::new(tokio::sync::Mutex::new(connection));
+                        let mut active = self.active.write().await;
+                        if active.len() < MAX_ACTIVE_CONNECTIONS {
+                            active.entry(*peer_id).or_insert(connection);
+                        }
+                        return Ok(elapsed);
+                    }
+                    Err(error) => {
+                        eprintln!(
+                            "confirmed peer send failed: peer={}, address={}, stage=data-roundtrip, error={}",
+                            hex::encode(peer_id),
+                            address,
+                            error
+                        );
+                        last_error = Some(error);
+                    }
+                },
+                Err(error) => {
+                    eprintln!(
+                        "confirmed peer send failed: peer={}, address={}, stage=connect, error={}",
+                        hex::encode(peer_id),
+                        address,
+                        error
+                    );
+                    last_error = Some(error);
+                }
+            }
+        }
+        Err(last_error.unwrap_or_else(|| {
+            NetworkError::Protocol("peer has no usable authenticated address".into())
+        }))
+    }
+
+    /// Send a request and receive the application's response on the same
+    /// authenticated peer session, reusing the active connection when possible.
+    pub async fn send_to_peer_request(
+        &self,
+        peer_id: &[u8; 32],
+        stream: u32,
+        payload: Vec<u8>,
+    ) -> Result<(std::time::Duration, Vec<u8>), NetworkError> {
+        let _outbound_permit = self
+            .outbound_limit
+            .acquire()
+            .await
+            .map_err(|_| NetworkError::Protocol("outbound limiter closed".into()))?;
+        let connection = if let Some(connection) = self.active.read().await.get(peer_id).cloned() {
+            connection
+        } else {
+            let mut active = self.active.write().await;
+            if let Some(connection) = active.get(peer_id).cloned() {
+                connection
+            } else {
+                let address = self
+                    .peers
+                    .read()
+                    .await
+                    .get(peer_id)
+                    .and_then(|peer| peer.addresses.first().copied())
+                    .ok_or_else(|| NetworkError::Protocol("peer address is unknown".into()))?;
+                let connection = Arc::new(tokio::sync::Mutex::new(self.connect(address).await?));
+                if active.len() < MAX_ACTIVE_CONNECTIONS {
+                    active.insert(*peer_id, connection.clone());
+                }
+                connection
+            }
+        };
+        let mut connection_guard = connection.lock().await;
+        let result = connection_guard
+            .send_data_request_roundtrip(stream, payload)
+            .await;
+        if result.is_err() {
+            let mut active = self.active.write().await;
+            if active
+                .get(peer_id)
+                .is_some_and(|current| Arc::ptr_eq(current, &connection))
+            {
+                active.remove(peer_id);
+            }
+        }
+        result
     }
 
     pub fn take_inbox(&self) -> Vec<([u8; 32], u32, Vec<u8>)> {
+        self.take_inbox_messages()
+            .into_iter()
+            .map(|message| (message.sender, message.stream, message.payload))
+            .collect()
+    }
+
+    pub fn take_inbox_messages(&self) -> Vec<InboundMessage> {
         let queue = self
             .inbox
             .lock()
@@ -1469,11 +1738,14 @@ mod tests {
             let mut server = handshake(s, si, a, false).await.unwrap();
             loop {
                 match server.recv().await.unwrap() {
-                    Control::Data { stream, payload } => {
+                    Control::Data {
+                        stream, payload, ..
+                    } => {
                         server
                             .send(&Control::DataAck {
                                 stream,
                                 bytes: payload.len() as u32,
+                                response: None,
                             })
                             .await
                             .unwrap();
@@ -1494,6 +1766,58 @@ mod tests {
             .unwrap();
         assert!(elapsed < HELLO_TIMEOUT);
         t.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn encrypted_data_plane_request_response_returns_application_payload() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_identity = Arc::new(Identity::generate(
+            Username::new("request-response-server").unwrap(),
+        ));
+        let client_identity = Arc::new(Identity::generate(
+            Username::new("request-response-client").unwrap(),
+        ));
+        let server_task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut server = handshake(stream, server_identity, address, false)
+                .await
+                .unwrap();
+            loop {
+                match server.recv().await.unwrap() {
+                    Control::Data {
+                        stream,
+                        payload,
+                        request: true,
+                    } => {
+                        assert_eq!(payload, b"durable-shard");
+                        server
+                            .send(&Control::DataAck {
+                                stream,
+                                bytes: payload.len() as u32,
+                                response: Some(b"durable-ack".to_vec()),
+                            })
+                            .await
+                            .unwrap();
+                        break;
+                    }
+                    Control::Ping { sequence } => {
+                        server.send(&Control::Pong { sequence }).await.unwrap();
+                    }
+                    _ => {}
+                }
+            }
+        });
+        let stream = TcpStream::connect(address).await.unwrap();
+        let mut client = handshake(stream, client_identity, address, true)
+            .await
+            .unwrap();
+        let (_, response) = client
+            .send_data_request_roundtrip(77, b"durable-shard".to_vec())
+            .await
+            .unwrap();
+        assert_eq!(response, b"durable-ack");
+        server_task.await.unwrap();
     }
 
     #[tokio::test]
@@ -1586,6 +1910,7 @@ mod tests {
         let message = Control::Data {
             stream: 1,
             payload: vec![0; MAX_FRAME / 2 + 1],
+            request: false,
         };
         let encoded = encode(&message).unwrap();
         assert!(matches!(decode(&encoded), Err(NetworkError::FrameTooLarge)));

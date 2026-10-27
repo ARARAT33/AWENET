@@ -13,6 +13,7 @@ awep2p-core = { path = "../../core" }
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+rand.workspace = true
 tokio.workspace = true
 rpassword.workspace = true
 hex.workspace = true
