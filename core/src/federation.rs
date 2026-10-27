@@ -5,9 +5,12 @@ use std::{
     fs,
     io::Write,
     path::Path,
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 pub const FORMAT_VERSION: u16 = 1;
+
+static SAVE_JSON_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AweNodeConfig {
@@ -205,28 +208,57 @@ pub fn save_json<T: Serialize>(value: &T, path: &Path) -> Result<(), String> {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let data = serde_json::to_vec_pretty(value).map_err(|e| e.to_string())?;
+    write_json_atomic(path, &data)
+}
+
+/// Atomically replace a JSON state file without sharing a temporary path between writers.
+/// A unique, exclusively-created sibling file prevents concurrent saves from truncating or
+/// renaming each other's in-progress data.
+fn write_json_atomic(path: &Path, data: &[u8]) -> Result<(), String> {
     let file_name = path
         .file_name()
         .and_then(|name| name.to_str())
-        .unwrap_or("awenet.json");
-    let temporary = path.with_file_name(format!(".{file_name}.{}.tmp", std::process::id()));
-    {
-        let mut file = fs::File::create(&temporary).map_err(|e| e.to_string())?;
-        file.write_all(&data).map_err(|e| e.to_string())?;
-        file.sync_all().map_err(|e| e.to_string())?;
-    }
-    if let Err(error) = fs::rename(&temporary, path) {
-        let _ = fs::remove_file(&temporary);
-        return Err(error.to_string());
-    }
-    if let Some(parent) = path.parent() {
-        if let Ok(directory) = fs::File::open(parent) {
-            let _ = directory.sync_all();
-        }
-    }
-    Ok(())
-}
+        .ok_or_else(|| "destination has no valid file name".to_string())?;
 
+    for _ in 0..32 {
+        let sequence = SAVE_JSON_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let temporary = path.with_file_name(format!(
+            ".{file_name}.{}.{sequence}.tmp",
+            std::process::id()
+        ));
+        let mut file = match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.to_string()),
+        };
+
+        let result = (|| {
+            file.write_all(data).map_err(|error| error.to_string())?;
+            file.sync_all().map_err(|error| error.to_string())?;
+            drop(file);
+            fs::rename(&temporary, path).map_err(|error| error.to_string())?;
+            // On Unix, syncing the parent directory helps persist the rename across a crash.
+            #[cfg(unix)]
+            if let Some(parent) = path.parent() {
+                if let Ok(directory) = fs::File::open(parent) {
+                    let _ = directory.sync_all();
+                }
+            }
+            Ok(())
+        })();
+
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        return result;
+    }
+
+    Err("could not allocate a unique temporary federation state file".into())
+}
 pub fn load_awenode(path: &Path) -> Result<AweNodeConfig, String> {
     let v: AweNodeConfig = serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
@@ -529,6 +561,67 @@ mod tests {
         fs::remove_file(path).unwrap();
     }
 
+    #[test]
+    fn concurrent_federation_state_saves_use_isolated_temporary_files() {
+        use std::sync::{Arc, Barrier};
+
+        let root = std::env::temp_dir().join(format!(
+            "awenet-federation-concurrent-save-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let path = Arc::new(root.join("state.json"));
+        let workers = 8u64;
+        let iterations = 24u64;
+        let barrier = Arc::new(Barrier::new(workers as usize));
+        let handles: Vec<_> = (0..workers)
+            .map(|worker| {
+                let path = Arc::clone(&path);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    for iteration in 0..iterations {
+                        save_json(
+                            &serde_json::json!({
+                                "worker": worker,
+                                "iteration": iteration
+                            }),
+                            path.as_path(),
+                        )
+                        .unwrap_or_else(|error| {
+                            panic!("concurrent state save failed: {error}")
+                        });
+                    }
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        let saved: serde_json::Value =
+            serde_json::from_slice(&fs::read(path.as_path()).unwrap()).unwrap();
+        assert!(saved["worker"].as_u64().is_some_and(|value| value < workers));
+        assert!(saved["iteration"]
+            .as_u64()
+            .is_some_and(|value| value < iterations));
+        let leftovers: Vec<_> = fs::read_dir(&root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with(".state.json.") && name.ends_with(".tmp"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "temporary federation state files leaked: {leftovers:?}"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn legacy_awenet_state_defaults_centre_group_fields() {
         let legacy = serde_json::json!({
