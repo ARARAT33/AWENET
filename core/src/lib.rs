@@ -55,6 +55,7 @@ pub mod onecoin_wallet;
 pub mod permissions;
 pub mod policy;
 pub mod product;
+pub mod product_health;
 pub mod protocol;
 pub mod readiness;
 pub mod recovery;
