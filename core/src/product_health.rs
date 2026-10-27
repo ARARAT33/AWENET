@@ -171,10 +171,26 @@ pub fn compute_report(inputs: HealthInputs, weights: HealthWeights) -> Option<He
     }
 
     let factors: [(&str, u8, u32); 4] = [
-        ("replica_durability", inputs.replica_health_pct, weights.replica_durability),
-        ("peer_coverage", inputs.peer_health_pct, weights.peer_coverage),
-        ("transfer_success", inputs.transfer_success_pct, weights.transfer_success),
-        ("dht_responsiveness", inputs.dht_responsiveness_pct, weights.dht_responsiveness),
+        (
+            "replica_durability",
+            inputs.replica_health_pct,
+            weights.replica_durability,
+        ),
+        (
+            "peer_coverage",
+            inputs.peer_health_pct,
+            weights.peer_coverage,
+        ),
+        (
+            "transfer_success",
+            inputs.transfer_success_pct,
+            weights.transfer_success,
+        ),
+        (
+            "dht_responsiveness",
+            inputs.dht_responsiveness_pct,
+            weights.dht_responsiveness,
+        ),
     ];
 
     let mut score: u32 = 0;
