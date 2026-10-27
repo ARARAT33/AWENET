@@ -592,9 +592,7 @@ mod tests {
                             }),
                             path.as_path(),
                         )
-                        .unwrap_or_else(|error| {
-                            panic!("concurrent state save failed: {error}")
-                        });
+                        .unwrap_or_else(|error| panic!("concurrent state save failed: {error}"));
                     }
                 })
             })
@@ -606,7 +604,9 @@ mod tests {
 
         let saved: serde_json::Value =
             serde_json::from_slice(&fs::read(path.as_path()).unwrap()).unwrap();
-        assert!(saved["worker"].as_u64().is_some_and(|value| value < workers));
+        assert!(saved["worker"]
+            .as_u64()
+            .is_some_and(|value| value < workers));
         assert!(saved["iteration"]
             .as_u64()
             .is_some_and(|value| value < iterations));
