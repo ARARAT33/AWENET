@@ -373,7 +373,11 @@ mod tests {
         let path = dir.join("state.json");
 
         save_json(&json!({"generation": 1, "members": ["node-a"]}), &path).unwrap();
-        save_json(&json!({"generation": 2, "members": ["node-b", "node-c"]}), &path).unwrap();
+        save_json(
+            &json!({"generation": 2, "members": ["node-b", "node-c"]}),
+            &path,
+        )
+        .unwrap();
 
         let saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(saved["generation"], 2);
