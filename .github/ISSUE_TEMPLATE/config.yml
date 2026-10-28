@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: AWENET documentation
+    url: https://github.com/ARARAT33/AWENET/tree/main/docs
+    about: Architecture, readiness gates and the real-network test plan
