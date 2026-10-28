@@ -114,8 +114,8 @@ impl HealthHistory {
 
     /// Record a score at a unix timestamp. Newest sample is kept last.
     pub fn record(&mut self, timestamp_unix: u64, score: u8) {
-        if let Some(&(_, last)) = self.samples.back() {
-            if timestamp_unix < last {
+        if let Some(&(last_timestamp, _)) = self.samples.back() {
+            if timestamp_unix < last_timestamp {
                 // Never let a clock jump backwards corrupt the trend.
                 return;
             }
@@ -344,6 +344,22 @@ mod tests {
         // Out-of-order timestamps are ignored.
         h.record(0, 99);
         assert_eq!(h.latest(), Some(40));
+    }
+
+    #[test]
+    fn history_compares_timestamps_not_health_scores() {
+        let mut history = HealthHistory::new(4);
+        history.record(40, 90);
+        // A newer timestamp must be accepted even when the score is lower
+        // than the previous score.
+        history.record(41, 20);
+        assert_eq!(history.len(), 2);
+        assert_eq!(history.latest(), Some(20));
+
+        // An actually older timestamp must still be rejected.
+        history.record(39, 100);
+        assert_eq!(history.len(), 2);
+        assert_eq!(history.latest(), Some(20));
     }
 
     #[test]
