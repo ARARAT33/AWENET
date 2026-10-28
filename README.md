@@ -85,6 +85,19 @@ cargo clippy --workspace --all-targets -- -D warnings
 CI runs the same commands on every push; a green check means the workspace
 is formatted, tested and clippy-clean.
 
+## The AWENET desktop product
+
+`awe-node` starts the complete local product: a Rust node with an embedded
+desktop-style UI served from `127.0.0.1:41800`.
+
+- Home dashboard with live node state, topology map and known peers
+- Browser for `awe://` resources and the web
+- Messenger with realtime voice/video calls, groups and channels
+- Storage, AWEStore and the ONECOIN economy screens
+- **Light & dark themes** — auto-detected from your OS, manually switchable
+- **Command palette** — press `Ctrl+K` to jump to any screen or action
+- Keyboard shortcuts: `Alt+1…9` switch screens, `Alt+/` shows the shortcut hint
+
 ## Product health score
 
 `core/src/product_health.rs` aggregates replica durability, peer coverage,
@@ -111,6 +124,8 @@ model is in [docs/PRODUCT-ARCHITECTURE.md](docs/PRODUCT-ARCHITECTURE.md) and
 - [Network topology](docs/network-topology.md)
 - [Engineering charter](docs/AWEP2P-ENGINEERING-CHARTER.md)
 - [Daily status](docs/AWEP2P-DAILY-STATUS.md)
+- [Contributing](CONTRIBUTING.md)
+- [Product roadmap](docs/ROADMAP.md)
 
 ## Security
 

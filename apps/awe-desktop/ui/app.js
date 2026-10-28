@@ -227,3 +227,152 @@ async function loadStore(){
 function toast(t){const e=document.createElement("div");e.textContent=t;e.style="position:fixed;right:22px;bottom:22px;background:#111829;color:#fff;padding:11px 15px;border-radius:9px;font-size:11px;z-index:10";document.body.appendChild(e);setTimeout(()=>e.remove(),2200)}
 navs.forEach(n=>n.addEventListener("click",e=>{e.preventDefault();render(n.dataset.view)}));
 (async()=>{render("dashboard");await refresh();render("dashboard");setInterval(async()=>{await refresh();if(title.textContent===pages.dashboard[0])render("dashboard")},5000);setInterval(pollCallSignals,1000)})();
+/* =================================================================== */
+/* AWENET product polish layer: themes, command palette, shortcuts,   */
+/* live HUD badges and a stacked toast system. Loads after core UI.    */
+/* =================================================================== */
+(() => {
+  "use strict";
+  const THEME_KEY = "awenet.theme";
+  const prefersDark = window.matchMedia ? matchMedia("(prefers-color-scheme: dark)").matches : false;
+  let theme = localStorage.getItem(THEME_KEY);
+  if (theme !== "dark" && theme !== "light") theme = prefersDark ? "dark" : "light";
+
+  function applyTheme(next) {
+    theme = next === "dark" ? "dark" : "light";
+    document.documentElement.dataset.theme = theme;
+    try { localStorage.setItem(THEME_KEY, theme); } catch (_) {}
+    const btn = document.getElementById("themeToggle");
+    if (btn) {
+      btn.textContent = theme === "dark" ? "☀" : "☾";
+      btn.title = theme === "dark" ? "Switch to light theme" : "Switch to dark theme";
+    }
+  }
+  applyTheme(theme);
+  const themeBtn = document.getElementById("themeToggle");
+  if (themeBtn) themeBtn.onclick = () => applyTheme(theme === "dark" ? "light" : "dark");
+
+  /* ---- Stacked toasts ------------------------------------------------ */
+  let toastHost = null;
+  function ensureToastHost() {
+    if (!toastHost) {
+      toastHost = document.createElement("div");
+      toastHost.className = "toast-host";
+      document.body.appendChild(toastHost);
+    }
+    return toastHost;
+  }
+  toast = function (message, kind) {
+    const host = ensureToastHost();
+    const t = document.createElement("div");
+    t.className = "toast" + (kind === "err" ? " err" : kind === "ok" ? " ok" : "");
+    t.textContent = message;
+    host.appendChild(t);
+    while (host.children.length > 5) host.firstElementChild.remove();
+    setTimeout(() => { t.classList.add("out"); setTimeout(() => t.remove(), 220); }, 2600);
+  };
+
+  /* ---- Live HUD: peer badge, latency, uptime ------------------------- */
+  let onlineSince = 0;
+  function fmtUptime(ms) {
+    const s = Math.floor(ms / 1000);
+    if (s < 60) return s + "s";
+    const m = Math.floor(s / 60);
+    if (m < 60) return m + "m " + (s % 60) + "s";
+    return Math.floor(m / 60) + "h " + (m % 60) + "m";
+  }
+  function updateHud() {
+    const peers = (live.peers || []).length;
+    const online = live.status === "online";
+    onlineSince = online ? (onlineSince || Date.now()) : 0;
+    navs.forEach(n => {
+      let badge = n.querySelector(".nav-badge");
+      if (!badge) { badge = document.createElement("span"); badge.className = "nav-badge"; n.appendChild(badge); }
+      if (n.dataset.view === "network") { badge.textContent = String(peers); badge.hidden = peers === 0; }
+      else { badge.hidden = true; }
+    });
+    const state = document.getElementById("sideState");
+    if (state) state.textContent = online
+      ? "Node online" + (onlineSince ? " · up " + fmtUptime(Date.now() - onlineSince) : "")
+      : "Disconnected";
+  }
+  const coreRefresh = refresh;
+  refresh = async function () {
+    const started = performance.now();
+    await coreRefresh();
+    const ms = Math.max(1, Math.round(performance.now() - started));
+    const badge = document.getElementById("apiBadge");
+    if (badge) badge.textContent = live.status === "online" ? "API · online · " + ms + " ms" : "API · offline";
+    updateHud();
+  };
+
+  /* ---- Command palette ----------------------------------------------- */
+  function openView(k) {
+    const btn = document.querySelector('.nav[data-view="' + k + '"]');
+    if (btn) btn.click(); else render(k);
+  }
+  function paletteEntries() {
+    const items = Object.keys(pages).map(k => ({ label: pages[k][0], hint: pages[k][1], run: () => openView(k) }));
+    items.push({ label: "ONECOIN", hint: "Network economy, wallet and exchange", run: () => openView("onecoin") });
+    items.push({ label: "Toggle theme", hint: "Light / dark", run: () => applyTheme(theme === "dark" ? "light" : "dark") });
+    items.push({ label: "Refresh node state", hint: "Reload live data", run: async () => { await refresh(); toast("Node state refreshed", "ok"); } });
+    items.push({ label: "Connect to a node", hint: "Open the connect form", run: () => { openView("network"); setTimeout(() => { const i = document.getElementById("peerAddress"); if (i) i.focus(); }, 60); } });
+    items.push({ label: "Run health check", hint: "Diagnostics", run: () => { openView("diagnostics"); setTimeout(() => { const b = document.getElementById("healthBtn"); if (b) b.click(); }, 80); } });
+    items.push({ label: "Upload a file", hint: "Storage", run: () => { openView("storage"); setTimeout(() => { const f = document.getElementById("storageFile"); if (f) f.focus(); }, 60); } });
+    items.push({ label: "Send a message", hint: "Messenger", run: () => { openView("messenger"); setTimeout(() => { const i = document.getElementById("msgRecipient"); if (i) i.focus(); }, 60); } });
+    return items;
+  }
+  let backdrop = null, paletteInput = null, paletteList = null, paletteItems = [], paletteIndex = 0;
+  function buildPalette() {
+    backdrop = document.createElement("div");
+    backdrop.className = "palette-backdrop";
+    backdrop.hidden = true;
+    const box = document.createElement("div");
+    box.className = "palette";
+    paletteInput = document.createElement("input");
+    paletteInput.placeholder = "Search screens and actions…";
+    paletteInput.setAttribute("aria-label", "Command palette");
+    paletteList = document.createElement("ul");
+    box.appendChild(paletteInput);
+    box.appendChild(paletteList);
+    backdrop.appendChild(box);
+    backdrop.addEventListener("mousedown", e => { if (e.target === backdrop) closePalette(); });
+    paletteInput.addEventListener("input", () => renderPalette());
+    paletteInput.addEventListener("keydown", e => {
+      if (e.key === "ArrowDown") { e.preventDefault(); paletteIndex = Math.min(paletteIndex + 1, paletteItems.length - 1); renderPalette(); }
+      else if (e.key === "ArrowUp") { e.preventDefault(); paletteIndex = Math.max(paletteIndex - 1, 0); renderPalette(); }
+      else if (e.key === "Enter") { e.preventDefault(); const it = paletteItems[paletteIndex]; if (it) { closePalette(); it.run(); } }
+      else if (e.key === "Escape") { e.preventDefault(); closePalette(); }
+    });
+    document.body.appendChild(backdrop);
+  }
+  function renderPalette() {
+    const q = (paletteInput.value || "").toLowerCase();
+    const all = paletteEntries().filter(it => !q || (it.label + " " + it.hint).toLowerCase().includes(q));
+    paletteItems = all;
+    if (paletteIndex >= all.length) paletteIndex = Math.max(0, all.length - 1);
+    paletteList.innerHTML = all.map((it, i) => '<li class="' + (i === paletteIndex ? "active" : "") + '"><span>' + esc(it.label) + '</span><small>' + esc(it.hint) + '</small></li>').join("") || '<li class="active"><span>No matches</span><small>Try another search</small></li>';
+    Array.prototype.forEach.call(paletteList.children, (li, i) => { li.onclick = () => { const it = all[i]; if (it) { closePalette(); it.run(); } }; });
+  }
+  function openPalette() {
+    if (!backdrop) buildPalette();
+    backdrop.hidden = false;
+    paletteIndex = 0;
+    paletteInput.value = "";
+    renderPalette();
+    paletteInput.focus();
+  }
+  function closePalette() { if (backdrop) backdrop.hidden = true; }
+  const paletteBtn = document.getElementById("paletteBtn");
+  if (paletteBtn) paletteBtn.onclick = openPalette;
+
+  /* ---- Global keyboard shortcuts -------------------------------------- */
+  document.addEventListener("keydown", e => {
+    if ((e.ctrlKey || e.metaKey) && (e.key === "k" || e.key === "K")) { e.preventDefault(); if (backdrop && !backdrop.hidden) closePalette(); else openPalette(); return; }
+    if (e.altKey && /^[1-9]$/.test(e.key)) { const target = navs[Number(e.key) - 1]; if (target) { e.preventDefault(); target.click(); } return; }
+    if (e.altKey && e.key === "/") { e.preventDefault(); toast("Ctrl+K palette · Alt+1…9 screens · Alt+/ shortcuts", "ok"); return; }
+    if (e.key === "Escape") closePalette();
+  });
+
+  updateHud();
+})();
