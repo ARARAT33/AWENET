@@ -1,5 +1,12 @@
 use serde::{Deserialize, Serialize};
-use std::{fs, path::Path};
+use std::{
+    fs::{self, OpenOptions},
+    io::Write,
+    path::Path,
+    sync::atomic::{AtomicU64, Ordering},
+};
+
+static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub const FORMAT_VERSION: u16 = 1;
 
@@ -160,12 +167,67 @@ pub fn generate_dgc(
     }
 }
 
-pub fn save_json<T: Serialize>(value: &T, path: &Path) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+fn write_json_atomically(path: &Path, data: &[u8]) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| "JSON target path must name a file".to_string())?
+        .to_string_lossy();
+
+    // Use a unique sibling temp file so concurrent saves never share a staging path.
+    // Keeping it beside the destination also keeps the final rename on one filesystem.
+    for _ in 0..32 {
+        let sequence = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let temp_path = parent.join(format!(
+            ".{file_name}.tmp-{}-{sequence}",
+            std::process::id()
+        ));
+        let mut file = match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.to_string()),
+        };
+
+        let write_result = (|| {
+            file.write_all(data).map_err(|error| error.to_string())?;
+            file.sync_all().map_err(|error| error.to_string())
+        })();
+        drop(file);
+
+        if let Err(error) = write_result {
+            let _ = fs::remove_file(&temp_path);
+            return Err(error);
+        }
+
+        if let Err(error) = fs::rename(&temp_path, path) {
+            let _ = fs::remove_file(&temp_path);
+            return Err(error.to_string());
+        }
+
+        // Best-effort directory sync makes the rename more durable on Unix filesystems.
+        #[cfg(unix)]
+        if let Ok(directory) = fs::File::open(parent) {
+            let _ = directory.sync_all();
+        }
+
+        return Ok(());
     }
+
+    Err("could not allocate a unique temporary file for JSON save".into())
+}
+
+pub fn save_json<T: Serialize>(value: &T, path: &Path) -> Result<(), String> {
     let data = serde_json::to_vec_pretty(value).map_err(|e| e.to_string())?;
-    fs::write(path, data).map_err(|e| e.to_string())
+    write_json_atomically(path, &data)
 }
 
 pub fn load_awenode(path: &Path) -> Result<AweNodeConfig, String> {
@@ -275,6 +337,9 @@ pub fn merge_dgc(local: &mut DataGroupConfig, incoming: &DataGroupConfig) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::{json, Value};
+    use std::{fs, thread};
+
     #[test]
     fn formats_validate() {
         let n = generate_awenode("node-1", "DC One", "127.0.0.1:41000", vec![], 1);
@@ -295,5 +360,93 @@ mod tests {
             1,
         );
         validate_dgc(&dg).unwrap();
+    }
+
+    #[test]
+    fn save_json_replaces_existing_file_with_complete_json() {
+        let dir = std::env::temp_dir().join(format!(
+            "awenet-federation-save-replace-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+
+        save_json(&json!({"generation": 1, "members": ["node-a"]}), &path).unwrap();
+        save_json(&json!({"generation": 2, "members": ["node-b", "node-c"]}), &path).unwrap();
+
+        let saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["generation"], 2);
+        assert_eq!(saved["members"], json!(["node-b", "node-c"]));
+        assert_no_temporary_files(&dir, ".state.json.tmp-");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_json_cleans_temporary_file_when_destination_cannot_be_replaced() {
+        let dir = std::env::temp_dir().join(format!(
+            "awenet-federation-save-failure-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let blocked = dir.join("blocked.json");
+        fs::create_dir(&blocked).unwrap();
+
+        assert!(save_json(&json!({"must_not_replace_directory": true}), &blocked).is_err());
+        assert!(blocked.is_dir());
+        assert_no_temporary_files(&dir, ".blocked.json.tmp-");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn concurrent_save_json_calls_leave_one_complete_document() {
+        let dir = std::env::temp_dir().join(format!(
+            "awenet-federation-save-concurrent-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+
+        let workers: Vec<_> = (0..8)
+            .map(|writer| {
+                let path = path.clone();
+                thread::spawn(move || {
+                    for iteration in 0..24 {
+                        save_json(&json!({"writer": writer, "iteration": iteration}), &path)
+                            .unwrap();
+                    }
+                })
+            })
+            .collect();
+
+        for worker in workers {
+            worker.join().unwrap();
+        }
+
+        let saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert!(saved["writer"].as_u64().is_some_and(|writer| writer < 8));
+        assert!(saved["iteration"]
+            .as_u64()
+            .is_some_and(|iteration| iteration < 24));
+        assert_no_temporary_files(&dir, ".state.json.tmp-");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn assert_no_temporary_files(dir: &Path, prefix: &str) {
+        let leftovers: Vec<_> = fs::read_dir(dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with(prefix))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "temporary files leaked: {leftovers:?}"
+        );
     }
 }
