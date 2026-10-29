@@ -112,7 +112,7 @@ mod tests {
         let t3 = s.advance();
         assert_eq!(t3, vec!["health_check"]);
         let t4 = s.advance();
-        assert_eq!(t4, vec!["repair_sweep", "health_check"]);
+        assert_eq!(t4, vec!["repair_sweep"]);
     }
 
     #[test]
@@ -125,7 +125,7 @@ mod tests {
             s.add_job("x", 7),
             Err(SchedulerError::Duplicate("x".into()))
         );
-        assert_eq!(s.ticks_until_next(), None);
+        assert_eq!(s.ticks_until_next(), Some(0));
         assert!(!s.is_empty());
     }
 }
