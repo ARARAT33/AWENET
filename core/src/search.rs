@@ -47,11 +47,11 @@ impl SearchIndex {
         }
         let mut terms = BTreeSet::new();
         for (term, freq) in counts {
+            terms.insert(term.clone());
             self.postings
                 .entry(term)
                 .or_default()
                 .insert(doc_id.to_string(), freq);
-            terms.insert(term);
         }
         self.doc_terms.insert(doc_id.to_string(), terms);
     }
