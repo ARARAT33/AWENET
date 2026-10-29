@@ -162,8 +162,36 @@ fn load_identity(path: &PathBuf, password: &str, username: &str) -> Result<Ident
     .map_err(anyhow::Error::msg)
 }
 
-async fn http_response(status: &str, content_type: &str, body: &str) -> Vec<u8> {
-    format!("HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: content-type\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}", body.len()).into_bytes()
+fn is_allowed_ui_origin(origin: &str) -> bool {
+    matches!(
+        origin,
+        "tauri://localhost"
+            | "http://tauri.localhost"
+            | "https://tauri.localhost"
+            | "http://127.0.0.1:41800"
+            | "http://localhost:41800"
+    )
+}
+
+async fn http_response(
+    status: &str,
+    content_type: &str,
+    body: &str,
+    origin: Option<&str>,
+) -> Vec<u8> {
+    let cors = origin
+        .filter(|value| is_allowed_ui_origin(value))
+        .map(|value| {
+            format!(
+                "Access-Control-Allow-Origin: {value}\r\nVary: Origin\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: content-type\r\n"
+            )
+        })
+        .unwrap_or_default();
+    format!(
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n{cors}Cache-Control: no-store\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+    .into_bytes()
 }
 
 async fn read_http_request(stream: &mut tokio::net::TcpStream) -> Result<String> {
@@ -283,6 +311,37 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or("GET");
     let path = parts.next().unwrap_or("/").split('?').next().unwrap_or("/");
+    let header_block = request.split("\r\n\r\n").next().unwrap_or("");
+    let mut origins = header_block.lines().skip(1).filter_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("origin").then_some(value.trim())
+    });
+    let origin = origins.next();
+    let duplicate_origin = origins.next().is_some();
+    if duplicate_origin || origin.is_some_and(|value| !is_allowed_ui_origin(value)) {
+        stream
+            .write_all(
+                &http_response(
+                    "403 Forbidden",
+                    "application/json; charset=utf-8",
+                    r#"{"status":"error","error":"origin not allowed"}"#,
+                    None,
+                )
+                .await,
+            )
+            .await?;
+        stream.shutdown().await?;
+        return Ok(());
+    }
+    if method.eq_ignore_ascii_case("OPTIONS") {
+        stream
+            .write_all(
+                &http_response("204 No Content", "text/plain; charset=utf-8", "", origin).await,
+            )
+            .await?;
+        stream.shutdown().await?;
+        return Ok(());
+    }
     let (status, mime, body) = match path {
         "/" | "/index.html" => ("200 OK", "text/html; charset=utf-8", UI_HTML.to_string()),
         "/style.css" => ("200 OK", "text/css; charset=utf-8", UI_CSS.to_string()),
@@ -1336,7 +1395,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         _ => ("404 Not Found", "text/plain; charset=utf-8", "Not Found".to_string()),
     };
     stream
-        .write_all(&http_response(status, mime, &body).await)
+        .write_all(&http_response(status, mime, &body, origin).await)
         .await?;
     stream.shutdown().await?;
     Ok(())
@@ -2518,5 +2577,62 @@ async fn main() -> Result<()> {
             .await
         }
         _ => usage(),
+    }
+}
+
+
+#[cfg(test)]
+mod ui_origin_tests {
+    use super::*;
+
+    #[test]
+    fn only_known_ui_origins_are_allowed() {
+        for origin in [
+            "tauri://localhost",
+            "http://tauri.localhost",
+            "https://tauri.localhost",
+            "http://127.0.0.1:41800",
+            "http://localhost:41800",
+        ] {
+            assert!(is_allowed_ui_origin(origin), "expected allowed origin: {origin}");
+        }
+
+        for origin in [
+            "https://attacker.example",
+            "http://localhost.evil.example:41800",
+            "http://127.0.0.1:41801",
+            "null",
+            "*",
+        ] {
+            assert!(!is_allowed_ui_origin(origin), "unexpected allowed origin: {origin}");
+        }
+    }
+
+    #[tokio::test]
+    async fn response_never_emits_wildcard_cors() {
+        let allowed = String::from_utf8(
+            http_response(
+                "200 OK",
+                "application/json; charset=utf-8",
+                "{}",
+                Some("http://127.0.0.1:41800"),
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(allowed.contains("Access-Control-Allow-Origin: http://127.0.0.1:41800\r\n"));
+        assert!(!allowed.contains("Access-Control-Allow-Origin: *"));
+
+        let untrusted = String::from_utf8(
+            http_response(
+                "200 OK",
+                "application/json; charset=utf-8",
+                "{}",
+                Some("https://attacker.example"),
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(!untrusted.contains("Access-Control-Allow-Origin:"));
     }
 }
