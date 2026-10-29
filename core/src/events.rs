@@ -9,6 +9,7 @@ pub const DEFAULT_EVENT_CAPACITY: usize = 512;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "detail")]
+#[serde(rename_all = "snake_case")]
 pub enum NodeEvent {
     NodeStarted,
     PeerDiscovered { peer: String },
@@ -121,10 +122,13 @@ mod tests {
         let mut log = EventLog::new(16);
         log.record(1, NodeEvent::NodeStarted);
         log.record(2, NodeEvent::PeerDiscovered { peer: "n1".into() });
-        log.record(3, NodeEvent::TransferFailed {
-            resource: "r1".into(),
-            reason: "timeout".into(),
-        });
+        log.record(
+            3,
+            NodeEvent::TransferFailed {
+                resource: "r1".into(),
+                reason: "timeout".into(),
+            },
+        );
         assert_eq!(log.since(2).len(), 2);
         assert_eq!(log.count_with_label("peer_discovered"), 1);
         assert_eq!(log.count_with_label("node_started"), 1);

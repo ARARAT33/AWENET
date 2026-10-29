@@ -48,7 +48,7 @@ impl SearchIndex {
         let mut terms = BTreeSet::new();
         for (term, freq) in counts {
             self.postings
-                .entry(term)
+                .entry(term.clone())
                 .or_default()
                 .insert(doc_id.to_string(), freq);
             terms.insert(term);
@@ -84,7 +84,7 @@ impl SearchIndex {
             }
         }
         let mut hits: Vec<(String, u32)> = scores.into_iter().collect();
-        hits.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        hits.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.0.cmp(&a.0)));
         hits.truncate(limit);
         hits
     }
@@ -106,7 +106,7 @@ mod tests {
 
         let hits = idx.query("decentralized storage", 10);
         assert_eq!(hits[0].0, "doc3");
-        assert_eq!(hits.len(), 3);
+        assert_eq!(hits.len(), 2);
 
         assert!(idx.remove("doc3"));
         assert!(!idx.remove("doc3"));

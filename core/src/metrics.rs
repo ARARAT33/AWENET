@@ -80,7 +80,7 @@ impl Metrics {
         }
         let mut sorted: Vec<u64> = s.to_vec();
         sorted.sort_unstable();
-        let rank = sorted.len().div_ceil(95).min(sorted.len()).max(1);
+        let rank = (sorted.len() * 95).div_ceil(100).min(sorted.len()).max(1);
         Some(sorted[rank - 1])
     }
 
@@ -128,7 +128,7 @@ mod tests {
             m.record_sample("op.latency", i);
         }
         assert_eq!(m.samples("op.latency").len(), MAX_SAMPLES_PER_METRIC);
-        assert_eq!(m.p95("op.latency"), Some(83));
+        assert_eq!(m.p95("op.latency"), Some(80));
         assert!(m.mean("op.latency").is_some());
         assert_eq!(m.p95("missing"), None);
     }
