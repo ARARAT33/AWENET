@@ -114,8 +114,8 @@ impl HealthHistory {
 
     /// Record a score at a unix timestamp. Newest sample is kept last.
     pub fn record(&mut self, timestamp_unix: u64, score: u8) {
-        if let Some(&(_, last)) = self.samples.back() {
-            if timestamp_unix < last {
+        if let Some(&(last_timestamp, _)) = self.samples.back() {
+            if timestamp_unix < last_timestamp {
                 // Never let a clock jump backwards corrupt the trend.
                 return;
             }
@@ -317,10 +317,10 @@ mod tests {
     fn recommendation_targets_the_weakest_factor() {
         let report = compute_report(
             HealthInputs {
-                replica_health_pct: 100,
+                replica_health_pct: 60,
                 peer_health_pct: 10,
-                transfer_success_pct: 100,
-                dht_responsiveness_pct: 100,
+                transfer_success_pct: 60,
+                dht_responsiveness_pct: 60,
             },
             HealthWeights::default(),
         )
@@ -344,6 +344,25 @@ mod tests {
         // Out-of-order timestamps are ignored.
         h.record(0, 99);
         assert_eq!(h.latest(), Some(40));
+    }
+
+    #[test]
+    fn history_monotonicity_compares_timestamps_not_scores() {
+        let mut history = HealthHistory::new(4);
+
+        // UNIX timestamps can be small in fixtures; the previous score must
+        // never be mistaken for the timestamp when checking sample ordering.
+        history.record(90, 95);
+        history.record(91, 20);
+
+        assert_eq!(history.len(), 2);
+        assert_eq!(history.latest(), Some(20));
+        assert_eq!(history.delta(), Some(-75));
+
+        // A genuinely older sample is ignored even when its score is higher.
+        history.record(90, 99);
+        assert_eq!(history.len(), 2);
+        assert_eq!(history.latest(), Some(20));
     }
 
     #[test]

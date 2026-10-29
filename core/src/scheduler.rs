@@ -112,7 +112,9 @@ mod tests {
         let t3 = s.advance();
         assert_eq!(t3, vec!["health_check"]);
         let t4 = s.advance();
-        assert_eq!(t4, vec!["repair_sweep", "health_check"]);
+        assert_eq!(t4, vec!["repair_sweep"]);
+        let t5 = s.advance();
+        assert_eq!(t5, vec!["health_check"]);
     }
 
     #[test]
@@ -120,12 +122,14 @@ mod tests {
         let mut s = Scheduler::new();
         assert_eq!(s.add_job("", 5), Err(SchedulerError::EmptyName));
         assert_eq!(s.add_job("x", 0), Err(SchedulerError::ZeroInterval));
+        assert_eq!(s.ticks_until_next(), None);
+        assert!(s.is_empty());
         s.add_job("x", 5).unwrap();
         assert_eq!(
             s.add_job("x", 7),
             Err(SchedulerError::Duplicate("x".into()))
         );
-        assert_eq!(s.ticks_until_next(), None);
+        assert_eq!(s.ticks_until_next(), Some(0));
         assert!(!s.is_empty());
     }
 }
