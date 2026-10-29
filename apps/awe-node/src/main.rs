@@ -2599,7 +2599,6 @@ async fn main() -> Result<()> {
     }
 }
 
-
 #[cfg(test)]
 mod ui_origin_tests {
     use super::{http_response, is_allowed_ui_origin};
