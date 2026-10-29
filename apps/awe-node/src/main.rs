@@ -2586,7 +2586,6 @@ async fn main() -> Result<()> {
     }
 }
 
-
 #[cfg(test)]
 mod ui_origin_tests {
     use super::*;
@@ -2600,7 +2599,10 @@ mod ui_origin_tests {
             "http://127.0.0.1:41800",
             "http://localhost:41800",
         ] {
-            assert!(is_allowed_ui_origin(origin), "expected allowed origin: {origin}");
+            assert!(
+                is_allowed_ui_origin(origin),
+                "expected allowed origin: {origin}"
+            );
         }
 
         for origin in [
@@ -2612,7 +2614,10 @@ mod ui_origin_tests {
             "null",
             "*",
         ] {
-            assert!(!is_allowed_ui_origin(origin), "unexpected allowed origin: {origin}");
+            assert!(
+                !is_allowed_ui_origin(origin),
+                "unexpected allowed origin: {origin}"
+            );
         }
 
         // Custom UI ports remain usable without allowing arbitrary websites.
