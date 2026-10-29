@@ -17,7 +17,6 @@ use awep2p_core::onecoin_consensus_runtime::{
     OnecoinConsensusMessage, OnecoinConsensusRuntime, ONECOIN_CONSENSUS_STREAM,
 };
 use awep2p_core::policy::{self, NetworkPolicy};
-use awep2p_core::product_health::{compute_report, HealthInputs, HealthWeights};
 use awep2p_core::reputation::NodeReputation;
 use awep2p_core::storage::{encode_shards, recover_shards, LocalNodeStore, StoragePolicy};
 use awep2p_core::store::{AppCapability, Store};
@@ -163,8 +162,45 @@ fn load_identity(path: &PathBuf, password: &str, username: &str) -> Result<Ident
     .map_err(anyhow::Error::msg)
 }
 
-async fn http_response(status: &str, content_type: &str, body: &str) -> Vec<u8> {
-    format!("HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: content-type\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}", body.len()).into_bytes()
+fn has_loopback_http_port(origin: &str, prefix: &str, expected_port: u16) -> bool {
+    origin.strip_prefix(prefix).is_some_and(|port| {
+        !port.is_empty()
+            && port.bytes().all(|byte| byte.is_ascii_digit())
+            && port
+                .parse::<u16>()
+                .is_ok_and(|value| value != 0 && value == expected_port)
+    })
+}
+
+fn is_allowed_ui_origin(origin: &str, ui_port: u16) -> bool {
+    matches!(
+        origin,
+        "tauri://localhost" | "http://tauri.localhost" | "https://tauri.localhost"
+    ) || has_loopback_http_port(origin, "http://127.0.0.1:", ui_port)
+        || has_loopback_http_port(origin, "http://localhost:", ui_port)
+        || has_loopback_http_port(origin, "http://[::1]:", ui_port)
+}
+
+async fn http_response(
+    status: &str,
+    content_type: &str,
+    body: &str,
+    origin: Option<&str>,
+    ui_port: u16,
+) -> Vec<u8> {
+    let cors_headers = origin
+        .filter(|value| is_allowed_ui_origin(value, ui_port))
+        .map(|value| {
+            format!(
+                "Access-Control-Allow-Origin: {value}\r\nVary: Origin\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: content-type\r\n"
+            )
+        })
+        .unwrap_or_default();
+    format!(
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'\r\n{cors_headers}Cache-Control: no-store\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+    .into_bytes()
 }
 
 async fn read_http_request(stream: &mut tokio::net::TcpStream) -> Result<String> {
@@ -262,7 +298,7 @@ fn parse_onecoin_atoms(value: &serde_json::Value) -> Result<u128, String> {
         .ok_or_else(|| "amount_coins is too large".to_string())
 }
 
-async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<()> {
+async fn serve_ui(mut stream: tokio::net::TcpStream, ui_port: u16, state: UiState) -> Result<()> {
     let UiState {
         node,
         messenger,
@@ -284,6 +320,45 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or("GET");
     let path = parts.next().unwrap_or("/").split('?').next().unwrap_or("/");
+    let header_block = request.split("\r\n\r\n").next().unwrap_or("");
+    let mut origins = header_block.lines().skip(1).filter_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("origin").then_some(value.trim())
+    });
+    let origin = origins.next();
+    let duplicate_origin = origins.next().is_some();
+    if duplicate_origin || origin.is_some_and(|value| !is_allowed_ui_origin(value, ui_port)) {
+        stream
+            .write_all(
+                &http_response(
+                    "403 Forbidden",
+                    "application/json; charset=utf-8",
+                    r#"{"status":"error","error":"origin not allowed"}"#,
+                    None,
+                    ui_port,
+                )
+                .await,
+            )
+            .await?;
+        stream.shutdown().await?;
+        return Ok(());
+    }
+    if method.eq_ignore_ascii_case("OPTIONS") {
+        stream
+            .write_all(
+                &http_response(
+                    "204 No Content",
+                    "text/plain; charset=utf-8",
+                    "",
+                    origin,
+                    ui_port,
+                )
+                .await,
+            )
+            .await?;
+        stream.shutdown().await?;
+        return Ok(());
+    }
     let (status, mime, body) = match path {
         "/" | "/index.html" => ("200 OK", "text/html; charset=utf-8", UI_HTML.to_string()),
         "/style.css" => ("200 OK", "text/css; charset=utf-8", UI_CSS.to_string()),
@@ -596,41 +671,6 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         "/api/health" => ("200 OK", "application/json; charset=utf-8", serde_json::json!({
             "status":"healthy","core":"ready","network":"listening","ui":"ready","api":"ready"
         }).to_string()),
-        "/api/product-health" => {
-            // Keep the UI heartbeat pure and bounded. Persisted transfer, DHT and
-            // peer snapshots will be wired in as non-blocking counters become available.
-            let inputs = HealthInputs {
-                replica_health_pct: 100,
-                peer_health_pct: 100,
-                transfer_success_pct: 100,
-                dht_responsiveness_pct: 100,
-            };
-            let report = compute_report(inputs, HealthWeights::default())
-                .expect("default product health weights are valid");
-            (
-                "200 OK",
-                "application/json; charset=utf-8",
-                serde_json::json!({
-                    "status": "ok",
-                    "generated_at": now_unix(),
-                    "score": report.score,
-                    "band": report.band.label(),
-                    "factors": report.factors,
-                    "contributions": report.contributions,
-                    "recommendation": report.recommendation,
-                    "evidence": {
-                        "snapshot": "bounded product contract",
-                        "limitations": [
-                            "peer coverage is neutral until a non-blocking peer snapshot is available",
-                            "replica durability is neutral until persisted replica counters are available",
-                            "transfer_success is neutral until persisted transfer counters are available",
-                            "dht_responsiveness is neutral until probe latency counters are available"
-                        ]
-                    }
-                })
-                .to_string(),
-            )
-        },
         "/api/call/signals" => {
             let since = request.lines().next().unwrap_or("").split_whitespace().nth(1)
                 .and_then(|p| p.split('?').nth(1))
@@ -1372,7 +1412,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         _ => ("404 Not Found", "text/plain; charset=utf-8", "Not Found".to_string()),
     };
     stream
-        .write_all(&http_response(status, mime, &body).await)
+        .write_all(&http_response(status, mime, &body, origin, ui_port).await)
         .await?;
     stream.shutdown().await?;
     Ok(())
@@ -2352,6 +2392,7 @@ async fn run_product() -> Result<()> {
     println!("Node transport: {listen}");
     println!("Native UI: AWENET desktop window");
 
+    let ui_port = listener.local_addr()?.port();
     let native_ui_addr = ui_addr;
     tokio::spawn(async move {
         loop {
@@ -2379,6 +2420,7 @@ async fn run_product() -> Result<()> {
             tokio::spawn(async move {
                 if let Err(e) = serve_ui(
                     stream,
+                    ui_port,
                     UiState {
                         node: api_node,
                         messenger: api_messenger,
@@ -2554,5 +2596,84 @@ async fn main() -> Result<()> {
             .await
         }
         _ => usage(),
+    }
+}
+
+#[cfg(test)]
+mod ui_origin_tests {
+    use super::{http_response, is_allowed_ui_origin};
+
+    #[test]
+    fn only_accepts_supported_origins_on_the_ui_port() {
+        let ui_port = 41800;
+        for origin in [
+            "tauri://localhost",
+            "http://tauri.localhost",
+            "https://tauri.localhost",
+            "http://127.0.0.1:41800",
+            "http://localhost:41800",
+            "http://[::1]:41800",
+        ] {
+            assert!(
+                is_allowed_ui_origin(origin, ui_port),
+                "expected allowed origin: {origin}"
+            );
+        }
+
+        for origin in [
+            "https://evil.example",
+            "http://localhost.evil:41800",
+            "http://127.0.0.1:3000",
+            "http://127.0.0.1:0",
+            "http://127.0.0.1:65536",
+            "http://user@127.0.0.1:41800",
+            "http://localhost:41800/path",
+            "null",
+            "*",
+        ] {
+            assert!(
+                !is_allowed_ui_origin(origin, ui_port),
+                "unexpected allowed origin: {origin}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn cors_response_reflects_only_allowed_origins() {
+        let allowed = String::from_utf8(
+            http_response(
+                "200 OK",
+                "application/json",
+                "{}",
+                Some("http://127.0.0.1:41800"),
+                41800,
+            )
+            .await,
+        )
+        .expect("valid response bytes");
+        assert!(allowed.contains("Access-Control-Allow-Origin: http://127.0.0.1:41800\r\n"));
+        assert!(allowed.contains("Vary: Origin\r\n"));
+        assert!(!allowed.contains("Access-Control-Allow-Origin: *"));
+        assert!(allowed.contains("X-Frame-Options: DENY\r\n"));
+        assert!(allowed.contains("Referrer-Policy: no-referrer\r\n"));
+        assert!(allowed.contains("Content-Security-Policy: default-src 'self';"));
+
+        let other_port = String::from_utf8(
+            http_response(
+                "200 OK",
+                "application/json",
+                "{}",
+                Some("http://127.0.0.1:3000"),
+                41800,
+            )
+            .await,
+        )
+        .expect("valid response bytes");
+        assert!(!other_port.contains("Access-Control-Allow-Origin:"));
+
+        let no_origin =
+            String::from_utf8(http_response("200 OK", "application/json", "{}", None, 41800).await)
+                .expect("valid response bytes");
+        assert!(!no_origin.contains("Access-Control-Allow-Origin:"));
     }
 }
