@@ -30,6 +30,7 @@ while exposing a small, stable product orchestration model on top.
 | Layer | Modules (examples) | What it gives you |
 | --- | --- | --- |
 | Product orchestration | `product`, `product_health`, `readiness` | One stable model for resources, peers, placement, transfers, capacity, health score |
+| Observability & automation | `events`, `metrics`, `scheduler`, `search` | Bounded audit event log, counters/gauges/p95 latency samples, tick-driven maintenance jobs, local resource search |
 | Identity & security | `identity`, `security`, `crypto`, `defense`, `sandbox` | Ed25519 identity, authenticated encrypted transport, hostile-traffic limits |
 | Discovery & routing | `discovery`, `routing`, `network_topology`, `lan_mesh` | DHT-style lookup, Data Centre topology, relay failover, LAN mesh |
 | Data plane | `data_plane`, `storage`, `replication`, `repair`, `recovery` | Chunked content-addressed storage, replica placement, repair planning |
@@ -126,6 +127,7 @@ model is in [docs/PRODUCT-ARCHITECTURE.md](docs/PRODUCT-ARCHITECTURE.md) and
 - [Daily status](docs/AWEP2P-DAILY-STATUS.md)
 - [Contributing](CONTRIBUTING.md)
 - [Product roadmap](docs/ROADMAP.md)
+- [Observability & automation upgrade](docs/OBSERVABILITY-UPGRADE-2026-10.md)
 
 ## Security
 

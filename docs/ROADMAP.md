@@ -21,3 +21,17 @@ when it is proven end-to-end on independent nodes, not when the code exists.
 - Federation UX tour with two live nodes and recorded evidence
 - ONECOIN consensus run on three independent nodes with published transcripts
 - Release binaries for Linux, macOS and Windows with clean-machine verification
+
+## Shipped 2026-10-29 — observability & automation layer
+
+- `events.rs`: bounded, replayable node event log (audit + observability) with
+  labeled events, tick filtering and JSON serialization
+- `metrics.rs`: in-process metrics registry — counters, gauges and bounded
+  latency samples with mean and p95, feeding the product health pipeline
+- `search.rs`: local inverted index with term-frequency scoring for the
+  Browser and Store screens, with re-index and removal support
+- `scheduler.rs`: deterministic tick-driven maintenance scheduler for repair
+  sweeps, backups and health recomputation — replay-friendly, fully tested
+- All four modules use only std and existing dependencies, with unit tests
+  maintained in CI (fmt, test, clippy -D warnings)
+
