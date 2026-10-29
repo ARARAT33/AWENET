@@ -128,9 +128,14 @@ fn three_node_product_smoke() {
                 "GET /api/status HTTP/1.1\r\nHost: 127.0.0.1:46201\r\nOrigin: {allowed_origin}\r\nConnection: close\r\n\r\n"
             ),
         );
-        assert!(allowed_response.starts_with("HTTP/1.1 200 OK"), "{allowed_response}");
         assert!(
-            allowed_response.contains(&format!("Access-Control-Allow-Origin: {allowed_origin}\r\n")),
+            allowed_response.starts_with("HTTP/1.1 200 OK"),
+            "{allowed_response}"
+        );
+        assert!(
+            allowed_response.contains(&format!(
+                "Access-Control-Allow-Origin: {allowed_origin}\r\n"
+            )),
             "allowed origin was not reflected: {allowed_response}"
         );
         assert!(!allowed_response.contains("Access-Control-Allow-Origin: *"));
@@ -141,9 +146,14 @@ fn three_node_product_smoke() {
                 "OPTIONS /api/onebank/contribution HTTP/1.1\r\nHost: 127.0.0.1:46201\r\nOrigin: {allowed_origin}\r\nAccess-Control-Request-Method: POST\r\nAccess-Control-Request-Headers: content-type\r\nConnection: close\r\n\r\n"
             ),
         );
-        assert!(preflight.starts_with("HTTP/1.1 204 No Content"), "{preflight}");
         assert!(
-            preflight.contains(&format!("Access-Control-Allow-Origin: {allowed_origin}\r\n")),
+            preflight.starts_with("HTTP/1.1 204 No Content"),
+            "{preflight}"
+        );
+        assert!(
+            preflight.contains(&format!(
+                "Access-Control-Allow-Origin: {allowed_origin}\r\n"
+            )),
             "preflight did not reflect allowed origin: {preflight}"
         );
 
