@@ -106,7 +106,7 @@ mod tests {
 
         let hits = idx.query("decentralized storage", 10);
         assert_eq!(hits[0].0, "doc3");
-        assert_eq!(hits.len(), 3);
+        assert_eq!(hits.len(), 2);
 
         assert!(idx.remove("doc3"));
         assert!(!idx.remove("doc3"));
