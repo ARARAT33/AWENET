@@ -99,7 +99,7 @@ mod tests {
         let mut idx = SearchIndex::new();
         idx.index("doc1", "AWENET decentralized storage layer");
         idx.index("doc2", "ONECOIN payments and wallets");
-        idx.index("doc3", "decentralized storage and repair");
+        idx.index("doc3", "decentralized storage storage and repair");
 
         assert_eq!(idx.doc_count(), 3);
         assert!(!idx.is_empty());
