@@ -8,7 +8,7 @@ use std::collections::VecDeque;
 pub const DEFAULT_EVENT_CAPACITY: usize = 512;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "detail")]
+#[serde(tag = "kind", content = "detail", rename_all = "snake_case")]
 pub enum NodeEvent {
     NodeStarted,
     PeerDiscovered { peer: String },
