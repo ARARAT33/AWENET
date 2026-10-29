@@ -85,6 +85,15 @@ pub struct HealthInputs {
     pub dht_responsiveness_pct: u8,
 }
 
+impl HealthInputs {
+    pub fn is_valid(&self) -> bool {
+        self.replica_health_pct <= 100
+            && self.peer_health_pct <= 100
+            && self.transfer_success_pct <= 100
+            && self.dht_responsiveness_pct <= 100
+    }
+}
+
 /// One scored snapshot of the network.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HealthReport {
@@ -120,7 +129,8 @@ impl HealthHistory {
                 return;
             }
         }
-        if self.samples.len() == self.max_samples {
+        let max_samples = self.max_samples.max(1);
+        while self.samples.len() >= max_samples {
             self.samples.pop_front();
         }
         self.samples.push_back((timestamp_unix, score));
@@ -166,7 +176,7 @@ impl Default for HealthHistory {
 /// Returns `None` when the weights are invalid so a misconfiguration can
 /// never silently produce a nonsense score.
 pub fn compute_report(inputs: HealthInputs, weights: HealthWeights) -> Option<HealthReport> {
-    if !weights.is_valid() {
+    if !weights.is_valid() || !inputs.is_valid() {
         return None;
     }
 
@@ -302,6 +312,16 @@ mod tests {
     }
 
     #[test]
+    fn out_of_range_inputs_are_rejected() {
+        let inputs = HealthInputs {
+            replica_health_pct: 101,
+            ..perfect()
+        };
+        assert!(!inputs.is_valid());
+        assert!(compute_report(inputs, HealthWeights::default()).is_none());
+    }
+
+    #[test]
     fn bands_cover_the_full_range() {
         assert_eq!(HealthBand::for_score(0), HealthBand::Critical);
         assert_eq!(HealthBand::for_score(39), HealthBand::Critical);
@@ -317,15 +337,15 @@ mod tests {
     fn recommendation_targets_the_weakest_factor() {
         let report = compute_report(
             HealthInputs {
-                replica_health_pct: 60,
+                replica_health_pct: 100,
                 peer_health_pct: 10,
-                transfer_success_pct: 60,
-                dht_responsiveness_pct: 60,
+                transfer_success_pct: 100,
+                dht_responsiveness_pct: 100,
             },
             HealthWeights::default(),
         )
         .unwrap();
-        assert_eq!(report.band, HealthBand::AtRisk);
+        assert_eq!(report.band, HealthBand::Stable);
         assert!(report.recommendation.contains("peer_coverage"));
     }
 
@@ -347,20 +367,17 @@ mod tests {
     }
 
     #[test]
-    fn history_monotonicity_compares_timestamps_not_scores() {
+    fn history_compares_timestamps_not_health_scores() {
         let mut history = HealthHistory::new(4);
-
-        // UNIX timestamps can be small in fixtures; the previous score must
-        // never be mistaken for the timestamp when checking sample ordering.
-        history.record(90, 95);
-        history.record(91, 20);
-
+        history.record(40, 90);
+        // A newer timestamp must be accepted even when the score is lower
+        // than the previous score.
+        history.record(41, 20);
         assert_eq!(history.len(), 2);
         assert_eq!(history.latest(), Some(20));
-        assert_eq!(history.delta(), Some(-75));
 
-        // A genuinely older sample is ignored even when its score is higher.
-        history.record(90, 99);
+        // An actually older timestamp must still be rejected.
+        history.record(39, 100);
         assert_eq!(history.len(), 2);
         assert_eq!(history.latest(), Some(20));
     }

@@ -80,7 +80,7 @@ impl Metrics {
         }
         let mut sorted: Vec<u64> = s.to_vec();
         sorted.sort_unstable();
-        let rank = (sorted.len() - sorted.len() / 20).clamp(1, sorted.len());
+        let rank = (sorted.len() * 95).div_ceil(100).min(sorted.len()).max(1);
         Some(sorted[rank - 1])
     }
 
