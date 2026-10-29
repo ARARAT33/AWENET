@@ -317,10 +317,10 @@ mod tests {
     fn recommendation_targets_the_weakest_factor() {
         let report = compute_report(
             HealthInputs {
-                replica_health_pct: 100,
+                replica_health_pct: 60,
                 peer_health_pct: 10,
-                transfer_success_pct: 100,
-                dht_responsiveness_pct: 100,
+                transfer_success_pct: 60,
+                dht_responsiveness_pct: 60,
             },
             HealthWeights::default(),
         )
