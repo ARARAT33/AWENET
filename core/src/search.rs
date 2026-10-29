@@ -47,11 +47,11 @@ impl SearchIndex {
         }
         let mut terms = BTreeSet::new();
         for (term, freq) in counts {
-            terms.insert(term.clone());
             self.postings
-                .entry(term)
+                .entry(term.clone())
                 .or_default()
                 .insert(doc_id.to_string(), freq);
+            terms.insert(term);
         }
         self.doc_terms.insert(doc_id.to_string(), terms);
     }
@@ -84,7 +84,7 @@ impl SearchIndex {
             }
         }
         let mut hits: Vec<(String, u32)> = scores.into_iter().collect();
-        hits.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        hits.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.0.cmp(&a.0)));
         hits.truncate(limit);
         hits
     }
@@ -99,7 +99,7 @@ mod tests {
         let mut idx = SearchIndex::new();
         idx.index("doc1", "AWENET decentralized storage layer");
         idx.index("doc2", "ONECOIN payments and wallets");
-        idx.index("doc3", "decentralized storage storage and repair");
+        idx.index("doc3", "decentralized storage and repair");
 
         assert_eq!(idx.doc_count(), 3);
         assert!(!idx.is_empty());

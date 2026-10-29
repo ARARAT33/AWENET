@@ -32,7 +32,7 @@ async function startCall(kind){
  const status=document.getElementById("callStatus");if(status)status.textContent="Starting "+kind+" call…";
  const pc=new RTCPeerConnection({iceServers:[{urls:"stun:stun.l.google.com:19302"}]});call.pc=pc;
  pc.onicecandidate=e=>{if(e.candidate)sendCallSignal("ice",e.candidate).catch(()=>{})};
- pc.ontrack=e=>{if(e.streams[0]){const v=document.getElementById("remoteVideo"),a=document.getElementById("remoteAudio");if(e.track.kind==="video"&&v){v.srcObject=e.streams[0];v.style.display="block"}else if(a)a.srcObject=e.streams[0}}};
+ pc.ontrack=e=>{if(e.streams[0]){const v=document.getElementById("remoteVideo"),a=document.getElementById("remoteAudio");if(e.track.kind==="video"&&v){v.srcObject=e.streams[0];v.style.display="block"}else if(a)a.srcObject=e.streams[0]}};
  pc.onconnectionstatechange=()=>{if(status)status.textContent="Call: "+pc.connectionState};
  const stream=await navigator.mediaDevices.getUserMedia({audio:true,video:kind==="video"});
  stream.getTracks().forEach(t=>pc.addTrack(t,stream));const lv=document.getElementById("localVideo");if(lv&&kind==="video"){lv.srcObject=stream;lv.style.display="block"}
@@ -82,7 +82,8 @@ async function loadMessenger(){
   const box=document.getElementById("messageList");
   if(box)box.innerHTML='<div class="empty">Messenger is unavailable: '+esc(e.message)+'</div>';
  }
-}\nasync function refresh(){
+}
+async function refresh(){
  const results=await Promise.allSettled([
   api("/api/status"),api("/api/node"),api("/api/storage"),api("/api/security"),api("/api/federation")
  ]);
@@ -115,7 +116,7 @@ function render(k){
   body=panel("Browser",'<div class="browser-bar"><input id="browserUrl" value="awe://home" placeholder="awe://fid-64hex, awe://site-id or https://example.com"><button class="primary" id="browserGo">Open</button><button class="secondary" id="browserExternal">↗ External</button></div><div class="browser-hint">AWE resources use native <b>awe://</b> IDs. Stored files can be opened as <b>awe://fid-&lt;64hex&gt;</b>.</div><iframe id="browserFrame" class="browser-frame" title="AWE Browser" src="about:blank"></iframe>');
  } else if(k==="dashboard"){
   body='<div class="grid">'+card("Node status",live.status.toUpperCase())+card("Data centre",live.node?.descriptor?"Node registered":"Local node","Live node descriptor")+card("Node ID",live.node_id,"AWE identity")+card("Connected peers",live.status?.active_connections||0,"Authenticated live connections")+card("Transport",live.transport,"Node transport")+'</div>'+
-  '<div class="section two">'+panel("Network topology",'<div class="network-map"><div class="node-point main" style="left:49%;top:47%"></div>'+live.peers.slice(0,8).map((_,i)=>{const a=i*45;return '<div class="line" style="left:51%;top:51%;width:105px;transform:rotate('+a+'deg)"></div><div class="node-point" style="left:'+(50+34*Math.cos(a*Math.PI/180))+'%;top:'+(50+34*Math.sin(a*Math.PI/180))+'%"></div>'}).join("")+'</div>'),panel("Runtime health",'<div class="big-status"><div class="big-orb">'+(live.status==="online"?"✓":"!")+'</div><div><b>'+esc(live.status==="online"?"Node operational":"Node unavailable")+'</b><div class="detail">'+esc(live.node_address)+'</div></div></div><div class="list section"><div class="list-row"><span>Core API</span><span class="status"><i></i>'+esc(live.ui)+'</span></div><div class="list-row"><span>Known peers</span><b>'+live.peers.length+'</b></div></div>'))+
+  '<div class="section two">'+panel("Network topology",'<div class="network-map"><div class="node-point main" style="left:49%;top:47%"></div>'+live.peers.slice(0,8).map((_,i)=>{const a=i*45;return '<div class="line" style="left:51%;top:51%;width:105px;transform:rotate('+a+'deg)"></div><div class="node-point" style="left:'+(50+34*Math.cos(a*Math.PI/180))+'%;top:'+(50+34*Math.sin(a*Math.PI/180))+'%"></div>'}).join("")+'</div>')+panel("Runtime health",'<div class="big-status"><div class="big-orb">'+(live.status==="online"?"✓":"!")+'</div><div><b>'+esc(live.status==="online"?"Node operational":"Node unavailable")+'</b><div class="detail">'+esc(live.node_address)+'</div></div></div><div class="list section"><div class="list-row"><span>Core API</span><span class="status"><i></i>'+esc(live.ui)+'</span></div><div class="list-row"><span>Known peers</span><b>'+live.peers.length+'</b></div></div>')+'</div>'+
   panel("Known peers",'<table class="table"><thead><tr><th>Peer</th><th>Address</th><th>Last seen</th><th>State</th></tr></thead><tbody>'+peerRows()+'</tbody></table>','<button class="secondary" id="goNetwork">Manage</button>');
  } else if(k==="node"){
   body='<div class="grid">'+card("Status",live.status.toUpperCase())+card("Identity",live.node_id,"Public AWE identity")+card("Listen",live.node_address,"Local node endpoint")+card("Transport",live.transport,"Active protocol")+'</div>'+
@@ -125,6 +126,7 @@ function render(k){
   body=panel("Connect to node",'<div class="peer-form"><input id="peerAddress" placeholder="127.0.0.1:41000"><button class="primary" id="connectBtn">Connect</button></div><div class="muted" style="margin-top:8px">Enter a reachable AWEp2P node address. The Rust node performs bootstrap/discovery.</div>')+
   panel("Known peers",'<table class="table"><thead><tr><th>Peer</th><th>Address</th><th>Last seen</th><th>State</th></tr></thead><tbody>'+peerRows()+'</tbody></table>','<button class="secondary" id="peerRefresh">Refresh</button>')+
   panel("Topology",'<div class="network-map"><div class="node-point main" style="left:49%;top:47%"></div>'+live.peers.map((_,i)=>{const a=i*(360/Math.max(live.peers.length,1));return '<div class="line" style="left:51%;top:51%;width:100px;transform:rotate('+a+'deg)"></div><div class="node-point" style="left:'+(50+35*Math.cos(a*Math.PI/180))+'%;top:'+(50+35*Math.sin(a*Math.PI/180))+'%"></div>'}).join("")+'</div>');
+ }
  else if(k==="federation"){
   body=panel("AWENET identity",'<div class="grid">'+card("Node",live.node_id,"Current local identity")+card("Data centre",live.federation?.data_centre_id||"Not joined","Current membership")+card("Data group",live.federation?.data_group_id||"Not joined","Current membership")+card("Centres",live.federation?.joined_data_centres?.length||0,"Imported .awenode/.awedc memberships")+card("Live links",live.status?.active_connections||0,"Authenticated transport connections")+card("Groups",live.federation?.joined_data_groups?.length||0,"Imported .dgc memberships")+'</div>')+
   panel("1 · Create .awenode",'<div class="peer-form"><input id="fedNodeName" placeholder="Data centre name"><input id="fedNodeDcId" placeholder="Existing Data centre ID (optional)"><input id="fedEndpoint" placeholder="'+esc(live.node_address)+'"><input id="fedBootstrap" placeholder="Owner endpoints: host:41000,host2:41000"><button class="primary" id="genNode">Generate</button></div><div class="muted" style="margin-top:8px">Install this configuration on another AWEp2P node and import it from this screen to join the same data centre.</div>')+
