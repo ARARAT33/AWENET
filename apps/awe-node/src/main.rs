@@ -162,15 +162,21 @@ fn load_identity(path: &PathBuf, password: &str, username: &str) -> Result<Ident
     .map_err(anyhow::Error::msg)
 }
 
+fn has_loopback_http_port(origin: &str, prefix: &str) -> bool {
+    origin.strip_prefix(prefix).is_some_and(|port| {
+        !port.is_empty()
+            && port.bytes().all(|byte| byte.is_ascii_digit())
+            && port.parse::<u16>().is_ok_and(|value| value != 0)
+    })
+}
+
 fn is_allowed_ui_origin(origin: &str) -> bool {
     matches!(
         origin,
-        "tauri://localhost"
-            | "http://tauri.localhost"
-            | "https://tauri.localhost"
-            | "http://127.0.0.1:41800"
-            | "http://localhost:41800"
-    )
+        "tauri://localhost" | "http://tauri.localhost" | "https://tauri.localhost"
+    ) || has_loopback_http_port(origin, "http://127.0.0.1:")
+        || has_loopback_http_port(origin, "http://localhost:")
+        || has_loopback_http_port(origin, "http://[::1]:")
 }
 
 async fn http_response(
@@ -2600,12 +2606,19 @@ mod ui_origin_tests {
         for origin in [
             "https://attacker.example",
             "http://localhost.evil.example:41800",
-            "http://127.0.0.1:41801",
+            "http://127.0.0.1.evil.example:41800",
+            "http://localhost:0",
+            "http://localhost",
             "null",
             "*",
         ] {
             assert!(!is_allowed_ui_origin(origin), "unexpected allowed origin: {origin}");
         }
+
+        // Custom UI ports remain usable without allowing arbitrary websites.
+        assert!(is_allowed_ui_origin("http://127.0.0.1:41801"));
+        assert!(is_allowed_ui_origin("http://localhost:43123"));
+        assert!(is_allowed_ui_origin("http://[::1]:41800"));
     }
 
     #[tokio::test]
