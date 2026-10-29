@@ -197,7 +197,7 @@ async fn http_response(
         })
         .unwrap_or_default();
     format!(
-        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nX-Content-Type-Options: nosniff\r\n{cors_headers}Cache-Control: no-store\r\nConnection: close\r\n\r\n{body}",
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'\r\n{cors_headers}Cache-Control: no-store\r\nConnection: close\r\n\r\n{body}",
         body.len()
     )
     .into_bytes()
@@ -2654,6 +2654,9 @@ mod ui_origin_tests {
         assert!(allowed.contains("Access-Control-Allow-Origin: http://127.0.0.1:41800\r\n"));
         assert!(allowed.contains("Vary: Origin\r\n"));
         assert!(!allowed.contains("Access-Control-Allow-Origin: *"));
+        assert!(allowed.contains("X-Frame-Options: DENY\r\n"));
+        assert!(allowed.contains("Referrer-Policy: no-referrer\r\n"));
+        assert!(allowed.contains("Content-Security-Policy: default-src 'self';"));
 
         let other_port = String::from_utf8(
             http_response(
