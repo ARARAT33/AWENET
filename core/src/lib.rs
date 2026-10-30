@@ -23,7 +23,9 @@ pub mod serde_bytes_64 {
     }
 }
 pub mod access;
+pub mod alerts;
 pub mod awenet;
+pub mod backup;
 pub mod calls;
 pub mod canonical;
 pub mod crypto;
@@ -36,6 +38,7 @@ pub mod federation;
 pub mod governance;
 pub mod host;
 pub mod host_directory;
+pub mod i18n;
 pub mod identity;
 pub mod lan_mesh;
 pub mod limits;
@@ -46,6 +49,7 @@ pub mod namespace;
 pub mod network;
 pub mod network_topology;
 pub mod node;
+pub mod notifications;
 pub mod onebank;
 pub mod onecoin;
 pub mod onecoin_consensus;
@@ -59,6 +63,7 @@ pub mod policy;
 pub mod product;
 pub mod product_health;
 pub mod protocol;
+pub mod quota;
 pub mod readiness;
 pub mod recovery;
 pub mod registry;
@@ -74,3 +79,4 @@ pub mod security;
 pub mod storage;
 pub mod store;
 pub mod supervisor;
+pub mod update;
