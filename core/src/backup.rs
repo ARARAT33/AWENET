@@ -145,14 +145,18 @@ mod tests {
     #[test]
     fn adds_items_with_stable_digests() {
         let mut manifest = BackupManifest::new(10);
-        let d1 = manifest.add_item("identity", ItemKind::Identity, b"key").unwrap();
+        let d1 = manifest
+            .add_item("identity", ItemKind::Identity, b"key")
+            .unwrap();
         assert_eq!(d1.len(), 64);
         let duplicate = manifest
             .add_item("identity", ItemKind::Identity, b"key")
             .unwrap_err();
         assert_eq!(duplicate, BackupError::Duplicate("identity".into()));
         let mut other = BackupManifest::new(11);
-        let d2 = other.add_item("identity", ItemKind::Identity, b"key").unwrap();
+        let d2 = other
+            .add_item("identity", ItemKind::Identity, b"key")
+            .unwrap();
         assert_eq!(d2, d1);
         assert_eq!(manifest.item_count(), 1);
         assert_eq!(manifest.total_bytes(), 3);
@@ -175,7 +179,9 @@ mod tests {
     #[test]
     fn plans_restore() {
         let mut manifest = BackupManifest::new(0);
-        let digest = manifest.add_item("identity", ItemKind::Identity, b"key").unwrap();
+        let digest = manifest
+            .add_item("identity", ItemKind::Identity, b"key")
+            .unwrap();
         let mut local = BTreeMap::new();
         local.insert("identity".to_string(), digest);
         let plan = manifest.plan_restore(&local);
