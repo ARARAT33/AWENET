@@ -1,6 +1,6 @@
 const view=document.getElementById("view"),title=document.getElementById("pageTitle"),navs=[...document.querySelectorAll(".nav")];
 const pages={dashboard:["Home","Everything important in one place"],browser:["Browser","Open AWE sites and the web in a separate browser view"],node:["My Node","Your identity, runtime and listening endpoint"],network:["Peers & Connections","Discover and connect to AWEp2P nodes"],federation:["AWENET","Build Nodes, Data Centres and Data Groups"],storage:["Storage","Local and distributed data plane"],messenger:["Messenger","Peer-to-peer messaging"],communities:["Groups & Channels","Real peer communities over AWE transport"],store:["AWEStore","AWE modules and services"],security:["Security","Identity, transport and trust"],diagnostics:["Diagnostics","Health checks and runtime inspection"],settings:["Settings","Application configuration"]};
-let live={status:"starting",node_id:"loading",node_address:"loading",transport:"loading",ui:"connecting",peers:[],node:{},storage:{},security:{},federation:{}};
+let live={status:"starting",node_id:"loading",node_address:"loading",transport:"loading",ui:"connecting",peers:[],node:{},storage:{},security:{},federation:{},product_health:{}};
 
 function apiBase(){
  if(location.protocol==="http:"||location.protocol==="https:")return location.origin;
@@ -85,9 +85,9 @@ async function loadMessenger(){
 }
 async function refresh(){
  const results=await Promise.allSettled([
-  api("/api/status"),api("/api/node"),api("/api/storage"),api("/api/security"),api("/api/federation")
+  api("/api/status"),api("/api/node"),api("/api/storage"),api("/api/security"),api("/api/federation"),api("/api/product-health")
  ]);
- const [status,node,storage,security,federation]=results.map(x=>x.status==="fulfilled"?x.value:null);
+ const [status,node,storage,security,federation,product_health]=results.map(x=>x.status==="fulfilled"?x.value:null);
  if(status||node){
   live={
    ...live,
@@ -95,7 +95,8 @@ async function refresh(){
    node:node||live.node,
    storage:storage||live.storage,
    security:security||live.security,
-   federation:federation||live.federation
+   federation:federation||live.federation,
+   product_health:product_health||live.product_health
   };
   if(!status)live.status=live.status||"online";
   setConnection(true);
@@ -115,7 +116,7 @@ function render(k){
  if(k==="browser"){
   body=panel("Browser",'<div class="browser-bar"><input id="browserUrl" value="awe://home" placeholder="awe://fid-64hex, awe://site-id or https://example.com"><button class="primary" id="browserGo">Open</button><button class="secondary" id="browserExternal">↗ External</button></div><div class="browser-hint">AWE resources use native <b>awe://</b> IDs. Stored files can be opened as <b>awe://fid-&lt;64hex&gt;</b>.</div><iframe id="browserFrame" class="browser-frame" title="AWE Browser" src="about:blank"></iframe>');
  } else if(k==="dashboard"){
-  body='<div class="grid">'+card("Node status",live.status.toUpperCase())+card("Data centre",live.node?.descriptor?"Node registered":"Local node","Live node descriptor")+card("Node ID",live.node_id,"AWE identity")+card("Connected peers",live.status?.active_connections||0,"Authenticated live connections")+card("Transport",live.transport,"Node transport")+'</div>'+
+  body='<div class="grid">'+card("Node status",live.status.toUpperCase())+card("Product health",live.product_health?.score!=null?live.product_health.score+" / 100":"—",live.product_health?.band||"Runtime evidence")+card("Data centre",live.node?.descriptor?"Node registered":"Local node","Live node descriptor")+card("Node ID",live.node_id,"AWE identity")+card("Connected peers",live.status?.active_connections||0,"Authenticated live connections")+card("Transport",live.transport,"Node transport")+'</div>'+
   '<div class="section two">'+panel("Network topology",'<div class="network-map"><div class="node-point main" style="left:49%;top:47%"></div>'+live.peers.slice(0,8).map((_,i)=>{const a=i*45;return '<div class="line" style="left:51%;top:51%;width:105px;transform:rotate('+a+'deg)"></div><div class="node-point" style="left:'+(50+34*Math.cos(a*Math.PI/180))+'%;top:'+(50+34*Math.sin(a*Math.PI/180))+'%"></div>'}).join("")+'</div>')+panel("Runtime health",'<div class="big-status"><div class="big-orb">'+(live.status==="online"?"✓":"!")+'</div><div><b>'+esc(live.status==="online"?"Node operational":"Node unavailable")+'</b><div class="detail">'+esc(live.node_address)+'</div></div></div><div class="list section"><div class="list-row"><span>Core API</span><span class="status"><i></i>'+esc(live.ui)+'</span></div><div class="list-row"><span>Known peers</span><b>'+live.peers.length+'</b></div></div>')+'</div>'+
   panel("Known peers",'<table class="table"><thead><tr><th>Peer</th><th>Address</th><th>Last seen</th><th>State</th></tr></thead><tbody>'+peerRows()+'</tbody></table>','<button class="secondary" id="goNetwork">Manage</button>');
  } else if(k==="node"){
