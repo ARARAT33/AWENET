@@ -1,6 +1,6 @@
 const view=document.getElementById("view"),title=document.getElementById("pageTitle"),navs=[...document.querySelectorAll(".nav")];
 const pages={dashboard:["Home","Everything important in one place"],browser:["Browser","Open AWE sites and the web in a separate browser view"],node:["My Node","Your identity, runtime and listening endpoint"],network:["Peers & Connections","Discover and connect to AWEp2P nodes"],federation:["AWENET","Build Nodes, Data Centres and Data Groups"],storage:["Storage","Local and distributed data plane"],messenger:["Messenger","Peer-to-peer messaging"],communities:["Groups & Channels","Real peer communities over AWE transport"],store:["AWEStore","AWE modules and services"],security:["Security","Identity, transport and trust"],diagnostics:["Diagnostics","Health checks and runtime inspection"],settings:["Settings","Application configuration"]};
-let live={status:"starting",node_id:"loading",node_address:"loading",transport:"loading",ui:"connecting",peers:[],node:{},storage:{},security:{},federation:{}};
+let live={status:"starting",node_id:"loading",node_address:"loading",transport:"loading",ui:"connecting",peers:[],node:{},storage:{},security:{},federation:{},lastUpdated:null};
 
 function apiBase(){
  if(location.protocol==="http:"||location.protocol==="https:")return location.origin;
@@ -20,6 +20,7 @@ async function api(path,options={}){
  }finally{clearTimeout(timer)}
 }
 const call={pc:null,id:null,remote:null,last:0,seen:new Set(),active:false};
+let activeBrowserObjectUrl=null;
 async function sendCallSignal(type,data){
  if(!call.remote||!call.id)return;
  await api("/api/call/signal",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({recipient:call.remote,call_id:call.id,signal_type:type,data:JSON.stringify(data)})});
@@ -32,7 +33,7 @@ async function startCall(kind){
  const status=document.getElementById("callStatus");if(status)status.textContent="Starting "+kind+" call…";
  const pc=new RTCPeerConnection({iceServers:[{urls:"stun:stun.l.google.com:19302"}]});call.pc=pc;
  pc.onicecandidate=e=>{if(e.candidate)sendCallSignal("ice",e.candidate).catch(()=>{})};
- pc.ontrack=e=>{if(e.streams[0]){const v=document.getElementById("remoteVideo"),a=document.getElementById("remoteAudio");if(e.track.kind==="video"&&v){v.srcObject=e.streams[0];v.style.display="block"}else if(a)a.srcObject=e.streams[0}}};
+  pc.ontrack=e=>{if(e.streams[0]){const v=document.getElementById("remoteVideo"),a=document.getElementById("remoteAudio");if(e.track.kind==="video"&&v){v.srcObject=e.streams[0];v.style.display="block"}else if(a)a.srcObject=e.streams[0]}};
  pc.onconnectionstatechange=()=>{if(status)status.textContent="Call: "+pc.connectionState};
  const stream=await navigator.mediaDevices.getUserMedia({audio:true,video:kind==="video"});
  stream.getTracks().forEach(t=>pc.addTrack(t,stream));const lv=document.getElementById("localVideo");if(lv&&kind==="video"){lv.srcObject=stream;lv.style.display="block"}
@@ -82,7 +83,8 @@ async function loadMessenger(){
   const box=document.getElementById("messageList");
   if(box)box.innerHTML='<div class="empty">Messenger is unavailable: '+esc(e.message)+'</div>';
  }
-}\nasync function refresh(){
+}
+async function refresh(){
  const results=await Promise.allSettled([
   api("/api/status"),api("/api/node"),api("/api/storage"),api("/api/security"),api("/api/federation")
  ]);
@@ -97,13 +99,18 @@ async function loadMessenger(){
    federation:federation||live.federation
   };
   if(!status)live.status=live.status||"online";
+  live.lastUpdated=new Date();
   setConnection(true);
  }else{
   live={...live,status:"offline",ui:"disconnected",peers:[]};
   setConnection(false);
  }
 }
-function setConnection(on){document.getElementById("sideDot").classList.toggle("online",on);document.getElementById("sideState").textContent=on?"Node online":"Disconnected";document.getElementById("sideTransport").textContent=on?live.transport:"API unavailable";document.getElementById("apiBadge").textContent="API · "+(on?live.ui:"offline")}
+function setConnection(on){
+ const dot=document.getElementById("sideDot"),state=document.getElementById("sideState"),transport=document.getElementById("sideTransport"),badge=document.getElementById("apiBadge"),updated=document.getElementById("lastUpdated");
+ dot.classList.toggle("online",on);state.textContent=on?"Node online":"Disconnected";transport.textContent=on?live.transport:"API unavailable";badge.textContent="API · "+(on?live.ui:"offline");badge.classList.toggle("offline",!on);badge.classList.toggle("syncing",on&&live.ui!=="ready");
+ if(updated)updated.textContent=on&&live.lastUpdated?"Synced "+live.lastUpdated.toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}):"Waiting for node";
+}
 function esc(x){return String(x??"").replace(/[&<>'"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;","\"":"&quot;"}[c]))}
 function card(a,b,c="Live runtime"){return '<div class="card"><div class="metric-label">'+a+'</div><div class="metric">'+esc(b)+'</div><div class="muted">'+c+'</div></div>'}
 function panel(h,body,extra=""){return '<div class="section panel"><div class="section-head"><h2>'+h+'</h2>'+extra+'</div>'+body+'</div>'}
@@ -112,10 +119,11 @@ function render(k){
  const p=pages[k]||pages.dashboard;navs.forEach(n=>n.classList.toggle("active",n.dataset.view===k));title.textContent=p[0];
  let body="";
  if(k==="browser"){
-  body=panel("Browser",'<div class="browser-bar"><input id="browserUrl" value="awe://home" placeholder="awe://fid-64hex, awe://site-id or https://example.com"><button class="primary" id="browserGo">Open</button><button class="secondary" id="browserExternal">↗ External</button></div><div class="browser-hint">AWE resources use native <b>awe://</b> IDs. Stored files can be opened as <b>awe://fid-&lt;64hex&gt;</b>.</div><iframe id="browserFrame" class="browser-frame" title="AWE Browser" src="about:blank"></iframe>');
+  body=panel("Browser",'<div class="browser-bar"><input id="browserUrl" value="awe://home" placeholder="awe://fid-64hex, awe://site-id or https://example.com"><button class="primary" id="browserGo">Open</button><button class="secondary" id="browserExternal">↗ External</button></div><div class="browser-hint">AWE resources use native <b>awe://</b> IDs. Stored files can be opened as <b>awe://fid-&lt;64hex&gt;</b>.</div><iframe id="browserFrame" class="browser-frame" title="AWE Browser" referrerpolicy="no-referrer" src="about:blank"></iframe>');
  } else if(k==="dashboard"){
   body='<div class="grid">'+card("Node status",live.status.toUpperCase())+card("Data centre",live.node?.descriptor?"Node registered":"Local node","Live node descriptor")+card("Node ID",live.node_id,"AWE identity")+card("Connected peers",live.status?.active_connections||0,"Authenticated live connections")+card("Transport",live.transport,"Node transport")+'</div>'+
-  '<div class="section two">'+panel("Network topology",'<div class="network-map"><div class="node-point main" style="left:49%;top:47%"></div>'+live.peers.slice(0,8).map((_,i)=>{const a=i*45;return '<div class="line" style="left:51%;top:51%;width:105px;transform:rotate('+a+'deg)"></div><div class="node-point" style="left:'+(50+34*Math.cos(a*Math.PI/180))+'%;top:'+(50+34*Math.sin(a*Math.PI/180))+'%"></div>'}).join("")+'</div>'),panel("Runtime health",'<div class="big-status"><div class="big-orb">'+(live.status==="online"?"✓":"!")+'</div><div><b>'+esc(live.status==="online"?"Node operational":"Node unavailable")+'</b><div class="detail">'+esc(live.node_address)+'</div></div></div><div class="list section"><div class="list-row"><span>Core API</span><span class="status"><i></i>'+esc(live.ui)+'</span></div><div class="list-row"><span>Known peers</span><b>'+live.peers.length+'</b></div></div>'))+
+  '<div class="section two">'+panel("Network topology",'<div class="network-map"><div class="node-point main" style="left:49%;top:47%"></div>'+live.peers.slice(0,8).map((_,i)=>{const a=i*45;return '<div class="line" style="left:51%;top:51%;width:105px;transform:rotate('+a+'deg)"></div><div class="node-point" style="left:'+(50+34*Math.cos(a*Math.PI/180))+'%;top:'+(50+34*Math.sin(a*Math.PI/180))+'%"></div>'}).join('')+'</div>')+
+  panel("Runtime health",'<div class="big-status"><div class="big-orb">'+(live.status==="online"?"✓":"!")+'</div><div><b>'+esc(live.status==="online"?"Node operational":"Node unavailable")+'</b><div class="detail">'+esc(live.node_address)+'</div></div></div><div class="list section"><div class="list-row"><span>Core API</span><span class="status"><i></i>'+esc(live.ui)+'</span></div><div class="list-row"><span>Known peers</span><b>'+live.peers.length+'</b></div></div>')+'</div>'+
   panel("Known peers",'<table class="table"><thead><tr><th>Peer</th><th>Address</th><th>Last seen</th><th>State</th></tr></thead><tbody>'+peerRows()+'</tbody></table>','<button class="secondary" id="goNetwork">Manage</button>');
  } else if(k==="node"){
   body='<div class="grid">'+card("Status",live.status.toUpperCase())+card("Identity",live.node_id,"Public AWE identity")+card("Listen",live.node_address,"Local node endpoint")+card("Transport",live.transport,"Active protocol")+'</div>'+
@@ -125,7 +133,7 @@ function render(k){
   body=panel("Connect to node",'<div class="peer-form"><input id="peerAddress" placeholder="127.0.0.1:41000"><button class="primary" id="connectBtn">Connect</button></div><div class="muted" style="margin-top:8px">Enter a reachable AWEp2P node address. The Rust node performs bootstrap/discovery.</div>')+
   panel("Known peers",'<table class="table"><thead><tr><th>Peer</th><th>Address</th><th>Last seen</th><th>State</th></tr></thead><tbody>'+peerRows()+'</tbody></table>','<button class="secondary" id="peerRefresh">Refresh</button>')+
   panel("Topology",'<div class="network-map"><div class="node-point main" style="left:49%;top:47%"></div>'+live.peers.map((_,i)=>{const a=i*(360/Math.max(live.peers.length,1));return '<div class="line" style="left:51%;top:51%;width:100px;transform:rotate('+a+'deg)"></div><div class="node-point" style="left:'+(50+35*Math.cos(a*Math.PI/180))+'%;top:'+(50+35*Math.sin(a*Math.PI/180))+'%"></div>'}).join("")+'</div>');
- else if(k==="federation"){
+ } else if(k==="federation"){
   body=panel("AWENET identity",'<div class="grid">'+card("Node",live.node_id,"Current local identity")+card("Data centre",live.federation?.data_centre_id||"Not joined","Current membership")+card("Data group",live.federation?.data_group_id||"Not joined","Current membership")+card("Centres",live.federation?.joined_data_centres?.length||0,"Imported .awenode/.awedc memberships")+card("Live links",live.status?.active_connections||0,"Authenticated transport connections")+card("Groups",live.federation?.joined_data_groups?.length||0,"Imported .dgc memberships")+'</div>')+
   panel("1 · Create .awenode",'<div class="peer-form"><input id="fedNodeName" placeholder="Data centre name"><input id="fedNodeDcId" placeholder="Existing Data centre ID (optional)"><input id="fedEndpoint" placeholder="'+esc(live.node_address)+'"><input id="fedBootstrap" placeholder="Owner endpoints: host:41000,host2:41000"><button class="primary" id="genNode">Generate</button></div><div class="muted" style="margin-top:8px">Install this configuration on another AWEp2P node and import it from this screen to join the same data centre.</div>')+
   panel("2 · Create .awedc",'<div class="peer-form"><input id="fedDcId" placeholder="Data centre ID"><input id="fedDcName" placeholder="Data centre name"><input id="fedEndpoints" placeholder="host:41000,host2:41000"><button class="primary" id="genDc">Generate</button></div><div class="muted" style="margin-top:8px">The data-centre package describes the owner, member nodes and reachable transport endpoints.</div>')+
@@ -170,11 +178,47 @@ function render(k){
  bind(k);
 }
 function bind(k){
- const openBrowser=async()=>{const input=document.getElementById("browserUrl").value.trim();const frame=document.getElementById("browserFrame");if(!input)return;const awe=input.match(/^awe:\/\/fid-([0-9a-f]{64})$/i);if(awe){try{const r=await api("/api/storage/get?file_id="+encodeURIComponent(awe[1]));const raw=r.data_hex||"";const bytes=new Uint8Array(raw.length/2);for(let i=0;i<bytes.length;i++)bytes[i]=parseInt(raw.slice(i*2,i*2+2),16);const type=/\.(html?|svg)$/i.test(r.filename||"")?"text/html":/\.json$/i.test(r.filename||"")?"application/json":"text/plain";frame.src=URL.createObjectURL(new Blob([bytes],{type}));return}catch(e){toast("AWE resource unavailable: "+e.message);return}}if(/^https?:\/\//i.test(input)){frame.src=input;return}if(input.startsWith("awe://")){frame.srcdoc='<h2>AWENET resource</h2><p>Resolved address: '+esc(input)+'</p><p>Use an <b>awe://fid-&lt;64hex&gt;</b> resource ID for a network-native stored object.</p>';return}frame.src="https://"+input};
+  async function openBrowser(){
+    const input=document.getElementById("browserUrl")?.value.trim()||"";
+    const frame=document.getElementById("browserFrame");
+    if(!input||!frame)return;
+    frame.referrerPolicy="no-referrer";
+    const awe=input.match(/^awe:\/\/fid-([0-9a-f]{64})$/i);
+    if(awe){
+      try{
+        const r=await api("/api/storage/get?file_id="+encodeURIComponent(awe[1]));
+        const raw=String(r.data_hex||"");
+        if(!/^(?:[0-9a-f]{2})*$/i.test(raw))throw new Error("Malformed object data");
+        const bytes=new Uint8Array(raw.length/2);
+        for(let i=0;i<bytes.length;i++)bytes[i]=parseInt(raw.slice(i*2,i*2+2),16);
+        const name=String(r.filename||"").toLowerCase();
+        const type=/\.html?$/.test(name)?"text/html":/\.svg$/.test(name)?"image/svg+xml":/\.json$/.test(name)?"application/json":"application/octet-stream";
+        // A stored site is untrusted content. Keep its origin opaque and deny
+        // access to the AWENET parent window and loopback API.
+        frame.setAttribute("sandbox","allow-scripts allow-forms allow-popups");
+        if(activeBrowserObjectUrl)URL.revokeObjectURL(activeBrowserObjectUrl);
+        activeBrowserObjectUrl=URL.createObjectURL(new Blob([bytes],{type}));
+        frame.src=activeBrowserObjectUrl;
+        return;
+      }catch(e){toast("AWE resource unavailable: "+e.message);return}
+    }
+    if(input.startsWith("awe://")){
+      frame.setAttribute("sandbox","");
+      frame.srcdoc='<h2>AWENET resource</h2><p>Resolved address: '+esc(input)+'</p><p>Use an <b>awe://fid-&lt;64hex&gt;</b> resource ID for a network-native stored object.</p>';
+      return;
+    }
+    const external=/^https?:\/\//i.test(input)?input:"https://"+input;
+    let parsed;
+    try{parsed=new URL(external)}catch(_){toast("Enter a valid http(s) URL or AWE resource ID");return}
+    if(parsed.protocol!=="http:"&&parsed.protocol!=="https:"){toast("Only http(s) external URLs are supported");return}
+    // External pages stay cross-origin; no-referrer avoids leaking the local UI URL.
+    frame.removeAttribute("sandbox");
+    frame.src=parsed.href;
+  }
  const bg=document.getElementById("browserGo");if(bg)bg.onclick=openBrowser;
- const be=document.getElementById("browserExternal");if(be)be.onclick=()=>{let u=document.getElementById("browserUrl").value.trim();if(u.startsWith("awe://"))return openBrowser();if(!/^https?:\/\//i.test(u))u="https://"+u;window.open(u,"_blank","noopener,noreferrer")};
+ const be=document.getElementById("browserExternal");if(be)be.onclick=()=>openBrowser();
  const bu=document.getElementById("browserUrl");if(bu)bu.addEventListener("keydown",e=>{if(e.key==="Enter")bg?.click()});
- const r=document.getElementById("refreshBtn");if(r)r.onclick=async()=>{await refresh();render(k)};
+ const r=document.getElementById("refreshBtn");if(r)r.onclick=async()=>{r.classList.add("refreshing");r.textContent="Refreshing…";try{await refresh();render(k)}finally{r.classList.remove("refreshing");}};
  const g=document.getElementById("goNetwork");if(g)g.onclick=()=>render("network");
  const pr=document.getElementById("peerRefresh");if(pr)pr.onclick=async()=>{await refresh();render("network")};
  const cb=document.getElementById("connectBtn");if(cb)cb.onclick=async()=>{const a=document.getElementById("peerAddress").value.trim();if(!a)return toast("Enter a node address");cb.disabled=true;try{const x=await api("/api/connect?address="+encodeURIComponent(a),{method:"POST"});toast("Bootstrap complete");await refresh();render("network")}catch(e){toast("Connection failed: "+e.message)}finally{cb.disabled=false}};
@@ -224,155 +268,6 @@ async function loadStore(){
   });
  }catch(e){box.innerHTML='<div class="empty">AWEStore unavailable: '+esc(e.message)+'</div>'}
 }
-function toast(t){const e=document.createElement("div");e.textContent=t;e.style="position:fixed;right:22px;bottom:22px;background:#111829;color:#fff;padding:11px 15px;border-radius:9px;font-size:11px;z-index:10";document.body.appendChild(e);setTimeout(()=>e.remove(),2200)}
+function toast(t){const e=document.createElement("div");e.className="toast";e.setAttribute("role","status");e.textContent=t;e.style="position:fixed;right:22px;bottom:22px;background:#111829;color:#fff;padding:11px 15px;border-radius:9px;font-size:11px;z-index:10";document.body.appendChild(e);setTimeout(()=>e.remove(),2200)}
 navs.forEach(n=>n.addEventListener("click",e=>{e.preventDefault();render(n.dataset.view)}));
 (async()=>{render("dashboard");await refresh();render("dashboard");setInterval(async()=>{await refresh();if(title.textContent===pages.dashboard[0])render("dashboard")},5000);setInterval(pollCallSignals,1000)})();
-/* =================================================================== */
-/* AWENET product polish layer: themes, command palette, shortcuts,   */
-/* live HUD badges and a stacked toast system. Loads after core UI.    */
-/* =================================================================== */
-(() => {
-  "use strict";
-  const THEME_KEY = "awenet.theme";
-  const prefersDark = window.matchMedia ? matchMedia("(prefers-color-scheme: dark)").matches : false;
-  let theme = localStorage.getItem(THEME_KEY);
-  if (theme !== "dark" && theme !== "light") theme = prefersDark ? "dark" : "light";
-
-  function applyTheme(next) {
-    theme = next === "dark" ? "dark" : "light";
-    document.documentElement.dataset.theme = theme;
-    try { localStorage.setItem(THEME_KEY, theme); } catch (_) {}
-    const btn = document.getElementById("themeToggle");
-    if (btn) {
-      btn.textContent = theme === "dark" ? "☀" : "☾";
-      btn.title = theme === "dark" ? "Switch to light theme" : "Switch to dark theme";
-    }
-  }
-  applyTheme(theme);
-  const themeBtn = document.getElementById("themeToggle");
-  if (themeBtn) themeBtn.onclick = () => applyTheme(theme === "dark" ? "light" : "dark");
-
-  /* ---- Stacked toasts ------------------------------------------------ */
-  let toastHost = null;
-  function ensureToastHost() {
-    if (!toastHost) {
-      toastHost = document.createElement("div");
-      toastHost.className = "toast-host";
-      document.body.appendChild(toastHost);
-    }
-    return toastHost;
-  }
-  toast = function (message, kind) {
-    const host = ensureToastHost();
-    const t = document.createElement("div");
-    t.className = "toast" + (kind === "err" ? " err" : kind === "ok" ? " ok" : "");
-    t.textContent = message;
-    host.appendChild(t);
-    while (host.children.length > 5) host.firstElementChild.remove();
-    setTimeout(() => { t.classList.add("out"); setTimeout(() => t.remove(), 220); }, 2600);
-  };
-
-  /* ---- Live HUD: peer badge, latency, uptime ------------------------- */
-  let onlineSince = 0;
-  function fmtUptime(ms) {
-    const s = Math.floor(ms / 1000);
-    if (s < 60) return s + "s";
-    const m = Math.floor(s / 60);
-    if (m < 60) return m + "m " + (s % 60) + "s";
-    return Math.floor(m / 60) + "h " + (m % 60) + "m";
-  }
-  function updateHud() {
-    const peers = (live.peers || []).length;
-    const online = live.status === "online";
-    onlineSince = online ? (onlineSince || Date.now()) : 0;
-    navs.forEach(n => {
-      let badge = n.querySelector(".nav-badge");
-      if (!badge) { badge = document.createElement("span"); badge.className = "nav-badge"; n.appendChild(badge); }
-      if (n.dataset.view === "network") { badge.textContent = String(peers); badge.hidden = peers === 0; }
-      else { badge.hidden = true; }
-    });
-    const state = document.getElementById("sideState");
-    if (state) state.textContent = online
-      ? "Node online" + (onlineSince ? " · up " + fmtUptime(Date.now() - onlineSince) : "")
-      : "Disconnected";
-  }
-  const coreRefresh = refresh;
-  refresh = async function () {
-    const started = performance.now();
-    await coreRefresh();
-    const ms = Math.max(1, Math.round(performance.now() - started));
-    const badge = document.getElementById("apiBadge");
-    if (badge) badge.textContent = live.status === "online" ? "API · online · " + ms + " ms" : "API · offline";
-    updateHud();
-  };
-
-  /* ---- Command palette ----------------------------------------------- */
-  function openView(k) {
-    const btn = document.querySelector('.nav[data-view="' + k + '"]');
-    if (btn) btn.click(); else render(k);
-  }
-  function paletteEntries() {
-    const items = Object.keys(pages).map(k => ({ label: pages[k][0], hint: pages[k][1], run: () => openView(k) }));
-    items.push({ label: "ONECOIN", hint: "Network economy, wallet and exchange", run: () => openView("onecoin") });
-    items.push({ label: "Toggle theme", hint: "Light / dark", run: () => applyTheme(theme === "dark" ? "light" : "dark") });
-    items.push({ label: "Refresh node state", hint: "Reload live data", run: async () => { await refresh(); toast("Node state refreshed", "ok"); } });
-    items.push({ label: "Connect to a node", hint: "Open the connect form", run: () => { openView("network"); setTimeout(() => { const i = document.getElementById("peerAddress"); if (i) i.focus(); }, 60); } });
-    items.push({ label: "Run health check", hint: "Diagnostics", run: () => { openView("diagnostics"); setTimeout(() => { const b = document.getElementById("healthBtn"); if (b) b.click(); }, 80); } });
-    items.push({ label: "Upload a file", hint: "Storage", run: () => { openView("storage"); setTimeout(() => { const f = document.getElementById("storageFile"); if (f) f.focus(); }, 60); } });
-    items.push({ label: "Send a message", hint: "Messenger", run: () => { openView("messenger"); setTimeout(() => { const i = document.getElementById("msgRecipient"); if (i) i.focus(); }, 60); } });
-    return items;
-  }
-  let backdrop = null, paletteInput = null, paletteList = null, paletteItems = [], paletteIndex = 0;
-  function buildPalette() {
-    backdrop = document.createElement("div");
-    backdrop.className = "palette-backdrop";
-    backdrop.hidden = true;
-    const box = document.createElement("div");
-    box.className = "palette";
-    paletteInput = document.createElement("input");
-    paletteInput.placeholder = "Search screens and actions…";
-    paletteInput.setAttribute("aria-label", "Command palette");
-    paletteList = document.createElement("ul");
-    box.appendChild(paletteInput);
-    box.appendChild(paletteList);
-    backdrop.appendChild(box);
-    backdrop.addEventListener("mousedown", e => { if (e.target === backdrop) closePalette(); });
-    paletteInput.addEventListener("input", () => renderPalette());
-    paletteInput.addEventListener("keydown", e => {
-      if (e.key === "ArrowDown") { e.preventDefault(); paletteIndex = Math.min(paletteIndex + 1, paletteItems.length - 1); renderPalette(); }
-      else if (e.key === "ArrowUp") { e.preventDefault(); paletteIndex = Math.max(paletteIndex - 1, 0); renderPalette(); }
-      else if (e.key === "Enter") { e.preventDefault(); const it = paletteItems[paletteIndex]; if (it) { closePalette(); it.run(); } }
-      else if (e.key === "Escape") { e.preventDefault(); closePalette(); }
-    });
-    document.body.appendChild(backdrop);
-  }
-  function renderPalette() {
-    const q = (paletteInput.value || "").toLowerCase();
-    const all = paletteEntries().filter(it => !q || (it.label + " " + it.hint).toLowerCase().includes(q));
-    paletteItems = all;
-    if (paletteIndex >= all.length) paletteIndex = Math.max(0, all.length - 1);
-    paletteList.innerHTML = all.map((it, i) => '<li class="' + (i === paletteIndex ? "active" : "") + '"><span>' + esc(it.label) + '</span><small>' + esc(it.hint) + '</small></li>').join("") || '<li class="active"><span>No matches</span><small>Try another search</small></li>';
-    Array.prototype.forEach.call(paletteList.children, (li, i) => { li.onclick = () => { const it = all[i]; if (it) { closePalette(); it.run(); } }; });
-  }
-  function openPalette() {
-    if (!backdrop) buildPalette();
-    backdrop.hidden = false;
-    paletteIndex = 0;
-    paletteInput.value = "";
-    renderPalette();
-    paletteInput.focus();
-  }
-  function closePalette() { if (backdrop) backdrop.hidden = true; }
-  const paletteBtn = document.getElementById("paletteBtn");
-  if (paletteBtn) paletteBtn.onclick = openPalette;
-
-  /* ---- Global keyboard shortcuts -------------------------------------- */
-  document.addEventListener("keydown", e => {
-    if ((e.ctrlKey || e.metaKey) && (e.key === "k" || e.key === "K")) { e.preventDefault(); if (backdrop && !backdrop.hidden) closePalette(); else openPalette(); return; }
-    if (e.altKey && /^[1-9]$/.test(e.key)) { const target = navs[Number(e.key) - 1]; if (target) { e.preventDefault(); target.click(); } return; }
-    if (e.altKey && e.key === "/") { e.preventDefault(); toast("Ctrl+K palette · Alt+1…9 screens · Alt+/ shortcuts", "ok"); return; }
-    if (e.key === "Escape") closePalette();
-  });
-
-  updateHud();
-})();
