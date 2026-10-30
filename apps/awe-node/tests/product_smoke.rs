@@ -469,11 +469,7 @@ fn three_node_product_smoke() {
             "content": invitation.to_string()
         })
         .to_string();
-        let import_response = post_raw(
-            "127.0.0.1:46201",
-            "/api/federation/import",
-            &import_body,
-        );
+        let import_response = post_raw("127.0.0.1:46201", "/api/federation/import", &import_body);
         assert!(
             import_response.starts_with("HTTP/1.1 500 Internal Server Error"),
             "failed federation persistence must return 500: {import_response}"
@@ -490,7 +486,8 @@ fn three_node_product_smoke() {
             .expect("read node data directory")
             .filter_map(Result::ok)
             .any(|entry| {
-                entry.file_name()
+                entry
+                    .file_name()
                     .to_string_lossy()
                     .starts_with(".awenet.json.tmp-")
             });
