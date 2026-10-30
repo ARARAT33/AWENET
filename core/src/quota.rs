@@ -34,12 +34,8 @@ pub enum QuotaDenyReason {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "decision", content = "detail", rename_all = "snake_case")]
 pub enum QuotaDecision {
-    Allowed {
-        remaining_storage_bytes: u64,
-    },
-    Denied {
-        reason: QuotaDenyReason,
-    },
+    Allowed { remaining_storage_bytes: u64 },
+    Denied { reason: QuotaDenyReason },
 }
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
@@ -156,7 +152,7 @@ impl QuotaLedger {
         };
         if account.transfers_today >= tier.max_transfers_per_day {
             return Ok(QuotaDecision::Denied {
-                reason: QuotaDenyReason::TransferLimitReached,
+                reason: QuotaDenyReason.TransferLimitReached,
             });
         }
         account.transfers_today += 1;

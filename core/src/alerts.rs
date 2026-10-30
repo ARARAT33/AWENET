@@ -175,10 +175,7 @@ mod tests {
         empty_metric.metric = String::new();
         assert_eq!(engine.add_rule(empty_metric), Err(AlertError::EmptyMetric));
         let bad_threshold = rule("d", "cpu", ThresholdOp::Greater, f64::NAN);
-        assert_eq!(
-            engine.add_rule(bad_threshold),
-            Err(AlertError::InvalidThreshold)
-        );
+        assert_eq!(engine.add_rule(bad_threshold), Err(AlertError::InvalidThreshold));
         assert_eq!(engine.rule_count(), 1);
     }
 
