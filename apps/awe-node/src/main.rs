@@ -540,7 +540,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
             // Build and persist a candidate first. Publish it to shared memory only after
             // durable storage succeeds, so a failed disk write cannot report a false import
             // or leave the running node ahead of its restart state.
-            let result: Result<Vec<String>, (&'static str, anyhow::Error)> = (|| {
+            let result: std::result::Result<Vec<String>, (&'static str, anyhow::Error)> = (|| {
                 let mut current = federation_state
                     .lock()
                     .map_err(|_| ("500 Internal Server Error", anyhow::anyhow!("state lock poisoned")))?;
