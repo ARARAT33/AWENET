@@ -26,7 +26,7 @@ on:
       - '.github/workflows/core.yml'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   rust:
@@ -44,6 +44,18 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - name: Auto-format Rust workspace (temporary debug)
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          cargo fmt --all
+          if ! git diff --quiet; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add -- '*.rs'
+            git commit -m "style: format Rust workspace"
+            git push
+          fi
       - name: Check Rust workspace formatting
         run: cargo fmt --all -- --check
       - name: Build workspace
