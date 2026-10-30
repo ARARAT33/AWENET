@@ -8,7 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-fn request(addr: &str, request: &str) -> String {
+fn request_full(addr: &str, request: &str) -> String {
     let mut stream = TcpStream::connect(addr).expect("connect");
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
@@ -42,13 +42,16 @@ fn request(addr: &str, request: &str) -> String {
             Err(err) => panic!("read: {err}"),
         }
     }
-    String::from_utf8_lossy(&out)
+    String::from_utf8_lossy(&out).to_string()
+}
+
+fn request(addr: &str, request: &str) -> String {
+    request_full(addr, request)
         .split("\r\n\r\n")
         .nth(1)
         .unwrap_or("")
         .to_string()
 }
-
 fn get(addr: &str, path: &str) -> String {
     request(
         addr,
@@ -117,6 +120,97 @@ fn three_node_product_smoke() {
         wait_for_health("127.0.0.1:46201");
         wait_for_health("127.0.0.1:46202");
         wait_for_health("127.0.0.1:46203");
+
+        let allowed_origin = "http://127.0.0.1:46201";
+        let allowed_response = request_full(
+            "127.0.0.1:46201",
+            &format!(
+                "GET /api/status HTTP/1.1\r\nHost: 127.0.0.1:46201\r\nOrigin: {allowed_origin}\r\nConnection: close\r\n\r\n"
+            ),
+        );
+        assert!(
+            allowed_response.starts_with("HTTP/1.1 200 OK"),
+            "{allowed_response}"
+        );
+        assert!(
+            allowed_response.contains(&format!(
+                "Access-Control-Allow-Origin: {allowed_origin}\r\n"
+            )),
+            "allowed origin was not reflected: {allowed_response}"
+        );
+        assert!(!allowed_response.contains("Access-Control-Allow-Origin: *"));
+
+        let product_health = get("127.0.0.1:46201", "/api/product-health");
+        let health: serde_json::Value =
+            serde_json::from_str(&product_health).expect("product health must be JSON");
+        let score = health
+            .get("score")
+            .and_then(serde_json::Value::as_u64)
+            .expect("product health score");
+        assert!(
+            score <= 100,
+            "health score must stay within 0..=100: {score}"
+        );
+        assert!(health
+            .get("band")
+            .and_then(serde_json::Value::as_str)
+            .is_some());
+        assert!(health.get("evidence").is_some());
+
+        let preflight = request_full(
+            "127.0.0.1:46201",
+            &format!(
+                "OPTIONS /api/onebank/contribution HTTP/1.1\r\nHost: 127.0.0.1:46201\r\nOrigin: {allowed_origin}\r\nAccess-Control-Request-Method: POST\r\nAccess-Control-Request-Headers: content-type\r\nConnection: close\r\n\r\n"
+            ),
+        );
+        assert!(
+            preflight.starts_with("HTTP/1.1 204 No Content"),
+            "{preflight}"
+        );
+        assert!(
+            preflight.contains(&format!(
+                "Access-Control-Allow-Origin: {allowed_origin}\r\n"
+            )),
+            "preflight did not reflect allowed origin: {preflight}"
+        );
+
+        let contribution_before = get("127.0.0.1:46201", "/api/onebank/contribution");
+        let malicious_body =
+            r#"{"storage_bytes":123456,"cpu_cores":7,"ram_bytes":8192,"node_count":1}"#;
+        let blocked = request_full(
+            "127.0.0.1:46201",
+            &format!(
+                "POST /api/onebank/contribution HTTP/1.1\r\nHost: 127.0.0.1:46201\r\nOrigin: https://evil.example\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                malicious_body.len(),
+                malicious_body
+            ),
+        );
+        assert!(blocked.starts_with("HTTP/1.1 403 Forbidden"), "{blocked}");
+        assert!(!blocked.contains("Access-Control-Allow-Origin:"));
+        assert!(!blocked.contains("Access-Control-Allow-Origin: *"));
+        let contribution_after = get("127.0.0.1:46201", "/api/onebank/contribution");
+        assert_eq!(
+            contribution_before, contribution_after,
+            "a disallowed Origin must be rejected before a state-changing handler runs"
+        );
+
+        let duplicate_origin = request_full(
+            "127.0.0.1:46201",
+            &format!(
+                "POST /api/onebank/contribution HTTP/1.1\r\nHost: 127.0.0.1:46201\r\nOrigin: {allowed_origin}\r\nOrigin: https://evil.example\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                malicious_body.len(),
+                malicious_body
+            ),
+        );
+        assert!(
+            duplicate_origin.starts_with("HTTP/1.1 403 Forbidden"),
+            "{duplicate_origin}"
+        );
+        assert_eq!(
+            contribution_before,
+            get("127.0.0.1:46201", "/api/onebank/contribution"),
+            "duplicate Origin headers must not reach a state-changing handler"
+        );
 
         for (port, ui) in [
             (46101u16, 46201u16),

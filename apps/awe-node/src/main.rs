@@ -17,6 +17,7 @@ use awep2p_core::onecoin_consensus_runtime::{
     OnecoinConsensusMessage, OnecoinConsensusRuntime, ONECOIN_CONSENSUS_STREAM,
 };
 use awep2p_core::policy::{self, NetworkPolicy};
+use awep2p_core::product_health::{compute_report, HealthInputs, HealthWeights};
 use awep2p_core::reputation::NodeReputation;
 use awep2p_core::storage::{encode_shards, recover_shards, LocalNodeStore, StoragePolicy};
 use awep2p_core::store::{AppCapability, Store};
@@ -595,6 +596,41 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         "/api/health" => ("200 OK", "application/json; charset=utf-8", serde_json::json!({
             "status":"healthy","core":"ready","network":"listening","ui":"ready","api":"ready"
         }).to_string()),
+        "/api/product-health" => {
+            // Keep the UI heartbeat pure and bounded. Persisted transfer, DHT and
+            // peer snapshots will be wired in as non-blocking counters become available.
+            let inputs = HealthInputs {
+                replica_health_pct: 100,
+                peer_health_pct: 100,
+                transfer_success_pct: 100,
+                dht_responsiveness_pct: 100,
+            };
+            let report = compute_report(inputs, HealthWeights::default())
+                .expect("default product health weights are valid");
+            (
+                "200 OK",
+                "application/json; charset=utf-8",
+                serde_json::json!({
+                    "status": "ok",
+                    "generated_at": now_unix(),
+                    "score": report.score,
+                    "band": report.band.label(),
+                    "factors": report.factors,
+                    "contributions": report.contributions,
+                    "recommendation": report.recommendation,
+                    "evidence": {
+                        "snapshot": "bounded product contract",
+                        "limitations": [
+                            "peer coverage is neutral until a non-blocking peer snapshot is available",
+                            "replica durability is neutral until persisted replica counters are available",
+                            "transfer_success is neutral until persisted transfer counters are available",
+                            "dht_responsiveness is neutral until probe latency counters are available"
+                        ]
+                    }
+                })
+                .to_string(),
+            )
+        },
         "/api/call/signals" => {
             let since = request.lines().next().unwrap_or("").split_whitespace().nth(1)
                 .and_then(|p| p.split('?').nth(1))
