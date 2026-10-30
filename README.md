@@ -31,6 +31,7 @@ while exposing a small, stable product orchestration model on top.
 | --- | --- | --- |
 | Product orchestration | `product`, `product_health`, `readiness` | One stable model for resources, peers, placement, transfers, capacity, health score |
 | Observability & automation | `events`, `metrics`, `scheduler`, `search` | Bounded audit event log, counters/gauges/p95 latency samples, tick-driven maintenance jobs, local resource search |
+| Node platform services | `alerts`, `backup`, `notifications`, `quota`, `i18n`, `update` | Threshold alerts, backup/restore planning, bounded notifications, quota accounting, bilingual (en/hy) UI strings, version & upgrade policy |
 | Identity & security | `identity`, `security`, `crypto`, `defense`, `sandbox` | Ed25519 identity, authenticated encrypted transport, hostile-traffic limits |
 | Discovery & routing | `discovery`, `routing`, `network_topology`, `lan_mesh` | DHT-style lookup, Data Centre topology, relay failover, LAN mesh |
 | Data plane | `data_plane`, `storage`, `replication`, `repair`, `recovery` | Chunked content-addressed storage, replica placement, repair planning |
@@ -107,6 +108,17 @@ stable band (Critical / AtRisk / Stable / Excellent) and a concrete
 recommendation. A bounded rolling history gives operators a trend, not just a
 snapshot. See [docs/HEALTH-SCORE.md](docs/HEALTH-SCORE.md).
 
+## Node platform services
+
+Six deterministic core modules give the node product-grade support services:
+`alerts.rs` (threshold alert rules with explicit firing transitions),
+`backup.rs` (content-addressed backup manifests and restore plans),
+`notifications.rs` (bounded notification center), `quota.rs` (storage and
+transfer quotas with allow/deny decisions), `i18n.rs` (bilingual English and
+Armenian product strings with fallback) and `update.rs` (version contract
+and upgrade policy that never breaks protocol compatibility silently). See
+[docs/PLATFORM-UPGRADE-2026-10-30.md](docs/PLATFORM-UPGRADE-2026-10-30.md).
+
 ## Important status rule
 
 A source module or UI screen is not proof of end-to-end functionality.
@@ -128,6 +140,7 @@ model is in [docs/PRODUCT-ARCHITECTURE.md](docs/PRODUCT-ARCHITECTURE.md) and
 - [Contributing](CONTRIBUTING.md)
 - [Product roadmap](docs/ROADMAP.md)
 - [Observability & automation upgrade](docs/OBSERVABILITY-UPGRADE-2026-10.md)
+- [Node platform services upgrade](docs/PLATFORM-UPGRADE-2026-10-30.md)
 
 ## Security
 
