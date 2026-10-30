@@ -145,19 +145,15 @@ mod tests {
     #[test]
     fn adds_items_with_stable_digests() {
         let mut manifest = BackupManifest::new(10);
-        let d1 = manifest
-            .add_item("identity", ItemKind::Identity, b"key")
-            .unwrap();
+        let d1 = manifest.add_item("identity", ItemKind::Identity, b"key").unwrap();
         assert_eq!(d1.len(), 64);
         let duplicate = manifest
             .add_item("identity", ItemKind::Identity, b"key")
             .unwrap_err();
         assert_eq!(duplicate, BackupError::Duplicate("identity".into()));
         let mut other = BackupManifest::new(11);
-        assert_eq!(
-            other.add_item("identity", ItemKind::Identity, b"key").unwrap(),
-            d1
-        );
+        let d2 = other.add_item("identity", ItemKind::Identity, b"key").unwrap();
+        assert_eq!(d2, d1);
         assert_eq!(manifest.item_count(), 1);
         assert_eq!(manifest.total_bytes(), 3);
         assert_eq!(manifest.kinds(), BTreeSet::from([ItemKind::Identity]));
@@ -166,26 +162,20 @@ mod tests {
     #[test]
     fn validates_ids_and_capacity() {
         let mut manifest = BackupManifest::new(0);
-        assert_eq!(
-            manifest.add_item("", ItemKind::Settings, b"x"),
-            Err(BackupError::EmptyId)
-        );
+        let empty = manifest.add_item("", ItemKind::Settings, b"x");
+        assert_eq!(empty, Err(BackupError::EmptyId));
         for i in 0..MAX_ITEMS {
             let id = format!("item-{i}");
             manifest.add_item(&id, ItemKind::Storage, b"x").unwrap();
         }
-        assert_eq!(
-            manifest.add_item("overflow", ItemKind::Storage, b"x"),
-            Err(BackupError::ManifestFull)
-        );
+        let overflow = manifest.add_item("overflow", ItemKind::Storage, b"x");
+        assert_eq!(overflow, Err(BackupError::ManifestFull));
     }
 
     #[test]
     fn plans_restore() {
         let mut manifest = BackupManifest::new(0);
-        let digest = manifest
-            .add_item("identity", ItemKind::Identity, b"key")
-            .unwrap();
+        let digest = manifest.add_item("identity", ItemKind::Identity, b"key").unwrap();
         let mut local = BTreeMap::new();
         local.insert("identity".to_string(), digest);
         let plan = manifest.plan_restore(&local);

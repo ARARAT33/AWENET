@@ -164,27 +164,24 @@ mod tests {
         let mut engine = AlertEngine::new();
         let good = rule("a", "cpu", ThresholdOp::Greater, 80.0);
         engine.add_rule(good.clone()).unwrap();
-        assert_eq!(
-            engine.add_rule(good.clone()),
-            Err(AlertError::Duplicate("a".into()))
-        );
+        let dup = engine.add_rule(good.clone());
+        assert_eq!(dup, Err(AlertError::Duplicate("a".into())));
         let mut empty_name = rule("b", "cpu", ThresholdOp::Greater, 80.0);
         empty_name.name = String::new();
         assert_eq!(engine.add_rule(empty_name), Err(AlertError::EmptyName));
         let mut empty_metric = rule("c", "", ThresholdOp::Greater, 80.0);
         empty_metric.metric = String::new();
         assert_eq!(engine.add_rule(empty_metric), Err(AlertError::EmptyMetric));
-        let bad_threshold = rule("d", "cpu", ThresholdOp::Greater, f64::NAN);
-        assert_eq!(engine.add_rule(bad_threshold), Err(AlertError::InvalidThreshold));
+        let bad = rule("d", "cpu", ThresholdOp::Greater, f64::NAN);
+        assert_eq!(engine.add_rule(bad), Err(AlertError::InvalidThreshold));
         assert_eq!(engine.rule_count(), 1);
     }
 
     #[test]
     fn fires_on_threshold_cross() {
         let mut engine = AlertEngine::new();
-        engine
-            .add_rule(rule("high_cpu", "cpu", ThresholdOp::Greater, 80.0))
-            .unwrap();
+        let high_cpu = rule("high_cpu", "cpu", ThresholdOp::Greater, 80.0);
+        engine.add_rule(high_cpu).unwrap();
         let mut gauges = BTreeMap::new();
         gauges.insert("cpu".to_string(), 50.0);
         assert!(engine.evaluate(&gauges).is_empty());
@@ -203,9 +200,8 @@ mod tests {
     #[test]
     fn less_op_and_missing_metric_keep_state() {
         let mut engine = AlertEngine::new();
-        engine
-            .add_rule(rule("low_disk", "disk_pct", ThresholdOp::Less, 10.0))
-            .unwrap();
+        let low_disk = rule("low_disk", "disk_pct", ThresholdOp::Less, 10.0);
+        engine.add_rule(low_disk).unwrap();
         let mut gauges = BTreeMap::new();
         gauges.insert("disk_pct".to_string(), 5.0);
         assert_eq!(engine.evaluate(&gauges).len(), 1);
@@ -218,9 +214,8 @@ mod tests {
     #[test]
     fn serializes_to_json() {
         let mut engine = AlertEngine::new();
-        engine
-            .add_rule(rule("r", "m", ThresholdOp::Greater, 1.0))
-            .unwrap();
+        let r = rule("r", "m", ThresholdOp::Greater, 1.0);
+        engine.add_rule(r).unwrap();
         let json = serde_json::to_string(&engine).unwrap();
         let back: AlertEngine = serde_json::from_str(&json).unwrap();
         assert_eq!(back.rule_count(), 1);

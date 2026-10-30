@@ -30,6 +30,15 @@ pub struct MessageEntry {
     pub hy: String,
 }
 
+impl MessageEntry {
+    fn new(en: &str, hy: &str) -> Self {
+        MessageEntry {
+            en: en.to_string(),
+            hy: hy.to_string(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Catalog {
     entries: BTreeMap<String, MessageEntry>,
@@ -42,13 +51,8 @@ impl Catalog {
 
     /// Adds or replaces a key with its English and Armenian texts.
     pub fn add(&mut self, key: &str, en: &str, hy: &str) {
-        self.entries.insert(
-            key.to_string(),
-            MessageEntry {
-                en: en.to_string(),
-                hy: hy.to_string(),
-            },
-        );
+        let entry = MessageEntry::new(en, hy);
+        self.entries.insert(key.to_string(), entry);
     }
 
     pub fn key_count(&self) -> usize {
@@ -141,11 +145,10 @@ mod tests {
         let c = product_catalog();
         let mut args = BTreeMap::new();
         args.insert("score", "87".to_string());
-        assert_eq!(c.format(Locale::En, "health_score", &args), "Health score: 87");
-        assert_eq!(
-            c.format(Locale::Hy, "health_score", &args),
-            "Առողջության միավոր՝ 87"
-        );
+        let en = c.format(Locale::En, "health_score", &args);
+        assert_eq!(en, "Health score: 87");
+        let hy = c.format(Locale::Hy, "health_score", &args);
+        assert_eq!(hy, "Առողջության միավոր՝ 87");
         assert_eq!(c.format(Locale::En, "missing", &args), "missing");
     }
 

@@ -99,10 +99,8 @@ mod tests {
         assert_eq!("1.2".parse::<Version>(), Err(VersionError::InvalidFormat));
         assert_eq!("a.2.3".parse::<Version>(), Err(VersionError::InvalidFormat));
         assert_eq!("1..3".parse::<Version>(), Err(VersionError::InvalidFormat));
-        assert_eq!(
-            "1.2.3.4".parse::<Version>(),
-            Err(VersionError::InvalidFormat)
-        );
+        let long: Result<Version, _> = "1.2.3.4".parse();
+        assert_eq!(long, Err(VersionError::InvalidFormat));
     }
 
     #[test]

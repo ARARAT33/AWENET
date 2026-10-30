@@ -152,7 +152,7 @@ impl QuotaLedger {
         };
         if account.transfers_today >= tier.max_transfers_per_day {
             return Ok(QuotaDecision::Denied {
-                reason: QuotaDenyReason.TransferLimitReached,
+                reason: QuotaDenyReason::TransferLimitReached,
             });
         }
         account.transfers_today += 1;
@@ -199,52 +199,43 @@ mod tests {
         let mut l = QuotaLedger::new();
         assert_eq!(l.set_tier("", 1, 1), Err(QuotaError::EmptyName));
         assert_eq!(l.set_tier("x", 0, 1), Err(QuotaError::ZeroStorageLimit));
-        assert_eq!(
-            l.register("a", "ghost"),
-            Err(QuotaError::UnknownTier("ghost".into()))
-        );
+        let unknown_tier = l.register("a", "ghost");
+        assert_eq!(unknown_tier, Err(QuotaError::UnknownTier("ghost".into())));
         assert_eq!(l.register("", "x"), Err(QuotaError::EmptyName));
         l.set_tier("x", 10, 1).unwrap();
         l.register("a", "x").unwrap();
-        assert_eq!(
-            l.register("a", "x"),
-            Err(QuotaError::DuplicateAccount("a".into()))
-        );
+        let dup = l.register("a", "x");
+        assert_eq!(dup, Err(QuotaError::DuplicateAccount("a".into())));
     }
 
     #[test]
     fn enforces_storage_and_transfers() {
         let mut l = ledger();
+        let first = l.record_storage("alice", 60).unwrap();
+        let allowed = QuotaDecision::Allowed {
+            remaining_storage_bytes: 40,
+        };
+        assert_eq!(first, allowed);
+        let second = l.record_storage("alice", 50).unwrap();
         assert_eq!(
-            l.record_storage("alice", 60),
-            Ok(QuotaDecision::Allowed {
-                remaining_storage_bytes: 40
-            })
-        );
-        assert_eq!(
-            l.record_storage("alice", 50),
-            Ok(QuotaDecision::Denied {
+            second,
+            QuotaDecision::Denied {
                 reason: QuotaDenyReason::StorageExceeded
-            })
-        );
-        assert_eq!(l.usage_percent("alice").unwrap(), 60);
-        assert_eq!(
-            l.record_transfer("alice").unwrap(),
-            QuotaDecision::Allowed {
-                remaining_storage_bytes: 40
             }
         );
+        assert_eq!(l.usage_percent("alice").unwrap(), 60);
+        let transfer = l.record_transfer("alice").unwrap();
+        assert_eq!(transfer, allowed);
         l.record_transfer("alice").unwrap();
+        let denied = l.record_transfer("alice").unwrap();
         assert_eq!(
-            l.record_transfer("alice").unwrap(),
+            denied,
             QuotaDecision::Denied {
                 reason: QuotaDenyReason::TransferLimitReached
             }
         );
-        assert_eq!(
-            l.record_storage("bob", 1),
-            Err(QuotaError::UnknownAccount("bob".into()))
-        );
+        let unknown = l.record_storage("bob", 1);
+        assert_eq!(unknown, Err(QuotaError::UnknownAccount("bob".into())));
     }
 
     #[test]
