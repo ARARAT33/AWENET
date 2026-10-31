@@ -133,7 +133,11 @@ impl AutomationEngine {
 
     /// Evaluates all enabled rules against the gauge values and records the
     /// firing ticks, honouring each rule's cooldown.
-    pub fn evaluate(&mut self, gauges: &BTreeMap<String, f64>, tick: u64) -> Vec<TriggeredAutomation> {
+    pub fn evaluate(
+        &mut self,
+        gauges: &BTreeMap<String, f64>,
+        tick: u64,
+    ) -> Vec<TriggeredAutomation> {
         let fired = self.fireable(gauges, tick);
         for trigger in &fired {
             self.last_fired.insert(trigger.rule.clone(), tick);
@@ -146,7 +150,13 @@ impl AutomationEngine {
 mod tests {
     use super::*;
 
-    fn rule(name: &str, metric: &str, op: ThresholdOp, threshold: f64, cooldown: u64) -> AutomationRule {
+    fn rule(
+        name: &str,
+        metric: &str,
+        op: ThresholdOp,
+        threshold: f64,
+        cooldown: u64,
+    ) -> AutomationRule {
         AutomationRule {
             name: name.into(),
             metric: metric.into(),
@@ -167,7 +177,9 @@ mod tests {
     #[test]
     fn validates_rules() {
         let mut engine = AutomationEngine::new();
-        engine.add_rule(rule("a", "cpu", ThresholdOp::Greater, 80.0, 5)).unwrap();
+        engine
+            .add_rule(rule("a", "cpu", ThresholdOp::Greater, 80.0, 5))
+            .unwrap();
         let dup = engine.add_rule(rule("a", "cpu", ThresholdOp::Greater, 80.0, 5));
         assert_eq!(dup, Err(AutomationError::Duplicate("a".into())));
         let mut empty_name = rule("b", "cpu", ThresholdOp::Greater, 80.0, 5);
@@ -181,7 +193,9 @@ mod tests {
     #[test]
     fn fires_once_then_respects_cooldown() {
         let mut engine = AutomationEngine::new();
-        engine.add_rule(rule("shed", "load", ThresholdOp::Greater, 0.9, 3)).unwrap();
+        engine
+            .add_rule(rule("shed", "load", ThresholdOp::Greater, 0.9, 3))
+            .unwrap();
         let hot = gauges("load", 0.95);
         assert_eq!(engine.evaluate(&hot, 10).len(), 1);
         assert!(engine.evaluate(&hot, 11).is_empty());
@@ -192,7 +206,9 @@ mod tests {
     #[test]
     fn plan_is_a_dry_run() {
         let mut engine = AutomationEngine::new();
-        engine.add_rule(rule("shed", "load", ThresholdOp::Greater, 0.9, 3)).unwrap();
+        engine
+            .add_rule(rule("shed", "load", ThresholdOp::Greater, 0.9, 3))
+            .unwrap();
         let hot = gauges("load", 0.95);
         assert_eq!(engine.plan(&hot, 1).len(), 1);
         assert_eq!(engine.plan(&hot, 1).len(), 1);
@@ -205,7 +221,9 @@ mod tests {
         let mut off = rule("off", "cpu", ThresholdOp::Greater, 10.0, 0);
         off.enabled = false;
         engine.add_rule(off).unwrap();
-        engine.add_rule(rule("gone", "mem", ThresholdOp::Greater, 10.0, 0)).unwrap();
+        engine
+            .add_rule(rule("gone", "mem", ThresholdOp::Greater, 10.0, 0))
+            .unwrap();
         let gauges = gauges("cpu", 99.0);
         assert!(engine.evaluate(&gauges, 1).is_empty());
     }
@@ -213,7 +231,9 @@ mod tests {
     #[test]
     fn serializes_to_json() {
         let mut engine = AutomationEngine::new();
-        engine.add_rule(rule("r", "m", ThresholdOp::Less, 1.0, 2)).unwrap();
+        engine
+            .add_rule(rule("r", "m", ThresholdOp::Less, 1.0, 2))
+            .unwrap();
         let json = serde_json::to_string(&engine).unwrap();
         let back: AutomationEngine = serde_json::from_str(&json).unwrap();
         assert_eq!(back.rule_count(), 1);

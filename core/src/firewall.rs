@@ -116,18 +116,28 @@ mod tests {
     #[test]
     fn validates_rules() {
         let mut fw = Firewall::new(FirewallAction::Allow);
-        fw.add_rule(rule("awehost", FirewallAction::Deny, "blocked prefix")).unwrap();
+        fw.add_rule(rule("awehost", FirewallAction::Deny, "blocked prefix"))
+            .unwrap();
         let dup = fw.add_rule(rule("awehost", FirewallAction::Allow, "dup"));
         assert_eq!(dup, Err(FirewallError::Duplicate("awehost".into())));
-        assert_eq!(fw.add_rule(rule("", FirewallAction::Deny, "x")), Err(FirewallError::EmptyPattern));
+        assert_eq!(
+            fw.add_rule(rule("", FirewallAction::Deny, "x")),
+            Err(FirewallError::EmptyPattern)
+        );
         assert_eq!(fw.rule_count(), 1);
     }
 
     #[test]
     fn first_match_wins() {
         let mut fw = Firewall::new(FirewallAction::Allow);
-        fw.add_rule(rule("awe", FirewallAction::Deny, "wide deny")).unwrap();
-        fw.add_rule(rule("awe-friend", FirewallAction::Allow, "friend exception")).unwrap();
+        fw.add_rule(rule("awe", FirewallAction::Deny, "wide deny"))
+            .unwrap();
+        fw.add_rule(rule(
+            "awe-friend",
+            FirewallAction::Allow,
+            "friend exception",
+        ))
+        .unwrap();
         assert_eq!(fw.check("awe-friend-123"), FirewallDecision::Denied);
         assert_eq!(fw.check("awe-evil"), FirewallDecision::Denied);
         assert_eq!(fw.check("other"), FirewallDecision::Allowed);
@@ -145,7 +155,8 @@ mod tests {
     #[test]
     fn reasons_travel_with_decisions() {
         let mut fw = Firewall::new(FirewallAction::Allow);
-        fw.add_rule(rule("bad", FirewallAction::Deny, "hostile peer")).unwrap();
+        fw.add_rule(rule("bad", FirewallAction::Deny, "hostile peer"))
+            .unwrap();
         let (decision, reason) = fw.check_with_reason("bad-peer");
         assert_eq!(decision, FirewallDecision::Denied);
         assert_eq!(reason.as_deref(), Some("hostile peer"));
@@ -154,7 +165,8 @@ mod tests {
     #[test]
     fn serializes_to_json() {
         let mut fw = Firewall::new(FirewallAction::Deny);
-        fw.add_rule(rule("ok", FirewallAction::Allow, "trusted")).unwrap();
+        fw.add_rule(rule("ok", FirewallAction::Allow, "trusted"))
+            .unwrap();
         let json = serde_json::to_string(&fw).unwrap();
         let back: Firewall = serde_json::from_str(&json).unwrap();
         assert_eq!(back.rule_count(), 1);
