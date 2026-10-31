@@ -24,8 +24,10 @@ pub mod serde_bytes_64 {
 }
 pub mod access;
 pub mod alerts;
+pub mod automation;
 pub mod awenet;
 pub mod backup;
+pub mod cache;
 pub mod calls;
 pub mod canonical;
 pub mod crypto;
@@ -35,6 +37,7 @@ pub mod diagnostics;
 pub mod discovery;
 pub mod events;
 pub mod federation;
+pub mod firewall;
 pub mod governance;
 pub mod host;
 pub mod host_directory;
@@ -64,6 +67,7 @@ pub mod product;
 pub mod product_health;
 pub mod protocol;
 pub mod quota;
+pub mod ratelimit;
 pub mod readiness;
 pub mod recovery;
 pub mod registry;
