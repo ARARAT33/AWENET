@@ -19,12 +19,8 @@ pub struct BucketConfig {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RateDecision {
-    Allowed {
-        tokens_left: u64,
-    },
-    Denied {
-        retry_after_ticks: u64,
-    },
+    Allowed { tokens_left: u64 },
+    Denied { retry_after_ticks: u64 },
 }
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
@@ -93,7 +89,12 @@ impl RateLimiter {
     /// Tries to take `amount` tokens from the key's bucket at the given
     /// tick. New keys start full; denied requests report how many ticks of
     /// refill are needed before the request can succeed.
-    pub fn try_acquire(&mut self, key: &str, amount: u64, tick: u64) -> Result<RateDecision, RateLimitError> {
+    pub fn try_acquire(
+        &mut self,
+        key: &str,
+        amount: u64,
+        tick: u64,
+    ) -> Result<RateDecision, RateLimitError> {
         if amount > self.config.capacity {
             return Err(RateLimitError::AmountTooLarge);
         }
@@ -104,10 +105,7 @@ impl RateLimiter {
             let bucket = TokenBucket::new(self.config, tick);
             self.buckets.insert(key.to_string(), bucket);
         }
-        let bucket = self
-            .buckets
-            .get_mut(key)
-            .expect("bucket was just inserted");
+        let bucket = self.buckets.get_mut(key).expect("bucket was just inserted");
         bucket.advance_to(tick);
         if bucket.tokens >= amount {
             bucket.tokens -= amount;
@@ -119,11 +117,9 @@ impl RateLimiter {
             let retry_after_ticks = if self.config.refill_per_tick == 0 {
                 u64::MAX
             } else {
-                (needed + self.config.refill_per_tick - 1) / self.config.refill_per_tick
+                needed.div_ceil(self.config.refill_per_tick)
             };
-            Ok(RateDecision::Denied {
-                retry_after_ticks,
-            })
+            Ok(RateDecision::Denied { retry_after_ticks })
         }
     }
 }
@@ -134,37 +130,87 @@ mod tests {
 
     #[test]
     fn rejects_zero_capacity() {
-        let err = RateLimiter::new(BucketConfig { capacity: 0, refill_per_tick: 1 });
-        assert_eq!(err, Err(RateLimitError::ZeroCapacity));
+        let err = RateLimiter::new(BucketConfig {
+            capacity: 0,
+            refill_per_tick: 1,
+        });
+        assert!(matches!(err, Err(RateLimitError::ZeroCapacity)));
     }
 
     #[test]
     fn burst_then_deny_then_refill() {
-        let mut limiter = RateLimiter::new(BucketConfig { capacity: 2, refill_per_tick: 1 }).unwrap();
-        assert_eq!(limiter.try_acquire("peer", 1, 0), Ok(RateDecision::Allowed { tokens_left: 1 }));
-        assert_eq!(limiter.try_acquire("peer", 1, 0), Ok(RateDecision::Allowed { tokens_left: 0 }));
-        assert_eq!(limiter.try_acquire("peer", 1, 0), Ok(RateDecision::Denied { retry_after_ticks: 1 }));
-        assert_eq!(limiter.try_acquire("peer", 1, 3), Ok(RateDecision::Allowed { tokens_left: 2 }));
+        let mut limiter = RateLimiter::new(BucketConfig {
+            capacity: 2,
+            refill_per_tick: 1,
+        })
+        .unwrap();
+        assert_eq!(
+            limiter.try_acquire("peer", 1, 0),
+            Ok(RateDecision::Allowed { tokens_left: 1 })
+        );
+        assert_eq!(
+            limiter.try_acquire("peer", 1, 0),
+            Ok(RateDecision::Allowed { tokens_left: 0 })
+        );
+        assert_eq!(
+            limiter.try_acquire("peer", 1, 0),
+            Ok(RateDecision::Denied {
+                retry_after_ticks: 1
+            })
+        );
+        assert_eq!(
+            limiter.try_acquire("peer", 1, 3),
+            Ok(RateDecision::Allowed { tokens_left: 1 })
+        );
     }
 
     #[test]
     fn keys_are_independent() {
-        let mut limiter = RateLimiter::new(BucketConfig { capacity: 1, refill_per_tick: 0 }).unwrap();
-        assert_eq!(limiter.try_acquire("a", 1, 0), Ok(RateDecision::Allowed { tokens_left: 0 }));
-        assert_eq!(limiter.try_acquire("b", 1, 0), Ok(RateDecision::Allowed { tokens_left: 0 }));
+        let mut limiter = RateLimiter::new(BucketConfig {
+            capacity: 1,
+            refill_per_tick: 0,
+        })
+        .unwrap();
+        assert_eq!(
+            limiter.try_acquire("a", 1, 0),
+            Ok(RateDecision::Allowed { tokens_left: 0 })
+        );
+        assert_eq!(
+            limiter.try_acquire("b", 1, 0),
+            Ok(RateDecision::Allowed { tokens_left: 0 })
+        );
         assert_eq!(limiter.tracked_keys(), 2);
     }
 
     #[test]
     fn zero_refill_never_recovers() {
-        let mut limiter = RateLimiter::new(BucketConfig { capacity: 1, refill_per_tick: 0 }).unwrap();
-        assert_eq!(limiter.try_acquire("a", 1, 0), Ok(RateDecision::Allowed { tokens_left: 0 }));
-        assert_eq!(limiter.try_acquire("a", 1, 100), Ok(RateDecision::Denied { retry_after_ticks: u64::MAX }));
+        let mut limiter = RateLimiter::new(BucketConfig {
+            capacity: 1,
+            refill_per_tick: 0,
+        })
+        .unwrap();
+        assert_eq!(
+            limiter.try_acquire("a", 1, 0),
+            Ok(RateDecision::Allowed { tokens_left: 0 })
+        );
+        assert_eq!(
+            limiter.try_acquire("a", 1, 100),
+            Ok(RateDecision::Denied {
+                retry_after_ticks: u64::MAX
+            })
+        );
     }
 
     #[test]
     fn amount_above_capacity_is_invalid() {
-        let mut limiter = RateLimiter::new(BucketConfig { capacity: 1, refill_per_tick: 1 }).unwrap();
-        assert_eq!(limiter.try_acquire("a", 2, 0), Err(RateLimitError::AmountTooLarge));
+        let mut limiter = RateLimiter::new(BucketConfig {
+            capacity: 1,
+            refill_per_tick: 1,
+        })
+        .unwrap();
+        assert_eq!(
+            limiter.try_acquire("a", 2, 0),
+            Err(RateLimitError::AmountTooLarge)
+        );
     }
 }

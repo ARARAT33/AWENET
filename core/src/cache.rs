@@ -17,6 +17,7 @@ pub enum CacheError {
     CapacityTooLarge,
 }
 
+#[derive(Debug)]
 pub struct LruCache<K: Ord + Clone, V: Clone> {
     capacity: usize,
     map: BTreeMap<K, V>,
@@ -104,7 +105,10 @@ mod tests {
 
     #[test]
     fn validates_capacity() {
-        assert_eq!(LruCache::<String, String>::new(0).unwrap_err(), CacheError::ZeroCapacity);
+        assert_eq!(
+            LruCache::<String, String>::new(0).unwrap_err(),
+            CacheError::ZeroCapacity
+        );
         assert_eq!(
             LruCache::<String, String>::new(MAX_CAPACITY + 1).unwrap_err(),
             CacheError::CapacityTooLarge
