@@ -189,7 +189,7 @@ mod tests {
             change("a", 1, 1, "node-a"),
             change("a", 2, 2, "node-b"),
             change("b", 3, 5, "node-a"),
-            change("b", 4, 5, "node-a"),
+            change("b", 4, 5, "node-b"),
         ];
         let mut forward = StateStore::new();
         let mut backward = StateStore::new();

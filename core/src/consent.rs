@@ -47,7 +47,7 @@ pub struct LogEntry {
 /// Bounded consent ledger with an ordered audit log.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ConsentLedger {
-    grants: BTreeMap<(String, String), Grant>,
+    grants: BTreeMap<String, Grant>,
     log: VecDeque<LogEntry>,
 }
 
@@ -72,12 +72,12 @@ impl ConsentLedger {
         if subject.is_empty() || scope.is_empty() {
             return Err(ConsentError::EmptyKey);
         }
-        let key = (subject.to_string(), scope.to_string());
-        if !self.grants.contains_key(&key) && self.grants.len() >= MAX_GRANTS {
+        if !self.grants.contains_key(&grant_key(subject, scope)) && self.grants.len() >= MAX_GRANTS
+        {
             return Err(ConsentError::LedgerFull);
         }
         self.grants.insert(
-            (subject.to_string(), scope.to_string()),
+            grant_key(subject, scope),
             Grant {
                 subject: subject.to_string(),
                 scope: scope.to_string(),
@@ -100,15 +100,14 @@ impl ConsentLedger {
         if subject.is_empty() || scope.is_empty() {
             return Err(ConsentError::EmptyKey);
         }
-        self.grants
-            .remove(&(subject.to_string(), scope.to_string()));
+        self.grants.remove(&grant_key(subject, scope));
         self.push_log(ConsentAction::Revoke, subject, scope, now_tick);
         Ok(())
     }
 
     /// True when the subject has a non-expired grant for the scope.
     pub fn is_allowed(&self, subject: &str, scope: &str, now_tick: u64) -> bool {
-        match self.grants.get(&(subject.to_string(), scope.to_string())) {
+        match self.grants.get(&grant_key(subject, scope)) {
             Some(g) => match g.expires_tick {
                 Some(expiry) => now_tick < expiry,
                 None => true,
@@ -118,12 +117,12 @@ impl ConsentLedger {
     }
 
     pub fn get(&self, subject: &str, scope: &str) -> Option<&Grant> {
-        self.grants.get(&(subject.to_string(), scope.to_string()))
+        self.grants.get(&grant_key(subject, scope))
     }
 
     /// Removes every grant that has expired by `now_tick`.
     pub fn sweep(&mut self, now_tick: u64) -> usize {
-        let expired: Vec<(String, String)> = self
+        let expired: Vec<String> = self
             .grants
             .iter()
             .filter(|(_, g)| g.expires_tick.is_some_and(|e| now_tick >= e))
@@ -154,9 +153,9 @@ impl ConsentLedger {
     /// Scopes a subject currently allows, sorted for stable output.
     pub fn scopes_for(&self, subject: &str) -> Vec<String> {
         self.grants
-            .keys()
-            .filter(|(s, _)| s == subject)
-            .map(|(_, scope)| scope.clone())
+            .values()
+            .filter(|grant| grant.subject == subject)
+            .map(|grant| grant.scope.clone())
             .collect()
     }
 
@@ -171,6 +170,10 @@ impl ConsentLedger {
             self.log.pop_front();
         }
     }
+}
+
+fn grant_key(subject: &str, scope: &str) -> String {
+    format!("{}:{}{}", subject.len(), subject, scope)
 }
 
 impl Default for ConsentLedger {
