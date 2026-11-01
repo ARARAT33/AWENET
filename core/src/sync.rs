@@ -66,14 +66,12 @@ impl<V: Clone> StateStore<V> {
         if change.key.is_empty() || change.writer.is_empty() {
             return Err(SyncError::EmptyKey);
         }
-        match self.entries.get(&change.key) {
-            Some(existing)
-                if !loses_to(existing, &change) =>
-            {
+        if let Some(existing) = self.entries.get(&change.key) {
+            if !loses_to(existing, &change) {
                 return Ok(ApplyOutcome::IgnoredStale);
             }
-            None if self.entries.len() >= MAX_KEYS => return Err(SyncError::StoreFull),
-            _ => {}
+        } else if self.entries.len() >= MAX_KEYS {
+            return Err(SyncError::StoreFull);
         }
         self.entries.insert(
             change.key,
@@ -166,10 +164,7 @@ mod tests {
         // A higher writer id loses the same tie.
         let mut other = StateStore::new();
         other.apply(change("k", 7, 3, "node-a")).unwrap();
-        assert_eq!(
-            other.apply(change("k", 9, 3, "node-b")).unwrap(),
-            ApplyOutcome::IgnoredStale
-        );
+        assert_eq!(other.apply(change("k", 9, 3, "node-b")).unwrap(), ApplyOutcome::IgnoredStale);
         assert_eq!(other.get("k").unwrap().value, 7);
     }
 
@@ -210,14 +205,8 @@ mod tests {
     #[test]
     fn validates_keys_and_bounds() {
         let mut store = StateStore::new();
-        assert_eq!(
-            store.apply(change("", 1, 1, "a")).unwrap_err(),
-            SyncError::EmptyKey
-        );
-        assert_eq!(
-            store.apply(change("k", 1, 1, "")).unwrap_err(),
-            SyncError::EmptyKey
-        );
+        assert_eq!(store.apply(change("", 1, 1, "a")).unwrap_err(), SyncError::EmptyKey);
+        assert_eq!(store.apply(change("k", 1, 1, "")).unwrap_err(), SyncError::EmptyKey);
     }
 
     #[test]

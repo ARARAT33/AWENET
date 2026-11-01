@@ -72,7 +72,9 @@ impl ConsentLedger {
         if subject.is_empty() || scope.is_empty() {
             return Err(ConsentError::EmptyKey);
         }
-        if !self.grants.contains_key(&(subject.to_string(), scope.to_string()))
+        if !self
+            .grants
+            .contains_key(&(subject.to_string(), scope.to_string()))
             && self.grants.len() >= MAX_GRANTS
         {
             return Err(ConsentError::LedgerFull);
@@ -92,7 +94,12 @@ impl ConsentLedger {
 
     /// Revokes consent for a subject and scope. Revoking an unknown grant
     /// is a no-op that is still logged, so the audit trail stays truthful.
-    pub fn revoke(&mut self, subject: &str, scope: &str, now_tick: u64) -> Result<(), ConsentError> {
+    pub fn revoke(
+        &mut self,
+        subject: &str,
+        scope: &str,
+        now_tick: u64,
+    ) -> Result<(), ConsentError> {
         if subject.is_empty() || scope.is_empty() {
             return Err(ConsentError::EmptyKey);
         }
@@ -185,7 +192,10 @@ mod tests {
         assert!(ledger.is_allowed("ararat", "profile.public", 100));
         assert!(!ledger.is_allowed("ararat", "profile.private", 100));
         assert!(!ledger.is_allowed("guest", "profile.public", 100));
-        assert_eq!(ledger.scopes_for("ararat"), vec!["profile.public".to_string()]);
+        assert_eq!(
+            ledger.scopes_for("ararat"),
+            vec!["profile.public".to_string()]
+        );
     }
 
     #[test]

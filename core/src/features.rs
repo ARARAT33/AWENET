@@ -211,11 +211,10 @@ mod tests {
         assert!(enabled > 0 && enabled < 200, "enabled = {enabled}");
         // Widening the rollout never removes a subject from the enabled set.
         flags.set_rollout("f", 60).unwrap();
-        for i in 0..200 {
-            if flags.is_enabled("f", &format!("s{i}")).unwrap() {
-                assert!(i < 200);
-            }
-        }
+        let wider: usize = (0..200)
+            .filter(|i| flags.is_enabled("f", &format!("s{i}")).unwrap())
+            .count();
+        assert!(wider >= enabled);
     }
 
     #[test]
