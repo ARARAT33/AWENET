@@ -146,9 +146,18 @@ mod tests {
     #[test]
     fn applies_changes_in_order() {
         let mut store = StateStore::new();
-        assert_eq!(store.apply(change("k", 1, 1, "a")).unwrap(), ApplyOutcome::Applied);
-        assert_eq!(store.apply(change("k", 2, 2, "a")).unwrap(), ApplyOutcome::Applied);
-        assert_eq!(store.apply(change("k", 1, 1, "b")).unwrap(), ApplyOutcome::IgnoredStale);
+        assert_eq!(
+            store.apply(change("k", 1, 1, "a")).unwrap(),
+            ApplyOutcome::Applied
+        );
+        assert_eq!(
+            store.apply(change("k", 2, 2, "a")).unwrap(),
+            ApplyOutcome::Applied
+        );
+        assert_eq!(
+            store.apply(change("k", 1, 1, "b")).unwrap(),
+            ApplyOutcome::IgnoredStale
+        );
         assert_eq!(store.get("k").unwrap().value, 2);
         assert_eq!(store.get("k").unwrap().version, 2);
     }
@@ -158,13 +167,19 @@ mod tests {
         let mut store = StateStore::new();
         store.apply(change("k", 5, 3, "node-b")).unwrap();
         // Lower writer id wins the tie, regardless of arrival order.
-        assert_eq!(store.apply(change("k", 7, 3, "node-a")).unwrap(), ApplyOutcome::Applied);
+        assert_eq!(
+            store.apply(change("k", 7, 3, "node-a")).unwrap(),
+            ApplyOutcome::Applied
+        );
         assert_eq!(store.get("k").unwrap().value, 7);
         assert_eq!(store.get("k").unwrap().writer, "node-a");
         // A higher writer id loses the same tie.
         let mut other = StateStore::new();
         other.apply(change("k", 7, 3, "node-a")).unwrap();
-        assert_eq!(other.apply(change("k", 9, 3, "node-b")).unwrap(), ApplyOutcome::IgnoredStale);
+        assert_eq!(
+            other.apply(change("k", 9, 3, "node-b")).unwrap(),
+            ApplyOutcome::IgnoredStale
+        );
         assert_eq!(other.get("k").unwrap().value, 7);
     }
 
@@ -184,9 +199,15 @@ mod tests {
         for c in changes.iter().rev() {
             backward.apply(c.clone()).unwrap();
         }
-        assert_eq!(forward.get("a").unwrap().value, backward.get("a").unwrap().value);
+        assert_eq!(
+            forward.get("a").unwrap().value,
+            backward.get("a").unwrap().value
+        );
         assert_eq!(forward.get("a").unwrap().version, 2);
-        assert_eq!(forward.get("b").unwrap().value, backward.get("b").unwrap().value);
+        assert_eq!(
+            forward.get("b").unwrap().value,
+            backward.get("b").unwrap().value
+        );
         assert_eq!(forward.get("b").unwrap().version, 5);
     }
 
@@ -205,8 +226,14 @@ mod tests {
     #[test]
     fn validates_keys_and_bounds() {
         let mut store = StateStore::new();
-        assert_eq!(store.apply(change("", 1, 1, "a")).unwrap_err(), SyncError::EmptyKey);
-        assert_eq!(store.apply(change("k", 1, 1, "")).unwrap_err(), SyncError::EmptyKey);
+        assert_eq!(
+            store.apply(change("", 1, 1, "a")).unwrap_err(),
+            SyncError::EmptyKey
+        );
+        assert_eq!(
+            store.apply(change("k", 1, 1, "")).unwrap_err(),
+            SyncError::EmptyKey
+        );
     }
 
     #[test]

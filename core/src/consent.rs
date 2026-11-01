@@ -100,7 +100,8 @@ impl ConsentLedger {
         if subject.is_empty() || scope.is_empty() {
             return Err(ConsentError::EmptyKey);
         }
-        self.grants.remove(&(subject.to_string(), scope.to_string()));
+        self.grants
+            .remove(&(subject.to_string(), scope.to_string()));
         self.push_log(ConsentAction::Revoke, subject, scope, now_tick);
         Ok(())
     }
@@ -256,7 +257,9 @@ mod tests {
     #[test]
     fn serializes_to_json() {
         let mut ledger = ConsentLedger::new();
-        ledger.grant("ararat", "profile.public", 1, Some(50)).unwrap();
+        ledger
+            .grant("ararat", "profile.public", 1, Some(50))
+            .unwrap();
         let json = serde_json::to_string(&ledger).unwrap();
         let back: ConsentLedger = serde_json::from_str(&json).unwrap();
         assert_eq!(back.len(), 1);
