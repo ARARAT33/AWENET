@@ -33,6 +33,7 @@ while exposing a small, stable product orchestration model on top.
 | Observability & automation | `events`, `metrics`, `scheduler`, `search` | Bounded audit event log, counters/gauges/p95 latency samples, tick-driven maintenance jobs, local resource search |
 | Node platform services | `alerts`, `backup`, `notifications`, `quota`, `i18n`, `update` | Threshold alerts, backup/restore planning, bounded notifications, quota accounting, bilingual (en/hy) UI strings, version & upgrade policy |
 | Smart node services | `automation`, `ratelimit`, `firewall`, `cache` | Metric-driven automation with cooldowns and dry-run, keyed token-bucket limiting, prefix-based peer firewall, bounded LRU cache |
+| Trust & lifecycle services | `sessions`, `consent`, `features`, `sync` | Authenticated sessions with tick TTL and revocation, consent ledger with expiry and audit log, deterministic feature flags, coordinator-free LWW state sync |
 | Identity & security | `identity`, `security`, `crypto`, `defense`, `sandbox` | Ed25519 identity, authenticated encrypted transport, hostile-traffic limits |
 | Discovery & routing | `discovery`, `routing`, `network_topology`, `lan_mesh` | DHT-style lookup, Data Centre topology, relay failover, LAN mesh |
 | Data plane | `data_plane`, `storage`, `replication`, `repair`, `recovery` | Chunked content-addressed storage, replica placement, repair planning |
@@ -129,6 +130,17 @@ Four deterministic core modules give the node self-managing behaviour:
 reasons) and `cache.rs` (bounded LRU cache with deterministic eviction). See
 [docs/SMART-SERVICES-UPGRADE-2026-10-31.md](docs/SMART-SERVICES-UPGRADE-2026-10-31.md).
 
+## Trust & lifecycle services
+
+Four deterministic core modules give the node a trust and lifecycle plane:
+`sessions.rs` (bounded authenticated sessions with explicit-tick TTL,
+revocation and typed states), `consent.rs` (per-(subject, scope) consent
+grants with expiry, revocation and an ordered audit log), `features.rs`
+(deterministic feature flags with kill switches and stable hash-bucketed
+rollouts) and `sync.rs` (coordinator-free last-writer-wins state sync that
+converges from any apply order). See
+[docs/TRUST-LIFECYCLE-UPGRADE-2026-11-01.md](docs/TRUST-LIFECYCLE-UPGRADE-2026-11-01.md).
+
 ## Important status rule
 
 A source module or UI screen is not proof of end-to-end functionality.
@@ -152,6 +164,7 @@ model is in [docs/PRODUCT-ARCHITECTURE.md](docs/PRODUCT-ARCHITECTURE.md) and
 - [Observability & automation upgrade](docs/OBSERVABILITY-UPGRADE-2026-10.md)
 - [Node platform services upgrade](docs/PLATFORM-UPGRADE-2026-10-30.md)
 - [Smart node services upgrade](docs/SMART-SERVICES-UPGRADE-2026-10-31.md)
+- [Trust & lifecycle services upgrade](docs/TRUST-LIFECYCLE-UPGRADE-2026-11-01.md)
 
 ## Security
 
