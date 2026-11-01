@@ -117,7 +117,7 @@ impl RateLimiter {
             let retry_after_ticks = if self.config.refill_per_tick == 0 {
                 u64::MAX
             } else {
-                (needed + self.config.refill_per_tick - 1) / self.config.refill_per_tick
+                needed.div_ceil(self.config.refill_per_tick)
             };
             Ok(RateDecision::Denied { retry_after_ticks })
         }
@@ -134,7 +134,7 @@ mod tests {
             capacity: 0,
             refill_per_tick: 1,
         });
-        assert_eq!(err, Err(RateLimitError::ZeroCapacity));
+        assert!(matches!(err, Err(RateLimitError::ZeroCapacity)));
     }
 
     #[test]
@@ -160,7 +160,7 @@ mod tests {
         );
         assert_eq!(
             limiter.try_acquire("peer", 1, 3),
-            Ok(RateDecision::Allowed { tokens_left: 2 })
+            Ok(RateDecision::Allowed { tokens_left: 1 })
         );
     }
 

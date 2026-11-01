@@ -87,4 +87,5 @@ pub mod storage;
 pub mod store;
 pub mod supervisor;
 pub mod sync;
+pub mod trust;
 pub mod update;
