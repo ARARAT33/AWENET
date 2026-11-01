@@ -72,11 +72,8 @@ impl ConsentLedger {
         if subject.is_empty() || scope.is_empty() {
             return Err(ConsentError::EmptyKey);
         }
-        if !self
-            .grants
-            .contains_key(&(subject.to_string(), scope.to_string()))
-            && self.grants.len() >= MAX_GRANTS
-        {
+        let key = (subject.to_string(), scope.to_string());
+        if !self.grants.contains_key(&key) && self.grants.len() >= MAX_GRANTS {
             return Err(ConsentError::LedgerFull);
         }
         self.grants.insert(
