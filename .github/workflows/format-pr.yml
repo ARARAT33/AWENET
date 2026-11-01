@@ -1,0 +1,46 @@
+name: Format PR branch
+# Keeps every same-repo pull request rustfmt-clean by running the real
+# rustfmt and pushing the formatting fix to the PR head branch. The
+# main-branch formatter in format.yml only fixes pushes to main; this
+# closes the gap for PR branches.
+
+concurrency:
+  group: format-pr-${{ github.event.pull_request.head.ref }}
+  cancel-in-progress: true
+
+on:
+  pull_request:
+    paths:
+      - '**/*.rs'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+
+permissions:
+  contents: write
+
+jobs:
+  rustfmt-pr:
+    # Fork PRs cannot be pushed to with the default token.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.head_ref }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Format Rust workspace
+        run: cargo fmt --all
+      - name: Push formatting to the PR branch
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo "Rust workspace already formatted."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- '*.rs' Cargo.toml Cargo.lock
+          git commit -m "style: format Rust workspace"
+          git push

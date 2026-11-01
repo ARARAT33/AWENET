@@ -212,7 +212,7 @@ mod tests {
         let hot = gauges("load", 0.95);
         assert_eq!(engine.plan(&hot, 1).len(), 1);
         assert_eq!(engine.plan(&hot, 1).len(), 1);
-        assert!(engine.evaluate(&hot, 1).is_empty() == false);
+        assert!(!engine.evaluate(&hot, 1).is_empty());
     }
 
     #[test]
