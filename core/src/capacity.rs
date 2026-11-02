@@ -126,7 +126,10 @@ mod tests {
 
     #[test]
     fn validates_config() {
-        assert_eq!(CapacityConfig::new(0).unwrap_err(), CapacityError::ZeroLimit);
+        assert_eq!(
+            CapacityConfig::new(0).unwrap_err(),
+            CapacityError::ZeroLimit
+        );
         let config = CapacityConfig::new(100).unwrap();
         assert_eq!(
             config.with_growth(101).unwrap_err(),

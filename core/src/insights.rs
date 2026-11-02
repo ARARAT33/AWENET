@@ -110,10 +110,7 @@ impl Insights {
                 },
             );
         }
-        let series = self
-            .series
-            .get_mut(name)
-            .expect("series was just inserted");
+        let series = self.series.get_mut(name).expect("series was just inserted");
         let anomaly = Self::anomaly_of(name, tick, value, series);
         series.samples.push_back(Sample { tick, value });
         if series.samples.len() > self.window {
