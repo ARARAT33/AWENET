@@ -24,12 +24,15 @@ pub mod serde_bytes_64 {
 }
 pub mod access;
 pub mod alerts;
+pub mod archiver;
 pub mod automation;
 pub mod awenet;
 pub mod backup;
 pub mod cache;
+pub mod capacity;
 pub mod calls;
 pub mod canonical;
+pub mod circuit;
 pub mod consent;
 pub mod crypto;
 pub mod data_plane;
@@ -45,6 +48,8 @@ pub mod host;
 pub mod host_directory;
 pub mod i18n;
 pub mod identity;
+pub mod insights;
+pub mod journal;
 pub mod lan_mesh;
 pub mod limits;
 pub mod messenger;
