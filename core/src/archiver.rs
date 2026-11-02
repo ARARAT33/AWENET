@@ -153,11 +153,7 @@ mod tests {
     #[test]
     fn deterministic_order_and_empty_input() {
         let policy = RetentionPolicy::new(0, 0, 1_000);
-        let records = vec![
-            record("z", 10, 5),
-            record("a", 10, 5),
-            record("m", 10, 5),
-        ];
+        let records = vec![record("z", 10, 5), record("a", 10, 5), record("m", 10, 5)];
         let plan = plan(&records, &policy);
         assert_eq!(plan.archive, vec!["a", "m", "z"]);
         assert_eq!(plan.archived_bytes, 15);

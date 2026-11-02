@@ -117,10 +117,7 @@ mod tests {
 
     #[test]
     fn validates_capacity() {
-        assert_eq!(
-            Journal::new(0).unwrap_err(),
-            JournalError::ZeroCapacity
-        );
+        assert_eq!(Journal::new(0).unwrap_err(), JournalError::ZeroCapacity);
         assert_eq!(
             Journal::new(MAX_CAPACITY + 1).unwrap_err(),
             JournalError::CapacityTooLarge
