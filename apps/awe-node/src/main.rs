@@ -555,7 +555,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                             if state.emergency.ensure_login_allowed().is_err() {
                                 ("423 Locked", "application/json; charset=utf-8", serde_json::json!({"authenticated":false,"error":"founder_account_locked"}).to_string())
                             } else {
-                                match state.login.validate_session(&state.devices, &token, now_unix()) {
+                                match state.authorize_founder_session(&token, now_unix()) {
                                     Ok(device_id) => ("200 OK", "application/json; charset=utf-8", serde_json::json!({"authenticated":true,"username":FOUNDER_USERNAME,"founder_awe_id":state.founder_id(),"device_id":hex::encode(device_id)}).to_string()),
                                     Err(_) => ("401 Unauthorized", "application/json; charset=utf-8", serde_json::json!({"authenticated":false,"error":"invalid_or_expired_session"}).to_string())
                                 }
