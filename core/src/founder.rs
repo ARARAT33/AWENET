@@ -110,6 +110,8 @@ pub enum FounderError {
     InvalidDeviceProof,
     #[error("device is unknown or blocked")]
     DeviceBlocked,
+    #[error("the last approved founder device cannot be blocked")]
+    LastApprovedDevice,
     #[error("governance sequence is invalid")]
     InvalidSequence,
     #[error("governance signature or immutable rules are invalid")]
@@ -506,6 +508,12 @@ impl FounderDevices {
             &Signature::from_bytes(&signature),
         )
         .map_err(|_| FounderError::InvalidApproval)?;
+        if blocked
+            && self.approved_devices().len() <= 1
+            && self.devices.get(&hex::encode(device)).is_some_and(|record| !record.blocked)
+        {
+            return Err(FounderError::LastApprovedDevice);
+        }
         let record = self
             .devices
             .get_mut(&hex::encode(device))
@@ -899,6 +907,23 @@ mod tests {
             .all(|d| d.device_id != target));
         fs::remove_file(p).unwrap();
     }
+    #[test]
+    fn last_approved_device_cannot_be_blocked() {
+        let p = path("last-device");
+        let id = founder();
+        let (s, d) = bootstrap();
+        let g = FounderGenesis::initialize_once(&p, &id, &s, d, FounderRules::default()).unwrap();
+        let mut devices = FounderDevices::new(&g, "Founder phone").unwrap();
+        let founder_device = device_id(&id.public.public_key);
+        let signature = id.sign(&device_control_message(founder_device, true, 1));
+        assert_eq!(
+            devices.block_device(founder_device, true, founder_device, 1, signature),
+            Err(FounderError::LastApprovedDevice)
+        );
+        assert_eq!(devices.approved_devices().len(), 1);
+        fs::remove_file(p).unwrap();
+    }
+
     #[test]
     fn governance_updates_are_signed_and_chained() {
         let p = path("rules");
