@@ -257,9 +257,7 @@ fn fingerprint(secret: &str) -> Result<String, KeyError> {
     let material = secret
         .strip_prefix(KEY_PREFIX)
         .ok_or(KeyError::InvalidFormat)?;
-    if material.len() != KEY_BYTES * 2
-        || !material.bytes().all(|byte| byte.is_ascii_hexdigit())
-    {
+    if material.len() != KEY_BYTES * 2 || !material.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(KeyError::InvalidFormat);
     }
 
