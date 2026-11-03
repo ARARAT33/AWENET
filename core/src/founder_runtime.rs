@@ -305,11 +305,17 @@ mod tests {
             digest,
             "Founder device",
             FounderRules::default(),
-        ).unwrap();
+        )
+        .unwrap();
         let mut stale = FounderPersistentState::load(&directory).unwrap();
         current.save(&founder).unwrap();
         assert!(stale.save(&founder).is_err());
-        assert_eq!(FounderPersistentState::load(&directory).unwrap().snapshot_sequence(), 2);
+        assert_eq!(
+            FounderPersistentState::load(&directory)
+                .unwrap()
+                .snapshot_sequence(),
+            2
+        );
         fs::remove_dir_all(directory).unwrap();
     }
 
