@@ -920,9 +920,12 @@ mod tests {
         let id = founder();
         let (s, d) = bootstrap();
         let first_device = Identity::generate(Username::new("founder-device").unwrap());
-        let mut rules = FounderRules::default();
-        rules.device_approval_policy =
-            DeviceApprovalPolicy::SelectedDevices(vec![device_id(&first_device.public.public_key)]);
+        let rules = FounderRules {
+            device_approval_policy: DeviceApprovalPolicy::SelectedDevices(vec![device_id(
+                &first_device.public.public_key,
+            )]),
+            ..FounderRules::default()
+        };
         let g =
             FounderGenesis::initialize_once(&p, &id, first_device.public.public_key, &s, d, rules)
                 .unwrap();
