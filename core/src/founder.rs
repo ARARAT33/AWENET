@@ -784,7 +784,7 @@ mod tests {
         let p = path("tamper");
         let id = founder();
         let (s, d) = bootstrap();
-        let mut g = test_genesis(&p, &id, &s, d, FounderRules::default()).unwrap();
+        let (mut g, _first_device) = test_genesis(&p, &id, &s, d, FounderRules::default()).unwrap();
         g.payload.rules.community_votes_can_replace_founder = true;
         assert_eq!(g.verify(), Err(FounderError::InvalidGenesis));
         fs::remove_file(p).unwrap();
