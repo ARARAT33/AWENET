@@ -21,7 +21,7 @@ use std::{
 };
 use thiserror::Error;
 
-const SNAPSHOT_DOMAIN: &[u8] = b"AWENET/FOUNDER-STATE-SNAPSHOT/v1\\0";
+const SNAPSHOT_DOMAIN: &[u8] = b"AWENET/FOUNDER-STATE-SNAPSHOT/v2\0";
 const MAX_SNAPSHOT_BYTES: u64 = 16 * 1024 * 1024;
 
 #[derive(Debug, Error)]
@@ -38,6 +38,8 @@ pub enum FounderStateError {
     Storage(String),
     #[error(transparent)]
     Genesis(#[from] FounderError),
+    #[error("founder authorization rejected: {0}")]
+    Authorization(String),
     #[error("Neter registry could not be initialized")]
     NeterRegistry,
 }
@@ -46,7 +48,6 @@ pub enum FounderStateError {
 struct FounderSnapshotPayload {
     sequence: u64,
     devices: FounderDevices,
-    login: FounderLogin,
     neters: NeterRegistry,
     emergency: FounderEmergencyLock,
 }
@@ -137,7 +138,7 @@ impl FounderPersistentState {
                 return Ok(Self {
                     genesis,
                     devices: snapshot.payload.devices,
-                    login: snapshot.payload.login,
+                    login: FounderLogin::new(),
                     neters: snapshot.payload.neters,
                     emergency: snapshot.payload.emergency,
                     sequence,
@@ -160,7 +161,6 @@ impl FounderPersistentState {
         let payload = FounderSnapshotPayload {
             sequence,
             devices: self.devices.clone(),
-            login: self.login.clone(),
             neters: self.neters.clone(),
             emergency: self.emergency.clone(),
         };
@@ -176,6 +176,34 @@ impl FounderPersistentState {
         write_new_snapshot(&final_path, &bytes)?;
         self.sequence = sequence;
         Ok(sequence)
+    }
+
+    /// Validate a founder session and the account emergency lock in one shared guard.
+    /// All founder-only handlers must call this before performing protected work.
+    pub fn authorize_founder_session(
+        &self,
+        token: &[u8; 32],
+        now: u64,
+    ) -> Result<[u8; 32], FounderStateError> {
+        self.emergency
+            .ensure_login_allowed()
+            .map_err(|error| FounderStateError::Authorization(error.to_string()))?;
+        self.login
+            .validate_session(&self.devices, token, now)
+            .map_err(|error| FounderStateError::Authorization(error.to_string()))
+    }
+
+    /// Governance operations must pass both the session guard and governance lock.
+    pub fn authorize_governance_session(
+        &self,
+        token: &[u8; 32],
+        now: u64,
+    ) -> Result<[u8; 32], FounderStateError> {
+        let device_id = self.authorize_founder_session(token, now)?;
+        self.emergency
+            .ensure_governance_allowed()
+            .map_err(|error| FounderStateError::Authorization(error.to_string()))?;
+        Ok(device_id)
     }
 
     pub fn snapshot_sequence(&self) -> u64 {
