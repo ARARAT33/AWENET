@@ -454,8 +454,11 @@ impl FounderDevices {
         );
         Ok(())
     }
-    pub fn request_was_denied(&self, request_id: &[u8; 32]) -> bool {
-        self.denied.contains_key(&hex::encode(request_id))
+    pub fn device_was_denied(&self, public_key: &[u8; 32]) -> bool {
+        let target = device_id(public_key);
+        self.audit.iter().any(|entry| {
+            entry.action == "device_denied" && entry.target_device == Some(target)
+        })
     }
 
     pub fn audit(&self) -> impl Iterator<Item = &FounderAuditRecord> {
