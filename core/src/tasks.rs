@@ -72,6 +72,7 @@ pub struct TaskStats {
     pub cancelled: usize,
 }
 
+#[derive(Debug)]
 pub struct TaskQueue {
     max_tasks: usize,
     next_id: u64,
@@ -139,7 +140,7 @@ impl TaskQueue {
     pub fn next_ready(&self, now: u64) -> Option<&Task> {
         self.tasks
             .values()
-            .filter(|task| task.state == TaskState::Pending && !self.expired(task, now))
+            .filter(|task| task.state == TaskState::Pending && !Self::expired(task, now))
             .max_by(|a, b| a.priority.cmp(&b.priority).then(b.id.cmp(&a.id)))
     }
 
@@ -149,7 +150,7 @@ impl TaskQueue {
         if task.state != TaskState::Pending {
             return Err(TaskError::NotPending(id));
         }
-        if self.expired(task, now) {
+        if Self::expired(task, now) {
             task.state = TaskState::Failed;
             return Err(TaskError::NotPending(id));
         }
@@ -199,7 +200,7 @@ impl TaskQueue {
     pub fn expire(&mut self, now: u64) -> Vec<u64> {
         let mut expired = Vec::new();
         for task in self.tasks.values_mut() {
-            if task.state == TaskState::Pending && self.expired(task, now) {
+            if task.state == TaskState::Pending && Self::expired(task, now) {
                 task.state = TaskState::Failed;
                 expired.push(task.id);
             }
@@ -221,7 +222,7 @@ impl TaskQueue {
         stats
     }
 
-    fn expired(&self, task: &Task, now: u64) -> bool {
+    fn expired(task: &Task, now: u64) -> bool {
         matches!(task.deadline_tick, Some(deadline) if deadline <= now)
     }
 }
@@ -319,7 +320,7 @@ mod tests {
         let id_alive = queue
             .submit("ok", Priority::Normal, 0, Some(100), 3)
             .unwrap();
-        assert!(queue.next_ready(10).is_none());
+        assert_eq!(queue.next_ready(10).unwrap().id, id_alive);
         assert_eq!(queue.expire(10), vec![id]);
         assert_eq!(queue.get(id).unwrap().state, TaskState::Failed);
         assert_eq!(queue.get(id_alive).unwrap().state, TaskState::Pending);
