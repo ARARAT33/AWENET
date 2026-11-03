@@ -344,28 +344,25 @@ mod tests {
             digest,
             "Founder device",
             FounderRules::default(),
-        ).unwrap();
+        )
+        .unwrap();
         let devices = state.devices.clone();
         let emergency = state.emergency.clone();
         let device_id = devices.approved_devices()[0].device_id;
-        let challenge = state.login.request_challenge_guarded(
-            &devices,
-            &emergency,
-            device_id,
-            100,
-            60,
-        ).unwrap();
+        let challenge = state
+            .login
+            .request_challenge_guarded(&devices, &emergency, device_id, 100, 60)
+            .unwrap();
         let signature = device.sign(&login_message(&challenge));
-        let session = state.login.complete_login(
-            &devices,
-            challenge.challenge_id,
-            signature,
-            101,
-            600,
-        ).unwrap();
+        let session = state
+            .login
+            .complete_login(&devices, challenge.challenge_id, signature, 101, 600)
+            .unwrap();
         state.save(&founder).unwrap();
         let loaded = FounderPersistentState::load(&directory).unwrap();
-        assert!(loaded.authorize_founder_session(&session.token, 102).is_err());
+        assert!(loaded
+            .authorize_founder_session(&session.token, 102)
+            .is_err());
         fs::remove_dir_all(directory).unwrap();
     }
 
