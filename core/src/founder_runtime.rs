@@ -233,10 +233,14 @@ fn write_new_snapshot(path: &Path, bytes: &[u8]) -> Result<(), FounderStateError
         return Err(storage_error(error));
     }
     drop(file);
-    if let Err(error) = fs::rename(&temp_path, path) {
+    // hard_link is an atomic no-overwrite publication on supported local
+    // filesystems. A stale concurrent writer cannot replace an existing
+    // sequence number with an older snapshot.
+    if let Err(error) = fs::hard_link(&temp_path, path) {
         let _ = fs::remove_file(&temp_path);
         return Err(storage_error(error));
     }
+    let _ = fs::remove_file(&temp_path);
     #[cfg(unix)]
     if let Ok(directory) = OpenOptions::new().read(true).open(parent) {
         let _ = directory.sync_all();
@@ -283,6 +287,29 @@ mod tests {
         assert_eq!(loaded.snapshot_sequence(), 2);
         assert_eq!(loaded.founder_id(), founder.public.awe_id.to_hex());
         assert_eq!(loaded.devices.approved_devices().len(), 1);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn stale_writer_cannot_overwrite_an_existing_snapshot_sequence() {
+        let directory = temporary_directory();
+        let founder = Identity::generate(Username::new("AWENeter").unwrap());
+        let device = Identity::generate(Username::new("founder-device").unwrap());
+        let secret = [0x3Cu8; 48];
+        let digest = crate::founder::bootstrap_digest(&secret);
+        let mut current = FounderPersistentState::initialize(
+            &directory,
+            &founder,
+            device.public.public_key,
+            &secret,
+            digest,
+            "Founder device",
+            FounderRules::default(),
+        ).unwrap();
+        let mut stale = FounderPersistentState::load(&directory).unwrap();
+        current.save(&founder).unwrap();
+        assert!(stale.save(&founder).is_err());
+        assert_eq!(FounderPersistentState::load(&directory).unwrap().snapshot_sequence(), 2);
         fs::remove_dir_all(directory).unwrap();
     }
 
