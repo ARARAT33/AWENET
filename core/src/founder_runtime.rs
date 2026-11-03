@@ -309,14 +309,16 @@ mod tests {
         )
         .unwrap();
         let device_id = state.devices.approved_devices()[0].device_id;
+        let devices = state.devices.clone();
+        let emergency = state.emergency.clone();
         let challenge = state
             .login
-            .request_challenge_guarded(&state.devices, &state.emergency, device_id, 10, 60)
+            .request_challenge_guarded(&devices, &emergency, device_id, 10, 60)
             .unwrap();
         let signature = device.sign(&login_message(&challenge));
         let session = state
             .login
-            .complete_login(&state.devices, challenge.challenge_id, signature, 11, 300)
+            .complete_login(&devices, challenge.challenge_id, signature, 11, 300)
             .unwrap();
         assert_eq!(
             state.authorize_founder_session(&session.token, 12).unwrap(),
