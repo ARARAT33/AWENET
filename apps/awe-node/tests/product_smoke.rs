@@ -475,10 +475,7 @@ fn three_node_product_smoke() {
         let federation_after_success: serde_json::Value =
             serde_json::from_str(&get("127.0.0.1:46201", "/api/federation"))
                 .expect("federation state after successful import");
-        assert_eq!(
-            federation_after_success["local_data_group_id"],
-            "dg-import-smoke"
-        );
+        assert_eq!(federation_after_success["data_group_id"], "dg-import-smoke");
         assert!(federation_after_success["joined_data_groups"]
             .as_array()
             .unwrap()
@@ -493,7 +490,18 @@ fn three_node_product_smoke() {
         let persisted: serde_json::Value =
             serde_json::from_slice(&fs::read(&federation_file).expect("read persisted federation"))
                 .expect("parse persisted federation");
-        assert_eq!(persisted, federation_after_success);
+        assert_eq!(persisted["local_data_group_id"], "dg-import-smoke");
+        let expected_api_projection = serde_json::json!({
+            "format": persisted["format"].clone(),
+            "version": persisted["version"].clone(),
+            "local_node_id": persisted["local_node_id"].clone(),
+            "data_centre_id": persisted["local_data_centre_id"].clone(),
+            "data_group_id": persisted["local_data_group_id"].clone(),
+            "joined_data_centres": persisted["joined_data_centres"].clone(),
+            "joined_data_groups": persisted["joined_data_groups"].clone(),
+            "bootstrap_endpoints": persisted["bootstrap_endpoints"].clone()
+        });
+        assert_eq!(federation_after_success, expected_api_projection);
 
         // A failed durable write must not publish an imported federation state in memory.
         let federation_before = federation_after_success;
