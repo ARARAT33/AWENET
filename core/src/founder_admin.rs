@@ -554,6 +554,7 @@ mod tests {
 
     fn setup() -> (Identity, FounderGenesis, NeterRegistry, PathBuf) {
         let founder = Identity::generate(Username::new("AWENeter").unwrap());
+        let first_device = Identity::generate(Username::new("founder-device").unwrap());
         let secret = vec![0xC9; 48];
         let digest = crate::founder::bootstrap_digest(&secret);
         let mut random = [0u8; 8];
@@ -562,6 +563,7 @@ mod tests {
         let genesis = FounderGenesis::initialize_once(
             &path,
             &founder,
+            first_device.public.public_key,
             &secret,
             digest,
             crate::founder::FounderRules::default(),
