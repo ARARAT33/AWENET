@@ -5,7 +5,7 @@
 //! compensation. Delegation is available only to a Neter explicitly granted
 //! that capability by the founder; delegated Neters cannot pass that right on.
 
-use crate::{crypto::hash, founder::FounderGenesis};
+use crate::{crypto::hash, founder::FounderGenesis, identity::Identity};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
@@ -545,6 +545,190 @@ fn validate_scopes(scopes: &[String]) -> Result<(), NeterError> {
     Ok(())
 }
 
+
+pub const MAX_EMERGENCY_AUDIT: usize = 1024;
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FounderEmergencyAudit {
+    pub sequence: u64,
+    pub tick: u64,
+    pub account_locked: bool,
+    pub governance_locked: bool,
+    pub command_hash: [u8; 32],
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct FounderEmergencyLock {
+    account_locked: bool,
+    governance_locked: bool,
+    sequence: u64,
+    last_hash: [u8; 32],
+    audit: VecDeque<FounderEmergencyAudit>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FounderEmergencyCommand {
+    pub sequence: u64,
+    pub previous_hash: [u8; 32],
+    pub account_locked: bool,
+    pub governance_locked: bool,
+    pub tick: u64,
+    #[serde(with = "crate::serde_bytes_64")]
+    pub signature: [u8; 64],
+}
+
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum FounderEmergencyError {
+    #[error("founder genesis is invalid")]
+    InvalidGenesis,
+    #[error("command signer is not the genesis founder")]
+    InvalidFounder,
+    #[error("emergency command sequence or previous hash is invalid")]
+    InvalidSequence,
+    #[error("emergency command signature is invalid")]
+    InvalidSignature,
+    #[error("founder account is emergency-locked")]
+    AccountLocked,
+    #[error("network governance operations are emergency-locked")]
+    GovernanceLocked,
+}
+
+#[derive(Serialize)]
+struct EmergencyStatement {
+    domain: &'static str,
+    sequence: u64,
+    previous_hash: [u8; 32],
+    account_locked: bool,
+    governance_locked: bool,
+    tick: u64,
+}
+
+fn emergency_message(
+    sequence: u64,
+    previous_hash: [u8; 32],
+    account_locked: bool,
+    governance_locked: bool,
+    tick: u64,
+) -> Vec<u8> {
+    serde_json::to_vec(&EmergencyStatement {
+        domain: "AWENET/FOUNDER-EMERGENCY-LOCK/v1",
+        sequence,
+        previous_hash,
+        account_locked,
+        governance_locked,
+        tick,
+    })
+    .expect("emergency statement serialization is infallible")
+}
+
+impl FounderEmergencyCommand {
+    pub fn sign(
+        founder: &Identity,
+        genesis: &FounderGenesis,
+        state: &FounderEmergencyLock,
+        account_locked: bool,
+        governance_locked: bool,
+        tick: u64,
+    ) -> Result<Self, FounderEmergencyError> {
+        genesis.verify().map_err(|_| FounderEmergencyError::InvalidGenesis)?;
+        if founder.public.public_key != genesis.payload.founder_public_key {
+            return Err(FounderEmergencyError::InvalidFounder);
+        }
+        let sequence = state
+            .sequence
+            .checked_add(1)
+            .ok_or(FounderEmergencyError::InvalidSequence)?;
+        let previous_hash = state.last_hash;
+        let message = emergency_message(
+            sequence,
+            previous_hash,
+            account_locked,
+            governance_locked,
+            tick,
+        );
+        Ok(Self {
+            sequence,
+            previous_hash,
+            account_locked,
+            governance_locked,
+            tick,
+            signature: founder.sign(&message),
+        })
+    }
+}
+
+impl FounderEmergencyLock {
+    pub fn account_locked(&self) -> bool {
+        self.account_locked
+    }
+
+    pub fn governance_locked(&self) -> bool {
+        self.governance_locked
+    }
+
+    pub fn ensure_login_allowed(&self) -> Result<(), FounderEmergencyError> {
+        if self.account_locked {
+            Err(FounderEmergencyError::AccountLocked)
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn ensure_governance_allowed(&self) -> Result<(), FounderEmergencyError> {
+        if self.governance_locked {
+            Err(FounderEmergencyError::GovernanceLocked)
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn audit(&self) -> impl Iterator<Item = &FounderEmergencyAudit> {
+        self.audit.iter()
+    }
+
+    pub fn apply(
+        &mut self,
+        genesis: &FounderGenesis,
+        command: FounderEmergencyCommand,
+    ) -> Result<[u8; 32], FounderEmergencyError> {
+        genesis.verify().map_err(|_| FounderEmergencyError::InvalidGenesis)?;
+        if command.sequence != self.sequence.checked_add(1).ok_or(FounderEmergencyError::InvalidSequence)?
+            || command.previous_hash != self.last_hash
+        {
+            return Err(FounderEmergencyError::InvalidSequence);
+        }
+        let key = VerifyingKey::from_bytes(&genesis.payload.founder_public_key)
+            .map_err(|_| FounderEmergencyError::InvalidFounder)?;
+        let message = emergency_message(
+            command.sequence,
+            command.previous_hash,
+            command.account_locked,
+            command.governance_locked,
+            command.tick,
+        );
+        key.verify(&message, &Signature::from_bytes(&command.signature))
+            .map_err(|_| FounderEmergencyError::InvalidSignature)?;
+        let encoded = serde_json::to_vec(&command)
+            .map_err(|_| FounderEmergencyError::InvalidSignature)?;
+        let command_hash = hash(b"AWENET/FOUNDER-EMERGENCY-HASH/v1", &encoded);
+        self.sequence = command.sequence;
+        self.last_hash = command_hash;
+        self.account_locked = command.account_locked;
+        self.governance_locked = command.governance_locked;
+        if self.audit.len() == MAX_EMERGENCY_AUDIT {
+            self.audit.pop_front();
+        }
+        self.audit.push_back(FounderEmergencyAudit {
+            sequence: command.sequence,
+            tick: command.tick,
+            account_locked: command.account_locked,
+            governance_locked: command.governance_locked,
+            command_hash,
+        });
+        Ok(command_hash)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -745,6 +929,34 @@ mod tests {
             ),
             Err(NeterError::DelegationNotGranted)
         );
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn emergency_account_and_governance_locks_are_signed_and_chained() {
+        let (founder, genesis, _registry, path) = setup();
+        let mut state = FounderEmergencyLock::default();
+        let lock_account = FounderEmergencyCommand::sign(
+            &founder, &genesis, &state, true, false, 1,
+        ).unwrap();
+        state.apply(&genesis, lock_account.clone()).unwrap();
+        assert_eq!(state.ensure_login_allowed(), Err(FounderEmergencyError::AccountLocked));
+        assert!(state.ensure_governance_allowed().is_ok());
+
+        let lock_governance = FounderEmergencyCommand::sign(
+            &founder, &genesis, &state, true, true, 2,
+        ).unwrap();
+        state.apply(&genesis, lock_governance).unwrap();
+        assert_eq!(state.ensure_governance_allowed(), Err(FounderEmergencyError::GovernanceLocked));
+
+        let unlock = FounderEmergencyCommand::sign(
+            &founder, &genesis, &state, false, false, 3,
+        ).unwrap();
+        state.apply(&genesis, unlock.clone()).unwrap();
+        assert!(state.ensure_login_allowed().is_ok());
+        assert!(state.ensure_governance_allowed().is_ok());
+        assert_eq!(state.audit().count(), 3);
+        assert_eq!(state.apply(&genesis, unlock), Err(FounderEmergencyError::InvalidSequence));
         fs::remove_file(path).unwrap();
     }
 
