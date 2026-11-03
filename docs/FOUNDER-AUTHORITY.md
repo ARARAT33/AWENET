@@ -1,105 +1,67 @@
-# Founder Authority and Genesis
+# AWENET Founder Authority
 
-This document describes the first implementation slice in `core/src/founder.rs`.
-It does not claim that a complete login UI, remote notification channel, or
-multi-node durable replication is already integrated.
+## Implemented cryptographic core
 
-## Genesis rules
+The Founder Authority implementation is split across:
 
-- The reserved founder username is `AWENeter`.
-- Genesis is created once with `FounderGenesis::initialize_once`.
-- The operator must provision a cryptographically random bootstrap secret of
-  at least 32 bytes out of band. The public login page must never contain that
-  secret or the expected digest.
-- The expected digest is computed with `bootstrap_digest` and stored in a
-  protected deployment/installation configuration.
-- The genesis file is created with exclusive `create_new`; concurrent
-  initializers cannot both create the same file.
-- The founder public key, AWEID, network ID, initial rules, and signature are
-  included in the record. Every node must call `FounderGenesis::verify`
-  before trusting it.
+- core/src/founder.rs — one-time signed Genesis, immutable founder rules, device proof-of-possession, approval policies, signed device controls, and chained governance updates.
+- core/src/founder_auth.rs — device-bound login challenges, single-use signatures, temporary lockout, expiring/revocable sessions, suspicious-session restriction, global logout, and emergency-lock-aware login entry point.
+- core/src/founder_admin.rs — founder-controlled Neter applications, appointments, capability-scoped delegation, compensation/status changes, and signed two-level emergency locks.
 
-A public internet page that lets the first visitor click "Create Founder"
-without a pre-provisioned secret is vulnerable to a first-run race. The
-bootstrap secret is therefore a security prerequisite, not an optional UX
-step. Back up the genesis record and founder private key securely. Loss of
-the founder private key cannot safely be repaired by silently electing a
-replacement founder.
+This is a tested Rust domain core. It is not yet a completed desktop login/control-center UI, remote notification transport, durable replicated state service, or enforcement middleware on every network/admin endpoint.
 
-## Device admission
+## Founder identity and one-time Genesis
 
-The Genesis founder authority key and the initial device key are separate
-key pairs. The founder authority key signs Genesis and governance; the
-initial device key is the first approved login/approval device. Copying the
-founder authority key alone does not grant device login. A new device creates a
-pending `DeviceRequest` and must first sign its nonce-bound proof message with
-its own private key using `device_proof_message` / `prove_device_request`.
-Only after proof-of-possession succeeds may an already-approved device sign
-the exact request and decision using `approval_message`. The founder may set
-the approval policy to require every currently approved device or a selected
-set of approved devices; the request snapshots its required approvers, and
-approval remains pending until all required signatures are present. Device
-block/unblock commands are also signed with `device_control_message`; callers
-must not trust an actor-device ID supplied without its signature. The final
-approved device cannot be blocked, preventing an accidental permanent
-administrative lockout. Offline requests remain
-pending in the caller's durable state. Denial does not create an approved
-device. Device state and audit history must be persisted atomically by the
-integrating application; the in-memory registry alone is not durable.
+- The sole founder handle is AWENeter.
+- AWEID is derived from the founder's Ed25519 public key, not from email, phone, or external accounts.
+- Genesis binds the network ID, founder AWEID, founder authority public key, a separate initial device public key, initial rules, and a founder signature.
+- The founder authority key and the initial device key are different key pairs. Possession of the founder authority key alone does not make a device approved.
+- Initialization requires an out-of-band random bootstrap secret of at least 256 bits. Its digest must be pinned in trusted installation/release configuration; the raw secret must never be included in public UI code.
+- The Genesis file uses exclusive create_new, Unix mode 0600, fsync, and cleanup on write failure. A second local initialization is rejected.
 
-## Founder login and sessions
+**Distributed boundary:** create_new prevents a local filesystem race, not a global election across unrelated public nodes. Every node must pin the same bootstrap/genesis trust root and reject a different founder key/network ID. A modified client that discards the trust root cannot be forced to obey. Never let the first public visitor automatically become founder.
 
-`core/src/founder_auth.rs` provides device-bound login challenges. Only a
-currently approved, unblocked device can request a challenge; that device must
-sign the challenge with its private key. Challenges are short-lived and
-single-use. Repeated bad signatures trigger a per-device temporary lockout,
-including for challenges issued before the lockout began.
+Production device keys should be non-exportable platform credentials (passkeys/WebAuthn, TPM, or secure enclave) where supported. A software-only private key cannot guarantee physical device binding if an attacker copies that device key too.
 
-Successful proof creates a random device-bound session token. The core supports
-session expiry, suspicious-session restriction, individual revocation, global
-logout, and bounded cleanup. The token is a bearer secret: never log it, expose
-it in URLs, or store it unencrypted. Passwords are intended to unlock the founder authority key locally and are
-not a substitute for device proof. Production device keys should be
-non-exportable platform credentials (passkeys/WebAuthn, TPM, or a secure
-enclave) where supported. A software-only exported private key cannot prove
-physical device binding if an attacker copies that key too.
+## Device approval and login
 
-## Governance updates
+- A new device signs a nonce-bound proof-of-possession request.
+- The founder can require approval from all currently approved devices or a selected set. Each request snapshots the required approvers and remains pending until all required approval signatures arrive.
+- Denials, approvals, block/unblock operations, and governance changes are cryptographically bound to their exact statements.
+- The last approved device cannot be blocked, avoiding accidental administrative lockout.
+- Login challenges are short-lived and single-use. Only an approved, unblocked device can request one; it must sign the challenge with its own key.
+- Repeated bad signatures trigger a temporary per-device lockout.
+- Sessions expire, can be individually revoked or restricted, and support global logout. Validation checks that the bound device remains approved and unblocked.
+- The caller must use the emergency-lock-aware login entry point when applying emergency state. Session tokens are bearer secrets and must never be logged, placed in URLs, or stored unencrypted.
 
-`SignedGovernanceUpdate` binds a monotonically increasing sequence number,
-the previous update hash, and the new rules. Nodes must verify the signature
-against the founder public key pinned in genesis, and reject sequence gaps,
-replays, or an unexpected previous hash. Updates must be distributed to
-online nodes and queued for offline nodes by the network synchronization
-layer.
+## Founder governance
+
+Founder-signed updates are sequence-numbered and chained to the previous update hash. Nodes must reject stale/replayed updates, sequence gaps, unexpected previous hashes, invalid signatures, and attempts to weaken immutable rules. Community votes and AWEMessenger groups can advise but cannot replace or remove the founder.
+
+The emergency state has two independent signed levels:
+- Account lock: blocks founder login.
+- Governance lock: blocks governance policy verification/changes through the guarded API.
+
+Emergency commands are signed by the Genesis founder key, sequence-chained, and audited. All login and governance entry points must call the corresponding guard before performing privileged work.
+
+## Neters
+
+- Neters can be appointed directly by the founder or by approval of a signed application.
+- Each Neter receives explicit scopes, status, and founder-set compensation.
+- A Neter can appoint another Neter only when the founder explicitly grants that capability; delegated scopes cannot exceed the parent Neter's scopes, and the child does not inherit re-delegation authority.
+- Only the founder can change compensation, suspend, reinstate, or remove a Neter.
+- Neters have no authority over the founder or founder governance.
+
+The current registry is in-memory; integrating services must persist it atomically and authorize every operation with a valid founder session/device.
 
 ## Required integration before production
 
-1. Persist genesis, device registry, pending approvals, governance chain, and
-   audit records using crash-safe atomic writes and backups.
-2. Add a real login flow that unlocks the founder key locally; never transmit
-   private keys or passwords to nodes.
-3. Deliver signed device-approval prompts to all currently approved devices.
-   A request remains pending when the founder is offline.
-4. Enforce founder signatures and device approval on every privileged API,
-   network control operation, Neter appointment, and ONECOIN policy change.
-5. Connect suspicious-session restrictions to every high-risk operation and
-   deliver security notifications to approved devices. Add recovery codes and
-   a second recovery key without bypassing device approval.
-6. Add multi-process, crash-recovery, race, replay, cross-platform, and
-   independent-node integration tests. A passing unit suite is not proof of
-   a secure distributed deployment.
+1. Add a real first-run/login UI that unlocks founder authority locally and provisions the bootstrap trust root safely.
+2. Store founder and per-device credentials in OS-protected/non-exportable stores where available; do not transmit private keys or passwords to network nodes.
+3. Persist Genesis, device registry, pending approvals, login sessions, governance chain, Neter registry, emergency state, and audit logs using crash-safe writes, backup and recovery.
+4. Deliver device approval prompts to existing approved devices; offline requests remain pending.
+5. Enforce a valid device-bound founder session and founder signatures on every privileged API, node control operation, Neter action, governance change, and ONECOIN policy update.
+6. Integrate recovery codes and a second recovery key without bypassing device approval.
+7. Add cross-platform restart, concurrent-init, replay, lockout, device revocation, emergency lock, Neter delegation, and independent-node tests.
 
-## Current implementation boundary
-
-The Rust core currently provides signed genesis creation/verification,
-bootstrap-secret validation, exclusive one-time file creation, device
-proof-of-possession, all-device or selected-device approval policies, signed
-device controls, bounded audit records, chained founder-signed governance
-updates, device-bound login challenges, temporary login lockouts, and
-revocable/restrictable sessions. Genesis binds a distinct initial device
-public key so the founder authority key is not itself a login credential. The desktop login and Control Center UI,
-notification transport, durable replicated device state, Neter capability
-integration, recovery flows, and privileged-operation enforcement remain
-integration work. Do not expose production founder initialization until the
-bootstrap secret and durable storage path are provisioned securely.
+A passing unit suite or a visible UI screen alone is not production readiness. Release requires Linux/Windows tests, Clippy, security review, clean-machine recovery tests, and independent-node verification.
