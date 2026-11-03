@@ -209,7 +209,10 @@ impl Sim {
     /// Advances one tick and returns how many envelopes were delivered.
     pub fn step(&mut self) -> u64 {
         self.tick += 1;
-        let delivered = self.scheduled.remove(&self.tick).map_or(0, Vec::len) as u64;
+        let delivered = match self.scheduled.remove(&self.tick) {
+            Some(batch) => batch.len() as u64,
+            None => 0,
+        };
         self.stats.delivered += delivered;
         delivered
     }
