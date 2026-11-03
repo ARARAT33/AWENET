@@ -754,7 +754,7 @@ mod tests {
         let p = path("genesis");
         let id = founder();
         let (s, d) = bootstrap();
-        let (g, first_device) = test_genesis(&p, &id, &s, d, FounderRules::default()).unwrap();
+        let (g, _first_device) = test_genesis(&p, &id, &s, d, FounderRules::default()).unwrap();
         g.verify().unwrap();
         assert_eq!(FounderGenesis::load(&p).unwrap(), g);
         assert_eq!(
@@ -814,6 +814,18 @@ mod tests {
             .unwrap();
         assert_eq!(devices.approved_devices().len(), 2);
         assert_eq!(devices.audit().count(), 1);
+        let second_id = device_id(&second.public.public_key);
+        let block_signature = first_device.sign(&device_control_message(second_id, true, 12));
+        devices
+            .block_device(
+                second_id,
+                true,
+                device_id(&first_device.public.public_key),
+                12,
+                block_signature,
+            )
+            .unwrap();
+        assert!(devices.approved_devices().iter().all(|d| d.device_id != second_id));
         fs::remove_file(p).unwrap();
     }
     #[test]
@@ -895,10 +907,19 @@ mod tests {
         let p = path("selected-device-approval");
         let id = founder();
         let (s, d) = bootstrap();
+        let first_device = Identity::generate(Username::new("founder-device").unwrap());
         let mut rules = FounderRules::default();
         rules.device_approval_policy =
             DeviceApprovalPolicy::SelectedDevices(vec![device_id(&first_device.public.public_key)]);
-        let (g, first_device) = test_genesis(&p, &id, &s, d, rules).unwrap();
+        let g = FounderGenesis::initialize_once(
+            &p,
+            &id,
+            first_device.public.public_key,
+            &s,
+            d,
+            rules,
+        )
+        .unwrap();
         let mut devices = FounderDevices::new(&g, "Founder phone").unwrap();
         let laptop = Identity::generate(Username::new("laptop").unwrap());
         let request = devices
@@ -948,21 +969,6 @@ mod tests {
             Err(FounderError::InvalidApproval)
         );
         assert_eq!(devices.pending.len(), 1);
-        let target = device_id(&second.public.public_key);
-        let block_signature = first_device.sign(&device_control_message(target, true, 12));
-        devices
-            .block_device(
-                target,
-                true,
-                device_id(&first_device.public.public_key),
-                12,
-                block_signature,
-            )
-            .unwrap();
-        assert!(devices
-            .approved_devices()
-            .iter()
-            .all(|d| d.device_id != target));
         fs::remove_file(p).unwrap();
     }
     #[test]
@@ -987,7 +993,7 @@ mod tests {
         let p = path("rules");
         let id = founder();
         let (s, d) = bootstrap();
-        let (g, first_device) = test_genesis(&p, &id, &s, d, FounderRules::default()).unwrap();
+        let (g, _first_device) = test_genesis(&p, &id, &s, d, FounderRules::default()).unwrap();
         let u = SignedGovernanceUpdate::sign(&id, 1, [0; 32], FounderRules::default()).unwrap();
         let h = u.verify(&g, 1, [0; 32]).unwrap();
         assert_ne!(h, [0; 32]);
