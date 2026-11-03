@@ -44,6 +44,20 @@ pending in the caller's durable state. Denial does not create an approved
 device. Device state and audit history must be persisted atomically by the
 integrating application; the in-memory registry alone is not durable.
 
+## Founder login and sessions
+
+`core/src/founder_auth.rs` provides device-bound login challenges. Only a
+currently approved, unblocked device can request a challenge; that device must
+sign the challenge with its private key. Challenges are short-lived and
+single-use. Repeated bad signatures trigger a per-device temporary lockout,
+including for challenges issued before the lockout began.
+
+Successful proof creates a random device-bound session token. The core supports
+session expiry, suspicious-session restriction, individual revocation, global
+logout, and bounded cleanup. The token is a bearer secret: never log it, expose
+it in URLs, or store it unencrypted. Passwords are intended to unlock the key
+locally and are not a substitute for device proof.
+
 ## Governance updates
 
 `SignedGovernanceUpdate` binds a monotonically increasing sequence number,
@@ -63,9 +77,9 @@ layer.
    A request remains pending when the founder is offline.
 4. Enforce founder signatures and device approval on every privileged API,
    network control operation, Neter appointment, and ONECOIN policy change.
-5. Freeze high-risk actions on suspicious sessions; implement rate limits,
-   notification delivery, session revocation, recovery codes, and a second
-   recovery key without bypassing device approval.
+5. Connect suspicious-session restrictions to every high-risk operation and
+   deliver security notifications to approved devices. Add recovery codes and
+   a second recovery key without bypassing device approval.
 6. Add multi-process, crash-recovery, race, replay, cross-platform, and
    independent-node integration tests. A passing unit suite is not proof of
    a secure distributed deployment.
@@ -73,10 +87,12 @@ layer.
 ## Current implementation boundary
 
 The Rust core currently provides signed genesis creation/verification,
-bootstrap-secret validation, exclusive one-time file creation, bounded
-device requests, existing-device signed approval/denial, device blocking,
-bounded audit records, and chained founder-signed governance updates.
-The desktop UI, notification transport, durable replicated device state,
-Neter capability integration, and privileged-operation enforcement remain
+bootstrap-secret validation, exclusive one-time file creation, device
+proof-of-possession, all-device or selected-device approval policies, signed
+device controls, bounded audit records, chained founder-signed governance
+updates, device-bound login challenges, temporary login lockouts, and
+revocable/restrictable sessions. The desktop login and Control Center UI,
+notification transport, durable replicated device state, Neter capability
+integration, recovery flows, and privileged-operation enforcement remain
 integration work. Do not expose production founder initialization until the
 bootstrap secret and durable storage path are provisioned securely.
