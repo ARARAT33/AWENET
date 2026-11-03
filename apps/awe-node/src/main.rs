@@ -106,7 +106,7 @@ fn default_vault() -> PathBuf {
 }
 
 fn usage() -> ! {
-    eprintln!("AWEp2P\n\nUsage:\n  awe-node                 Start the complete local product\n  awe-node founder-init <founder-vault> <device-vault> <device-username> <bootstrap-secret-file>\n  awe-node founder-status [data-directory]\n  awe-node app             Start UI + local node\n  awe-node secret <username> [out-file]\n  awe-node init <username> [vault-file]\n  awe-node run <vault-file> <password> <listen-addr> [bootstrap-addr ...]\n  awe-node id <vault-file> <password> <username>\n  awe-node status [vault-file]\n  awe-node diagnostics\n  awe-node mesh <listen-port>\n  awe-node health\n  awe-node probe <address>");
+    eprintln!("AWEp2P\n\nUsage:\n  awe-node                 Start the complete local product\n  awe-node founder-digest <bootstrap-secret-file>\n  awe-node founder-init <founder-vault> <device-vault> <device-username> <bootstrap-secret-file>\n  awe-node founder-status [data-directory]\n  awe-node app             Start UI + local node\n  awe-node secret <username> [out-file]\n  awe-node init <username> [vault-file]\n  awe-node run <vault-file> <password> <listen-addr> [bootstrap-addr ...]\n  awe-node id <vault-file> <password> <username>\n  awe-node status [vault-file]\n  awe-node diagnostics\n  awe-node mesh <listen-port>\n  awe-node health\n  awe-node probe <address>");
     std::process::exit(2)
 }
 
