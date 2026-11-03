@@ -35,6 +35,7 @@ while exposing a small, stable product orchestration model on top.
 | Smart node services | `automation`, `ratelimit`, `firewall`, `cache` | Metric-driven automation with cooldowns and dry-run, keyed token-bucket limiting, prefix-based peer firewall, bounded LRU cache |
 | Trust & lifecycle services | `sessions`, `consent`, `features`, `sync` | Authenticated sessions with tick TTL and revocation, consent ledger with expiry and audit log, deterministic feature flags, coordinator-free LWW state sync |
 | Intelligence & resilience services | `insights`, `capacity`, `circuit`, `journal`, `archiver` | Rolling-window insights with anomaly detection, capacity forecasts with urgency bands, circuit breaker with cooldown, write-ahead journal with checkpoints, retention & compaction planning |
+| Developer & API services | `tasks`, `keys`, `webhooks`, `runbooks` | Priority task queue with deadlines and retry budgets, scoped API keys with rotation and expiry, event webhooks with cooldowns and dead-lettering, gated runbooks with dry-run plans |
 | Identity & security | `identity`, `security`, `crypto`, `defense`, `sandbox` | Ed25519 identity, authenticated encrypted transport, hostile-traffic limits |
 | Discovery & routing | `discovery`, `routing`, `network_topology`, `lan_mesh` | DHT-style lookup, Data Centre topology, relay failover, LAN mesh |
 | Data plane | `data_plane`, `storage`, `replication`, `repair`, `recovery` | Chunked content-addressed storage, replica placement, repair planning |
@@ -154,6 +155,16 @@ replay and checkpoint truncation) and `archiver.rs` (retention tiering with
 a bounded archive budget and deterministic compaction plans). See
 [docs/RESILIENCE-UPGRADE-2026-11-02.md](docs/RESILIENCE-UPGRADE-2026-11-02.md).
 
+## Developer & API services
+
+Four deterministic core modules give the node a developer and automation
+plane: `tasks.rs` (bounded priority task queue with explicit-tick deadlines
+and a retry budget), `keys.rs` (scoped API keys with issue/verify/rotate and
+revoke plus typed expiry errors), `webhooks.rs` (event subscriptions with
+per-hook cooldowns, retry hints and dead-lettering) and `runbooks.rs` (gated
+runbooks with health and alert gates, dry-run plans and abort-with-reason
+execution). See [docs/DEVELOPER-UPGRADE-2026-11-03.md](docs/DEVELOPER-UPGRADE-2026-11-03.md).
+
 ## Important status rule
 
 A source module or UI screen is not proof of end-to-end functionality.
@@ -179,6 +190,7 @@ model is in [docs/PRODUCT-ARCHITECTURE.md](docs/PRODUCT-ARCHITECTURE.md) and
 - [Smart node services upgrade](docs/SMART-SERVICES-UPGRADE-2026-10-31.md)
 - [Trust & lifecycle services upgrade](docs/TRUST-LIFECYCLE-UPGRADE-2026-11-01.md)
 - [Intelligence & resilience services upgrade](docs/RESILIENCE-UPGRADE-2026-11-02.md)
+- [Developer & API services upgrade](docs/DEVELOPER-UPGRADE-2026-11-03.md)
 
 ## Security
 
