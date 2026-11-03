@@ -395,6 +395,33 @@ mod tests {
         );
         validate_dgc(&dg).unwrap();
     }
+    struct FailingSerialize;
+
+    impl serde::Serialize for FailingSerialize {
+        fn serialize<S>(&self, _serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            Err(<S::Error as serde::ser::Error>::custom(
+                "intentional serialization failure",
+            ))
+        }
+    }
+
+    #[test]
+    fn serialization_failure_preserves_existing_file() {
+        let dir = test_dir("serialize-failure");
+        let path = dir.join("state.json");
+        let original = br#"{"keep":true}"#;
+        fs::write(&path, original).unwrap();
+
+        assert!(save_json(&FailingSerialize, &path).is_err());
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert_no_temporary_files(&dir, ".state.json.tmp-");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn save_json_replaces_existing_file_with_complete_json() {
         let dir = test_dir("replace");
