@@ -165,7 +165,7 @@ impl ApiKeys {
         self.keys
             .values()
             .filter(|record| {
-                !record.revoked && record.expires_tick.map_or(true, |expiry| now < expiry)
+                !record.revoked && record.expires_tick.is_none_or(|expiry| now < expiry)
             })
             .collect()
     }
@@ -331,7 +331,9 @@ mod tests {
         let issued = registry.issue("node-cli", scopes(), 0, None).unwrap();
         let verified = registry.verify(&issued.secret, 10).unwrap();
         assert_eq!(verified.label, "node-cli");
-        assert_eq!(verified.scopes, scopes());
+        let mut expected_scopes = scopes();
+        expected_scopes.sort();
+        assert_eq!(verified.scopes, expected_scopes);
         assert!(!verified.revoked);
     }
 
