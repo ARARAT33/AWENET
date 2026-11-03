@@ -165,22 +165,27 @@ impl FounderGenesis {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| FounderError::Storage(e.to_string()))?;
         }
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(path)
-            .map_err(|e| {
-                if e.kind() == std::io::ErrorKind::AlreadyExists {
-                    FounderError::AlreadyInitialized
-                } else {
-                    FounderError::Storage(e.to_string())
-                }
-            })?;
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(path).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                FounderError::AlreadyInitialized
+            } else {
+                FounderError::Storage(e.to_string())
+            }
+        })?;
         let bytes =
             serde_json::to_vec_pretty(&record).map_err(|e| FounderError::Storage(e.to_string()))?;
-        file.write_all(&bytes)
-            .and_then(|_| file.sync_all())
-            .map_err(|e| FounderError::Storage(e.to_string()))?;
+        if let Err(error) = file.write_all(&bytes).and_then(|_| file.sync_all()) {
+            drop(file);
+            let _ = fs::remove_file(path);
+            return Err(FounderError::Storage(error.to_string()));
+        }
         Ok(record)
     }
 
@@ -262,7 +267,6 @@ pub struct FounderAuditRecord {
 pub struct FounderDevices {
     devices: BTreeMap<String, DeviceRecord>,
     pending: BTreeMap<String, DeviceRequest>,
-    denied: BTreeMap<String, bool>,
     audit: VecDeque<FounderAuditRecord>,
     next_audit_sequence: u64,
 }
@@ -284,7 +288,6 @@ impl FounderDevices {
         Ok(Self {
             devices,
             pending: BTreeMap::new(),
-            denied: BTreeMap::new(),
             audit: VecDeque::new(),
             next_audit_sequence: 1,
         })
@@ -299,11 +302,7 @@ impl FounderDevices {
         tick: u64,
     ) -> Result<DeviceRequest, FounderError> {
         let id = device_id(&public_key);
-        if self
-            .devices
-            .get(&hex::encode(id))
-            .is_some_and(|d| !d.blocked)
-        {
+        if self.devices.contains_key(&hex::encode(id)) {
             return Err(FounderError::DeviceAlreadyRegistered);
         }
         if self.pending.len() >= MAX_PENDING_REQUESTS {
@@ -407,7 +406,6 @@ impl FounderDevices {
                 self.push_audit(tick, "device_approved", approver_id, Some(id));
             }
             DeviceDecision::Denied => {
-                self.denied.insert(request_key, true);
                 self.push_audit(
                     tick,
                     "device_denied",
