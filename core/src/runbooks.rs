@@ -16,6 +16,8 @@ pub const MAX_STEPS: usize = 100;
 pub enum RunbookError {
     #[error("runbook name must not be empty")]
     EmptyName,
+    #[error("runbook registry capacity must be between 1 and {MAX_RUNBOOKS}")]
+    InvalidCapacity,
     #[error("runbook registry is full (max {MAX_RUNBOOKS} runbooks)")]
     RegistryFull,
     #[error("runbook {0} must have between 1 and {MAX_STEPS} steps")]
@@ -68,7 +70,7 @@ pub struct Runbooks {
 impl Runbooks {
     pub fn new(max_runbooks: usize) -> Result<Self, RunbookError> {
         if max_runbooks == 0 || max_runbooks > MAX_RUNBOOKS {
-            return Err(RunbookError::RegistryFull);
+            return Err(RunbookError::InvalidCapacity);
         }
         Ok(Self {
             max_runbooks,
@@ -205,6 +207,11 @@ mod tests {
 
     #[test]
     fn validates_registration() {
+        assert_eq!(Runbooks::new(0).unwrap_err(), RunbookError::InvalidCapacity);
+        assert_eq!(
+            Runbooks::new(MAX_RUNBOOKS + 1).unwrap_err(),
+            RunbookError::InvalidCapacity
+        );
         let mut runbooks = Runbooks::new(1).unwrap();
         assert_eq!(
             runbooks
@@ -268,13 +275,13 @@ mod tests {
         assert_eq!(plan[1].status, StepStatus::Ready);
 
         let plan = runbooks.plan("drain-and-repair", 100, 3).unwrap();
-        assert_eq!(plan[0].status, StepStatus::Ready);
         assert_eq!(
-            plan[1].status,
+            plan[0].status,
             StepStatus::Skipped {
                 reason: "3 open alerts exceed the allowed maximum of 2".into()
             }
         );
+        assert_eq!(plan[1].status, StepStatus::Ready);
     }
 
     #[test]
