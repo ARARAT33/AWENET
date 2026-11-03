@@ -23,11 +23,13 @@ pub mod serde_bytes_64 {
     }
 }
 pub mod access;
+pub mod accounting;
 pub mod alerts;
 pub mod archiver;
 pub mod automation;
 pub mod awenet;
 pub mod backup;
+pub mod billing;
 pub mod cache;
 pub mod calls;
 pub mod canonical;
@@ -39,6 +41,7 @@ pub mod data_plane;
 pub mod defense;
 pub mod diagnostics;
 pub mod discovery;
+pub mod escrow;
 pub mod events;
 pub mod features;
 pub mod federation;
@@ -92,6 +95,7 @@ pub mod security;
 pub mod sessions;
 pub mod storage;
 pub mod store;
+pub mod subscriptions;
 pub mod supervisor;
 pub mod sync;
 pub mod tasks;
