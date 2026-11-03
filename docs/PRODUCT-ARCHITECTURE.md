@@ -10,6 +10,14 @@ Desktop / CLI -> Product orchestration -> Identity/security, discovery, routing,
 
 The public product model is in core/src/product.rs. It gives the existing subsystems shared concepts for resources, peers, placement, transfers, capacity and product snapshots.
 
+## Founder control plane
+
+The Founder Authority is the network control plane and is governed by the canonical [Founder Authority specification](FOUNDER-AUTHORITY.md). It is separate from node ownership and resource contribution. AWENET's one founder identity, `AWENeter`, is established by signed Genesis and acts only through approved founder devices and device-bound sessions.
+
+Founder-only operations must pass shared cryptographic authorization and audit enforcement; hiding a button or checking a UI role is not authorization. Neters may perform only founder-delegated bounded tasks. Members and Messenger groups can advise but cannot vote away the founder. Founder authority does not override user privacy, secret-resource access maps, or local node operators' right to stop resource contribution.
+
+The product runtime must expose public read-only status separately from authenticated founder administration. The founder can govern without hosting an always-online server.
+
 ## Resource lifecycle
 1. Create a content-addressed ResourceId.
 2. Create a manifest describing size and chunks.
