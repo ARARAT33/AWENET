@@ -36,6 +36,7 @@ while exposing a small, stable product orchestration model on top.
 | Trust & lifecycle services | `sessions`, `consent`, `features`, `sync` | Authenticated sessions with tick TTL and revocation, consent ledger with expiry and audit log, deterministic feature flags, coordinator-free LWW state sync |
 | Intelligence & resilience services | `insights`, `capacity`, `circuit`, `journal`, `archiver` | Rolling-window insights with anomaly detection, capacity forecasts with urgency bands, circuit breaker with cooldown, write-ahead journal with checkpoints, retention & compaction planning |
 | Developer & API services | `tasks`, `keys`, `webhooks`, `runbooks` | Priority task queue with deadlines and retry budgets, scoped API keys with rotation and expiry, event webhooks with cooldowns and dead-lettering, gated runbooks with dry-run plans |
+| Commerce & economy services | `accounting`, `billing`, `subscriptions`, `escrow` | Double-entry ledger with balanced entries, invoice lifecycle with payments and overdue sweeps, subscription lifecycle with trial and grace periods, escrow with fees, release and refund |
 | Identity & security | `identity`, `security`, `crypto`, `defense`, `sandbox` | Ed25519 identity, authenticated encrypted transport, hostile-traffic limits |
 | Discovery & routing | `discovery`, `routing`, `network_topology`, `lan_mesh` | DHT-style lookup, Data Centre topology, relay failover, LAN mesh |
 | Data plane | `data_plane`, `storage`, `replication`, `repair`, `recovery` | Chunked content-addressed storage, replica placement, repair planning |
@@ -165,6 +166,16 @@ per-hook cooldowns, retry hints and dead-lettering) and `runbooks.rs` (gated
 runbooks with health and alert gates, dry-run plans and abort-with-reason
 execution). See [docs/DEVELOPER-UPGRADE-2026-11-03.md](docs/DEVELOPER-UPGRADE-2026-11-03.md).
 
+## Commerce & economy services
+
+Four deterministic core modules extend the ONECOIN economy with product
+commerce primitives: `accounting.rs` (double-entry ledger with balanced
+journal entries and per-account balances), `billing.rs` (invoice lifecycle
+with line items, payment allocation and overdue sweeps), `subscriptions.rs`
+(subscription lifecycle with trials, renewals, past-due grace and expiry)
+and `escrow.rs` (escrow with fees, release, refund and expiry). See
+[docs/COMMERCE-UPGRADE-2026-11-03.md](docs/COMMERCE-UPGRADE-2026-11-03.md).
+
 ## Important status rule
 
 A source module or UI screen is not proof of end-to-end functionality.
@@ -191,6 +202,7 @@ model is in [docs/PRODUCT-ARCHITECTURE.md](docs/PRODUCT-ARCHITECTURE.md) and
 - [Trust & lifecycle services upgrade](docs/TRUST-LIFECYCLE-UPGRADE-2026-11-01.md)
 - [Intelligence & resilience services upgrade](docs/RESILIENCE-UPGRADE-2026-11-02.md)
 - [Developer & API services upgrade](docs/DEVELOPER-UPGRADE-2026-11-03.md)
+- [Commerce & economy services upgrade](docs/COMMERCE-UPGRADE-2026-11-03.md)
 
 ## Security
 
