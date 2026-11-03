@@ -471,13 +471,16 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                     let mut device_id = [0u8; 32];
                     device_id.copy_from_slice(&bytes);
                     match founder.lock() {
-                        Ok(mut state) => match state.login.request_challenge_guarded(
-                            &state.devices,
-                            &state.emergency,
-                            device_id,
-                            now_unix(),
-                            120,
-                        ) {
+                        Ok(mut state) => {
+                            let devices = state.devices.clone();
+                            let emergency = state.emergency.clone();
+                            match state.login.request_challenge_guarded(
+                                &devices,
+                                &emergency,
+                                device_id,
+                                now_unix(),
+                                120,
+                            ) {
                             Ok(challenge) => {
                                 let signed_message = login_message(&challenge);
                                 ("200 OK", "application/json; charset=utf-8", serde_json::json!({
@@ -492,6 +495,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                                 }).to_string())
                             }
                             Err(error) => ("403 Forbidden", "application/json; charset=utf-8", serde_json::json!({"error":"founder_login_challenge_rejected","detail":error.to_string()}).to_string())
+                            }
                         },
                         Err(_) => ("500 Internal Server Error", "application/json; charset=utf-8", serde_json::json!({"error":"founder_state_lock_poisoned"}).to_string())
                     }
@@ -513,13 +517,14 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                     let mut challenge_id = [0u8; 32];
                     challenge_id.copy_from_slice(&challenge);
                     let mut signature = [0u8; 64];
-                    signature.copy_from_slice(&signature);
+                    signature.copy_from_slice(&signature_bytes);
                     match founder.lock() {
                         Ok(mut state) => {
                             if state.emergency.ensure_login_allowed().is_err() {
                                 ("423 Locked", "application/json; charset=utf-8", serde_json::json!({"error":"founder_account_locked"}).to_string())
                             } else {
-                                match state.login.complete_login(&state.devices, challenge_id, signature, now_unix(), 8 * 60 * 60) {
+                                let devices = state.devices.clone();
+                                match state.login.complete_login(&devices, challenge_id, signature, now_unix(), 8 * 60 * 60) {
                                     Ok(session) => ("200 OK", "application/json; charset=utf-8", serde_json::json!({
                                         "token": hex::encode(session.token),
                                         "device_id": hex::encode(session.device_id),
