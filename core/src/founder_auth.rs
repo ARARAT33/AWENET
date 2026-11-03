@@ -366,6 +366,17 @@ mod tests {
     }
 
     #[test]
+    fn copied_founder_authority_key_is_not_a_device_login_key() {
+        let (founder, _device, devices, path) = setup();
+        let mut auth = FounderLogin::new();
+        assert_eq!(
+            auth.request_challenge(&devices, device_id(&founder.public.public_key), 1, 10),
+            Err(FounderAuthError::UnapprovedDevice)
+        );
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn unknown_device_cannot_request_login_challenge() {
         let (_founder, _device, devices, path) = setup();
         let mut auth = FounderLogin::new();
@@ -433,6 +444,52 @@ mod tests {
         assert!(auth.validate_session(&devices, &s2.token, 5).is_ok());
         assert_eq!(auth.revoke_all_sessions(), 2);
         assert_eq!(auth.active_session_count(5), 0);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn blocking_a_device_invalidates_its_existing_sessions() {
+        let (founder, first_device, mut devices, path) = setup();
+        let second = Identity::generate(Username::new("second-device").unwrap());
+        let request = devices.request_device(second.public.public_key, "Second device", 1).unwrap();
+        devices
+            .prove_device_request(request.request_id, second.sign(&crate::founder::device_proof_message(&request)))
+            .unwrap();
+        let approval = first_device.sign(&crate::founder::approval_message(
+            &request,
+            &crate::founder::DeviceDecision::Approved,
+        ));
+        devices
+            .decide_request(
+                request.request_id,
+                device_id(&first_device.public.public_key),
+                crate::founder::DeviceDecision::Approved,
+                approval,
+                2,
+            )
+            .unwrap();
+
+        let second_id = device_id(&second.public.public_key);
+        let mut auth = FounderLogin::new();
+        let challenge = auth.request_challenge(&devices, second_id, 3, 20).unwrap();
+        let session = auth
+            .complete_login(&devices, challenge.challenge_id, second.sign(&login_message(&challenge)), 4, 100)
+            .unwrap();
+        let block_signature = first_device.sign(&crate::founder::device_control_message(second_id, true, 5));
+        devices
+            .block_device(
+                second_id,
+                true,
+                device_id(&first_device.public.public_key),
+                5,
+                block_signature,
+            )
+            .unwrap();
+        assert_eq!(
+            auth.validate_session(&devices, &session.token, 6),
+            Err(FounderAuthError::InvalidSession)
+        );
+        let _ = founder;
         fs::remove_file(path).unwrap();
     }
 
