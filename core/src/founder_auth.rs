@@ -501,7 +501,7 @@ mod tests {
 
     #[test]
     fn blocking_a_device_invalidates_its_existing_sessions() {
-        let (founder, first_device, mut devices, path) = setup();
+        let (_founder, first_device, mut devices, path) = setup();
         let second = Identity::generate(Username::new("second-device").unwrap());
         let request = devices
             .request_device(second.public.public_key, "Second device", 1)
@@ -553,7 +553,6 @@ mod tests {
             auth.validate_session(&devices, &session.token, 6),
             Err(FounderAuthError::InvalidSession)
         );
-        let _ = founder;
         fs::remove_file(path).unwrap();
     }
 
