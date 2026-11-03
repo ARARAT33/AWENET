@@ -15,6 +15,10 @@ pub const MAX_SESSIONS: usize = 4096;
 pub enum SessionError {
     #[error("session registry is full (max {MAX_SESSIONS})")]
     RegistryFull,
+    #[error("session expiry tick overflow")]
+    TickOverflow,
+    #[error("session identifier space is exhausted")]
+    IdExhausted,
     #[error("unknown session {0}")]
     UnknownSession(u64),
     #[error("session {0} is expired")]
@@ -63,21 +67,29 @@ impl SessionManager {
         now_tick: u64,
         ttl_ticks: u64,
     ) -> Result<Session, SessionError> {
+        // Validate arithmetic before sweeping or mutating the registry. Wrapping
+        // either value could silently expire a session or overwrite an existing id.
+        let expires_tick = now_tick
+            .checked_add(ttl_ticks)
+            .ok_or(SessionError::TickOverflow)?;
+        let id = self.next_id;
+        let next_id = id.checked_add(1).ok_or(SessionError::IdExhausted)?;
+
         if self.sessions.len() >= MAX_SESSIONS {
             self.sweep(now_tick);
             if self.sessions.len() >= MAX_SESSIONS {
                 return Err(SessionError::RegistryFull);
             }
         }
-        let id = self.next_id;
-        self.next_id = self.next_id.wrapping_add(1);
+
         let session = Session {
             id,
             principal: principal.to_string(),
             created_tick: now_tick,
-            expires_tick: now_tick + ttl_ticks,
+            expires_tick,
             revoked: false,
         };
+        self.next_id = next_id;
         self.sessions.insert(id, session.clone());
         Ok(session)
     }
@@ -227,6 +239,33 @@ mod tests {
         // Expiring one session frees a slot for the sweep path.
         manager.sweep(1000);
         assert!(manager.create("p", 1000, 10).is_ok());
+    }
+
+    #[test]
+    fn expiry_tick_overflow_is_rejected_without_mutation() {
+        let mut manager = SessionManager::new();
+
+        assert_eq!(
+            manager.create("ararat", u64::MAX, 1).unwrap_err(),
+            SessionError::TickOverflow
+        );
+        assert!(manager.is_empty());
+        assert_eq!(manager.next_id, 1);
+    }
+
+    #[test]
+    fn identifier_exhaustion_never_wraps_or_overwrites() {
+        let mut manager = SessionManager::new();
+        let original = manager.create("first", 0, 100).unwrap();
+        manager.next_id = u64::MAX;
+
+        assert_eq!(
+            manager.create("second", 1, 100).unwrap_err(),
+            SessionError::IdExhausted
+        );
+        assert_eq!(manager.get(original.id), Some(&original));
+        assert_eq!(manager.len(), 1);
+        assert_eq!(manager.next_id, u64::MAX);
     }
 
     #[test]
