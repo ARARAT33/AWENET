@@ -993,6 +993,28 @@ mod tests {
             )
             .unwrap();
         let child = Identity::generate(Username::new("child").unwrap());
+        let allowed_scopes = vec!["awenetwork:tasks".into()];
+        let compensation_message = appointment_message(
+            child.public.public_key,
+            "Child",
+            &allowed_scopes,
+            false,
+            50,
+            parent_record.neter_id,
+            2,
+        );
+        assert_eq!(
+            registry.appoint_by_neter(
+                parent_record.neter_id,
+                child.public.public_key,
+                "Child",
+                allowed_scopes,
+                50,
+                2,
+                parent.sign(&compensation_message),
+            ),
+            Err(NeterError::CompensationRequiresFounder)
+        );
         let child_scopes = vec!["awemessenger:admin".into()];
         let msg = appointment_message(
             child.public.public_key,
