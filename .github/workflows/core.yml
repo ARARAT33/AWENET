@@ -47,13 +47,49 @@ jobs:
       - name: Check Rust workspace formatting
         run: cargo fmt --all -- --check
       - name: Build workspace
+        id: build
         run: cargo check --workspace --all-targets
+      - name: Report build diagnostics
+        if: failure() && steps.build.outcome == 'failure'
+        shell: bash
+        run: |
+          cargo check --workspace --all-targets --message-format=short 2>&1 | grep -E 'error(\[[^]]*\])?:' | head -n 20 | while IFS= read -r line; do
+            echo "::error::${line}"
+          done
+          exit 0
       - name: Run unit and integration tests
+        id: tests
         run: cargo test --workspace --all-targets
+      - name: Report tests diagnostics
+        if: failure() && steps.tests.outcome == 'failure'
+        shell: bash
+        run: |
+          cargo test --workspace --all-targets 2>&1 | grep -E '(^failures:$|^---- |FAILED|panicked at )' | head -n 40 | while IFS= read -r line; do
+            echo "::error::${line}"
+          done
+          exit 0
       - name: Run product smoke test
+        id: smoke
         run: cargo test -p awe-node --test product_smoke -- --nocapture
+      - name: Report smoke diagnostics
+        if: failure() && steps.smoke.outcome == 'failure'
+        shell: bash
+        run: |
+          cargo test -p awe-node --test product_smoke -- --nocapture 2>&1 | grep -E '(FAILED|panicked at |assertion)' | head -n 30 | while IFS= read -r line; do
+            echo "::error::${line}"
+          done
+          exit 0
       - name: Run clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        id: clippy
+        run: cargo clippy --workspace --all-targets --message-format=short -- -D warnings
+      - name: Report clippy diagnostics
+        if: failure() && steps.clippy.outcome == 'failure'
+        shell: bash
+        run: |
+          cargo clippy --workspace --all-targets --message-format=short 2>&1 | grep -E 'error(\[[^]]*\])?:' | head -n 20 | while IFS= read -r line; do
+            echo "::error::${line}"
+          done
+          exit 0
 
   architecture:
     name: Architecture integrity checks
