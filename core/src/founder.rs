@@ -739,6 +739,15 @@ mod tests {
         Ok((genesis, device))
     }
 
+    fn expect_genesis_error(
+        result: Result<(FounderGenesis, Identity), FounderError>,
+    ) -> FounderError {
+        match result {
+            Ok(_) => panic!("expected founder genesis initialization to fail"),
+            Err(error) => error,
+        }
+    }
+
     fn bootstrap() -> (Vec<u8>, [u8; 32]) {
         let secret = vec![0xA5; 48];
         let digest = bootstrap_digest(&secret);
@@ -758,7 +767,7 @@ mod tests {
         g.verify().unwrap();
         assert_eq!(FounderGenesis::load(&p).unwrap(), g);
         assert_eq!(
-            test_genesis(&p, &id, &s, d, FounderRules::default()).unwrap_err(),
+            expect_genesis_error(test_genesis(&p, &id, &s, d, FounderRules::default())),
             FounderError::AlreadyInitialized
         );
         fs::remove_file(p).unwrap();
@@ -769,12 +778,12 @@ mod tests {
         let id = founder();
         let (s, d) = bootstrap();
         assert_eq!(
-            test_genesis(&p, &id, b"short", d, FounderRules::default()).unwrap_err(),
+            expect_genesis_error(test_genesis(&p, &id, b"short", d, FounderRules::default())),
             FounderError::InvalidBootstrapSecret
         );
         let wrong = Identity::generate(Username::new("someone").unwrap());
         assert_eq!(
-            test_genesis(&p, &wrong, &s, d, FounderRules::default()).unwrap_err(),
+            expect_genesis_error(test_genesis(&p, &wrong, &s, d, FounderRules::default())),
             FounderError::InvalidFounderUsername
         );
         assert!(!p.exists());
