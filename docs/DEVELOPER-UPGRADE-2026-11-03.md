@@ -29,7 +29,8 @@ summarises the queue by state.
 using the `awenet_<hex>` format. The registry stores only a domain-separated
 SHA-256 fingerprint, never the raw secret. The `IssuedApiKey.secret` value is
 returned only on issue/rotate; its Debug output is redacted, and typed errors
-never echo a supplied credential. `verify` checks unknown, revoked and
+never echo a supplied credential. If OS entropy is unavailable,
+issuance fails closed with EntropyUnavailable; there is no deterministic fallback. `verify` checks unknown, revoked and
 expired keys. `rotate` registers the replacement before revoking the old key,
 so a capacity or entropy failure leaves the old credential valid. Lifecycle
 and expiry decisions still use explicit ticks. The module is a core primitive;
