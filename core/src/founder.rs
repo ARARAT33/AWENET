@@ -28,6 +28,7 @@ pub struct FounderGenesisPayload {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FounderGenesis {
     pub payload: FounderGenesisPayload,
+    #[serde(with = "crate::serde_bytes_64")]
     pub signature: [u8; 64],
 }
 
