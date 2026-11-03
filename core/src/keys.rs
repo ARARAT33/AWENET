@@ -105,7 +105,7 @@ impl ApiKeys {
         if record.revoked {
             return Err(KeyError::Revoked(key.to_string()));
         }
-        if matches!(record.expires_tick, Some(expiry) if expiry <= now) {
+        if let Some(expiry) = record.expires_tick.filter(|expiry| *expiry <= now) {
             return Err(KeyError::Expired(key.to_string(), expiry));
         }
         Ok(record)

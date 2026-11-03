@@ -72,6 +72,7 @@ pub struct TaskStats {
     pub cancelled: usize,
 }
 
+#[derive(Debug)]
 pub struct TaskQueue {
     max_tasks: usize,
     next_id: u64,

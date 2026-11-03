@@ -31,7 +31,7 @@ pub enum InvoiceError {
     InvoiceNotOpen(u64),
     #[error("payment for invoice {0} must be greater than zero")]
     ZeroPayment(u64),
-    #[error("payment {1} exceeds the remaining {2} on invoice {0}")]
+    #[error("payment {payment} exceeds the remaining {remaining} on invoice {invoice}")]
     Overpayment {
         invoice: u64,
         payment: u64,
