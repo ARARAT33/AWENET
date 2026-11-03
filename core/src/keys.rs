@@ -105,8 +105,10 @@ impl ApiKeys {
         if record.revoked {
             return Err(KeyError::Revoked(key.to_string()));
         }
-        if matches!(record.expires_tick, Some(expiry) if expiry <= now) {
-            return Err(KeyError::Expired(key.to_string(), expiry));
+        if let Some(expiry) = record.expires_tick {
+            if expiry <= now {
+                return Err(KeyError::Expired(key.to_string(), expiry));
+            }
         }
         Ok(record)
     }
@@ -124,9 +126,8 @@ impl ApiKeys {
     /// Rotates a key: revokes the old material and issues fresh material
     /// with the same label, scopes and expiry tick. Returns the new key.
     pub fn rotate(&mut self, key: &str, now: u64) -> Result<ApiKey, KeyError> {
-        self.verify(key, now).cloned()?;
+        let old = self.verify(key, now).cloned()?;
         self.revoke(key)?;
-        let old = self.keys.get(key).expect("verified above");
         let mut fresh = self.issue(&old.label, old.scopes.clone(), now, old.expires_tick)?;
         fresh.rotated_from = Some(key.to_string());
         self.keys.insert(fresh.key.clone(), fresh.clone());
