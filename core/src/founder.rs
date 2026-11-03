@@ -340,7 +340,10 @@ impl FounderDevices {
                 ids.dedup();
                 if ids.len() != selected.len()
                     || ids.iter().any(|id| {
-                        !self.devices.get(&hex::encode(id)).is_some_and(|device| !device.blocked)
+                        !self
+                            .devices
+                            .get(&hex::encode(id))
+                            .is_some_and(|device| !device.blocked)
                     })
                 {
                     return Err(FounderError::InvalidApprovalPolicy);
@@ -432,13 +435,18 @@ impl FounderDevices {
             if !request.required_approvers.contains(&approver_id) {
                 return Err(FounderError::UnapprovedApprover);
             }
-            let request = self.pending.get_mut(&request_key).ok_or(FounderError::UnknownRequest)?;
+            let request = self
+                .pending
+                .get_mut(&request_key)
+                .ok_or(FounderError::UnknownRequest)?;
             let approver_key = hex::encode(approver_id);
             if request.approvals.contains_key(&approver_key) {
                 return Err(FounderError::DuplicateApproval);
             }
             request.approvals.insert(approver_key, signature.to_vec());
-            let all_approved = request.required_approvers.iter()
+            let all_approved = request
+                .required_approvers
+                .iter()
                 .all(|id| request.approvals.contains_key(&hex::encode(id)));
             if !all_approved {
                 return Ok(());

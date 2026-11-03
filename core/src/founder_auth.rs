@@ -136,7 +136,12 @@ impl FounderLogin {
         let expires_tick = now.saturating_add(ttl.max(1));
         let challenge_id = hash(
             b"AWENET/FOUNDER-LOGIN-CHALLENGE/v1",
-            &[requested_device_id.as_slice(), nonce.as_slice(), &now.to_be_bytes()].concat(),
+            &[
+                requested_device_id.as_slice(),
+                nonce.as_slice(),
+                &now.to_be_bytes(),
+            ]
+            .concat(),
         );
         let challenge = FounderLoginChallenge {
             challenge_id,
@@ -145,7 +150,8 @@ impl FounderLogin {
             issued_tick: now,
             expires_tick,
         };
-        self.challenges.insert(hex::encode(challenge_id), challenge.clone());
+        self.challenges
+            .insert(hex::encode(challenge_id), challenge.clone());
         Ok(challenge)
     }
 
@@ -175,7 +181,10 @@ impl FounderLogin {
         let device_key = VerifyingKey::from_bytes(&device.public_key)
             .map_err(|_| FounderAuthError::InvalidSignature)?;
         if device_key
-            .verify(&login_message(&challenge), &Signature::from_bytes(&signature))
+            .verify(
+                &login_message(&challenge),
+                &Signature::from_bytes(&signature),
+            )
             .is_err()
         {
             let failure = self
@@ -224,7 +233,10 @@ impl FounderLogin {
         now: u64,
     ) -> Result<[u8; 32], FounderAuthError> {
         let key = hex::encode(hash(b"AWENET/FOUNDER-SESSION/v1", token));
-        let session = self.sessions.get(&key).ok_or(FounderAuthError::InvalidSession)?;
+        let session = self
+            .sessions
+            .get(&key)
+            .ok_or(FounderAuthError::InvalidSession)?;
         if session.revoked || session.restricted || now >= session.expires_tick {
             return Err(FounderAuthError::InvalidSession);
         }
@@ -233,14 +245,20 @@ impl FounderLogin {
 
     pub fn restrict_session(&mut self, token: &[u8; 32]) -> Result<(), FounderAuthError> {
         let key = hex::encode(hash(b"AWENET/FOUNDER-SESSION/v1", token));
-        let session = self.sessions.get_mut(&key).ok_or(FounderAuthError::InvalidSession)?;
+        let session = self
+            .sessions
+            .get_mut(&key)
+            .ok_or(FounderAuthError::InvalidSession)?;
         session.restricted = true;
         Ok(())
     }
 
     pub fn revoke_session(&mut self, token: &[u8; 32]) -> Result<(), FounderAuthError> {
         let key = hex::encode(hash(b"AWENET/FOUNDER-SESSION/v1", token));
-        let session = self.sessions.get_mut(&key).ok_or(FounderAuthError::InvalidSession)?;
+        let session = self
+            .sessions
+            .get_mut(&key)
+            .ok_or(FounderAuthError::InvalidSession)?;
         session.revoked = true;
         Ok(())
     }
@@ -300,8 +318,13 @@ mod tests {
         OsRng.fill_bytes(&mut random);
         let path = std::env::temp_dir().join(format!("awenet-auth-{}.json", hex::encode(random)));
         let genesis = FounderGenesis::initialize_once(
-            &path, &founder, &secret, digest, FounderRules::default(),
-        ).unwrap();
+            &path,
+            &founder,
+            &secret,
+            digest,
+            FounderRules::default(),
+        )
+        .unwrap();
         let devices = FounderDevices::new(&genesis, "Founder device").unwrap();
         (founder, devices, path)
     }
@@ -313,9 +336,14 @@ mod tests {
         let mut auth = FounderLogin::new();
         let challenge = auth.request_challenge(&devices, id, 10, 20).unwrap();
         let signature = founder.sign(&login_message(&challenge));
-        let session = auth.complete_login(&devices, challenge.challenge_id, signature, 11, 50).unwrap();
+        let session = auth
+            .complete_login(&devices, challenge.challenge_id, signature, 11, 50)
+            .unwrap();
         assert_eq!(auth.validate_session(&session.token, 12).unwrap(), id);
-        assert_eq!(auth.validate_session(&session.token, 61), Err(FounderAuthError::InvalidSession));
+        assert_eq!(
+            auth.validate_session(&session.token, 61),
+            Err(FounderAuthError::InvalidSession)
+        );
         fs::remove_file(path).unwrap();
     }
 
@@ -337,7 +365,9 @@ mod tests {
         let attacker = Identity::generate(Username::new("attacker").unwrap());
         let mut auth = FounderLogin::new();
         for tick in 1..=MAX_FAILED_LOGINS {
-            let c = auth.request_challenge(&devices, id, tick as u64, 20).unwrap();
+            let c = auth
+                .request_challenge(&devices, id, tick as u64, 20)
+                .unwrap();
             let bad = attacker.sign(&login_message(&c));
             assert_eq!(
                 auth.complete_login(&devices, c.challenge_id, bad, tick as u64, 100),
@@ -358,11 +388,30 @@ mod tests {
         let id = device_id(&founder.public.public_key);
         let mut auth = FounderLogin::new();
         let c1 = auth.request_challenge(&devices, id, 1, 20).unwrap();
-        let s1 = auth.complete_login(&devices, c1.challenge_id, founder.sign(&login_message(&c1)), 2, 100).unwrap();
+        let s1 = auth
+            .complete_login(
+                &devices,
+                c1.challenge_id,
+                founder.sign(&login_message(&c1)),
+                2,
+                100,
+            )
+            .unwrap();
         let c2 = auth.request_challenge(&devices, id, 3, 20).unwrap();
-        let s2 = auth.complete_login(&devices, c2.challenge_id, founder.sign(&login_message(&c2)), 4, 100).unwrap();
+        let s2 = auth
+            .complete_login(
+                &devices,
+                c2.challenge_id,
+                founder.sign(&login_message(&c2)),
+                4,
+                100,
+            )
+            .unwrap();
         auth.record_suspicious_login(&s1.token).unwrap();
-        assert_eq!(auth.validate_session(&s1.token, 5), Err(FounderAuthError::InvalidSession));
+        assert_eq!(
+            auth.validate_session(&s1.token, 5),
+            Err(FounderAuthError::InvalidSession)
+        );
         assert!(auth.validate_session(&s2.token, 5).is_ok());
         assert_eq!(auth.revoke_all_sessions(), 2);
         assert_eq!(auth.active_session_count(5), 0);
@@ -376,7 +425,8 @@ mod tests {
         let mut auth = FounderLogin::new();
         let c = auth.request_challenge(&devices, id, 1, 20).unwrap();
         let sig = founder.sign(&login_message(&c));
-        auth.complete_login(&devices, c.challenge_id, sig, 2, 100).unwrap();
+        auth.complete_login(&devices, c.challenge_id, sig, 2, 100)
+            .unwrap();
         assert_eq!(
             auth.complete_login(&devices, c.challenge_id, sig, 3, 100),
             Err(FounderAuthError::InvalidChallenge)
