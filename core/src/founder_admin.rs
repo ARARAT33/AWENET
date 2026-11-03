@@ -74,6 +74,8 @@ pub enum NeterError {
     DelegationNotGranted,
     #[error("delegated scopes exceed the appointing Neter's scopes")]
     ScopeEscalation,
+    #[error("only the founder may set Neter compensation")]
+    CompensationRequiresFounder,
     #[error("invalid or duplicate capability scope")]
     InvalidScopes,
     #[error("application is unknown")]
@@ -361,6 +363,9 @@ impl NeterRegistry {
             .ok_or(NeterError::InactiveNeter)?;
         if !parent.can_appoint_neter {
             return Err(NeterError::DelegationNotGranted);
+        }
+        if compensation_atoms_per_task != 0 {
+            return Err(NeterError::CompensationRequiresFounder);
         }
         if scopes.iter().any(|scope| !parent.scopes.contains(scope)) {
             return Err(NeterError::ScopeEscalation);
