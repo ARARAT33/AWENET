@@ -7,9 +7,9 @@ use awep2p_core::diagnostics::{NodeDiagnostics, NodeMetrics};
 use awep2p_core::federation::{
     self, AweNetConfig, AweNodeConfig, DataCentreConfig, DataGroupConfig,
 };
-use awep2p_core::identity::{AweId, AweSecret, Identity, LocalVault, Username};
 use awep2p_core::founder::{FounderRules, FOUNDER_USERNAME};
 use awep2p_core::founder_runtime::FounderPersistentState;
+use awep2p_core::identity::{AweId, AweSecret, Identity, LocalVault, Username};
 use awep2p_core::lan_mesh::LanPeerBeacon;
 use awep2p_core::messenger::format_uid;
 use awep2p_core::network::{format_node_descriptor, Node};
@@ -1662,8 +1662,9 @@ async fn run_product() -> Result<()> {
     let founder_directory = data_dir.join("founder");
     let founder_state: Option<FounderState> = if founder_directory.join("genesis.json").exists() {
         Some(Arc::new(Mutex::new(
-            FounderPersistentState::load(&founder_directory)
-                .context("Founder Authority Genesis exists but its signed state could not be loaded")?
+            FounderPersistentState::load(&founder_directory).context(
+                "Founder Authority Genesis exists but its signed state could not be loaded",
+            )?,
         )))
     } else {
         None
@@ -2507,7 +2508,6 @@ async fn probe(address: SocketAddr) -> Result<()> {
     Ok(())
 }
 
-
 fn founder_data_directory() -> PathBuf {
     if let Some(value) = env::var_os("AWE_DATA_DIR") {
         PathBuf::from(value)
@@ -2524,13 +2524,14 @@ fn initialize_founder(
     device_username: String,
     bootstrap_secret_path: PathBuf,
 ) -> Result<()> {
-    let digest_text = env::var("AWE_FOUNDER_BOOTSTRAP_DIGEST")
-        .context("set AWE_FOUNDER_BOOTSTRAP_DIGEST to the pinned 32-byte hex digest before initialization")?;
+    let digest_text = env::var("AWE_FOUNDER_BOOTSTRAP_DIGEST").context(
+        "set AWE_FOUNDER_BOOTSTRAP_DIGEST to the pinned 32-byte hex digest before initialization",
+    )?;
     let digest_bytes = hex::decode(digest_text.trim())
         .context("AWE_FOUNDER_BOOTSTRAP_DIGEST must be 64 hexadecimal characters")?;
-    let expected_digest: [u8; 32] = digest_bytes
-        .try_into()
-        .map_err(|_| anyhow::anyhow!("AWE_FOUNDER_BOOTSTRAP_DIGEST must decode to exactly 32 bytes"))?;
+    let expected_digest: [u8; 32] = digest_bytes.try_into().map_err(|_| {
+        anyhow::anyhow!("AWE_FOUNDER_BOOTSTRAP_DIGEST must decode to exactly 32 bytes")
+    })?;
     let founder_password = rpassword::prompt_password("Founder vault password: ")?;
     let device_password = rpassword::prompt_password("Initial device vault password: ")?;
     let founder = load_identity(&founder_vault, &founder_password, FOUNDER_USERNAME)?;
@@ -2546,11 +2547,15 @@ fn initialize_founder(
         expected_digest,
         "Initial founder device",
         FounderRules::default(),
-    ).context("Founder Genesis initialization failed")?;
+    )
+    .context("Founder Genesis initialization failed")?;
     println!("Founder Genesis initialized.");
     println!("Founder username: {}", FOUNDER_USERNAME);
     println!("Founder AWE-ID: {}", state.founder_id());
-    println!("Network ID: {}", hex::encode(state.genesis.payload.network_id));
+    println!(
+        "Network ID: {}",
+        hex::encode(state.genesis.payload.network_id)
+    );
     println!("Signed state snapshot: {}", state.snapshot_sequence());
     println!("Stored under: {}", directory.display());
     Ok(())
@@ -2560,13 +2565,28 @@ fn print_founder_status(directory: PathBuf) -> Result<()> {
     let state = FounderPersistentState::load(&directory.join("founder"))?;
     println!("Founder: {}", FOUNDER_USERNAME);
     println!("Founder AWE-ID: {}", state.founder_id());
-    println!("Network ID: {}", hex::encode(state.genesis.payload.network_id));
+    println!(
+        "Network ID: {}",
+        hex::encode(state.genesis.payload.network_id)
+    );
     println!("Snapshot sequence: {}", state.snapshot_sequence());
-    println!("Approved devices: {}", state.devices.approved_devices().len());
-    println!("Pending device requests: {}", state.devices.pending_requests().count());
+    println!(
+        "Approved devices: {}",
+        state.devices.approved_devices().len()
+    );
+    println!(
+        "Pending device requests: {}",
+        state.devices.pending_requests().count()
+    );
     println!("Active Neters: {}", state.neters.active().len());
-    println!("Account emergency lock: {}", state.emergency.account_locked());
-    println!("Governance emergency lock: {}", state.emergency.governance_locked());
+    println!(
+        "Account emergency lock: {}",
+        state.emergency.account_locked()
+    );
+    println!(
+        "Governance emergency lock: {}",
+        state.emergency.governance_locked()
+    );
     Ok(())
 }
 
@@ -2580,11 +2600,18 @@ async fn main() -> Result<()> {
             let device_vault = args.next().map(PathBuf::from).unwrap_or_else(|| usage());
             let device_username = args.next().unwrap_or_else(|| usage());
             let bootstrap_secret = args.next().map(PathBuf::from).unwrap_or_else(|| usage());
-            initialize_founder(founder_vault, device_vault, device_username, bootstrap_secret)
+            initialize_founder(
+                founder_vault,
+                device_vault,
+                device_username,
+                bootstrap_secret,
+            )
         }
-        Some("founder-status") => {
-            print_founder_status(args.next().map(PathBuf::from).unwrap_or_else(founder_data_directory))
-        },
+        Some("founder-status") => print_founder_status(
+            args.next()
+                .map(PathBuf::from)
+                .unwrap_or_else(founder_data_directory),
+        ),
         Some("secret") => {
             let username = args.next().unwrap_or_else(|| usage());
             generate_secret_file(&username, args.next().map(PathBuf::from))
