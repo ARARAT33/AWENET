@@ -49,6 +49,7 @@ pub mod federation;
 pub mod firewall;
 pub mod founder;
 pub mod founder_auth;
+pub mod founder_admin;
 pub mod fuzz;
 pub mod governance;
 pub mod host;
