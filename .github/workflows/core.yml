@@ -70,34 +70,16 @@ jobs:
             echo "### CI diagnostics (automated)"
             echo ""
             echo "build=${{ steps.build.outcome }} tests=${{ steps.tests.outcome }} smoke=${{ steps.smoke.outcome }} clippy=${{ steps.clippy.outcome }}"
-            if [ "${{ steps.build.outcome }}" = "failure" ]; then
-              echo ""
-              echo "#### cargo check"
+            echo ""
+            echo "environment: $(rustc -V) cargo $(cargo -V 2>&1 | head -n 1)"
+            echo ""
+            echo "disk: $(df -h . | tail -n 1)"
+            echo ""
+            echo "#### cargo check (raw tail)"
               echo '```'
-              cargo check --workspace --all-targets --message-format=short 2>&1 | grep -E 'error(\[[^]]*\])?:' | head -n 40
+              cargo check --workspace --all-targets --message-format=short > diag.txt 2>&1; echo "cargo exit: $?" >> diag.txt
+              tail -n 80 diag.txt
               echo '```'
-            fi
-            if [ "${{ steps.tests.outcome }}" = "failure" ]; then
-              echo ""
-              echo "#### unit and integration tests"
-              echo '```'
-              cargo test --workspace --all-targets 2>&1 | grep -E '(^failures:$|^---- |FAILED|panicked at )' | head -n 60
-              echo '```'
-            fi
-            if [ "${{ steps.smoke.outcome }}" = "failure" ]; then
-              echo ""
-              echo "#### product smoke test"
-              echo '```'
-              cargo test -p awe-node --test product_smoke -- --nocapture 2>&1 | tail -n 60
-              echo '```'
-            fi
-            if [ "${{ steps.clippy.outcome }}" = "failure" ]; then
-              echo ""
-              echo "#### clippy"
-              echo '```'
-              cargo clippy --workspace --all-targets --message-format=short 2>&1 | grep -E 'error(\[[^]]*\])?:' | head -n 40
-              echo '```'
-            fi
           } > diagnostics.md
           gh pr comment "${{ github.event.pull_request.number }}" --body-file diagnostics.md
 
