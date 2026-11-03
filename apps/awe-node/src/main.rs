@@ -7,7 +7,7 @@ use awep2p_core::diagnostics::{NodeDiagnostics, NodeMetrics};
 use awep2p_core::federation::{
     self, AweNetConfig, AweNodeConfig, DataCentreConfig, DataGroupConfig,
 };
-use awep2p_core::founder::{FounderRules, FOUNDER_USERNAME};
+use awep2p_core::founder::{bootstrap_digest, FounderRules, FOUNDER_USERNAME};
 use awep2p_core::founder_runtime::FounderPersistentState;
 use awep2p_core::identity::{AweId, AweSecret, Identity, LocalVault, Username};
 use awep2p_core::lan_mesh::LanPeerBeacon;
@@ -2518,6 +2518,19 @@ fn founder_data_directory() -> PathBuf {
     }
 }
 
+fn print_founder_bootstrap_digest(secret_path: PathBuf) -> Result<()> {
+    let secret = fs::read(&secret_path)
+        .context("could not read the founder bootstrap secret file")?;
+    if secret.len() < 32 {
+        anyhow::bail!("founder bootstrap secret must contain at least 32 random bytes");
+    }
+    println!(
+        "AWE_FOUNDER_BOOTSTRAP_DIGEST={}",
+        hex::encode(bootstrap_digest(&secret))
+    );
+    Ok(())
+}
+
 fn initialize_founder(
     founder_vault: PathBuf,
     device_vault: PathBuf,
@@ -2595,6 +2608,9 @@ async fn main() -> Result<()> {
     let mut args = env::args().skip(1);
     match args.next().as_deref() {
         None | Some("app") | Some("gui") => run_product().await,
+        Some("founder-digest") => {
+            print_founder_bootstrap_digest(args.next().map(PathBuf::from).unwrap_or_else(|| usage()))
+        }
         Some("founder-init") => {
             let founder_vault = args.next().map(PathBuf::from).unwrap_or_else(|| usage());
             let device_vault = args.next().map(PathBuf::from).unwrap_or_else(|| usage());
