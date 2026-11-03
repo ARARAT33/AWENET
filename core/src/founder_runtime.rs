@@ -1,6 +1,6 @@
 //! Crash-safe, founder-signed snapshots for the Founder Authority runtime.
 //!
-//! Snapshot files are immutable and atomically renamed into place. Each snapshot
+//! Snapshot files are immutable and atomically published without overwriting an existing sequence number. Each snapshot
 //! is signed by the founder authority key; loading verifies the signature and
 //! falls back to the newest earlier valid snapshot if the latest one is damaged.
 //! The caller must invoke save() after every successful state mutation.
