@@ -271,6 +271,8 @@ The network must fail closed for founder-only operations when authorization cann
 - Persistent founder runtime snapshots with signature verification and damaged-latest fallback.
 - Explicit local founder initialization/status/digest CLI commands.
 - Node startup loads founder state; read-only `GET /api/founder/status` exposes status.
+- Device-signed login endpoints are present: `POST /api/founder/login/challenge`, `POST /api/founder/login/complete`, `GET /api/founder/session`, and `POST /api/founder/logout`. Challenges and sessions currently live in process memory and are invalidated by restart; durable transactional session/revocation storage remains required.
+- The desktop UI has a read-only Founder Authority overview that consumes the live status endpoint. It does not pretend to provide the full administration console or device-key signing bridge.
 
 ### Not yet complete — do not claim production readiness
 
