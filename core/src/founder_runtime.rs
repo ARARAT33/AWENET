@@ -119,7 +119,10 @@ impl FounderPersistentState {
             let entry = entry.map_err(storage_error)?;
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            if let Some(raw) = name.strip_prefix("snapshot-").and_then(|v| v.strip_suffix(".json")) {
+            if let Some(raw) = name
+                .strip_prefix("snapshot-")
+                .and_then(|v| v.strip_suffix(".json"))
+            {
                 if let Ok(sequence) = raw.parse::<u64>() {
                     candidates.push((sequence, entry.path()));
                 }
@@ -128,9 +131,7 @@ impl FounderPersistentState {
         candidates.sort_by(|a, b| b.0.cmp(&a.0));
         for (sequence, path) in candidates {
             if let Ok(snapshot) = read_snapshot(&path) {
-                if snapshot.payload.sequence != sequence
-                    || !verify_snapshot(&genesis, &snapshot)
-                {
+                if snapshot.payload.sequence != sequence || !verify_snapshot(&genesis, &snapshot) {
                     continue;
                 }
                 return Ok(Self {
@@ -152,7 +153,9 @@ impl FounderPersistentState {
         if founder.public.public_key != self.genesis.payload.founder_public_key {
             return Err(FounderStateError::WrongFounderKey);
         }
-        let sequence = self.sequence.checked_add(1)
+        let sequence = self
+            .sequence
+            .checked_add(1)
             .ok_or_else(|| FounderStateError::Storage("snapshot sequence exhausted".into()))?;
         let payload = FounderSnapshotPayload {
             sequence,
@@ -185,7 +188,10 @@ impl FounderPersistentState {
 }
 
 fn read_snapshot(path: &Path) -> Result<SignedFounderSnapshot, FounderStateError> {
-    let file = OpenOptions::new().read(true).open(path).map_err(storage_error)?;
+    let file = OpenOptions::new()
+        .read(true)
+        .open(path)
+        .map_err(storage_error)?;
     let mut bytes = Vec::new();
     file.take(MAX_SNAPSHOT_BYTES)
         .read_to_end(&mut bytes)
@@ -205,11 +211,14 @@ fn verify_snapshot(genesis: &FounderGenesis, snapshot: &SignedFounderSnapshot) -
     };
     let mut signing_bytes = SNAPSHOT_DOMAIN.to_vec();
     signing_bytes.extend_from_slice(&payload_bytes);
-    key.verify(&signing_bytes, &Signature::from_bytes(&snapshot.signature)).is_ok()
+    key.verify(&signing_bytes, &Signature::from_bytes(&snapshot.signature))
+        .is_ok()
 }
 
 fn write_new_snapshot(path: &Path, bytes: &[u8]) -> Result<(), FounderStateError> {
-    let parent = path.parent().ok_or_else(|| FounderStateError::Storage("snapshot directory missing".into()))?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| FounderStateError::Storage("snapshot directory missing".into()))?;
     let mut nonce = [0u8; 16];
     OsRng.fill_bytes(&mut nonce);
     let temp_path = parent.join(format!(".snapshot-{}.tmp", hex::encode(nonce)));
@@ -265,7 +274,8 @@ mod tests {
             digest,
             "Founder device",
             FounderRules::default(),
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(state.snapshot_sequence(), 1);
         state.login.revoke_all_sessions();
         assert_eq!(state.save(&founder).unwrap(), 2);
@@ -291,9 +301,14 @@ mod tests {
             digest,
             "Founder device",
             FounderRules::default(),
-        ).unwrap();
+        )
+        .unwrap();
         state.save(&founder).unwrap();
-        fs::write(directory.join("snapshot-00000000000000000002.json"), b"broken").unwrap();
+        fs::write(
+            directory.join("snapshot-00000000000000000002.json"),
+            b"broken",
+        )
+        .unwrap();
         let loaded = FounderPersistentState::load(&directory).unwrap();
         assert_eq!(loaded.snapshot_sequence(), 1);
         fs::remove_dir_all(directory).unwrap();
