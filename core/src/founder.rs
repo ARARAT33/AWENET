@@ -67,6 +67,8 @@ pub struct GenesisPayload {
     pub founder_username: String,
     pub founder_id: [u8; 32],
     pub founder_public_key: [u8; 32],
+    /// Device-specific public key; deliberately distinct from the founder authority key.
+    pub initial_device_public_key: [u8; 32],
     pub network_id: [u8; 32],
     pub created_nonce: [u8; 32],
     pub rules: FounderRules,
@@ -138,6 +140,7 @@ impl FounderGenesis {
     pub fn initialize_once(
         path: &Path,
         founder: &Identity,
+        initial_device_public_key: [u8; 32],
         bootstrap_secret: &[u8],
         expected_bootstrap_digest: [u8; 32],
         rules: FounderRules,
@@ -165,14 +168,17 @@ impl FounderGenesis {
             founder_username: FOUNDER_USERNAME.into(),
             founder_id: *founder.public.awe_id.as_bytes(),
             founder_public_key: founder.public.public_key,
+            initial_device_public_key,
             network_id: hash(b"AWENET/NETWORK-ID/v1", &nonce),
             created_nonce: nonce,
             rules,
         };
-        let bytes =
+        let payload_bytes =
             serde_json::to_vec(&payload).map_err(|e| FounderError::Storage(e.to_string()))?;
+        let mut signing_bytes = b"AWENET/FOUNDER-GENESIS/v1\\0".to_vec();
+        signing_bytes.extend_from_slice(&payload_bytes);
         let record = Self {
-            signature: founder.sign(&bytes),
+            signature: founder.sign(&signing_bytes),
             payload,
         };
         record.verify()?;
@@ -225,6 +231,8 @@ impl FounderGenesis {
             || p.version != GENESIS_VERSION
             || p.founder_username != FOUNDER_USERNAME
             || p.founder_id != *AweId::from_public_key(&p.founder_public_key).as_bytes()
+            || p.initial_device_public_key == p.founder_public_key
+            || VerifyingKey::from_bytes(&p.initial_device_public_key).is_err()
             || p.network_id != hash(b"AWENET/NETWORK-ID/v1", &p.created_nonce)
             || !p.rules.founder_is_irremovable
             || p.rules.community_votes_can_replace_founder
@@ -237,8 +245,10 @@ impl FounderGenesis {
         }
         let key = VerifyingKey::from_bytes(&p.founder_public_key)
             .map_err(|_| FounderError::InvalidGenesis)?;
-        let bytes = serde_json::to_vec(p).map_err(|_| FounderError::InvalidGenesis)?;
-        key.verify(&bytes, &Signature::from_bytes(&self.signature))
+        let payload_bytes = serde_json::to_vec(p).map_err(|_| FounderError::InvalidGenesis)?;
+        let mut signing_bytes = b"AWENET/FOUNDER-GENESIS/v1\\0".to_vec();
+        signing_bytes.extend_from_slice(&payload_bytes);
+        key.verify(&signing_bytes, &Signature::from_bytes(&self.signature))
             .map_err(|_| FounderError::InvalidGenesis)
     }
 
@@ -291,13 +301,13 @@ pub struct FounderDevices {
 impl FounderDevices {
     pub fn new(genesis: &FounderGenesis, first_device_label: &str) -> Result<Self, FounderError> {
         genesis.verify()?;
-        let id = device_id(&genesis.payload.founder_public_key);
+        let id = device_id(&genesis.payload.initial_device_public_key);
         let mut devices = BTreeMap::new();
         devices.insert(
             hex::encode(id),
             DeviceRecord {
                 device_id: id,
-                public_key: genesis.payload.founder_public_key,
+                public_key: genesis.payload.initial_device_public_key,
                 label: first_device_label.chars().take(80).collect(),
                 approved_at: 0,
                 blocked: false,
