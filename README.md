@@ -43,6 +43,12 @@ while exposing a small, stable product orchestration model on top.
 | Names, Store, Messenger | `namespace`, `host`, `store`, `messenger` | AWEwww/AWETLD names, hosted sites, Store, Messenger |
 | Economy (ONECOIN) | `onecoin*`, `onebank`, `governance` | Distributed finality, payments, wallets, governance |
 
+## Founder Authority
+
+AWENET has one immutable founder identity, `AWENeter`, established by a signed one-time Genesis trust record. Founder authority is independent of node operation: the founder can govern from an approved device without running a server. Device approval, device-bound sessions, signed governance, bounded Neter delegation, emergency locks and auditable administration are defined in the [Founder Authority specification](docs/FOUNDER-AUTHORITY.md).
+
+The implementation is being integrated into the node and all privileged control paths. The current branch contains the cryptographic domain core, signed persistent snapshots, explicit founder bootstrap CLI and read-only founder status endpoint. The full Control Center, recovery, remote approval delivery and mandatory authorization middleware are still in progress; this is not yet production-ready.
+
 ## Product architecture
 
 The product facade is in `core/src/product.rs`. It gives the existing
