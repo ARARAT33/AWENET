@@ -456,9 +456,9 @@ impl FounderDevices {
     }
     pub fn device_was_denied(&self, public_key: &[u8; 32]) -> bool {
         let target = device_id(public_key);
-        self.audit.iter().any(|entry| {
-            entry.action == "device_denied" && entry.target_device == Some(target)
-        })
+        self.audit
+            .iter()
+            .any(|entry| entry.action == "device_denied" && entry.target_device == Some(target))
     }
 
     pub fn audit(&self) -> impl Iterator<Item = &FounderAuditRecord> {
