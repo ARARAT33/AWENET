@@ -234,6 +234,7 @@ impl FounderLogin {
     /// Returns the device bound to a valid, unrestricted session.
     pub fn validate_session(
         &self,
+        devices: &FounderDevices,
         token: &[u8; 32],
         now: u64,
     ) -> Result<[u8; 32], FounderAuthError> {
@@ -242,7 +243,14 @@ impl FounderLogin {
             .sessions
             .get(&key)
             .ok_or(FounderAuthError::InvalidSession)?;
-        if session.revoked || session.restricted || now >= session.expires_tick {
+        if session.revoked
+            || session.restricted
+            || now >= session.expires_tick
+            || !devices
+                .approved_devices()
+                .iter()
+                .any(|device| device.device_id == session.device_id)
+        {
             return Err(FounderAuthError::InvalidSession);
         }
         Ok(session.device_id)
@@ -344,9 +352,9 @@ mod tests {
         let session = auth
             .complete_login(&devices, challenge.challenge_id, signature, 11, 50)
             .unwrap();
-        assert_eq!(auth.validate_session(&session.token, 12).unwrap(), id);
+        assert_eq!(auth.validate_session(&devices, &session.token, 12).unwrap(), id);
         assert_eq!(
-            auth.validate_session(&session.token, 61),
+            auth.validate_session(&devices, &session.token, 61),
             Err(FounderAuthError::InvalidSession)
         );
         fs::remove_file(path).unwrap();
@@ -414,10 +422,10 @@ mod tests {
             .unwrap();
         auth.record_suspicious_login(&s1.token).unwrap();
         assert_eq!(
-            auth.validate_session(&s1.token, 5),
+            auth.validate_session(&devices, &s1.token, 5),
             Err(FounderAuthError::InvalidSession)
         );
-        assert!(auth.validate_session(&s2.token, 5).is_ok());
+        assert!(auth.validate_session(&devices, &s2.token, 5).is_ok());
         assert_eq!(auth.revoke_all_sessions(), 2);
         assert_eq!(auth.active_session_count(5), 0);
         fs::remove_file(path).unwrap();
