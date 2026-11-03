@@ -2519,8 +2519,8 @@ fn founder_data_directory() -> PathBuf {
 }
 
 fn print_founder_bootstrap_digest(secret_path: PathBuf) -> Result<()> {
-    let secret = fs::read(&secret_path)
-        .context("could not read the founder bootstrap secret file")?;
+    let secret =
+        fs::read(&secret_path).context("could not read the founder bootstrap secret file")?;
     if secret.len() < 32 {
         anyhow::bail!("founder bootstrap secret must contain at least 32 random bytes");
     }
@@ -2608,9 +2608,9 @@ async fn main() -> Result<()> {
     let mut args = env::args().skip(1);
     match args.next().as_deref() {
         None | Some("app") | Some("gui") => run_product().await,
-        Some("founder-digest") => {
-            print_founder_bootstrap_digest(args.next().map(PathBuf::from).unwrap_or_else(|| usage()))
-        }
+        Some("founder-digest") => print_founder_bootstrap_digest(
+            args.next().map(PathBuf::from).unwrap_or_else(|| usage()),
+        ),
         Some("founder-init") => {
             let founder_vault = args.next().map(PathBuf::from).unwrap_or_else(|| usage());
             let device_vault = args.next().map(PathBuf::from).unwrap_or_else(|| usage());
