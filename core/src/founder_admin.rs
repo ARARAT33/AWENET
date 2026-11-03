@@ -605,6 +605,47 @@ mod tests {
     }
 
     #[test]
+    fn application_requires_applicant_proof_and_founder_approval() {
+        let (founder, genesis, mut registry, path) = setup();
+        let applicant = Identity::generate(Username::new("applicant").unwrap());
+        let scopes = vec!["awenet:tasks".into()];
+        let display = "Task reviewer";
+        let message = "I can review AWENET tasks";
+        let proof = application_proof_message(
+            applicant.public.public_key, display, &scopes, message, 4,
+        );
+        let app = registry.submit_application(
+            applicant.public.public_key,
+            display,
+            scopes.clone(),
+            message,
+            4,
+            applicant.sign(&proof),
+        ).unwrap();
+        let approval = serde_json::to_vec(&ApplicationApprovalStatement {
+            domain: "AWENET/NETER-APPLICATION-APPROVAL/v1",
+            application_id: app.application_id,
+            candidate_public_key: applicant.public.public_key,
+            approved_scopes: &scopes,
+            can_appoint_neter: false,
+            compensation_atoms_per_task: 25,
+            tick: 5,
+        }).unwrap();
+        let record = registry.approve_application(
+            &genesis,
+            app.application_id,
+            scopes,
+            false,
+            25,
+            5,
+            founder.sign(&approval),
+        ).unwrap();
+        assert_eq!(registry.get(&record.neter_id).unwrap().status, NeterStatus::Active);
+        assert_eq!(registry.applications().count(), 0);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn delegation_requires_founder_grant_and_cannot_escalate_scopes() {
         let (founder, genesis, mut registry, path) = setup();
         let parent = Identity::generate(Username::new("parent").unwrap());
