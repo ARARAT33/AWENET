@@ -479,13 +479,11 @@ fn three_node_product_smoke() {
             federation_after_success["local_data_group_id"],
             "dg-import-smoke"
         );
-        assert!(
-            federation_after_success["joined_data_groups"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|group| group == "dg-import-smoke")
-        );
+        assert!(federation_after_success["joined_data_groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|group| group == "dg-import-smoke"));
         let federation_file = dirs[0].join("awenet.json");
         let persisted: serde_json::Value =
             serde_json::from_slice(&fs::read(&federation_file).expect("read persisted federation"))
@@ -513,11 +511,7 @@ fn three_node_product_smoke() {
             "content": failing_invitation.to_string()
         })
         .to_string();
-        let import_response = post_raw(
-            "127.0.0.1:46201",
-            "/api/federation/import",
-            &failing_body,
-        );
+        let import_response = post_raw("127.0.0.1:46201", "/api/federation/import", &failing_body);
         assert!(
             import_response.starts_with("HTTP/1.1 500 Internal Server Error"),
             "failed federation persistence must return 500: {import_response}"
