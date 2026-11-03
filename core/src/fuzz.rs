@@ -139,7 +139,13 @@ mod tests {
     use super::*;
 
     fn config(seed: u64) -> FuzzConfig {
-        FuzzConfig { seed, ticks: 200, nodes: 5, sends_per_tick: 4, intensity: 40 }
+        FuzzConfig {
+            seed,
+            ticks: 200,
+            nodes: 5,
+            sends_per_tick: 4,
+            intensity: 40,
+        }
     }
 
     #[test]

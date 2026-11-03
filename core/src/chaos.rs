@@ -148,7 +148,12 @@ pub struct ChaosDriver {
 
 impl ChaosDriver {
     pub fn new(plan: ChaosPlan) -> Self {
-        Self { plan, cursor: 0, applied: 0, skipped: 0 }
+        Self {
+            plan,
+            cursor: 0,
+            applied: 0,
+            skipped: 0,
+        }
     }
 
     /// Applies every plan event scheduled at or before now.

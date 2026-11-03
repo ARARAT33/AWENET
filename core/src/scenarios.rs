@@ -48,11 +48,7 @@ pub struct ScenarioReport {
 }
 
 /// Runs a named scenario with the given fleet size and horizon.
-pub fn run(
-    scenario: Scenario,
-    nodes: u64,
-    horizon: u64,
-) -> Result<ScenarioReport, ScenarioError> {
+pub fn run(scenario: Scenario, nodes: u64, horizon: u64) -> Result<ScenarioReport, ScenarioError> {
     if nodes == 0 || nodes > MAX_SCENARIO_NODES {
         return Err(ScenarioError::InvalidNodeCount);
     }
@@ -121,7 +117,15 @@ fn steady_delivery(nodes: u64, horizon: u64) -> Result<ScenarioReport, ScenarioE
         sim.step();
     }
     let liveness = conserved(&sim) && sim.stats().delivered == sim.stats().sent;
-    Ok(finish("steady-delivery", horizon, &sim, blocked, 0, 0, liveness))
+    Ok(finish(
+        "steady-delivery",
+        horizon,
+        &sim,
+        blocked,
+        0,
+        0,
+        liveness,
+    ))
 }
 
 fn partition_healing(nodes: u64, horizon: u64) -> Result<ScenarioReport, ScenarioError> {
@@ -197,7 +201,15 @@ fn message_storm(nodes: u64, horizon: u64) -> Result<ScenarioReport, ScenarioErr
         sim.step();
     }
     let liveness = conserved(&sim) && sim.stats().delivered == sim.stats().sent;
-    Ok(finish("message-storm", horizon, &sim, blocked, 0, 0, liveness))
+    Ok(finish(
+        "message-storm",
+        horizon,
+        &sim,
+        blocked,
+        0,
+        0,
+        liveness,
+    ))
 }
 
 #[cfg(test)]

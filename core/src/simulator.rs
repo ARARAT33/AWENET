@@ -199,7 +199,10 @@ impl Sim {
             sent_tick: self.tick,
             deliver_tick: self.tick + latency,
         };
-        self.scheduled.entry(envelope.deliver_tick).or_default().push(envelope);
+        self.scheduled
+            .entry(envelope.deliver_tick)
+            .or_default()
+            .push(envelope);
         Ok(id)
     }
 
@@ -329,10 +332,7 @@ mod tests {
         assert_eq!(s.remove_node(2).unwrap(), 1);
         assert_eq!(s.stats().dropped, 1);
         assert_eq!(s.in_flight(), 1);
-        assert_eq!(
-            s.drop_inflight_to(2).unwrap_err(),
-            SimError::UnknownNode(2)
-        );
+        assert_eq!(s.drop_inflight_to(2).unwrap_err(), SimError::UnknownNode(2));
     }
 
     #[test]
