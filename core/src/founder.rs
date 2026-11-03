@@ -93,6 +93,8 @@ pub enum FounderError {
     UnapprovedApprover,
     #[error("device approval signature is invalid")]
     InvalidApproval,
+    #[error("new device has not proved possession of its private key")]
+    InvalidDeviceProof,
     #[error("device is unknown or blocked")]
     DeviceBlocked,
     #[error("governance sequence is invalid")]
@@ -208,6 +210,8 @@ impl FounderGenesis {
             || p.rules.community_votes_can_replace_founder
             || !p.rules.new_devices_require_existing_device_approval
             || !p.rules.nodes_must_verify_founder_signatures
+            || !p.rules.offline_device_requests_remain_pending
+            || !p.rules.neter_delegation_requires_explicit_capability
         {
             return Err(FounderError::InvalidGenesis);
         }
@@ -238,6 +242,7 @@ pub struct DeviceRequest {
     pub label: String,
     pub requested_at: u64,
     pub nonce: [u8; 32],
+    pub proof_verified: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum DeviceDecision {
@@ -316,11 +321,32 @@ impl FounderDevices {
             label: label.chars().take(80).collect(),
             requested_at: tick,
             nonce,
+            proof_verified: false,
         };
         self.pending
             .insert(hex::encode(request_id), request.clone());
         Ok(request)
     }
+    /// The new device must first prove possession of the private key bound to
+    /// its submitted public key. This prevents an attacker from registering a
+    /// victim's public key and asking the founder to approve it.
+    pub fn prove_device_request(
+        &mut self,
+        request_id: [u8; 32],
+        proof_signature: [u8; 64],
+    ) -> Result<(), FounderError> {
+        let request = self
+            .pending
+            .get_mut(&hex::encode(request_id))
+            .ok_or(FounderError::UnknownRequest)?;
+        let key = VerifyingKey::from_bytes(&request.public_key)
+            .map_err(|_| FounderError::InvalidDeviceProof)?;
+        key.verify(&device_proof_message(request), &Signature::from_bytes(&proof_signature))
+            .map_err(|_| FounderError::InvalidDeviceProof)?;
+        request.proof_verified = true;
+        Ok(())
+    }
+
     /// The signed approval statement is bound to the exact request and decision.
     /// Only a currently approved device may approve or deny another device.
     pub fn decide_request(
@@ -331,6 +357,11 @@ impl FounderDevices {
         signature: [u8; 64],
         tick: u64,
     ) -> Result<(), FounderError> {
+        let request_key = hex::encode(request_id);
+        let request = self.pending.get(&request_key).ok_or(FounderError::UnknownRequest)?;
+        if !request.proof_verified {
+            return Err(FounderError::InvalidDeviceProof);
+        }
         let approver = self
             .devices
             .get(&hex::encode(approver_id))
@@ -338,7 +369,6 @@ impl FounderDevices {
             .ok_or(FounderError::UnapprovedApprover)?;
         let key = VerifyingKey::from_bytes(&approver.public_key)
             .map_err(|_| FounderError::InvalidApproval)?;
-        let request_key = hex::encode(request_id);
         let request = self
             .pending
             .get(&request_key)
@@ -388,14 +418,21 @@ impl FounderDevices {
         blocked: bool,
         actor: [u8; 32],
         tick: u64,
+        signature: [u8; 64],
     ) -> Result<(), FounderError> {
-        if !self
+        let actor_key = self
             .devices
             .get(&hex::encode(actor))
-            .is_some_and(|d| !d.blocked)
-        {
-            return Err(FounderError::UnapprovedApprover);
-        }
+            .filter(|d| !d.blocked)
+            .map(|d| d.public_key)
+            .ok_or(FounderError::UnapprovedApprover)?;
+        let key = VerifyingKey::from_bytes(&actor_key)
+            .map_err(|_| FounderError::InvalidApproval)?;
+        key.verify(
+            &device_control_message(device, blocked, tick),
+            &Signature::from_bytes(&signature),
+        )
+        .map_err(|_| FounderError::InvalidApproval)?;
         let record = self
             .devices
             .get_mut(&hex::encode(device))
@@ -447,6 +484,42 @@ pub fn approval_message(request: &DeviceRequest, decision: &DeviceDecision) -> V
         decision,
     })
     .expect("approval statement serialization is infallible")
+}
+#[derive(Serialize)]
+struct DeviceProofStatement<'a> {
+    domain: &'static str,
+    request_id: [u8; 32],
+    public_key: [u8; 32],
+    label: &'a str,
+    requested_at: u64,
+    nonce: [u8; 32],
+}
+pub fn device_proof_message(request: &DeviceRequest) -> Vec<u8> {
+    serde_json::to_vec(&DeviceProofStatement {
+        domain: "AWENET/DEVICE-PROOF/v1",
+        request_id: request.request_id,
+        public_key: request.public_key,
+        label: &request.label,
+        requested_at: request.requested_at,
+        nonce: request.nonce,
+    })
+    .expect("device proof statement serialization is infallible")
+}
+pub fn device_control_message(device: [u8; 32], blocked: bool, tick: u64) -> Vec<u8> {
+    #[derive(Serialize)]
+    struct DeviceControlStatement {
+        domain: &'static str,
+        device: [u8; 32],
+        blocked: bool,
+        tick: u64,
+    }
+    serde_json::to_vec(&DeviceControlStatement {
+        domain: "AWENET/DEVICE-CONTROL/v1",
+        device,
+        blocked,
+        tick,
+    })
+    .expect("device control statement serialization is infallible")
 }
 pub fn device_id(public_key: &[u8; 32]) -> [u8; 32] {
     hash(b"AWENET/DEVICE-ID/v1", public_key)
@@ -502,7 +575,13 @@ impl SignedGovernanceUpdate {
         if self.sequence != expected_sequence || self.previous_hash != expected_previous_hash {
             return Err(FounderError::InvalidSequence);
         }
-        if !self.rules.founder_is_irremovable || self.rules.community_votes_can_replace_founder {
+        if !self.rules.founder_is_irremovable
+            || self.rules.community_votes_can_replace_founder
+            || !self.rules.new_devices_require_existing_device_approval
+            || !self.rules.offline_device_requests_remain_pending
+            || !self.rules.nodes_must_verify_founder_signatures
+            || !self.rules.neter_delegation_requires_explicit_capability
+        {
             return Err(FounderError::InvalidGovernanceSignature);
         }
         let statement = GovernanceStatement {
@@ -594,6 +673,8 @@ mod tests {
         let req = devices
             .request_device(second.public.public_key, "Laptop", 10)
             .unwrap();
+        let proof = second.sign(&device_proof_message(&req));
+        devices.prove_device_request(req.request_id, proof).unwrap();
         let sig = id.sign(&approval_message(&req, &DeviceDecision::Approved));
         devices
             .decide_request(
@@ -620,6 +701,8 @@ mod tests {
         let req = devices
             .request_device(second.public.public_key, "Laptop", 10)
             .unwrap();
+        let proof = second.sign(&device_proof_message(&req));
+        devices.prove_device_request(req.request_id, proof).unwrap();
         let sig = attacker.sign(&approval_message(&req, &DeviceDecision::Approved));
         assert_eq!(
             devices.decide_request(
@@ -632,6 +715,12 @@ mod tests {
             Err(FounderError::InvalidApproval)
         );
         assert_eq!(devices.pending.len(), 1);
+        let target = devices.approved_devices()[1].device_id;
+        let block_signature = id.sign(&device_control_message(target, true, 12));
+        devices
+            .block_device(target, true, device_id(&id.public.public_key), 12, block_signature)
+            .unwrap();
+        assert!(devices.approved_devices().iter().all(|d| d.device_id != target));
         fs::remove_file(p).unwrap();
     }
     #[test]
