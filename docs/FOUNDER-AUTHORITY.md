@@ -179,7 +179,6 @@ Founder state includes:
 
 - Genesis and pinned trust-root metadata;
 - approved, pending, denied, blocked and revoked devices;
-- login challenges, sessions, lockout counters and revocations;
 - governance sequence and hash chain;
 - Neter registry, applications, scopes, compensation and audit;
 - emergency lock state and signed emergency history;
@@ -196,7 +195,7 @@ Persistence requirements:
 - restore procedure that never rolls back device revocations or governance sequence;
 - corruption detection, backup health and operator-visible recovery status.
 
-Private signing keys, vault passwords, raw bootstrap secrets, recovery codes and session tokens must not be included in public state snapshots. Persisting a snapshot locally is not the same as replicated consensus. Replicated copies must be authenticated, encrypted where sensitive, and must not be allowed to establish a different trust root.
+Private signing keys, vault passwords, raw bootstrap secrets, recovery codes and session tokens must not be included in public state snapshots. Persisting a snapshot locally is not the same as replicated consensus. Founder login challenges, sessions and failed-login lockout counters are currently volatile process state and are intentionally excluded from signed snapshots. Restart invalidates all sessions and challenges. This is safer than accidentally restoring a bearer session after rollback, but persistent anti-brute-force lockout and durable revocation state are still release requirements. Replicated copies must be authenticated, encrypted where sensitive, and must not be allowed to establish a different trust root.
 
 ### Recovery
 
