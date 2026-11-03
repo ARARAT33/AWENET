@@ -5,10 +5,7 @@
 //! device already admitted by FounderDevices. Persist this state securely and
 //! deliver the challenge to the same device before exposing the Control Center.
 
-use crate::{
-    crypto::hash,
-    founder::FounderDevices,
-};
+use crate::{crypto::hash, founder::FounderDevices};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};

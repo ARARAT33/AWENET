@@ -510,7 +510,10 @@ impl FounderDevices {
         .map_err(|_| FounderError::InvalidApproval)?;
         if blocked
             && self.approved_devices().len() <= 1
-            && self.devices.get(&hex::encode(device)).is_some_and(|record| !record.blocked)
+            && self
+                .devices
+                .get(&hex::encode(device))
+                .is_some_and(|record| !record.blocked)
         {
             return Err(FounderError::LastApprovedDevice);
         }
@@ -796,43 +799,66 @@ mod tests {
         let mut devices = FounderDevices::new(&g, "Founder phone").unwrap();
 
         let laptop = Identity::generate(Username::new("laptop").unwrap());
-        let laptop_request = devices.request_device(laptop.public.public_key, "Laptop", 10).unwrap();
+        let laptop_request = devices
+            .request_device(laptop.public.public_key, "Laptop", 10)
+            .unwrap();
         let laptop_proof = laptop.sign(&device_proof_message(&laptop_request));
-        devices.prove_device_request(laptop_request.request_id, laptop_proof).unwrap();
-        let founder_approval = id.sign(&approval_message(&laptop_request, &DeviceDecision::Approved));
-        devices.decide_request(
-            laptop_request.request_id,
-            device_id(&id.public.public_key),
-            DeviceDecision::Approved,
-            founder_approval,
-            11,
-        ).unwrap();
+        devices
+            .prove_device_request(laptop_request.request_id, laptop_proof)
+            .unwrap();
+        let founder_approval = id.sign(&approval_message(
+            &laptop_request,
+            &DeviceDecision::Approved,
+        ));
+        devices
+            .decide_request(
+                laptop_request.request_id,
+                device_id(&id.public.public_key),
+                DeviceDecision::Approved,
+                founder_approval,
+                11,
+            )
+            .unwrap();
         assert_eq!(devices.approved_devices().len(), 2);
 
         let tablet = Identity::generate(Username::new("tablet").unwrap());
-        let tablet_request = devices.request_device(tablet.public.public_key, "Tablet", 20).unwrap();
+        let tablet_request = devices
+            .request_device(tablet.public.public_key, "Tablet", 20)
+            .unwrap();
         let tablet_proof = tablet.sign(&device_proof_message(&tablet_request));
-        devices.prove_device_request(tablet_request.request_id, tablet_proof).unwrap();
+        devices
+            .prove_device_request(tablet_request.request_id, tablet_proof)
+            .unwrap();
 
-        let founder_approval = id.sign(&approval_message(&tablet_request, &DeviceDecision::Approved));
-        devices.decide_request(
-            tablet_request.request_id,
-            device_id(&id.public.public_key),
-            DeviceDecision::Approved,
-            founder_approval,
-            21,
-        ).unwrap();
+        let founder_approval = id.sign(&approval_message(
+            &tablet_request,
+            &DeviceDecision::Approved,
+        ));
+        devices
+            .decide_request(
+                tablet_request.request_id,
+                device_id(&id.public.public_key),
+                DeviceDecision::Approved,
+                founder_approval,
+                21,
+            )
+            .unwrap();
         assert_eq!(devices.approved_devices().len(), 2);
         assert_eq!(devices.pending_requests().count(), 1);
 
-        let laptop_approval = laptop.sign(&approval_message(&tablet_request, &DeviceDecision::Approved));
-        devices.decide_request(
-            tablet_request.request_id,
-            device_id(&laptop.public.public_key),
-            DeviceDecision::Approved,
-            laptop_approval,
-            22,
-        ).unwrap();
+        let laptop_approval = laptop.sign(&approval_message(
+            &tablet_request,
+            &DeviceDecision::Approved,
+        ));
+        devices
+            .decide_request(
+                tablet_request.request_id,
+                device_id(&laptop.public.public_key),
+                DeviceDecision::Approved,
+                laptop_approval,
+                22,
+            )
+            .unwrap();
         assert_eq!(devices.approved_devices().len(), 3);
         assert_eq!(devices.pending_requests().count(), 0);
         fs::remove_file(p).unwrap();
@@ -849,17 +875,23 @@ mod tests {
         let g = FounderGenesis::initialize_once(&p, &id, &s, d, rules).unwrap();
         let mut devices = FounderDevices::new(&g, "Founder phone").unwrap();
         let laptop = Identity::generate(Username::new("laptop").unwrap());
-        let request = devices.request_device(laptop.public.public_key, "Laptop", 10).unwrap();
+        let request = devices
+            .request_device(laptop.public.public_key, "Laptop", 10)
+            .unwrap();
         let proof = laptop.sign(&device_proof_message(&request));
-        devices.prove_device_request(request.request_id, proof).unwrap();
+        devices
+            .prove_device_request(request.request_id, proof)
+            .unwrap();
         let approval = id.sign(&approval_message(&request, &DeviceDecision::Approved));
-        devices.decide_request(
-            request.request_id,
-            device_id(&id.public.public_key),
-            DeviceDecision::Approved,
-            approval,
-            11,
-        ).unwrap();
+        devices
+            .decide_request(
+                request.request_id,
+                device_id(&id.public.public_key),
+                DeviceDecision::Approved,
+                approval,
+                11,
+            )
+            .unwrap();
         assert_eq!(devices.approved_devices().len(), 2);
         fs::remove_file(p).unwrap();
     }
