@@ -453,7 +453,7 @@ fn three_node_product_smoke() {
             "data_group_name": "Import Smoke",
             "issued_at_unix": 1,
             "owner_data_centre_id": "dc-import-smoke",
-            "data_centre_ids": ["dc-import-smoke"],
+            "data_centre_ids": ["dc-import-smoke", "dc-import-peer"],
             "peer_data_groups": [],
             "join_token": "test-join-token"
         });
@@ -484,6 +484,11 @@ fn three_node_product_smoke() {
             .unwrap()
             .iter()
             .any(|group| group == "dg-import-smoke"));
+        assert!(federation_after_success["joined_data_centres"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|centre| centre == "dc-import-peer"));
         let federation_file = dirs[0].join("awenet.json");
         let persisted: serde_json::Value =
             serde_json::from_slice(&fs::read(&federation_file).expect("read persisted federation"))
