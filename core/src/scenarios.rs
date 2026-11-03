@@ -113,9 +113,7 @@ fn steady_delivery(nodes: u64, horizon: u64) -> Result<ScenarioReport, ScenarioE
         }
         sim.step();
     }
-    while sim.in_flight() > 0 {
-        sim.step();
-    }
+    sim.drain();
     let liveness = conserved(&sim) && sim.stats().delivered == sim.stats().sent;
     Ok(finish(
         "steady-delivery",
@@ -144,9 +142,7 @@ fn partition_healing(nodes: u64, horizon: u64) -> Result<ScenarioReport, Scenari
         let now = sim.tick();
         driver.advance(&mut sim, now);
     }
-    while sim.in_flight() > 0 {
-        sim.step();
-    }
+    sim.drain();
     let liveness = conserved(&sim) && sim.online_count() == sim.node_count();
     Ok(finish(
         "partition-healing",
@@ -175,9 +171,7 @@ fn node_churn(nodes: u64, horizon: u64) -> Result<ScenarioReport, ScenarioError>
             sim.add_node(victim)?;
         }
     }
-    while sim.in_flight() > 0 {
-        sim.step();
-    }
+    sim.drain();
     let liveness = conserved(&sim) && sim.stats().delivered == sim.stats().sent;
     Ok(finish("node-churn", horizon, &sim, blocked, 0, 0, liveness))
 }
@@ -197,9 +191,7 @@ fn message_storm(nodes: u64, horizon: u64) -> Result<ScenarioReport, ScenarioErr
         }
         sim.step();
     }
-    while sim.in_flight() > 0 {
-        sim.step();
-    }
+    sim.drain();
     let liveness = conserved(&sim) && sim.stats().delivered == sim.stats().sent;
     Ok(finish(
         "message-storm",

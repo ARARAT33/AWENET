@@ -225,6 +225,15 @@ impl Sim {
         }
         Ok(delivered)
     }
+
+    /// Steps until nothing is in flight and returns the deliveries.
+    pub fn drain(&mut self) -> u64 {
+        let mut delivered = 0u64;
+        while self.in_flight() > 0 {
+            delivered += self.step();
+        }
+        delivered
+    }
 }
 
 #[cfg(test)]
@@ -350,5 +359,15 @@ mod tests {
         let first = run();
         let second = run();
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn drain_flushes_all_inflight() {
+        let mut s = sim(2);
+        s.send(1, 2, 2).unwrap();
+        s.send(1, 2, 5).unwrap();
+        assert_eq!(s.drain(), 2);
+        assert_eq!(s.in_flight(), 0);
+        assert_eq!(s.tick(), 5);
     }
 }
