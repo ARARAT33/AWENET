@@ -174,6 +174,13 @@ impl FounderLogin {
         if now >= challenge.expires_tick {
             return Err(FounderAuthError::InvalidChallenge);
         }
+        if self
+            .failures
+            .get(&hex::encode(challenge.device_id))
+            .is_some_and(|failure| now < failure.locked_until)
+        {
+            return Err(FounderAuthError::TemporarilyLocked);
+        }
         let device = devices
             .approved_devices()
             .into_iter()
