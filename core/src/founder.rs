@@ -30,7 +30,15 @@ pub const MAX_PENDING_REQUESTS: usize = 128;
 pub const MAX_AUDIT_RECORDS: usize = 4096;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "mode", content = "device_ids", rename_all = "snake_case")]
+pub enum DeviceApprovalPolicy {
+    AllApprovedDevices,
+    SelectedDevices(Vec<[u8; 32]>),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FounderRules {
+    pub device_approval_policy: DeviceApprovalPolicy,
     pub founder_is_irremovable: bool,
     pub community_votes_can_replace_founder: bool,
     pub new_devices_require_existing_device_approval: bool,
@@ -41,6 +49,7 @@ pub struct FounderRules {
 impl Default for FounderRules {
     fn default() -> Self {
         Self {
+            device_approval_policy: DeviceApprovalPolicy::AllApprovedDevices,
             founder_is_irremovable: true,
             community_votes_can_replace_founder: false,
             new_devices_require_existing_device_approval: true,
@@ -93,6 +102,10 @@ pub enum FounderError {
     UnapprovedApprover,
     #[error("device approval signature is invalid")]
     InvalidApproval,
+    #[error("device approval policy references unavailable or duplicate devices")]
+    InvalidApprovalPolicy,
+    #[error("this device has already approved this request")]
+    DuplicateApproval,
     #[error("new device has not proved possession of its private key")]
     InvalidDeviceProof,
     #[error("device is unknown or blocked")]
@@ -248,6 +261,8 @@ pub struct DeviceRequest {
     pub requested_at: u64,
     pub nonce: [u8; 32],
     pub proof_verified: bool,
+    pub required_approvers: Vec<[u8; 32]>,
+    pub approvals: BTreeMap<String, Vec<u8>>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum DeviceDecision {
@@ -269,6 +284,7 @@ pub struct FounderDevices {
     pending: BTreeMap<String, DeviceRequest>,
     audit: VecDeque<FounderAuditRecord>,
     next_audit_sequence: u64,
+    approval_policy: DeviceApprovalPolicy,
 }
 impl FounderDevices {
     pub fn new(genesis: &FounderGenesis, first_device_label: &str) -> Result<Self, FounderError> {
@@ -290,6 +306,7 @@ impl FounderDevices {
             pending: BTreeMap::new(),
             audit: VecDeque::new(),
             next_audit_sequence: 1,
+            approval_policy: genesis.payload.rules.device_approval_policy.clone(),
         })
     }
     pub fn approved_devices(&self) -> Vec<&DeviceRecord> {
@@ -308,6 +325,32 @@ impl FounderDevices {
         if self.pending.len() >= MAX_PENDING_REQUESTS {
             return Err(FounderError::PendingLimit);
         }
+        let required_approvers = match &self.approval_policy {
+            DeviceApprovalPolicy::AllApprovedDevices => self
+                .approved_devices()
+                .iter()
+                .map(|device| device.device_id)
+                .collect::<Vec<_>>(),
+            DeviceApprovalPolicy::SelectedDevices(selected) => {
+                if selected.is_empty() {
+                    return Err(FounderError::InvalidApprovalPolicy);
+                }
+                let mut ids = selected.clone();
+                ids.sort();
+                ids.dedup();
+                if ids.len() != selected.len()
+                    || ids.iter().any(|id| {
+                        !self.devices.get(&hex::encode(id)).is_some_and(|device| !device.blocked)
+                    })
+                {
+                    return Err(FounderError::InvalidApprovalPolicy);
+                }
+                ids
+            }
+        };
+        if required_approvers.is_empty() {
+            return Err(FounderError::InvalidApprovalPolicy);
+        }
         let mut nonce = [0u8; 32];
         OsRng.fill_bytes(&mut nonce);
         let request_id = hash(
@@ -321,6 +364,8 @@ impl FounderDevices {
             requested_at: tick,
             nonce,
             proof_verified: false,
+            required_approvers,
+            approvals: BTreeMap::new(),
         };
         self.pending
             .insert(hex::encode(request_id), request.clone());
@@ -383,8 +428,24 @@ impl FounderDevices {
             &Signature::from_bytes(&signature),
         )
         .map_err(|_| FounderError::InvalidApproval)?;
-        if matches!(decision, DeviceDecision::Approved) && self.devices.len() >= MAX_DEVICES {
-            return Err(FounderError::DeviceLimit);
+        if matches!(decision, DeviceDecision::Approved) {
+            if !request.required_approvers.contains(&approver_id) {
+                return Err(FounderError::UnapprovedApprover);
+            }
+            let request = self.pending.get_mut(&request_key).ok_or(FounderError::UnknownRequest)?;
+            let approver_key = hex::encode(approver_id);
+            if request.approvals.contains_key(&approver_key) {
+                return Err(FounderError::DuplicateApproval);
+            }
+            request.approvals.insert(approver_key, signature.to_vec());
+            let all_approved = request.required_approvers.iter()
+                .all(|id| request.approvals.contains_key(&hex::encode(id)));
+            if !all_approved {
+                return Ok(());
+            }
+            if self.devices.len() >= MAX_DEVICES {
+                return Err(FounderError::DeviceLimit);
+            }
         }
         let request = self
             .pending
@@ -461,6 +522,10 @@ impl FounderDevices {
             .any(|entry| entry.action == "device_denied" && entry.target_device == Some(target))
     }
 
+    pub fn pending_requests(&self) -> impl Iterator<Item = &DeviceRequest> {
+        self.pending.values()
+    }
+
     pub fn audit(&self) -> impl Iterator<Item = &FounderAuditRecord> {
         self.audit.iter()
     }
@@ -481,13 +546,23 @@ impl FounderDevices {
 #[derive(Serialize)]
 struct ApprovalStatement<'a> {
     domain: &'static str,
-    request: &'a DeviceRequest,
+    request_id: [u8; 32],
+    public_key: [u8; 32],
+    label: &'a str,
+    requested_at: u64,
+    nonce: [u8; 32],
+    required_approvers: &'a [[u8; 32]],
     decision: &'a DeviceDecision,
 }
 pub fn approval_message(request: &DeviceRequest, decision: &DeviceDecision) -> Vec<u8> {
     serde_json::to_vec(&ApprovalStatement {
         domain: "AWENET/DEVICE-APPROVAL/v1",
-        request,
+        request_id: request.request_id,
+        public_key: request.public_key,
+        label: &request.label,
+        requested_at: request.requested_at,
+        nonce: request.nonce,
+        required_approvers: &request.required_approvers,
         decision,
     })
     .expect("approval statement serialization is infallible")
