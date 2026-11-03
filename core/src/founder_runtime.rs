@@ -330,6 +330,46 @@ mod tests {
     }
 
     #[test]
+    fn founder_sessions_are_invalidated_after_restart() {
+        let directory = temporary_directory();
+        let founder = Identity::generate(Username::new("AWENeter").unwrap());
+        let device = Identity::generate(Username::new("founder-device").unwrap());
+        let secret = [0x2Au8; 48];
+        let digest = crate::founder::bootstrap_digest(&secret);
+        let mut state = FounderPersistentState::initialize(
+            &directory,
+            &founder,
+            device.public.public_key,
+            &secret,
+            digest,
+            "Founder device",
+            FounderRules::default(),
+        ).unwrap();
+        let devices = state.devices.clone();
+        let emergency = state.emergency.clone();
+        let device_id = devices.approved_devices()[0].device_id;
+        let challenge = state.login.request_challenge_guarded(
+            &devices,
+            &emergency,
+            device_id,
+            100,
+            60,
+        ).unwrap();
+        let signature = device.sign(&login_message(&challenge));
+        let session = state.login.complete_login(
+            &devices,
+            challenge.challenge_id,
+            signature,
+            101,
+            600,
+        ).unwrap();
+        state.save(&founder).unwrap();
+        let loaded = FounderPersistentState::load(&directory).unwrap();
+        assert!(loaded.authorize_founder_session(&session.token, 102).is_err());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn founder_state_round_trips_with_signed_snapshot() {
         let directory = temporary_directory();
         let founder = Identity::generate(Username::new("AWENeter").unwrap());
