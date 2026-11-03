@@ -45,6 +45,7 @@ pub mod discovery;
 pub mod escrow;
 pub mod events;
 pub mod features;
+pub mod founder;
 pub mod federation;
 pub mod firewall;
 pub mod fuzz;
