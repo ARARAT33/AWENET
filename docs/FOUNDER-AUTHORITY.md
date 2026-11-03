@@ -221,6 +221,49 @@ A signed admin command should bind network ID, actor AWEID, device ID, session I
 
 The current `GET /api/founder/status` route is read-only observability, not proof of authorization and not a complete control API. The current runtime snapshot type is a persistence foundation; callers must persist every successful mutation. No operation should be described as founder-protected until the enforcement middleware is actually on its execution path and has integration tests.
 
+### Current founder login HTTP contract
+
+These endpoints are served by the local node UI listener. They are not a remote administration transport and should remain loopback-only until an authenticated encrypted remote control protocol is implemented. The API does not emit wildcard CORS permissions.
+
+Request a challenge for a device already present in the approved device registry:
+
+```http
+POST /api/founder/login/challenge
+Content-Type: application/json
+
+{"device_id":"<64 lowercase hex characters>"}
+```
+
+A successful response contains `challenge_id`, `device_id`, `nonce`, `issued_tick`, `expires_tick`, `message` and `algorithm: "Ed25519"`. `message` is the hex encoding of the exact canonical byte string returned by the core `login_message` function. The client must hex-decode those bytes and sign them with the approved device private key. It must not reconstruct or alter the statement.
+
+Complete the challenge:
+
+```http
+POST /api/founder/login/complete
+Content-Type: application/json
+
+{"challenge_id":"<64 hex>","signature":"<128 hex>"}
+```
+
+The response contains a 32-byte bearer token, device ID and expiry. The token is shown only once and must be kept in volatile client memory; never put it in a URL, logs, telemetry or persistent browser storage.
+
+Validate a session:
+
+```http
+GET /api/founder/session
+Authorization: Bearer <64 hex token>
+```
+
+Revoke it:
+
+```http
+POST /api/founder/logout
+Authorization: Bearer <64 hex token>
+```
+
+Challenge and session state is currently process-memory-only. Restart invalidates all active sessions and pending login challenges. This is an explicit temporary boundary, not durable session support. Failed-login counters are also currently volatile; persistent rate-limit state is required before production. These endpoints authenticate a founder device but do not yet authorize Neter, governance, network-policy or ONECOIN mutations.
+
+
 ## 10. Founder Control Center UX
 
 The Control Center is a first-class area in the AWENET product, available only after local vault unlock and approved-device authentication. It must work on desktop, tablet and mobile, be Armenian-first with English support, accessible, responsive, and usable with keyboard and screen readers.
