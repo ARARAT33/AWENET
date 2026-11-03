@@ -10,6 +10,26 @@ The Founder Authority implementation is split across:
 
 This is a tested Rust domain core. It is not yet a completed desktop login/control-center UI, remote notification transport, durable replicated state service, or enforcement middleware on every network/admin endpoint.
 
+## Runtime persistence and node integration
+
+- `core/src/founder_runtime.rs` composes Genesis, approved devices, login sessions, Neter registry, and both emergency-lock levels into one runtime state.
+- Every persisted state snapshot is immutable, atomically renamed into place, and signed by the pinned Founder authority key. Startup verifies signatures and can fall back to the newest earlier valid snapshot if the latest snapshot is damaged.
+- Private founder/device keys are not included in the state snapshots; they remain in the separate local vaults.
+- The node loads the Founder state at startup and exposes a read-only `GET /api/founder/status` endpoint. If Genesis is absent, the endpoint explicitly reports `initialized: false`.
+- First-time initialization is an explicit local CLI operation; the first public visitor or first network node is never silently elected founder.
+
+Initialize after creating two separate local vaults (one with username `AWENeter`, one for the initial device):
+
+```text
+AWE_FOUNDER_BOOTSTRAP_DIGEST=<64-hex-character pinned digest>
+awe-node founder-init <founder-vault> <device-vault> <device-username> <bootstrap-secret-file>
+awe-node founder-status
+```
+
+The command prompts for both vault passwords. The bootstrap secret file must contain at least 32 random bytes; its digest must be pinned out of band in the local environment. Never put the raw secret or digest in browser JavaScript, a public repository, or a public node registry.
+
+The runtime snapshot API is a persistence foundation, not a complete remote administration service. Callers must save after each successful mutation. The current node integration is read-only status; remote login, device-approval delivery, founder Control Center UI, and mandatory authorization middleware on all privileged operations are still outstanding.
+
 ## Founder identity and one-time Genesis
 
 - The sole founder handle is AWENeter.
