@@ -5,10 +5,7 @@
 //! compensation. Delegation is available only to a Neter explicitly granted
 //! that capability by the founder; delegated Neters cannot pass that right on.
 
-use crate::{
-    crypto::hash,
-    founder::FounderGenesis,
-};
+use crate::{crypto::hash, founder::FounderGenesis};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
@@ -225,11 +222,10 @@ impl NeterRegistry {
         proof_signature: [u8; 64],
     ) -> Result<NeterApplication, NeterError> {
         validate_scopes(&requested_scopes)?;
-        let proof = application_proof_message(
-            public_key, display_name, &requested_scopes, message, tick,
-        );
-        let applicant_key = VerifyingKey::from_bytes(&public_key)
-            .map_err(|_| NeterError::InvalidNeterSignature)?;
+        let proof =
+            application_proof_message(public_key, display_name, &requested_scopes, message, tick);
+        let applicant_key =
+            VerifyingKey::from_bytes(&public_key).map_err(|_| NeterError::InvalidNeterSignature)?;
         applicant_key
             .verify(&proof, &Signature::from_bytes(&proof_signature))
             .map_err(|_| NeterError::InvalidNeterSignature)?;
@@ -292,7 +288,8 @@ impl NeterRegistry {
             compensation_atoms_per_task,
             tick,
         };
-        let bytes = serde_json::to_vec(&statement).map_err(|_| NeterError::InvalidFounderSignature)?;
+        let bytes =
+            serde_json::to_vec(&statement).map_err(|_| NeterError::InvalidFounderSignature)?;
         self.verify_founder_signature(&bytes, &founder_signature)?;
         let application = self
             .applications
@@ -563,8 +560,13 @@ mod tests {
         OsRng.fill_bytes(&mut random);
         let path = std::env::temp_dir().join(format!("awenet-neter-{}.json", hex::encode(random)));
         let genesis = FounderGenesis::initialize_once(
-            &path, &founder, &secret, digest, crate::founder::FounderRules::default(),
-        ).unwrap();
+            &path,
+            &founder,
+            &secret,
+            digest,
+            crate::founder::FounderRules::default(),
+        )
+        .unwrap();
         let registry = NeterRegistry::new(&genesis).unwrap();
         (founder, genesis, registry, path)
     }
@@ -576,29 +578,68 @@ mod tests {
         let scopes = vec!["awenetwork:tasks".into(), "awemessenger:moderation".into()];
         let founder_id = neter_id(&founder.public.public_key);
         let signature = founder.sign(&appointment_message(
-            neter.public.public_key, "Moderator", &scopes, true, 500, founder_id, 10,
+            neter.public.public_key,
+            "Moderator",
+            &scopes,
+            true,
+            500,
+            founder_id,
+            10,
         ));
-        let record = registry.appoint_by_founder(
-            &genesis, neter.public.public_key, "Moderator", scopes, true, 500, 10, signature,
-        ).unwrap();
+        let record = registry
+            .appoint_by_founder(
+                &genesis,
+                neter.public.public_key,
+                "Moderator",
+                scopes,
+                true,
+                500,
+                10,
+                signature,
+            )
+            .unwrap();
         assert_eq!(registry.active().len(), 1);
 
         let compensation = serde_json::to_vec(&CompensationStatement {
             domain: "AWENET/NETER-COMPENSATION/v1",
-            neter_id: record.neter_id, compensation_atoms_per_task: 750, tick: 11,
-        }).unwrap();
-        registry.set_compensation_by_founder(
-            &genesis, record.neter_id, 750, 11, founder.sign(&compensation),
-        ).unwrap();
-        assert_eq!(registry.get(&record.neter_id).unwrap().compensation_atoms_per_task, 750);
+            neter_id: record.neter_id,
+            compensation_atoms_per_task: 750,
+            tick: 11,
+        })
+        .unwrap();
+        registry
+            .set_compensation_by_founder(
+                &genesis,
+                record.neter_id,
+                750,
+                11,
+                founder.sign(&compensation),
+            )
+            .unwrap();
+        assert_eq!(
+            registry
+                .get(&record.neter_id)
+                .unwrap()
+                .compensation_atoms_per_task,
+            750
+        );
 
         let status = serde_json::to_vec(&NeterStatusStatement {
-            domain: "AWENET/NETER-STATUS/v1", neter_id: record.neter_id,
-            status: NeterStatus::Suspended, tick: 12,
-        }).unwrap();
-        registry.set_status_by_founder(
-            &genesis, record.neter_id, NeterStatus::Suspended, 12, founder.sign(&status),
-        ).unwrap();
+            domain: "AWENET/NETER-STATUS/v1",
+            neter_id: record.neter_id,
+            status: NeterStatus::Suspended,
+            tick: 12,
+        })
+        .unwrap();
+        registry
+            .set_status_by_founder(
+                &genesis,
+                record.neter_id,
+                NeterStatus::Suspended,
+                12,
+                founder.sign(&status),
+            )
+            .unwrap();
         assert!(registry.active().is_empty());
         assert_eq!(registry.audit().count(), 3);
         fs::remove_file(path).unwrap();
@@ -611,17 +652,18 @@ mod tests {
         let scopes = vec!["awenet:tasks".into()];
         let display = "Task reviewer";
         let message = "I can review AWENET tasks";
-        let proof = application_proof_message(
-            applicant.public.public_key, display, &scopes, message, 4,
-        );
-        let app = registry.submit_application(
-            applicant.public.public_key,
-            display,
-            scopes.clone(),
-            message,
-            4,
-            applicant.sign(&proof),
-        ).unwrap();
+        let proof =
+            application_proof_message(applicant.public.public_key, display, &scopes, message, 4);
+        let app = registry
+            .submit_application(
+                applicant.public.public_key,
+                display,
+                scopes.clone(),
+                message,
+                4,
+                applicant.sign(&proof),
+            )
+            .unwrap();
         let approval = serde_json::to_vec(&ApplicationApprovalStatement {
             domain: "AWENET/NETER-APPLICATION-APPROVAL/v1",
             application_id: app.application_id,
@@ -630,17 +672,23 @@ mod tests {
             can_appoint_neter: false,
             compensation_atoms_per_task: 25,
             tick: 5,
-        }).unwrap();
-        let record = registry.approve_application(
-            &genesis,
-            app.application_id,
-            scopes,
-            false,
-            25,
-            5,
-            founder.sign(&approval),
-        ).unwrap();
-        assert_eq!(registry.get(&record.neter_id).unwrap().status, NeterStatus::Active);
+        })
+        .unwrap();
+        let record = registry
+            .approve_application(
+                &genesis,
+                app.application_id,
+                scopes,
+                false,
+                25,
+                5,
+                founder.sign(&approval),
+            )
+            .unwrap();
+        assert_eq!(
+            registry.get(&record.neter_id).unwrap().status,
+            NeterStatus::Active
+        );
         assert_eq!(registry.applications().count(), 0);
         fs::remove_file(path).unwrap();
     }
@@ -652,20 +700,46 @@ mod tests {
         let scopes = vec!["awenetwork:tasks".into()];
         let founder_id = neter_id(&founder.public.public_key);
         let sig = founder.sign(&appointment_message(
-            parent.public.public_key, "Parent", &scopes, false, 0, founder_id, 1,
+            parent.public.public_key,
+            "Parent",
+            &scopes,
+            false,
+            0,
+            founder_id,
+            1,
         ));
-        let parent_record = registry.appoint_by_founder(
-            &genesis, parent.public.public_key, "Parent", scopes.clone(), false, 0, 1, sig,
-        ).unwrap();
+        let parent_record = registry
+            .appoint_by_founder(
+                &genesis,
+                parent.public.public_key,
+                "Parent",
+                scopes.clone(),
+                false,
+                0,
+                1,
+                sig,
+            )
+            .unwrap();
         let child = Identity::generate(Username::new("child").unwrap());
         let child_scopes = vec!["awenetwork:tasks".into()];
         let child_message = appointment_message(
-            child.public.public_key, "Child", &child_scopes, false, 0, parent_record.neter_id, 2,
+            child.public.public_key,
+            "Child",
+            &child_scopes,
+            false,
+            0,
+            parent_record.neter_id,
+            2,
         );
         assert_eq!(
             registry.appoint_by_neter(
-                parent_record.neter_id, child.public.public_key, "Child", child_scopes.clone(),
-                0, 2, parent.sign(&child_message),
+                parent_record.neter_id,
+                child.public.public_key,
+                "Child",
+                child_scopes.clone(),
+                0,
+                2,
+                parent.sign(&child_message),
             ),
             Err(NeterError::DelegationNotGranted)
         );
@@ -679,19 +753,45 @@ mod tests {
         let scopes = vec!["awenetwork:tasks".into()];
         let founder_id = neter_id(&founder.public.public_key);
         let sig = founder.sign(&appointment_message(
-            parent.public.public_key, "Parent", &scopes, true, 0, founder_id, 1,
+            parent.public.public_key,
+            "Parent",
+            &scopes,
+            true,
+            0,
+            founder_id,
+            1,
         ));
-        let parent_record = registry.appoint_by_founder(
-            &genesis, parent.public.public_key, "Parent", scopes, true, 0, 1, sig,
-        ).unwrap();
+        let parent_record = registry
+            .appoint_by_founder(
+                &genesis,
+                parent.public.public_key,
+                "Parent",
+                scopes,
+                true,
+                0,
+                1,
+                sig,
+            )
+            .unwrap();
         let child = Identity::generate(Username::new("child").unwrap());
         let child_scopes = vec!["awemessenger:admin".into()];
         let msg = appointment_message(
-            child.public.public_key, "Child", &child_scopes, false, 0, parent_record.neter_id, 2,
+            child.public.public_key,
+            "Child",
+            &child_scopes,
+            false,
+            0,
+            parent_record.neter_id,
+            2,
         );
         assert_eq!(
             registry.appoint_by_neter(
-                parent_record.neter_id, child.public.public_key, "Child", child_scopes, 0, 2,
+                parent_record.neter_id,
+                child.public.public_key,
+                "Child",
+                child_scopes,
+                0,
+                2,
                 parent.sign(&msg),
             ),
             Err(NeterError::ScopeEscalation)

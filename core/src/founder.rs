@@ -769,14 +769,12 @@ mod tests {
         let id = founder();
         let (s, d) = bootstrap();
         assert_eq!(
-            test_genesis(&p, &id, b"short", d, FounderRules::default())
-                .unwrap_err(),
+            test_genesis(&p, &id, b"short", d, FounderRules::default()).unwrap_err(),
             FounderError::InvalidBootstrapSecret
         );
         let wrong = Identity::generate(Username::new("someone").unwrap());
         assert_eq!(
-            test_genesis(&p, &wrong, &s, d, FounderRules::default())
-                .unwrap_err(),
+            test_genesis(&p, &wrong, &s, d, FounderRules::default()).unwrap_err(),
             FounderError::InvalidFounderUsername
         );
         assert!(!p.exists());
@@ -786,8 +784,7 @@ mod tests {
         let p = path("tamper");
         let id = founder();
         let (s, d) = bootstrap();
-        let mut g =
-            test_genesis(&p, &id, &s, d, FounderRules::default()).unwrap();
+        let mut g = test_genesis(&p, &id, &s, d, FounderRules::default()).unwrap();
         g.payload.rules.community_votes_can_replace_founder = true;
         assert_eq!(g.verify(), Err(FounderError::InvalidGenesis));
         fs::remove_file(p).unwrap();
