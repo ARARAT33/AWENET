@@ -513,7 +513,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
             let challenge_bytes = hex::decode(challenge_hex);
             let signature_bytes = hex::decode(signature_hex);
             match (&founder_state, challenge_bytes, signature_bytes) {
-                (Some(founder), Ok(challenge), Ok(signature)) if challenge.len() == 32 && signature.len() == 64 => {
+                (Some(founder), Ok(challenge), Ok(signature_bytes)) if challenge.len() == 32 && signature_bytes.len() == 64 => {
                     let mut challenge_id = [0u8; 32];
                     challenge_id.copy_from_slice(&challenge);
                     let mut signature = [0u8; 64];
