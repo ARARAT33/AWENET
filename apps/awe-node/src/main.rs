@@ -7,7 +7,8 @@ use awep2p_core::diagnostics::{NodeDiagnostics, NodeMetrics};
 use awep2p_core::federation::{
     self, AweNetConfig, AweNodeConfig, DataCentreConfig, DataGroupConfig,
 };
-use awep2p_core::founder::{bootstrap_digest, FounderRules, FOUNDER_USERNAME};
+use awep2p_core::founder::{bootstrap_digest, device_id as founder_device_id, FounderRules, FOUNDER_USERNAME};
+use awep2p_core::founder_auth::login_message;
 use awep2p_core::founder_runtime::FounderPersistentState;
 use awep2p_core::identity::{AweId, AweSecret, Identity, LocalVault, Username};
 use awep2p_core::lan_mesh::LanPeerBeacon;
@@ -167,7 +168,7 @@ fn load_identity(path: &PathBuf, password: &str, username: &str) -> Result<Ident
 }
 
 async fn http_response(status: &str, content_type: &str, body: &str) -> Vec<u8> {
-    format!("HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: content-type\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}", body.len()).into_bytes()
+    format!("HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: content-type, authorization\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}", body.len()).into_bytes()
 }
 
 async fn read_http_request(stream: &mut tokio::net::TcpStream) -> Result<String> {
@@ -459,6 +460,136 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         "/api/policy" => {
             let policy = policy_state.lock().map(|p| p.clone()).unwrap_or_default();
             ("200 OK", "application/json; charset=utf-8", serde_json::to_string(&policy).unwrap_or_else(|_| "{}".into()))
+        },
+        "/api/founder/login/challenge" if method == "POST" => {
+            let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+            let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+            let device_hex = parsed.get("device_id").and_then(|v| v.as_str()).unwrap_or("");
+            let decoded = hex::decode(device_hex);
+            match (&founder_state, decoded) {
+                (Some(founder), Ok(bytes)) if bytes.len() == 32 => {
+                    let mut device_id = [0u8; 32];
+                    device_id.copy_from_slice(&bytes);
+                    match founder.lock() {
+                        Ok(mut state) => match state.login.request_challenge_guarded(
+                            &state.devices,
+                            &state.emergency,
+                            device_id,
+                            now_unix(),
+                            120,
+                        ) {
+                            Ok(challenge) => {
+                                let signed_message = login_message(&challenge);
+                                ("200 OK", "application/json; charset=utf-8", serde_json::json!({
+                                    "challenge_id": hex::encode(challenge.challenge_id),
+                                    "device_id": hex::encode(challenge.device_id),
+                                    "nonce": hex::encode(challenge.nonce),
+                                    "issued_tick": challenge.issued_tick,
+                                    "expires_tick": challenge.expires_tick,
+                                    "message": hex::encode(signed_message),
+                                    "algorithm": "Ed25519",
+                                    "domain": "AWENET/FOUNDER-LOGIN/v1"
+                                }).to_string())
+                            }
+                            Err(error) => ("403 Forbidden", "application/json; charset=utf-8", serde_json::json!({"error":"founder_login_challenge_rejected","detail":error.to_string()}).to_string())
+                        },
+                        Err(_) => ("500 Internal Server Error", "application/json; charset=utf-8", serde_json::json!({"error":"founder_state_lock_poisoned"}).to_string())
+                    }
+                }
+                (None, _) => ("409 Conflict", "application/json; charset=utf-8", serde_json::json!({"error":"founder_not_initialized"}).to_string()),
+                (_, Ok(_)) => ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"error":"device_id_must_be_32_bytes"}).to_string()),
+                (_, Err(_)) => ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"error":"invalid_device_id_hex"}).to_string())
+            }
+        },
+        "/api/founder/login/complete" if method == "POST" => {
+            let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+            let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+            let challenge_hex = parsed.get("challenge_id").and_then(|v| v.as_str()).unwrap_or("");
+            let signature_hex = parsed.get("signature").and_then(|v| v.as_str()).unwrap_or("");
+            let challenge_bytes = hex::decode(challenge_hex);
+            let signature_bytes = hex::decode(signature_hex);
+            match (&founder_state, challenge_bytes, signature_bytes) {
+                (Some(founder), Ok(challenge), Ok(signature)) if challenge.len() == 32 && signature.len() == 64 => {
+                    let mut challenge_id = [0u8; 32];
+                    challenge_id.copy_from_slice(&challenge);
+                    let mut signature = [0u8; 64];
+                    signature.copy_from_slice(&signature);
+                    match founder.lock() {
+                        Ok(mut state) => {
+                            if state.emergency.ensure_login_allowed().is_err() {
+                                ("423 Locked", "application/json; charset=utf-8", serde_json::json!({"error":"founder_account_locked"}).to_string())
+                            } else {
+                                match state.login.complete_login(&state.devices, challenge_id, signature, now_unix(), 8 * 60 * 60) {
+                                    Ok(session) => ("200 OK", "application/json; charset=utf-8", serde_json::json!({
+                                        "token": hex::encode(session.token),
+                                        "device_id": hex::encode(session.device_id),
+                                        "expires_tick": session.expires_tick,
+                                        "token_type": "Bearer",
+                                        "storage": "memory_only_until_durable_session_store_is_enabled"
+                                    }).to_string()),
+                                    Err(error) => ("401 Unauthorized", "application/json; charset=utf-8", serde_json::json!({"error":"founder_login_failed","detail":error.to_string()}).to_string())
+                                }
+                            }
+                        }
+                        Err(_) => ("500 Internal Server Error", "application/json; charset=utf-8", serde_json::json!({"error":"founder_state_lock_poisoned"}).to_string())
+                    }
+                }
+                (None, _, _) => ("409 Conflict", "application/json; charset=utf-8", serde_json::json!({"error":"founder_not_initialized"}).to_string()),
+                (_, Ok(_), Ok(_)) => ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"error":"invalid_challenge_or_signature_length"}).to_string()),
+                _ => ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"error":"invalid_challenge_or_signature_hex"}).to_string())
+            }
+        },
+        "/api/founder/session" if method == "GET" => {
+            let token_hex = request.lines().find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                if name.eq_ignore_ascii_case("authorization") {
+                    value.trim().strip_prefix("Bearer ").map(str::to_owned)
+                } else { None }
+            }).unwrap_or_default();
+            match (&founder_state, hex::decode(token_hex)) {
+                (Some(founder), Ok(bytes)) if bytes.len() == 32 => {
+                    let mut token = [0u8; 32];
+                    token.copy_from_slice(&bytes);
+                    match founder.lock() {
+                        Ok(state) => {
+                            if state.emergency.ensure_login_allowed().is_err() {
+                                ("423 Locked", "application/json; charset=utf-8", serde_json::json!({"authenticated":false,"error":"founder_account_locked"}).to_string())
+                            } else {
+                                match state.login.validate_session(&state.devices, &token, now_unix()) {
+                                    Ok(device_id) => ("200 OK", "application/json; charset=utf-8", serde_json::json!({"authenticated":true,"username":FOUNDER_USERNAME,"founder_awe_id":state.founder_id(),"device_id":hex::encode(device_id)}).to_string()),
+                                    Err(_) => ("401 Unauthorized", "application/json; charset=utf-8", serde_json::json!({"authenticated":false,"error":"invalid_or_expired_session"}).to_string())
+                                }
+                            }
+                        }
+                        Err(_) => ("500 Internal Server Error", "application/json; charset=utf-8", serde_json::json!({"error":"founder_state_lock_poisoned"}).to_string())
+                    }
+                }
+                (None, _) => ("409 Conflict", "application/json; charset=utf-8", serde_json::json!({"error":"founder_not_initialized"}).to_string()),
+                (_, _) => ("401 Unauthorized", "application/json; charset=utf-8", serde_json::json!({"authenticated":false,"error":"missing_or_invalid_bearer_token"}).to_string())
+            }
+        },
+        "/api/founder/logout" if method == "POST" => {
+            let token_hex = request.lines().find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                if name.eq_ignore_ascii_case("authorization") {
+                    value.trim().strip_prefix("Bearer ").map(str::to_owned)
+                } else { None }
+            }).unwrap_or_default();
+            match (&founder_state, hex::decode(token_hex)) {
+                (Some(founder), Ok(bytes)) if bytes.len() == 32 => {
+                    let mut token = [0u8; 32];
+                    token.copy_from_slice(&bytes);
+                    match founder.lock() {
+                        Ok(mut state) => match state.login.revoke_session(&token) {
+                            Ok(()) => ("200 OK", "application/json; charset=utf-8", serde_json::json!({"logged_out":true}).to_string()),
+                            Err(_) => ("401 Unauthorized", "application/json; charset=utf-8", serde_json::json!({"error":"invalid_or_revoked_session"}).to_string())
+                        },
+                        Err(_) => ("500 Internal Server Error", "application/json; charset=utf-8", serde_json::json!({"error":"founder_state_lock_poisoned"}).to_string())
+                    }
+                }
+                (None, _) => ("409 Conflict", "application/json; charset=utf-8", serde_json::json!({"error":"founder_not_initialized"}).to_string()),
+                _ => ("401 Unauthorized", "application/json; charset=utf-8", serde_json::json!({"error":"missing_or_invalid_bearer_token"}).to_string())
+            }
         },
         "/api/founder/status" if method == "GET" => {
             match &founder_state {
