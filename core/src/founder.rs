@@ -6,7 +6,11 @@
 use crate::identity::{AweId, Identity, Username};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{fs::{self, OpenOptions}, io::Write, path::Path};
+use std::{
+    fs::{self, OpenOptions},
+    io::Write,
+    path::Path,
+};
 use thiserror::Error;
 
 pub const FOUNDER_USERNAME: &str = "AWENeter";
@@ -91,12 +95,16 @@ impl FounderGenesis {
             authority_epoch: 0,
         };
         let mut message = GENESIS_DOMAIN.to_vec();
-        message.extend(serde_json::to_vec(&payload).map_err(|_| FounderGenesisError::Serialization)?);
-        let record = Self { payload, signature: founder.sign(&message) };
+        message
+            .extend(serde_json::to_vec(&payload).map_err(|_| FounderGenesisError::Serialization)?);
+        let record = Self {
+            payload,
+            signature: founder.sign(&message),
+        };
         record.verify()?;
 
-        let bytes = serde_json::to_vec_pretty(&record)
-            .map_err(|_| FounderGenesisError::Serialization)?;
+        let bytes =
+            serde_json::to_vec_pretty(&record).map_err(|_| FounderGenesisError::Serialization)?;
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(unix)]
@@ -106,8 +114,9 @@ impl FounderGenesis {
         }
         let mut file = match options.open(path) {
             Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists =>
-                return Err(FounderGenesisError::AlreadyInitialized),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Err(FounderGenesisError::AlreadyInitialized)
+            }
             Err(error) => return Err(FounderGenesisError::Io(error.to_string())),
         };
         if let Err(error) = file.write_all(&bytes).and_then(|_| file.sync_all()) {
@@ -120,8 +129,8 @@ impl FounderGenesis {
 
     pub fn load_and_verify(path: &Path) -> Result<Self, FounderGenesisError> {
         let bytes = fs::read(path).map_err(|error| FounderGenesisError::Io(error.to_string()))?;
-        let record: Self = serde_json::from_slice(&bytes)
-            .map_err(|_| FounderGenesisError::InvalidGenesis)?;
+        let record: Self =
+            serde_json::from_slice(&bytes).map_err(|_| FounderGenesisError::InvalidGenesis)?;
         record.verify()?;
         Ok(record)
     }
@@ -136,8 +145,8 @@ impl FounderGenesis {
             return Err(FounderGenesisError::InvalidGenesis);
         }
         let mut message = GENESIS_DOMAIN.to_vec();
-        message.extend(serde_json::to_vec(payload)
-            .map_err(|_| FounderGenesisError::Serialization)?);
+        message
+            .extend(serde_json::to_vec(payload).map_err(|_| FounderGenesisError::Serialization)?);
         if !Identity::verify(&payload.founder_public_key, &message, &self.signature) {
             return Err(FounderGenesisError::InvalidGenesis);
         }
@@ -145,8 +154,7 @@ impl FounderGenesis {
     }
 
     pub fn founder_username() -> Result<Username, FounderGenesisError> {
-        Username::new(FOUNDER_USERNAME)
-            .map_err(|_| FounderGenesisError::InvalidFounderUsername)
+        Username::new(FOUNDER_USERNAME).map_err(|_| FounderGenesisError::InvalidFounderUsername)
     }
 }
 
@@ -156,8 +164,14 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_path(label: &str) -> std::path::PathBuf {
-        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-        std::env::temp_dir().join(format!("awenet-{label}-{}-{nonce}.json", std::process::id()))
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "awenet-{label}-{}-{nonce}.json",
+            std::process::id()
+        ))
     }
     fn founder() -> Identity {
         Identity::generate(Username::new(FOUNDER_USERNAME).unwrap())
@@ -169,7 +183,9 @@ mod tests {
         let founder = founder();
         let token = [7u8; 32];
         let commitment = FounderGenesis::bootstrap_commitment(&token).unwrap();
-        let created = FounderGenesis::initialize_once(&path, &founder, [9u8; 32], &token, &commitment).unwrap();
+        let created =
+            FounderGenesis::initialize_once(&path, &founder, [9u8; 32], &token, &commitment)
+                .unwrap();
         assert_eq!(created.payload.founder_id, founder.public.awe_id.to_hex());
         assert_eq!(created, FounderGenesis::load_and_verify(&path).unwrap());
         let _ = fs::remove_file(path);
@@ -182,7 +198,10 @@ mod tests {
         let token = [8u8; 32];
         let commitment = FounderGenesis::bootstrap_commitment(&token).unwrap();
         FounderGenesis::initialize_once(&path, &founder, [1; 32], &token, &commitment).unwrap();
-        assert_eq!(FounderGenesis::initialize_once(&path, &founder, [2; 32], &token, &commitment), Err(FounderGenesisError::AlreadyInitialized));
+        assert_eq!(
+            FounderGenesis::initialize_once(&path, &founder, [2; 32], &token, &commitment),
+            Err(FounderGenesisError::AlreadyInitialized)
+        );
         let _ = fs::remove_file(path);
     }
 
@@ -193,7 +212,10 @@ mod tests {
         let token = [3u8; 32];
         let wrong = [4u8; 32];
         let commitment = FounderGenesis::bootstrap_commitment(&wrong).unwrap();
-        assert_eq!(FounderGenesis::initialize_once(&path, &founder, [1; 32], &token, &commitment), Err(FounderGenesisError::InvalidBootstrapToken));
+        assert_eq!(
+            FounderGenesis::initialize_once(&path, &founder, [1; 32], &token, &commitment),
+            Err(FounderGenesisError::InvalidBootstrapToken)
+        );
         assert!(!path.exists());
     }
 
@@ -203,7 +225,10 @@ mod tests {
         let impostor = Identity::generate(Username::new("someone_else").unwrap());
         let token = [5u8; 32];
         let commitment = FounderGenesis::bootstrap_commitment(&token).unwrap();
-        assert_eq!(FounderGenesis::initialize_once(&path, &impostor, [1; 32], &token, &commitment), Err(FounderGenesisError::InvalidFounderUsername));
+        assert_eq!(
+            FounderGenesis::initialize_once(&path, &impostor, [1; 32], &token, &commitment),
+            Err(FounderGenesisError::InvalidFounderUsername)
+        );
         assert!(!path.exists());
     }
 
@@ -213,7 +238,8 @@ mod tests {
         let founder = founder();
         let token = [6u8; 32];
         let commitment = FounderGenesis::bootstrap_commitment(&token).unwrap();
-        let mut record = FounderGenesis::initialize_once(&path, &founder, [1; 32], &token, &commitment).unwrap();
+        let mut record =
+            FounderGenesis::initialize_once(&path, &founder, [1; 32], &token, &commitment).unwrap();
         record.payload.network_id = [2; 32];
         assert_eq!(record.verify(), Err(FounderGenesisError::InvalidGenesis));
         let _ = fs::remove_file(path);
@@ -221,6 +247,9 @@ mod tests {
 
     #[test]
     fn weak_bootstrap_token_is_rejected() {
-        assert_eq!(FounderGenesis::bootstrap_commitment(b"short"), Err(FounderGenesisError::WeakBootstrapToken));
+        assert_eq!(
+            FounderGenesis::bootstrap_commitment(b"short"),
+            Err(FounderGenesisError::WeakBootstrapToken)
+        );
     }
 }
