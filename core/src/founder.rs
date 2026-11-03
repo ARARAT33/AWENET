@@ -9,6 +9,7 @@
 
 use crate::{
     crypto::hash,
+    founder_admin::FounderEmergencyLock,
     identity::{AweId, Identity},
 };
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
@@ -118,6 +119,8 @@ pub enum FounderError {
     InvalidSequence,
     #[error("governance signature or immutable rules are invalid")]
     InvalidGovernanceSignature,
+    #[error("network governance is emergency-locked")]
+    GovernanceLocked,
 }
 
 #[derive(Serialize)]
@@ -676,6 +679,19 @@ impl SignedGovernanceUpdate {
             signature: founder.sign(&bytes),
         })
     }
+    pub fn verify_with_emergency_lock(
+        &self,
+        genesis: &FounderGenesis,
+        expected_sequence: u64,
+        expected_previous_hash: [u8; 32],
+        emergency: &FounderEmergencyLock,
+    ) -> Result<[u8; 32], FounderError> {
+        emergency
+            .ensure_governance_allowed()
+            .map_err(|_| FounderError::GovernanceLocked)?;
+        self.verify(genesis, expected_sequence, expected_previous_hash)
+    }
+
     pub fn verify(
         &self,
         genesis: &FounderGenesis,
@@ -1007,6 +1023,23 @@ mod tests {
         let h = u.verify(&g, 1, [0; 32]).unwrap();
         assert_ne!(h, [0; 32]);
         assert_eq!(u.verify(&g, 2, [0; 32]), Err(FounderError::InvalidSequence));
+        let (founder_device, _unused) = (first_device.clone(), ());
+        let mut emergency = FounderEmergencyLock::default();
+        let lock = crate::founder_admin::FounderEmergencyCommand::sign(
+            &id,
+            &g,
+            &emergency,
+            false,
+            true,
+            2,
+        )
+        .unwrap();
+        emergency.apply(&g, lock).unwrap();
+        assert_eq!(
+            u.verify_with_emergency_lock(&g, 1, [0; 32], &emergency),
+            Err(FounderError::GovernanceLocked)
+        );
+        let _ = founder_device;
         fs::remove_file(p).unwrap();
     }
 }
