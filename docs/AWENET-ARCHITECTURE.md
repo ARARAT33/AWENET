@@ -14,6 +14,20 @@ AWENET is the network. Browser, Messenger, Calls, Groups, Files, Sites, Apps and
 - **No impossible security promises.** The network uses authentication, encryption, replay protection, admission limits, bounded state and repair, but attacks can never be promised to be impossible.
 - **Simple UX.** Everyday users get Browser, Messenger, Groups, Files and Store first; operators/developers get Node, Network, Security and Developer views.
 
+## Founder Authority — network-wide control plane
+
+The Founder Authority is a first-class control-plane subsystem of AWENET, not a separate application role and not a node operator account. The sole founder identity is `AWENeter`; its AWEID and founder trust root are established once by signed Genesis and cannot be replaced by member votes, Neters, validators, public visitors or ordinary nodes.
+
+The founder does not need to host a node or operate infrastructure. Founder actions are signed by an explicitly approved founder device and validated against the network's pinned Genesis, device status, session, operation scope, governance sequence and emergency-lock state. New devices remain pending until the configured existing-device approval policy is satisfied. Founder-offline requests remain pending; no public or email-only fallback can self-approve.
+
+The Founder Authority governs network policy and delegated administration. It does not grant blanket access to private user files, messages or secret resources. Resource owners' access descriptors, encryption and authorization remain authoritative. Node operators retain control over their own contributed resources and can stop contribution.
+
+Neters receive only explicit, bounded, expiring scopes. They cannot change founder identity/rules, appoint outside their delegation, modify their compensation, or override founder decisions. Community votes and messenger groups provide advice; only a valid founder-signed governance update changes founder-controlled policy.
+
+Two independent emergency locks are part of the control plane: account/login lock and governance lock. Privileged APIs, node administration, Neter actions, governance changes and ONECOIN policy operations must all use the same fail-closed authorization middleware. A UI-only role check is never sufficient.
+
+The complete normative design, threat model, persistence/recovery requirements, Control Center specification, implementation status and release acceptance checklist live in [Founder Authority — Canonical Specification](FOUNDER-AUTHORITY.md). Code must not be called production-ready while any required integration or release check in that specification remains outstanding.
+
 ## Layers
 
 Applications -> application protocols -> resource/placement -> identity/access -> discovery/routing -> encrypted data plane -> transport/relay -> node resources.
