@@ -29,9 +29,12 @@ replacement founder.
 ## Device admission
 
 The genesis founder key is the first approved device. A new device creates a
-pending `DeviceRequest`; an already-approved device signs the exact request
-and decision using `approval_message`. The decision is rejected unless the
-signature verifies against an active approved device. Offline requests remain
+pending `DeviceRequest` and must first sign its nonce-bound proof message with
+its own private key using `device_proof_message` / `prove_device_request`.
+Only after proof-of-possession succeeds may an already-approved device sign
+the exact request and decision using `approval_message`. Device block/unblock
+commands are also signed with `device_control_message`; callers must not trust
+an actor-device ID supplied without its signature. Offline requests remain
 pending in the caller's durable state. Denial does not create an approved
 device. Device state and audit history must be persisted atomically by the
 integrating application; the in-memory registry alone is not durable.
