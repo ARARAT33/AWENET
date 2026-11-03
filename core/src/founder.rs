@@ -1023,7 +1023,6 @@ mod tests {
         let h = u.verify(&g, 1, [0; 32]).unwrap();
         assert_ne!(h, [0; 32]);
         assert_eq!(u.verify(&g, 2, [0; 32]), Err(FounderError::InvalidSequence));
-        let (founder_device, _unused) = (first_device.clone(), ());
         let mut emergency = FounderEmergencyLock::default();
         let lock = crate::founder_admin::FounderEmergencyCommand::sign(
             &id,
@@ -1039,7 +1038,6 @@ mod tests {
             u.verify_with_emergency_lock(&g, 1, [0; 32], &emergency),
             Err(FounderError::GovernanceLocked)
         );
-        let _ = founder_device;
         fs::remove_file(p).unwrap();
     }
 }
