@@ -13,7 +13,7 @@ This is a tested Rust domain core. It is not yet a completed desktop login/contr
 ## Runtime persistence and node integration
 
 - `core/src/founder_runtime.rs` composes Genesis, approved devices, login sessions, Neter registry, and both emergency-lock levels into one runtime state.
-- Every persisted state snapshot is immutable, atomically renamed into place, and signed by the pinned Founder authority key. Startup verifies signatures and can fall back to the newest earlier valid snapshot if the latest snapshot is damaged.
+- Every persisted state snapshot is immutable, atomically published without overwriting an existing sequence number, and signed by the pinned Founder authority key. Startup verifies signatures and can fall back to the newest earlier valid snapshot if the latest snapshot is damaged.
 - Private founder/device keys are not included in the state snapshots; they remain in the separate local vaults.
 - The node loads the Founder state at startup and exposes a read-only `GET /api/founder/status` endpoint. If Genesis is absent, the endpoint explicitly reports `initialized: false`.
 - First-time initialization is an explicit local CLI operation; the first public visitor or first network node is never silently elected founder.
