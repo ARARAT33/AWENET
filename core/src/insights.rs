@@ -177,10 +177,17 @@ impl Insights {
             .sum::<f64>()
             / count;
         let stddev = variance.sqrt();
-        if stddev <= f64::EPSILON {
-            return None;
-        }
-        let z = ((value - mean) / stddev).abs();
+        let z = if stddev <= f64::EPSILON {
+            // A flat baseline has zero spread: any value that differs
+            // from it deviates without bound, while the baseline
+            // value itself can never deviate.
+            if (value - mean).abs() <= f64::EPSILON {
+                return None;
+            }
+            f64::INFINITY
+        } else {
+            ((value - mean) / stddev).abs()
+        };
         if z > series.threshold {
             Some(Anomaly {
                 series: name.to_string(),
@@ -234,7 +241,7 @@ mod tests {
         for tick in 0..10u64 {
             assert_eq!(insights.push("cpu", tick, 42.0).unwrap(), None);
         }
-        // Zero stddev: identical spikes cannot be distinguished.
+        // A flat baseline followed by the same value stays calm.
         assert_eq!(insights.push("cpu", 10, 42.0).unwrap(), None);
     }
 
@@ -294,6 +301,8 @@ mod tests {
             Err(InsightsError::UnknownSeries(_))
         ));
         insights.push("real", 0, 1.0).unwrap();
-        assert_eq!(insights.summary("real").unwrap(), None);
+        let summary = insights.summary("real").unwrap().expect("summary");
+        assert_eq!(summary.count, 1);
+        assert_eq!(summary.last, 1.0);
     }
 }

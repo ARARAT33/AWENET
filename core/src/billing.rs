@@ -31,7 +31,7 @@ pub enum InvoiceError {
     InvoiceNotOpen(u64),
     #[error("payment for invoice {0} must be greater than zero")]
     ZeroPayment(u64),
-    #[error("payment {2} exceeds the remaining {3} on invoice {0}")]
+    #[error("payment {payment} exceeds the remaining {remaining} on invoice {invoice}")]
     Overpayment {
         invoice: u64,
         payment: u64,
@@ -170,14 +170,20 @@ impl Billing {
         if amount == 0 {
             return Err(InvoiceError::ZeroPayment(id));
         }
+        let total = {
+            let invoice = self
+                .invoices
+                .get(&id)
+                .ok_or(InvoiceError::UnknownInvoice(id))?;
+            if invoice.state != InvoiceState::Open {
+                return Err(InvoiceError::InvoiceNotOpen(id));
+            }
+            self.total(id)?
+        };
         let invoice = self
             .invoices
             .get_mut(&id)
             .ok_or(InvoiceError::UnknownInvoice(id))?;
-        if invoice.state != InvoiceState::Open {
-            return Err(InvoiceError::InvoiceNotOpen(id));
-        }
-        let total = self.total(id)?;
         let remaining = total - invoice.paid_amount;
         if amount > remaining {
             return Err(InvoiceError::Overpayment {

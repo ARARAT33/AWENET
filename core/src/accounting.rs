@@ -119,6 +119,9 @@ impl Ledger {
             if (line.debit > 0) == (line.credit > 0) {
                 return Err(LedgerError::InvalidAmount);
             }
+            if line.debit > i64::MAX as u64 || line.credit > i64::MAX as u64 {
+                return Err(LedgerError::InvalidAmount);
+            }
             if !self.accounts.contains_key(&line.account) {
                 return Err(LedgerError::UnknownAccount(line.account.clone()));
             }
@@ -131,9 +134,9 @@ impl Ledger {
         for line in &lines {
             let balance = self.balances.get_mut(&line.account).expect("checked above");
             if line.debit > 0 {
-                *balance += i64::try_from(line.debit).expect("positive fits i64");
+                *balance += i64::try_from(line.debit).expect("validated to fit i64");
             } else {
-                *balance -= i64::try_from(line.credit).expect("positive fits i64");
+                *balance -= i64::try_from(line.credit).expect("validated to fit i64");
             }
         }
         let id = self.next_entry_id;

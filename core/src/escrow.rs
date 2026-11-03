@@ -21,7 +21,7 @@ pub enum EscrowError {
     ZeroAmount,
     #[error("buyer and seller must differ")]
     SameParty,
-    #[error("fee {0} exceeds the escrow amount {1}")]
+    #[error("fee {fee} exceeds the escrow amount {amount}")]
     FeeExceedsAmount { fee: u64, amount: u64 },
     #[error("unknown escrow {0}")]
     UnknownEscrow(u64),

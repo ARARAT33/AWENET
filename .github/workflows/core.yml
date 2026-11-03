@@ -27,6 +27,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: write
 
 jobs:
   rust:
@@ -47,13 +48,65 @@ jobs:
       - name: Check Rust workspace formatting
         run: cargo fmt --all -- --check
       - name: Build workspace
+        id: build
         run: cargo check --workspace --all-targets
       - name: Run unit and integration tests
+        id: tests
         run: cargo test --workspace --all-targets
       - name: Run product smoke test
+        id: smoke
         run: cargo test -p awe-node --test product_smoke -- --nocapture
       - name: Run clippy
+        id: clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Publish diagnostics to PR
+        if: failure() && github.event_name == 'pull_request'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          {
+            echo "### CI diagnostics (automated)"
+            echo ""
+            echo "build=${{ steps.build.outcome }} tests=${{ steps.tests.outcome }} smoke=${{ steps.smoke.outcome }} clippy=${{ steps.clippy.outcome }}"
+            echo ""
+            echo "environment: $(rustc -V) cargo $(cargo -V 2>&1 | head -n 1)"
+            echo ""
+            echo "disk: $(df -h . | tail -n 1)"
+            echo ""
+            echo "#### cargo check (raw tail)"
+              echo '```'
+              cargo check --workspace --all-targets --message-format=short > diag.txt 2>&1; echo "cargo exit: $?" >> diag.txt
+              tail -n 80 diag.txt
+              echo '```'
+              echo '```'
+            if [ "${{ steps.tests.outcome }}" = "failure" ]; then
+              echo ""
+              echo "#### test failures"
+              echo '```'
+              cargo test --workspace --all-targets > tests.txt 2>&1; echo "cargo test exit: $?" >> tests.txt
+              grep -E -A3 '(^failures:$|^---- |FAILED|panicked at )' tests.txt | head -n 100
+              echo '```'
+            fi
+            if [ "${{ steps.smoke.outcome }}" = "failure" ]; then
+              echo ""
+              echo "#### product smoke test (tail)"
+              echo '```'
+              cargo test -p awe-node --test product_smoke -- --nocapture > smoke.txt 2>&1; echo "smoke exit: $?" >> smoke.txt
+              tail -n 60 smoke.txt
+              echo '```'
+            fi
+            if [ "${{ steps.clippy.outcome }}" = "failure" ]; then
+              echo ""
+              echo "#### clippy (short)"
+              echo '```'
+              cargo clippy --workspace --all-targets --message-format=short > clippy.txt 2>&1; echo "clippy exit: $?" >> clippy.txt
+              grep -E 'error(\[[^]]*\])?:|warning:' clippy.txt | head -n 60
+              echo '```'
+            fi
+          } > diagnostics.md
+          gh pr comment "${{ github.event.pull_request.number }}" --body-file diagnostics.md
 
   architecture:
     name: Architecture integrity checks
