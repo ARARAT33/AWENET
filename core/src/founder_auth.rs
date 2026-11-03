@@ -5,7 +5,11 @@
 //! device already admitted by FounderDevices. Persist this state securely and
 //! deliver the challenge to the same device before exposing the Control Center.
 
-use crate::{crypto::hash, founder::FounderDevices};
+use crate::{
+    crypto::hash,
+    founder::FounderDevices,
+    founder_admin::FounderEmergencyLock,
+};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
@@ -31,6 +35,8 @@ pub enum FounderAuthError {
     TemporarilyLocked,
     #[error("founder session registry is full")]
     SessionLimit,
+    #[error("founder account is emergency-locked")]
+    AccountLocked,
     #[error("founder session is invalid, expired, revoked, or restricted")]
     InvalidSession,
 }
@@ -151,6 +157,22 @@ impl FounderLogin {
         self.challenges
             .insert(hex::encode(challenge_id), challenge.clone());
         Ok(challenge)
+    }
+
+    /// Emergency-lock-aware entry point for login APIs. Callers should use
+    /// this instead of request_challenge when the network has an emergency state.
+    pub fn request_challenge_guarded(
+        &mut self,
+        devices: &FounderDevices,
+        emergency: &FounderEmergencyLock,
+        requested_device_id: [u8; 32],
+        now: u64,
+        ttl: u64,
+    ) -> Result<FounderLoginChallenge, FounderAuthError> {
+        emergency
+            .ensure_login_allowed()
+            .map_err(|_| FounderAuthError::AccountLocked)?;
+        self.request_challenge(devices, requested_device_id, now, ttl)
     }
 
     /// Verifies proof of possession of the approved device key and creates a
@@ -361,6 +383,36 @@ mod tests {
         assert_eq!(
             auth.validate_session(&devices, &session.token, 61),
             Err(FounderAuthError::InvalidSession)
+        );
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn emergency_account_lock_blocks_login_challenges() {
+        let (founder, device, devices, path) = setup();
+        let mut emergency = crate::founder_admin::FounderEmergencyLock::default();
+        let command = crate::founder_admin::FounderEmergencyCommand::sign(
+            &founder,
+            &FounderGenesis::load(&path).unwrap(),
+            &emergency,
+            true,
+            false,
+            1,
+        )
+        .unwrap();
+        emergency
+            .apply(&FounderGenesis::load(&path).unwrap(), command)
+            .unwrap();
+        let mut auth = FounderLogin::new();
+        assert_eq!(
+            auth.request_challenge_guarded(
+                &devices,
+                &emergency,
+                device_id(&device.public.public_key),
+                2,
+                20,
+            ),
+            Err(FounderAuthError::AccountLocked)
         );
         fs::remove_file(path).unwrap();
     }
