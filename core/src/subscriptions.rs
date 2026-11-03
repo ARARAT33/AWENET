@@ -252,10 +252,7 @@ mod tests {
         assert_eq!(subs.get(id).unwrap().current_period_end, 35);
 
         let id2 = subs.subscribe("bob", plan(30, 5), 0, Some(10)).unwrap();
-        assert_eq!(
-            subs.advance(10),
-            vec![(id2, SubscriptionState::Expired)]
-        );
+        assert_eq!(subs.advance(10), vec![(id2, SubscriptionState::Expired)]);
         assert_eq!(subs.get(id2).unwrap().state, SubscriptionState::Expired);
     }
 
@@ -266,10 +263,7 @@ mod tests {
         assert_eq!(subs.renew(id, 20).unwrap(), 50);
         assert_eq!(subs.get(id).unwrap().state, SubscriptionState::Active);
         assert_eq!(subs.advance(49).len(), 0);
-        assert_eq!(
-            subs.advance(50),
-            vec![(id, SubscriptionState::PastDue)]
-        );
+        assert_eq!(subs.advance(50), vec![(id, SubscriptionState::PastDue)]);
         assert_eq!(
             subs.renew(id, 55).unwrap_err(),
             SubscriptionError::InvalidState(id, SubscriptionState::PastDue)
@@ -283,10 +277,7 @@ mod tests {
         subs.advance(10);
         assert_eq!(subs.get(id).unwrap().state, SubscriptionState::PastDue);
         assert_eq!(subs.advance(15).len(), 0);
-        assert_eq!(
-            subs.advance(15 + 1),
-            vec![(id, SubscriptionState::Expired)]
-        );
+        assert_eq!(subs.advance(15 + 1), vec![(id, SubscriptionState::Expired)]);
 
         let id2 = subs.subscribe("bob", plan(10, 5), 0, None).unwrap();
         subs.cancel(id2).unwrap();

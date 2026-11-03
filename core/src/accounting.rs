@@ -185,19 +185,14 @@ mod tests {
 
     fn ledger() -> Ledger {
         let mut ledger = Ledger::new(8).unwrap();
-        ledger
-            .add_account("wallet", AccountKind::Asset)
-            .unwrap();
+        ledger.add_account("wallet", AccountKind::Asset).unwrap();
         ledger.add_account("fees", AccountKind::Revenue).unwrap();
         ledger
     }
 
     #[test]
     fn validates_capacity_and_duplicates() {
-        assert_eq!(
-            Ledger::new(0).unwrap_err(),
-            LedgerError::InvalidCapacity
-        );
+        assert_eq!(Ledger::new(0).unwrap_err(), LedgerError::InvalidCapacity);
         assert_eq!(
             Ledger::new(MAX_ACCOUNTS + 1).unwrap_err(),
             LedgerError::InvalidCapacity
@@ -216,7 +211,9 @@ mod tests {
         let mut ledger = Ledger::new(1).unwrap();
         ledger.add_account("wallet", AccountKind::Asset).unwrap();
         assert_eq!(
-            ledger.add_account("fees", AccountKind::Revenue).unwrap_err(),
+            ledger
+                .add_account("fees", AccountKind::Revenue)
+                .unwrap_err(),
             LedgerError::LedgerFull
         );
         assert_eq!(ledger.len(), 1);
@@ -233,7 +230,9 @@ mod tests {
             LedgerError::EmptyEntryName
         );
         assert_eq!(
-            ledger.post("solo", 0, vec![line("wallet", 10, 0)]).unwrap_err(),
+            ledger
+                .post("solo", 0, vec![line("wallet", 10, 0)])
+                .unwrap_err(),
             LedgerError::InvalidLineCount
         );
         assert_eq!(
@@ -300,10 +299,7 @@ mod tests {
             .unwrap();
         assert_eq!(ledger.balance("wallet").unwrap(), 25);
         assert_eq!(ledger.balance("fees").unwrap(), -25);
-        assert_eq!(
-            ledger.account_kind("fees").unwrap(),
-            AccountKind::Revenue
-        );
+        assert_eq!(ledger.account_kind("fees").unwrap(), AccountKind::Revenue);
         assert_eq!(
             ledger.balance("ghost").unwrap_err(),
             LedgerError::UnknownAccount("ghost".into())
