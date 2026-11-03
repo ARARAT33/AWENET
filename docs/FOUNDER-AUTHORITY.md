@@ -18,15 +18,33 @@ This is a tested Rust domain core. It is not yet a completed desktop login/contr
 - The node loads the Founder state at startup and exposes a read-only `GET /api/founder/status` endpoint. If Genesis is absent, the endpoint explicitly reports `initialized: false`.
 - First-time initialization is an explicit local CLI operation; the first public visitor or first network node is never silently elected founder.
 
-Initialize after creating two separate local vaults (one with username `AWENeter`, one for the initial device):
+Create two separate local vaults (the founder authority key and the first approved device key must be different):
 
 ```text
-AWE_FOUNDER_BOOTSTRAP_DIGEST=<64-hex-character pinned digest>
-awe-node founder-init <founder-vault> <device-vault> <device-username> <bootstrap-secret-file>
+awe-node init AWENeter <founder-vault>
+awe-node init <device-username> <device-vault>
+```
+
+Create a file containing at least 32 random bytes. On Windows PowerShell, for example:
+
+```powershell
+$bytes = New-Object byte[] 48
+$rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+$rng.GetBytes($bytes)
+[IO.File]::WriteAllBytes("founder-bootstrap.bin", $bytes)
+$rng.Dispose()
+```
+
+Calculate the domain-separated digest and pin it in the local environment:
+
+```text
+awe-node founder-digest founder-bootstrap.bin
+AWE_FOUNDER_BOOTSTRAP_DIGEST=<64-hex-character digest printed by the command>
+awe-node founder-init <founder-vault> <device-vault> <device-username> founder-bootstrap.bin
 awe-node founder-status
 ```
 
-The command prompts for both vault passwords. The bootstrap secret file must contain at least 32 random bytes; its digest must be pinned out of band in the local environment. Never put the raw secret or digest in browser JavaScript, a public repository, or a public node registry.
+The initialization command prompts for both vault passwords. The digest is not a replacement for the secret; both are required. Keep the raw secret private and never put either value in browser JavaScript, a public repository, or a public node registry.
 
 The runtime snapshot API is a persistence foundation, not a complete remote administration service. Callers must save after each successful mutation. The current node integration is read-only status; remote login, device-approval delivery, founder Control Center UI, and mandatory authorization middleware on all privileged operations are still outstanding.
 
