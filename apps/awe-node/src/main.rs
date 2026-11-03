@@ -2518,6 +2518,7 @@ fn founder_data_directory() -> PathBuf {
     }
 }
 
+// Prints only the domain-separated digest; raw bootstrap bytes never leave this process.
 fn print_founder_bootstrap_digest(secret_path: PathBuf) -> Result<()> {
     let secret =
         fs::read(&secret_path).context("could not read the founder bootstrap secret file")?;
