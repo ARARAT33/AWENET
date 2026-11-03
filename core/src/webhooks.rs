@@ -193,10 +193,7 @@ mod tests {
 
     #[test]
     fn validates_capacity_and_attempts() {
-        assert_eq!(
-            Webhooks::new(0).unwrap_err(),
-            WebhookError::InvalidCapacity
-        );
+        assert_eq!(Webhooks::new(0).unwrap_err(), WebhookError::InvalidCapacity);
         assert_eq!(
             Webhooks::new(MAX_WEBHOOKS + 1).unwrap_err(),
             WebhookError::InvalidCapacity

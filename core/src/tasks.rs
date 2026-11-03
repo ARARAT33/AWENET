@@ -139,9 +139,7 @@ impl TaskQueue {
     pub fn next_ready(&self, now: u64) -> Option<&Task> {
         self.tasks
             .values()
-            .filter(|task| {
-                task.state == TaskState::Pending && !self.expired(task, now)
-            })
+            .filter(|task| task.state == TaskState::Pending && !self.expired(task, now))
             .max_by(|a, b| a.priority.cmp(&b.priority).then(b.id.cmp(&a.id)))
     }
 
@@ -271,7 +269,9 @@ mod tests {
     fn next_ready_prefers_highest_priority() {
         let mut queue = TaskQueue::new(8).unwrap();
         queue.submit("low", Priority::Low, 0, None, 3).unwrap();
-        queue.submit("critical", Priority::Critical, 0, None, 3).unwrap();
+        queue
+            .submit("critical", Priority::Critical, 0, None, 3)
+            .unwrap();
         queue.submit("high", Priority::High, 0, None, 3).unwrap();
         let next = queue.next_ready(1).unwrap();
         assert_eq!(next.label, "critical");
@@ -313,8 +313,12 @@ mod tests {
     #[test]
     fn deadlines_expire_pending_tasks() {
         let mut queue = TaskQueue::new(4).unwrap();
-        let id = queue.submit("late", Priority::Normal, 0, Some(10), 3).unwrap();
-        let id_alive = queue.submit("ok", Priority::Normal, 0, Some(100), 3).unwrap();
+        let id = queue
+            .submit("late", Priority::Normal, 0, Some(10), 3)
+            .unwrap();
+        let id_alive = queue
+            .submit("ok", Priority::Normal, 0, Some(100), 3)
+            .unwrap();
         assert!(queue.next_ready(10).is_none());
         assert_eq!(queue.expire(10), vec![id]);
         assert_eq!(queue.get(id).unwrap().state, TaskState::Failed);

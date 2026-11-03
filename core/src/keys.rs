@@ -127,12 +127,7 @@ impl ApiKeys {
         self.verify(key, now).cloned()?;
         self.revoke(key)?;
         let old = self.keys.get(key).expect("verified above");
-        let mut fresh = self.issue(
-            &old.label,
-            old.scopes.clone(),
-            now,
-            old.expires_tick,
-        )?;
+        let mut fresh = self.issue(&old.label, old.scopes.clone(), now, old.expires_tick)?;
         fresh.rotated_from = Some(key.to_string());
         self.keys.insert(fresh.key.clone(), fresh.clone());
         Ok(fresh)
