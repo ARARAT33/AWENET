@@ -352,7 +352,10 @@ mod tests {
         let session = auth
             .complete_login(&devices, challenge.challenge_id, signature, 11, 50)
             .unwrap();
-        assert_eq!(auth.validate_session(&devices, &session.token, 12).unwrap(), id);
+        assert_eq!(
+            auth.validate_session(&devices, &session.token, 12).unwrap(),
+            id
+        );
         assert_eq!(
             auth.validate_session(&devices, &session.token, 61),
             Err(FounderAuthError::InvalidSession)
