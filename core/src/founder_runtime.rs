@@ -306,24 +306,22 @@ mod tests {
             digest,
             "Founder device",
             FounderRules::default(),
-        ).unwrap();
+        )
+        .unwrap();
         let device_id = state.devices.approved_devices()[0].device_id;
-        let challenge = state.login.request_challenge_guarded(
-            &state.devices,
-            &state.emergency,
-            device_id,
-            10,
-            60,
-        ).unwrap();
+        let challenge = state
+            .login
+            .request_challenge_guarded(&state.devices, &state.emergency, device_id, 10, 60)
+            .unwrap();
         let signature = device.sign(&login_message(&challenge));
-        let session = state.login.complete_login(
-            &state.devices,
-            challenge.challenge_id,
-            signature,
-            11,
-            300,
-        ).unwrap();
-        assert_eq!(state.authorize_founder_session(&session.token, 12).unwrap(), device_id);
+        let session = state
+            .login
+            .complete_login(&state.devices, challenge.challenge_id, signature, 11, 300)
+            .unwrap();
+        assert_eq!(
+            state.authorize_founder_session(&session.token, 12).unwrap(),
+            device_id
+        );
         state.login.revoke_session(&session.token).unwrap();
         assert!(state.authorize_founder_session(&session.token, 13).is_err());
         fs::remove_dir_all(directory).unwrap();
