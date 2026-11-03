@@ -28,7 +28,10 @@ replacement founder.
 
 ## Device admission
 
-The genesis founder key is the first approved device. A new device creates a
+The Genesis founder authority key and the initial device key are separate
+key pairs. The founder authority key signs Genesis and governance; the
+initial device key is the first approved login/approval device. Copying the
+founder authority key alone does not grant device login. A new device creates a
 pending `DeviceRequest` and must first sign its nonce-bound proof message with
 its own private key using `device_proof_message` / `prove_device_request`.
 Only after proof-of-possession succeeds may an already-approved device sign
@@ -55,8 +58,11 @@ including for challenges issued before the lockout began.
 Successful proof creates a random device-bound session token. The core supports
 session expiry, suspicious-session restriction, individual revocation, global
 logout, and bounded cleanup. The token is a bearer secret: never log it, expose
-it in URLs, or store it unencrypted. Passwords are intended to unlock the key
-locally and are not a substitute for device proof.
+it in URLs, or store it unencrypted. Passwords are intended to unlock the founder authority key locally and are
+not a substitute for device proof. Production device keys should be
+non-exportable platform credentials (passkeys/WebAuthn, TPM, or a secure
+enclave) where supported. A software-only exported private key cannot prove
+physical device binding if an attacker copies that key too.
 
 ## Governance updates
 
@@ -91,7 +97,8 @@ bootstrap-secret validation, exclusive one-time file creation, device
 proof-of-possession, all-device or selected-device approval policies, signed
 device controls, bounded audit records, chained founder-signed governance
 updates, device-bound login challenges, temporary login lockouts, and
-revocable/restrictable sessions. The desktop login and Control Center UI,
+revocable/restrictable sessions. Genesis binds a distinct initial device
+public key so the founder authority key is not itself a login credential. The desktop login and Control Center UI,
 notification transport, durable replicated device state, Neter capability
 integration, recovery flows, and privileged-operation enforcement remain
 integration work. Do not expose production founder initialization until the
