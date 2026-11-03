@@ -283,12 +283,50 @@ fn storage_error(error: impl std::fmt::Display) -> FounderStateError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::identity::Username;
+    use crate::{founder_auth::login_message, identity::Username};
 
     fn temporary_directory() -> PathBuf {
         let mut random = [0u8; 16];
         OsRng.fill_bytes(&mut random);
         std::env::temp_dir().join(format!("awenet-founder-state-{}", hex::encode(random)))
+    }
+
+    #[test]
+    fn shared_founder_authorization_guard_accepts_only_active_device_sessions() {
+        let directory = temporary_directory();
+        let founder = Identity::generate(Username::new("AWENeter").unwrap());
+        let device = Identity::generate(Username::new("founder-device").unwrap());
+        let secret = [0x4Du8; 48];
+        let digest = crate::founder::bootstrap_digest(&secret);
+        let mut state = FounderPersistentState::initialize(
+            &directory,
+            &founder,
+            device.public.public_key,
+            &secret,
+            digest,
+            "Founder device",
+            FounderRules::default(),
+        ).unwrap();
+        let device_id = state.devices.approved_devices()[0].device_id;
+        let challenge = state.login.request_challenge_guarded(
+            &state.devices,
+            &state.emergency,
+            device_id,
+            10,
+            60,
+        ).unwrap();
+        let signature = device.sign(&login_message(&challenge));
+        let session = state.login.complete_login(
+            &state.devices,
+            challenge.challenge_id,
+            signature,
+            11,
+            300,
+        ).unwrap();
+        assert_eq!(state.authorize_founder_session(&session.token, 12).unwrap(), device_id);
+        state.login.revoke_session(&session.token).unwrap();
+        assert!(state.authorize_founder_session(&session.token, 13).is_err());
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
