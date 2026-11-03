@@ -8,12 +8,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-fn request(addr: &str, request: &str) -> String {
+fn request_raw(addr: &str, request_text: &str) -> String {
     let mut stream = TcpStream::connect(addr).expect("connect");
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
         .expect("timeout");
-    stream.write_all(request.as_bytes()).expect("write");
+    stream.write_all(request_text.as_bytes()).expect("write");
     let deadline = Instant::now() + Duration::from_secs(60);
     let mut out = Vec::with_capacity(65536);
     let mut buf = [0u8; 8192];
@@ -34,7 +34,7 @@ fn request(addr: &str, request: &str) -> String {
                 if Instant::now() >= deadline {
                     panic!(
                         "read timed out for {}: {err}",
-                        request.lines().next().unwrap_or("<request>")
+                        request_text.lines().next().unwrap_or("<request>")
                     );
                 }
                 thread::sleep(Duration::from_millis(10));
@@ -42,7 +42,11 @@ fn request(addr: &str, request: &str) -> String {
             Err(err) => panic!("read: {err}"),
         }
     }
-    String::from_utf8_lossy(&out)
+    String::from_utf8_lossy(&out).to_string()
+}
+
+fn request(addr: &str, request_text: &str) -> String {
+    request_raw(addr, request_text)
         .split("\r\n\r\n")
         .nth(1)
         .unwrap_or("")
@@ -56,14 +60,22 @@ fn get(addr: &str, path: &str) -> String {
     )
 }
 
-fn post(addr: &str, path: &str, body: &str) -> String {
-    request(
+fn post_raw(addr: &str, path: &str, body: &str) -> String {
+    request_raw(
         addr,
         &format!(
             "POST {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         ),
     )
+}
+
+fn post(addr: &str, path: &str, body: &str) -> String {
+    post_raw(addr, path, body)
+        .split("\r\n\r\n")
+        .nth(1)
+        .unwrap_or("")
+        .to_string()
 }
 
 fn wait_for_health(addr: &str) {
@@ -431,6 +443,104 @@ fn three_node_product_smoke() {
             downloaded.contains(r#""status":"reconstructed""#)
                 && downloaded.contains(&format!(r#""data_hex":"{hex}""#)),
             "storage get: {downloaded}"
+        );
+
+        // A successful import must be reflected in both the live state and durable state.
+        let dgc_invitation = serde_json::json!({
+            "format": "dgc",
+            "version": 1,
+            "data_group_id": "dg-import-smoke",
+            "data_group_name": "Import Smoke",
+            "issued_at_unix": 1,
+            "owner_data_centre_id": "dc-import-smoke",
+            "data_centre_ids": ["dc-import-smoke", "dc-import-peer"],
+            "peer_data_groups": [],
+            "join_token": "test-join-token"
+        });
+        let successful_body = serde_json::json!({
+            "kind": "dgc",
+            "content": dgc_invitation.to_string()
+        })
+        .to_string();
+        let successful_import = post(
+            "127.0.0.1:46201",
+            "/api/federation/import",
+            &successful_body,
+        );
+        assert!(
+            successful_import.contains(r#""status":"imported""#),
+            "successful federation import: {successful_import}"
+        );
+
+        let federation_after_success: serde_json::Value =
+            serde_json::from_str(&get("127.0.0.1:46201", "/api/federation"))
+                .expect("federation state after successful import");
+        assert_eq!(
+            federation_after_success["local_data_group_id"],
+            "dg-import-smoke"
+        );
+        assert!(federation_after_success["joined_data_groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|group| group == "dg-import-smoke"));
+        assert!(federation_after_success["joined_data_centres"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|centre| centre == "dc-import-peer"));
+        let federation_file = dirs[0].join("awenet.json");
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&fs::read(&federation_file).expect("read persisted federation"))
+                .expect("parse persisted federation");
+        assert_eq!(persisted, federation_after_success);
+
+        // A failed durable write must not publish an imported federation state in memory.
+        let federation_before = federation_after_success;
+        fs::remove_file(&federation_file).expect("remove federation state file");
+        fs::create_dir(&federation_file).expect("block federation state replacement");
+
+        let failing_invitation = serde_json::json!({
+            "format": "awenode",
+            "version": 1,
+            "node_id": "node-import-failure",
+            "data_centre_id": "dc-import-failure",
+            "data_centre_name": "Import Failure",
+            "issued_at_unix": 2,
+            "endpoint": "127.0.0.1:46102",
+            "bootstrap_endpoints": [],
+            "join_token": "test-failure-token"
+        });
+        let failing_body = serde_json::json!({
+            "kind": "awenode",
+            "content": failing_invitation.to_string()
+        })
+        .to_string();
+        let import_response = post_raw("127.0.0.1:46201", "/api/federation/import", &failing_body);
+        assert!(
+            import_response.starts_with("HTTP/1.1 500 Internal Server Error"),
+            "failed federation persistence must return 500: {import_response}"
+        );
+
+        let federation_after_failure: serde_json::Value =
+            serde_json::from_str(&get("127.0.0.1:46201", "/api/federation"))
+                .expect("federation state after failed import");
+        assert_eq!(
+            federation_before, federation_after_failure,
+            "failed federation persistence must not mutate the live state"
+        );
+        let leaked_temp_file = fs::read_dir(&dirs[0])
+            .expect("read node data directory")
+            .filter_map(Result::ok)
+            .any(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".awenet.json.tmp-")
+            });
+        assert!(
+            !leaked_temp_file,
+            "failed federation persistence leaked a temporary file"
         );
     });
 
