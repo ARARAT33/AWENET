@@ -1,9 +1,11 @@
 # Developer & API services upgrade (2026-11-03)
 
 This upgrade adds a developer and automation plane to AWENET as four
-deterministic core modules. Like every AWENET service module they are pure
-data: no wall clock, no threads and no ambient I/O. Time is an explicit tick
-supplied by the caller, which keeps behaviour replay-friendly and testable.
+bounded core modules. Task, webhook, runbook and key-lifecycle decisions use
+explicit ticks and remain replay-friendly. API-key material is intentionally
+non-deterministic and comes from the operating-system CSPRNG; the registry
+retains only fingerprints. Key issuance fails closed if secure entropy is
+unavailable.
 
 ## New modules
 
@@ -25,11 +27,16 @@ summarises the queue by state.
 
 ## keys.rs
 
-`ApiKeys` issues deterministic `awenet-<id>-<token>` key material from an
-internal counter (splitmix64), with a label, scope set and optional expiry
-tick. `verify` returns typed errors for unknown, revoked and expired keys,
-`rotate` revokes the old material and issues fresh material with the same
-label, scopes and expiry, and `active` lists the keys that verify at a tick.
+`ApiKeys` issues 256-bit bearer secrets from the operating-system CSPRNG
+using the `awenet_<hex>` format. The registry stores only a domain-separated
+SHA-256 fingerprint, never the raw secret. The `IssuedApiKey.secret` value is
+returned only on issue/rotate; its Debug output is redacted, and typed errors
+never echo a supplied credential. If OS entropy is unavailable,
+issuance fails closed with EntropyUnavailable; there is no deterministic
+fallback. `verify` checks unknown, revoked and expired keys. `rotate` registers the replacement before revoking the old key,
+so a capacity or entropy failure leaves the old credential valid. Lifecycle
+and expiry decisions still use explicit ticks. The module is a core primitive;
+it is not yet wired into the HTTP route authorization layer.
 
 ## webhooks.rs
 

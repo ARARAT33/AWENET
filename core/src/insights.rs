@@ -216,8 +216,8 @@ mod tests {
     #[test]
     fn detects_spike_anomaly() {
         let mut insights = Insights::new(16, 3.0).unwrap();
-        for tick in 0..6u64 {
-            assert_eq!(insights.push("latency", tick, 10.0).unwrap(), None);
+        for (tick, value) in [8.0, 9.0, 10.0, 11.0, 12.0, 13.0].into_iter().enumerate() {
+            assert_eq!(insights.push("latency", tick as u64, value).unwrap(), None);
         }
         let anomaly = insights.push("latency", 6, 100.0).unwrap();
         assert!(anomaly.is_some());
@@ -294,6 +294,6 @@ mod tests {
             Err(InsightsError::UnknownSeries(_))
         ));
         insights.push("real", 0, 1.0).unwrap();
-        assert_eq!(insights.summary("real").unwrap(), None);
+        assert!(insights.summary("real").unwrap().is_some());
     }
 }

@@ -35,7 +35,7 @@ while exposing a small, stable product orchestration model on top.
 | Smart node services | `automation`, `ratelimit`, `firewall`, `cache` | Metric-driven automation with cooldowns and dry-run, keyed token-bucket limiting, prefix-based peer firewall, bounded LRU cache |
 | Trust & lifecycle services | `sessions`, `consent`, `features`, `sync` | Authenticated sessions with tick TTL and revocation, consent ledger with expiry and audit log, deterministic feature flags, coordinator-free LWW state sync |
 | Intelligence & resilience services | `insights`, `capacity`, `circuit`, `journal`, `archiver` | Rolling-window insights with anomaly detection, capacity forecasts with urgency bands, circuit breaker with cooldown, write-ahead journal with checkpoints, retention & compaction planning |
-| Developer & API services | `tasks`, `keys`, `webhooks`, `runbooks` | Priority task queue with deadlines and retry budgets, scoped API keys with rotation and expiry, event webhooks with cooldowns and dead-lettering, gated runbooks with dry-run plans |
+| Developer & API services | `tasks`, `keys`, `webhooks`, `runbooks` | Priority task queue with deadlines and retry budgets, CSPRNG-issued scoped API keys with hashed lookup, rotation and expiry, event webhooks with cooldowns and dead-lettering, gated runbooks with dry-run plans |
 | Identity & security | `identity`, `security`, `crypto`, `defense`, `sandbox` | Ed25519 identity, authenticated encrypted transport, hostile-traffic limits |
 | Discovery & routing | `discovery`, `routing`, `network_topology`, `lan_mesh` | DHT-style lookup, Data Centre topology, relay failover, LAN mesh |
 | Data plane | `data_plane`, `storage`, `replication`, `repair`, `recovery` | Chunked content-addressed storage, replica placement, repair planning |
@@ -157,13 +157,16 @@ a bounded archive budget and deterministic compaction plans). See
 
 ## Developer & API services
 
-Four deterministic core modules give the node a developer and automation
+Four bounded core modules give the node a developer and automation
 plane: `tasks.rs` (bounded priority task queue with explicit-tick deadlines
-and a retry budget), `keys.rs` (scoped API keys with issue/verify/rotate and
-revoke plus typed expiry errors), `webhooks.rs` (event subscriptions with
-per-hook cooldowns, retry hints and dead-lettering) and `runbooks.rs` (gated
-runbooks with health and alert gates, dry-run plans and abort-with-reason
-execution). See [docs/DEVELOPER-UPGRADE-2026-11-03.md](docs/DEVELOPER-UPGRADE-2026-11-03.md).
+and a retry budget), `keys.rs` (OS-CSPRNG bearer keys, fingerprint-only registry
+storage, issue/verify/rotate/revoke and typed expiry errors), `webhooks.rs`
+(event subscriptions with per-hook cooldowns, retry hints and dead-lettering)
+and `runbooks.rs` (gated runbooks with health and alert gates, dry-run plans
+and abort-with-reason execution). API-key issuance fails closed when OS
+entropy is unavailable. These are core primitives; HTTP route authorization
+integration remains a separate Phase 2 task. See
+[docs/DEVELOPER-UPGRADE-2026-11-03.md](docs/DEVELOPER-UPGRADE-2026-11-03.md).
 
 ## Important status rule
 

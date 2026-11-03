@@ -199,7 +199,7 @@ mod tests {
     fn sample() -> Runbook {
         Runbook {
             name: "drain-and-repair".into(),
-            steps: vec![step("drain", 80, 2), step("repair", 60, 5)],
+            steps: vec![step("drain", 80, 5), step("repair", 60, 2)],
         }
     }
 
