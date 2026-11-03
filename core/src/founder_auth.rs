@@ -323,8 +323,9 @@ mod tests {
     use rand::RngCore;
     use std::{fs, path::PathBuf};
 
-    fn setup() -> (Identity, FounderDevices, PathBuf) {
+    fn setup() -> (Identity, Identity, FounderDevices, PathBuf) {
         let founder = Identity::generate(Username::new("AWENeter").unwrap());
+        let first_device = Identity::generate(Username::new("founder-device").unwrap());
         let secret = vec![0xB7; 48];
         let digest = crate::founder::bootstrap_digest(&secret);
         let mut random = [0u8; 8];
@@ -333,22 +334,23 @@ mod tests {
         let genesis = FounderGenesis::initialize_once(
             &path,
             &founder,
+            first_device.public.public_key,
             &secret,
             digest,
             FounderRules::default(),
         )
         .unwrap();
         let devices = FounderDevices::new(&genesis, "Founder device").unwrap();
-        (founder, devices, path)
+        (founder, first_device, devices, path)
     }
 
     #[test]
     fn approved_device_can_login_and_session_expires() {
-        let (founder, devices, path) = setup();
-        let id = device_id(&founder.public.public_key);
+        let (_founder, device, devices, path) = setup();
+        let id = device_id(&device.public.public_key);
         let mut auth = FounderLogin::new();
         let challenge = auth.request_challenge(&devices, id, 10, 20).unwrap();
-        let signature = founder.sign(&login_message(&challenge));
+        let signature = device.sign(&login_message(&challenge));
         let session = auth
             .complete_login(&devices, challenge.challenge_id, signature, 11, 50)
             .unwrap();
@@ -365,7 +367,7 @@ mod tests {
 
     #[test]
     fn unknown_device_cannot_request_login_challenge() {
-        let (_founder, devices, path) = setup();
+        let (_founder, _device, devices, path) = setup();
         let mut auth = FounderLogin::new();
         assert_eq!(
             auth.request_challenge(&devices, [9; 32], 1, 10),
@@ -376,8 +378,8 @@ mod tests {
 
     #[test]
     fn bad_signatures_trigger_temporary_lockout() {
-        let (founder, devices, path) = setup();
-        let id = device_id(&founder.public.public_key);
+        let (_founder, device, devices, path) = setup();
+        let id = device_id(&device.public.public_key);
         let attacker = Identity::generate(Username::new("attacker").unwrap());
         let mut auth = FounderLogin::new();
         for tick in 1..=MAX_FAILED_LOGINS {
@@ -400,15 +402,15 @@ mod tests {
 
     #[test]
     fn global_logout_and_suspicious_restriction_work() {
-        let (founder, devices, path) = setup();
-        let id = device_id(&founder.public.public_key);
+        let (_founder, device, devices, path) = setup();
+        let id = device_id(&device.public.public_key);
         let mut auth = FounderLogin::new();
         let c1 = auth.request_challenge(&devices, id, 1, 20).unwrap();
         let s1 = auth
             .complete_login(
                 &devices,
                 c1.challenge_id,
-                founder.sign(&login_message(&c1)),
+                device.sign(&login_message(&c1)),
                 2,
                 100,
             )
@@ -418,7 +420,7 @@ mod tests {
             .complete_login(
                 &devices,
                 c2.challenge_id,
-                founder.sign(&login_message(&c2)),
+                device.sign(&login_message(&c2)),
                 4,
                 100,
             )
@@ -436,11 +438,11 @@ mod tests {
 
     #[test]
     fn challenge_cannot_be_replayed() {
-        let (founder, devices, path) = setup();
-        let id = device_id(&founder.public.public_key);
+        let (_founder, device, devices, path) = setup();
+        let id = device_id(&device.public.public_key);
         let mut auth = FounderLogin::new();
         let c = auth.request_challenge(&devices, id, 1, 20).unwrap();
-        let sig = founder.sign(&login_message(&c));
+        let sig = device.sign(&login_message(&c));
         auth.complete_login(&devices, c.challenge_id, sig, 2, 100)
             .unwrap();
         assert_eq!(
