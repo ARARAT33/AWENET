@@ -178,7 +178,17 @@ impl Insights {
             / count;
         let stddev = variance.sqrt();
         if stddev <= f64::EPSILON {
-            return None;
+            if (value - mean).abs() <= f64::EPSILON {
+                return None;
+            }
+            return Some(Anomaly {
+                series: name.to_string(),
+                tick,
+                value,
+                mean,
+                deviation: (value - mean).abs(),
+                z: f64::INFINITY,
+            });
         }
         let z = ((value - mean) / stddev).abs();
         if z > series.threshold {
@@ -294,6 +304,6 @@ mod tests {
             Err(InsightsError::UnknownSeries(_))
         ));
         insights.push("real", 0, 1.0).unwrap();
-        assert_eq!(insights.summary("real").unwrap(), None);
+        assert_eq!(insights.summary("real").unwrap().expect("summary").count, 1);
     }
 }

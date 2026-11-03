@@ -37,6 +37,7 @@ pub mod consent;
 pub mod crypto;
 pub mod data_plane;
 pub mod defense;
+pub mod developer_api;
 pub mod diagnostics;
 pub mod discovery;
 pub mod events;

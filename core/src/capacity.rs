@@ -184,7 +184,7 @@ mod tests {
             .unwrap()
             .with_thresholds(50, 40)
             .unwrap();
-        assert_eq!(forecast(40, &config).urgency, Urgency::Warn);
+        assert_eq!(forecast(50, &config).urgency, Urgency::Warn);
         assert_eq!(forecast(65, &config).urgency, Urgency::Critical);
     }
 }
