@@ -204,7 +204,10 @@ mod tests {
         );
         assert_eq!(
             escrows.create("a", "b", 10, 11, 0, None).unwrap_err(),
-            EscrowError::FeeExceedsAmount { fee: 11, amount: 10 }
+            EscrowError::FeeExceedsAmount {
+                fee: 11,
+                amount: 10
+            }
         );
     }
 
@@ -224,18 +227,12 @@ mod tests {
     fn fund_release_pays_seller_net_of_fee() {
         let mut escrows = Escrows::new(4).unwrap();
         let id = escrows.create("alice", "bob", 100, 5, 0, None).unwrap();
-        assert_eq!(
-            escrows.release(id).unwrap_err(),
-            EscrowError::NotFunded(id)
-        );
+        assert_eq!(escrows.release(id).unwrap_err(), EscrowError::NotFunded(id));
         escrows.fund(id, 1).unwrap();
         assert_eq!(escrows.get(id).unwrap().state, EscrowState::Funded);
         assert_eq!(escrows.release(id).unwrap(), 95);
         assert_eq!(escrows.get(id).unwrap().state, EscrowState::Released);
-        assert_eq!(
-            escrows.release(id).unwrap_err(),
-            EscrowError::NotFunded(id)
-        );
+        assert_eq!(escrows.release(id).unwrap_err(), EscrowError::NotFunded(id));
     }
 
     #[test]
@@ -256,7 +253,9 @@ mod tests {
         let mut escrows = Escrows::new(8).unwrap();
         let unfunded = escrows.create("alice", "bob", 100, 5, 0, Some(10)).unwrap();
         let held = escrows.create("carol", "dave", 50, 0, 0, Some(10)).unwrap();
-        let fresh = escrows.create("erin", "frank", 50, 0, 0, Some(100)).unwrap();
+        let fresh = escrows
+            .create("erin", "frank", 50, 0, 0, Some(100))
+            .unwrap();
         assert_eq!(
             escrows.fund(unfunded, 10).unwrap_err(),
             EscrowError::InvalidState(unfunded, EscrowState::Expired)

@@ -166,11 +166,7 @@ impl Billing {
 
     /// Allocates a payment against an open invoice. The invoice closes as
     /// Paid only when the total is reached; overpayment is rejected.
-    pub fn record_payment(
-        &mut self,
-        id: u64,
-        amount: u64,
-    ) -> Result<PaymentOutcome, InvoiceError> {
+    pub fn record_payment(&mut self, id: u64, amount: u64) -> Result<PaymentOutcome, InvoiceError> {
         if amount == 0 {
             return Err(InvoiceError::ZeroPayment(id));
         }
@@ -218,9 +214,7 @@ impl Billing {
     pub fn overdue(&self, now: u64) -> Vec<u64> {
         self.invoices
             .values()
-            .filter(|invoice| {
-                invoice.state == InvoiceState::Open && invoice.due_tick <= now
-            })
+            .filter(|invoice| invoice.state == InvoiceState::Open && invoice.due_tick <= now)
             .map(|invoice| invoice.id)
             .collect()
     }
@@ -261,17 +255,16 @@ mod tests {
 
     #[test]
     fn validates_capacity_and_invoice() {
-        assert_eq!(
-            Billing::new(0).unwrap_err(),
-            InvoiceError::InvalidCapacity
-        );
+        assert_eq!(Billing::new(0).unwrap_err(), InvoiceError::InvalidCapacity);
         assert_eq!(
             Billing::new(MAX_INVOICES + 1).unwrap_err(),
             InvoiceError::InvalidCapacity
         );
         let mut billing = billing();
         assert_eq!(
-            billing.create("", vec![item("a", 1, 10)], 0, 5).unwrap_err(),
+            billing
+                .create("", vec![item("a", 1, 10)], 0, 5)
+                .unwrap_err(),
             InvoiceError::InvalidInvoiceNumber
         );
         assert_eq!(
