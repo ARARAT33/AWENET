@@ -27,6 +27,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: write
 
 jobs:
   rust:
@@ -49,47 +50,56 @@ jobs:
       - name: Build workspace
         id: build
         run: cargo check --workspace --all-targets
-      - name: Report build diagnostics
-        if: failure() && steps.build.outcome == 'failure'
-        shell: bash
-        run: |
-          cargo check --workspace --all-targets --message-format=short 2>&1 | grep -E 'error(\[[^]]*\])?:' | head -n 20 | while IFS= read -r line; do
-            echo "::error::${line}"
-          done
-          exit 0
       - name: Run unit and integration tests
         id: tests
         run: cargo test --workspace --all-targets
-      - name: Report tests diagnostics
-        if: failure() && steps.tests.outcome == 'failure'
-        shell: bash
-        run: |
-          cargo test --workspace --all-targets 2>&1 | grep -E '(^failures:$|^---- |FAILED|panicked at )' | head -n 40 | while IFS= read -r line; do
-            echo "::error::${line}"
-          done
-          exit 0
       - name: Run product smoke test
         id: smoke
         run: cargo test -p awe-node --test product_smoke -- --nocapture
-      - name: Report smoke diagnostics
-        if: failure() && steps.smoke.outcome == 'failure'
-        shell: bash
-        run: |
-          cargo test -p awe-node --test product_smoke -- --nocapture 2>&1 | grep -E '(FAILED|panicked at |assertion)' | head -n 30 | while IFS= read -r line; do
-            echo "::error::${line}"
-          done
-          exit 0
       - name: Run clippy
         id: clippy
-        run: cargo clippy --workspace --all-targets --message-format=short -- -D warnings
-      - name: Report clippy diagnostics
-        if: failure() && steps.clippy.outcome == 'failure'
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Publish diagnostics to PR
+        if: failure() && github.event_name == 'pull_request'
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          cargo clippy --workspace --all-targets --message-format=short 2>&1 | grep -E 'error(\[[^]]*\])?:' | head -n 20 | while IFS= read -r line; do
-            echo "::error::${line}"
-          done
-          exit 0
+          set +e
+          {
+            echo "### CI diagnostics (automated)"
+            echo ""
+            echo "build=${{ steps.build.outcome }} tests=${{ steps.tests.outcome }} smoke=${{ steps.smoke.outcome }} clippy=${{ steps.clippy.outcome }}"
+            if [ "${{ steps.build.outcome }}" = "failure" ]; then
+              echo ""
+              echo "#### cargo check"
+              echo '```'
+              cargo check --workspace --all-targets --message-format=short 2>&1 | grep -E 'error(\[[^]]*\])?:' | head -n 40
+              echo '```'
+            fi
+            if [ "${{ steps.tests.outcome }}" = "failure" ]; then
+              echo ""
+              echo "#### unit and integration tests"
+              echo '```'
+              cargo test --workspace --all-targets 2>&1 | grep -E '(^failures:$|^---- |FAILED|panicked at )' | head -n 60
+              echo '```'
+            fi
+            if [ "${{ steps.smoke.outcome }}" = "failure" ]; then
+              echo ""
+              echo "#### product smoke test"
+              echo '```'
+              cargo test -p awe-node --test product_smoke -- --nocapture 2>&1 | tail -n 60
+              echo '```'
+            fi
+            if [ "${{ steps.clippy.outcome }}" = "failure" ]; then
+              echo ""
+              echo "#### clippy"
+              echo '```'
+              cargo clippy --workspace --all-targets --message-format=short 2>&1 | grep -E 'error(\[[^]]*\])?:' | head -n 40
+              echo '```'
+            fi
+          } > diagnostics.md
+          gh pr comment "${{ github.event.pull_request.number }}" --body-file diagnostics.md
 
   architecture:
     name: Architecture integrity checks
