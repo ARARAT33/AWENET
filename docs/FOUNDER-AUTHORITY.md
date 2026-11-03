@@ -32,9 +32,14 @@ The genesis founder key is the first approved device. A new device creates a
 pending `DeviceRequest` and must first sign its nonce-bound proof message with
 its own private key using `device_proof_message` / `prove_device_request`.
 Only after proof-of-possession succeeds may an already-approved device sign
-the exact request and decision using `approval_message`. Device block/unblock
-commands are also signed with `device_control_message`; callers must not trust
-an actor-device ID supplied without its signature. Offline requests remain
+the exact request and decision using `approval_message`. The founder may set
+the approval policy to require every currently approved device or a selected
+set of approved devices; the request snapshots its required approvers, and
+approval remains pending until all required signatures are present. Device
+block/unblock commands are also signed with `device_control_message`; callers
+must not trust an actor-device ID supplied without its signature. The final
+approved device cannot be blocked, preventing an accidental permanent
+administrative lockout. Offline requests remain
 pending in the caller's durable state. Denial does not create an approved
 device. Device state and audit history must be persisted atomically by the
 integrating application; the in-memory registry alone is not durable.
