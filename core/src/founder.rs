@@ -1025,12 +1025,7 @@ mod tests {
         assert_eq!(u.verify(&g, 2, [0; 32]), Err(FounderError::InvalidSequence));
         let mut emergency = FounderEmergencyLock::default();
         let lock = crate::founder_admin::FounderEmergencyCommand::sign(
-            &id,
-            &g,
-            &emergency,
-            false,
-            true,
-            2,
+            &id, &g, &emergency, false, true, 2,
         )
         .unwrap();
         emergency.apply(&g, lock).unwrap();

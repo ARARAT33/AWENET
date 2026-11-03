@@ -550,7 +550,6 @@ fn validate_scopes(scopes: &[String]) -> Result<(), NeterError> {
     Ok(())
 }
 
-
 pub const MAX_EMERGENCY_AUDIT: usize = 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -635,7 +634,9 @@ impl FounderEmergencyCommand {
         governance_locked: bool,
         tick: u64,
     ) -> Result<Self, FounderEmergencyError> {
-        genesis.verify().map_err(|_| FounderEmergencyError::InvalidGenesis)?;
+        genesis
+            .verify()
+            .map_err(|_| FounderEmergencyError::InvalidGenesis)?;
         if founder.public.public_key != genesis.payload.founder_public_key {
             return Err(FounderEmergencyError::InvalidFounder);
         }
@@ -696,8 +697,14 @@ impl FounderEmergencyLock {
         genesis: &FounderGenesis,
         command: FounderEmergencyCommand,
     ) -> Result<[u8; 32], FounderEmergencyError> {
-        genesis.verify().map_err(|_| FounderEmergencyError::InvalidGenesis)?;
-        if command.sequence != self.sequence.checked_add(1).ok_or(FounderEmergencyError::InvalidSequence)?
+        genesis
+            .verify()
+            .map_err(|_| FounderEmergencyError::InvalidGenesis)?;
+        if command.sequence
+            != self
+                .sequence
+                .checked_add(1)
+                .ok_or(FounderEmergencyError::InvalidSequence)?
             || command.previous_hash != self.last_hash
         {
             return Err(FounderEmergencyError::InvalidSequence);
@@ -713,8 +720,8 @@ impl FounderEmergencyLock {
         );
         key.verify(&message, &Signature::from_bytes(&command.signature))
             .map_err(|_| FounderEmergencyError::InvalidSignature)?;
-        let encoded = serde_json::to_vec(&command)
-            .map_err(|_| FounderEmergencyError::InvalidSignature)?;
+        let encoded =
+            serde_json::to_vec(&command).map_err(|_| FounderEmergencyError::InvalidSignature)?;
         let command_hash = hash(b"AWENET/FOUNDER-EMERGENCY-HASH/v1", &encoded);
         self.sequence = command.sequence;
         self.last_hash = command_hash;
@@ -941,27 +948,33 @@ mod tests {
     fn emergency_account_and_governance_locks_are_signed_and_chained() {
         let (founder, genesis, _registry, path) = setup();
         let mut state = FounderEmergencyLock::default();
-        let lock_account = FounderEmergencyCommand::sign(
-            &founder, &genesis, &state, true, false, 1,
-        ).unwrap();
+        let lock_account =
+            FounderEmergencyCommand::sign(&founder, &genesis, &state, true, false, 1).unwrap();
         state.apply(&genesis, lock_account.clone()).unwrap();
-        assert_eq!(state.ensure_login_allowed(), Err(FounderEmergencyError::AccountLocked));
+        assert_eq!(
+            state.ensure_login_allowed(),
+            Err(FounderEmergencyError::AccountLocked)
+        );
         assert!(state.ensure_governance_allowed().is_ok());
 
-        let lock_governance = FounderEmergencyCommand::sign(
-            &founder, &genesis, &state, true, true, 2,
-        ).unwrap();
+        let lock_governance =
+            FounderEmergencyCommand::sign(&founder, &genesis, &state, true, true, 2).unwrap();
         state.apply(&genesis, lock_governance).unwrap();
-        assert_eq!(state.ensure_governance_allowed(), Err(FounderEmergencyError::GovernanceLocked));
+        assert_eq!(
+            state.ensure_governance_allowed(),
+            Err(FounderEmergencyError::GovernanceLocked)
+        );
 
-        let unlock = FounderEmergencyCommand::sign(
-            &founder, &genesis, &state, false, false, 3,
-        ).unwrap();
+        let unlock =
+            FounderEmergencyCommand::sign(&founder, &genesis, &state, false, false, 3).unwrap();
         state.apply(&genesis, unlock.clone()).unwrap();
         assert!(state.ensure_login_allowed().is_ok());
         assert!(state.ensure_governance_allowed().is_ok());
         assert_eq!(state.audit().count(), 3);
-        assert_eq!(state.apply(&genesis, unlock), Err(FounderEmergencyError::InvalidSequence));
+        assert_eq!(
+            state.apply(&genesis, unlock),
+            Err(FounderEmergencyError::InvalidSequence)
+        );
         fs::remove_file(path).unwrap();
     }
 
