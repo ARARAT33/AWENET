@@ -135,6 +135,33 @@ pub fn neter_id(public_key: &[u8; 32]) -> [u8; 32] {
     hash(b"AWENET/NETER-ID/v1", public_key)
 }
 
+pub fn application_proof_message(
+    public_key: [u8; 32],
+    display_name: &str,
+    requested_scopes: &[String],
+    message: &str,
+    submitted_tick: u64,
+) -> Vec<u8> {
+    #[derive(Serialize)]
+    struct Statement<'a> {
+        domain: &'static str,
+        public_key: [u8; 32],
+        display_name: &'a str,
+        requested_scopes: &'a [String],
+        message: &'a str,
+        submitted_tick: u64,
+    }
+    serde_json::to_vec(&Statement {
+        domain: "AWENET/NETER-APPLICATION-PROOF/v1",
+        public_key,
+        display_name,
+        requested_scopes,
+        message,
+        submitted_tick,
+    })
+    .expect("Neter application proof serialization is infallible")
+}
+
 pub fn appointment_message(
     candidate_public_key: [u8; 32],
     display_name: &str,
@@ -195,8 +222,17 @@ impl NeterRegistry {
         requested_scopes: Vec<String>,
         message: &str,
         tick: u64,
+        proof_signature: [u8; 64],
     ) -> Result<NeterApplication, NeterError> {
         validate_scopes(&requested_scopes)?;
+        let proof = application_proof_message(
+            public_key, display_name, &requested_scopes, message, tick,
+        );
+        let applicant_key = VerifyingKey::from_bytes(&public_key)
+            .map_err(|_| NeterError::InvalidNeterSignature)?;
+        applicant_key
+            .verify(&proof, &Signature::from_bytes(&proof_signature))
+            .map_err(|_| NeterError::InvalidNeterSignature)?;
         if self.applications.len() >= MAX_NETERS {
             return Err(NeterError::RegistryFull);
         }
