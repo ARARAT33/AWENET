@@ -157,13 +157,16 @@ a bounded archive budget and deterministic compaction plans). See
 
 ## Developer & API services
 
-Four deterministic core modules give the node a developer and automation
+Four bounded core modules give the node a developer and automation
 plane: `tasks.rs` (bounded priority task queue with explicit-tick deadlines
-and a retry budget), `keys.rs` (OS-CSPRNG bearer keys, fingerprint-only registry storage,
-issue/verify/rotate/revoke and typed expiry errors), `webhooks.rs` (event subscriptions with
-per-hook cooldowns, retry hints and dead-lettering) and `runbooks.rs` (gated
-runbooks with health and alert gates, dry-run plans and abort-with-reason
-execution). See [docs/DEVELOPER-UPGRADE-2026-11-03.md](docs/DEVELOPER-UPGRADE-2026-11-03.md).
+and a retry budget), `keys.rs` (OS-CSPRNG bearer keys, fingerprint-only registry
+storage, issue/verify/rotate/revoke and typed expiry errors), `webhooks.rs`
+(event subscriptions with per-hook cooldowns, retry hints and dead-lettering)
+and `runbooks.rs` (gated runbooks with health and alert gates, dry-run plans
+and abort-with-reason execution). API-key issuance fails closed when OS
+entropy is unavailable. These are core primitives; HTTP route authorization
+integration remains a separate Phase 2 task. See
+[docs/DEVELOPER-UPGRADE-2026-11-03.md](docs/DEVELOPER-UPGRADE-2026-11-03.md).
 
 ## Important status rule
 
