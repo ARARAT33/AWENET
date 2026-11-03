@@ -1,6 +1,6 @@
 const view=document.getElementById("view"),title=document.getElementById("pageTitle"),navs=[...document.querySelectorAll(".nav")];
-const pages={dashboard:["Home","Everything important in one place"],browser:["Browser","Open AWE sites and the web in a separate browser view"],node:["My Node","Your identity, runtime and listening endpoint"],network:["Peers & Connections","Discover and connect to AWEp2P nodes"],federation:["AWENET","Build Nodes, Data Centres and Data Groups"],storage:["Storage","Local and distributed data plane"],messenger:["Messenger","Peer-to-peer messaging"],communities:["Groups & Channels","Real peer communities over AWE transport"],store:["AWEStore","AWE modules and services"],security:["Security","Identity, transport and trust"],diagnostics:["Diagnostics","Health checks and runtime inspection"],settings:["Settings","Application configuration"]};
-let live={status:"starting",node_id:"loading",node_address:"loading",transport:"loading",ui:"connecting",peers:[],node:{},storage:{},security:{},federation:{},lastUpdated:null};
+const pages={dashboard:["Home","Everything important in one place"],browser:["Browser","Open AWE sites and the web in a separate browser view"],node:["My Node","Your identity, runtime and listening endpoint"],network:["Peers & Connections","Discover and connect to AWEp2P nodes"],federation:["AWENET","Build Nodes, Data Centres and Data Groups"],storage:["Storage","Local and distributed data plane"],messenger:["Messenger","Peer-to-peer messaging"],communities:["Groups & Channels","Real peer communities over AWE transport"],store:["AWEStore","AWE modules and services"],security:["Security","Identity, transport and trust"],diagnostics:["Diagnostics","Health checks and runtime inspection"],settings:["Settings","Application configuration"],founder:["Founder Authority","AWENET network founder · identity, trust and administration"]};
+let live={status:"starting",node_id:"loading",node_address:"loading",transport:"loading",ui:"connecting",peers:[],node:{},storage:{},security:{},federation:{},founder:{initialized:false},lastUpdated:null};
 
 function apiBase(){
  if(location.protocol==="http:"||location.protocol==="https:")return location.origin;
@@ -86,9 +86,9 @@ async function loadMessenger(){
 }
 async function refresh(){
  const results=await Promise.allSettled([
-  api("/api/status"),api("/api/node"),api("/api/storage"),api("/api/security"),api("/api/federation")
+  api("/api/status"),api("/api/node"),api("/api/storage"),api("/api/security"),api("/api/federation"),api("/api/founder/status")
  ]);
- const [status,node,storage,security,federation]=results.map(x=>x.status==="fulfilled"?x.value:null);
+ const [status,node,storage,security,federation,founder]=results.map(x=>x.status==="fulfilled"?x.value:null);
  if(status||node){
   live={
    ...live,
@@ -96,7 +96,8 @@ async function refresh(){
    node:node||live.node,
    storage:storage||live.storage,
    security:security||live.security,
-   federation:federation||live.federation
+   federation:federation||live.federation,
+   founder:founder||live.founder
   };
   if(!status)live.status=live.status||"online";
   live.lastUpdated=new Date();
@@ -163,6 +164,28 @@ function render(k){
   body=panel("AWEStore",'<div id="storeCatalog" class="store-grid"><div class="empty">Loading verified packages…</div></div>','<button class="secondary" id="storeRefresh">Refresh</button>')+
   panel("Security",'<div class="notice">Only packages that pass AWE package integrity and developer-signature verification are shown. Installation grants only the capabilities you explicitly approve.</div>');
 
+ } else if(k==="founder"){
+  const f=live.founder||{};
+  const initialized=!!f.initialized;
+  body='<div class="grid">'+
+   card("Founder identity",initialized?(f.username||"AWENeter"):"Not initialized","Reserved immutable network founder")+
+   card("Founder AWEID",initialized?(f.founder_awe_id||"Unavailable"):"—","Cryptographic identity · not email or phone")+
+   card("Network trust root",initialized?(f.network_id||"Loaded"):"Not established","Pinned Genesis network ID")+
+   card("Approved devices",initialized?(f.approved_devices??0):"—","Explicit device approval required")+
+   card("Pending requests",initialized?(f.pending_device_requests??0):"—","Remain pending while founder is offline")+
+   card("Active Neters",initialized?(f.active_neters??0):"—","Bounded delegated authority")+
+  '</div>'+
+  panel("Founder authority state",'<div class="list">'+
+   '<div class="list-row"><span>Genesis</span><b>'+esc(initialized?"Initialized":"Not initialized")+'</b></div>'+
+   '<div class="list-row"><span>Signed snapshot</span><b>'+esc(initialized?("Sequence "+(f.snapshot_sequence??"—")):"—")+'</b></div>'+
+   '<div class="list-row"><span>Account emergency lock</span><b>'+esc(initialized?(f.account_locked?"LOCKED":"Open"):"—")+'</b></div>'+
+   '<div class="list-row"><span>Governance emergency lock</span><b>'+esc(initialized?(f.governance_locked?"LOCKED":"Open"):"—")+'</b></div>'+
+   '</div>')+
+  panel("Security model",'<div class="notice">Founder authority belongs to AWENeter and is exercised only through approved founder devices. AWEID is derived from the founder public key. Member votes and Neters cannot remove or replace the founder. Founder status does not grant access to private user content or override local node-owner resource controls.</div>')+
+  panel("Control Center integration",'<div class="notice">'+
+   (initialized?'Device-signed login challenge, completion, session inspection and logout APIs are available. The full signed administration command bridge, recovery ceremony and OS-protected credential integration are still under development.':'Founder Genesis is not initialized on this installation. Initialize it explicitly using the secure local CLI instructions in the Founder Authority specification.')+
+   '</div><div class="list"><div class="list-row"><span>Read-only status API</span><b>GET /api/founder/status</b></div><div class="list-row"><span>Login challenge</span><b>POST /api/founder/login/challenge</b></div><div class="list-row"><span>Complete login</span><b>POST /api/founder/login/complete</b></div><div class="list-row"><span>Session validation</span><b>GET /api/founder/session</b></div><div class="list-row"><span>Logout</span><b>POST /api/founder/logout</b></div></div>')+
+  panel("Full specification",'<div class="notice">Canonical specification: docs/FOUNDER-AUTHORITY.md · Architecture contract: docs/AWENET-ARCHITECTURE.md. Production readiness is not claimed until all release acceptance checks pass.</div>');
  } else if(k==="security"){
   body='<div class="grid">'+card("Identity",live.node_id,"Public node identity")+card("Transport",live.transport,"Network layer")+card("Peer count",live.peers.length,"Known peers")+card("Trust","Core-managed","No UI-only security state")+'</div>'+
   panel("Security model",'<div class="list"><div class="list-row"><span>Node identity</span><b>Rust core</b></div><div class="list-row"><span>Authentication</span><b>Core protocol</b></div><div class="list-row"><span>Transport</span><b>'+esc(live.transport)+'</b></div><div class="list-row"><span>Secrets</span><b>Local identity vault</b></div></div>');
