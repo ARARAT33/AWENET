@@ -274,9 +274,10 @@ The network must fail closed for founder-only operations when authorization cann
 
 ### Not yet complete — do not claim production readiness
 
-- Full first-run and login UI / Founder Control Center.
+- Full first-run and login UI / Founder Control Center (a read-only overview is present; secure device signing and administrative workflows are not).
 - Secure UI-to-core signing bridge and OS-backed non-exportable key integration.
 - Remote device-approval delivery and pending-request workflow.
+- Durable transactional session/revocation storage; current login challenges and sessions are intentionally memory-only and are lost on restart.
 - Recovery ceremony, recovery UI and clean-device recovery tests.
 - Durable transaction API that automatically persists every mutation and safely handles concurrent writers.
 - Shared authorization middleware enforced on every privileged API, node admin action, Neter action, governance mutation and ONECOIN policy endpoint.
