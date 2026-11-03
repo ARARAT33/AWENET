@@ -413,6 +413,10 @@ impl FounderDevices {
         );
         Ok(())
     }
+    pub fn request_was_denied(&self, request_id: &[u8; 32]) -> bool {
+        self.denied.contains_key(&hex::encode(request_id))
+    }
+
     pub fn audit(&self) -> impl Iterator<Item = &FounderAuditRecord> {
         self.audit.iter()
     }
