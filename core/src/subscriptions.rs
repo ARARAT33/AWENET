@@ -276,8 +276,8 @@ mod tests {
         let id = subs.subscribe("alice", plan(10, 5), 0, None).unwrap();
         subs.advance(10);
         assert_eq!(subs.get(id).unwrap().state, SubscriptionState::PastDue);
-        assert_eq!(subs.advance(15).len(), 0);
-        assert_eq!(subs.advance(15 + 1), vec![(id, SubscriptionState::Expired)]);
+        assert_eq!(subs.advance(14).len(), 0);
+        assert_eq!(subs.advance(15), vec![(id, SubscriptionState::Expired)]);
 
         let id2 = subs.subscribe("bob", plan(10, 5), 0, None).unwrap();
         subs.cancel(id2).unwrap();

@@ -170,14 +170,21 @@ impl Billing {
         if amount == 0 {
             return Err(InvoiceError::ZeroPayment(id));
         }
+        let (paid_amount, total) = {
+            let invoice = self
+                .invoices
+                .get(&id)
+                .ok_or(InvoiceError::UnknownInvoice(id))?;
+            if invoice.state != InvoiceState::Open {
+                return Err(InvoiceError::InvoiceNotOpen(id));
+            }
+            let total = self.total(id)?;
+            (invoice.paid_amount, total)
+        };
         let invoice = self
             .invoices
             .get_mut(&id)
             .ok_or(InvoiceError::UnknownInvoice(id))?;
-        if invoice.state != InvoiceState::Open {
-            return Err(InvoiceError::InvoiceNotOpen(id));
-        }
-        let total = self.total(id)?;
         let remaining = total - invoice.paid_amount;
         if amount > remaining {
             return Err(InvoiceError::Overpayment {

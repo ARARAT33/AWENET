@@ -126,8 +126,14 @@ impl ApiKeys {
     pub fn rotate(&mut self, key: &str, now: u64) -> Result<ApiKey, KeyError> {
         self.verify(key, now).cloned()?;
         self.revoke(key)?;
-        let old = self.keys.get(key).expect("verified above");
-        let mut fresh = self.issue(&old.label, old.scopes.clone(), now, old.expires_tick)?;
+        let (label, scopes, expires_tick) = {
+            let old = self
+                .keys
+                .get(key)
+                .ok_or_else(|| KeyError::UnknownKey(key.to_string()))?;
+            (old.label.clone(), old.scopes.clone(), old.expires_tick)
+        };
+        let mut fresh = self.issue(&label, scopes, now, expires_tick)?;
         fresh.rotated_from = Some(key.to_string());
         self.keys.insert(fresh.key.clone(), fresh.clone());
         Ok(fresh)
