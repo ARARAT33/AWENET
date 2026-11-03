@@ -7,7 +7,7 @@
 
 use crate::{
     crypto::hash,
-    founder::{device_id, FounderDevices},
+    founder::FounderDevices,
 };
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use rand::{rngs::OsRng, RngCore};
@@ -111,12 +111,13 @@ impl FounderLogin {
         now: u64,
         ttl: u64,
     ) -> Result<FounderLoginChallenge, FounderAuthError> {
-        let device = devices
+        if !devices
             .approved_devices()
-            .into_iter()
-            .find(|d| d.device_id == requested_device_id)
-            .ok_or(FounderAuthError::UnapprovedDevice)?;
-        let _ = device;
+            .iter()
+            .any(|device| device.device_id == requested_device_id)
+        {
+            return Err(FounderAuthError::UnapprovedDevice);
+        }
         let failure = self
             .failures
             .get(&hex::encode(requested_device_id))
@@ -303,7 +304,7 @@ impl FounderLogin {
 mod tests {
     use super::*;
     use crate::{
-        founder::{FounderDevices, FounderGenesis, FounderRules},
+        founder::{device_id, FounderDevices, FounderGenesis, FounderRules},
         identity::{Identity, Username},
     };
     use rand::rngs::OsRng;
