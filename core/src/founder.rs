@@ -341,8 +341,11 @@ impl FounderDevices {
             .ok_or(FounderError::UnknownRequest)?;
         let key = VerifyingKey::from_bytes(&request.public_key)
             .map_err(|_| FounderError::InvalidDeviceProof)?;
-        key.verify(&device_proof_message(request), &Signature::from_bytes(&proof_signature))
-            .map_err(|_| FounderError::InvalidDeviceProof)?;
+        key.verify(
+            &device_proof_message(request),
+            &Signature::from_bytes(&proof_signature),
+        )
+        .map_err(|_| FounderError::InvalidDeviceProof)?;
         request.proof_verified = true;
         Ok(())
     }
@@ -358,7 +361,10 @@ impl FounderDevices {
         tick: u64,
     ) -> Result<(), FounderError> {
         let request_key = hex::encode(request_id);
-        let request = self.pending.get(&request_key).ok_or(FounderError::UnknownRequest)?;
+        let request = self
+            .pending
+            .get(&request_key)
+            .ok_or(FounderError::UnknownRequest)?;
         if !request.proof_verified {
             return Err(FounderError::InvalidDeviceProof);
         }
@@ -426,8 +432,8 @@ impl FounderDevices {
             .filter(|d| !d.blocked)
             .map(|d| d.public_key)
             .ok_or(FounderError::UnapprovedApprover)?;
-        let key = VerifyingKey::from_bytes(&actor_key)
-            .map_err(|_| FounderError::InvalidApproval)?;
+        let key =
+            VerifyingKey::from_bytes(&actor_key).map_err(|_| FounderError::InvalidApproval)?;
         key.verify(
             &device_control_message(device, blocked, tick),
             &Signature::from_bytes(&signature),
@@ -718,9 +724,18 @@ mod tests {
         let target = devices.approved_devices()[1].device_id;
         let block_signature = id.sign(&device_control_message(target, true, 12));
         devices
-            .block_device(target, true, device_id(&id.public.public_key), 12, block_signature)
+            .block_device(
+                target,
+                true,
+                device_id(&id.public.public_key),
+                12,
+                block_signature,
+            )
             .unwrap();
-        assert!(devices.approved_devices().iter().all(|d| d.device_id != target));
+        assert!(devices
+            .approved_devices()
+            .iter()
+            .all(|d| d.device_id != target));
         fs::remove_file(p).unwrap();
     }
     #[test]
