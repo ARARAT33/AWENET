@@ -451,9 +451,14 @@ mod tests {
     fn blocking_a_device_invalidates_its_existing_sessions() {
         let (founder, first_device, mut devices, path) = setup();
         let second = Identity::generate(Username::new("second-device").unwrap());
-        let request = devices.request_device(second.public.public_key, "Second device", 1).unwrap();
+        let request = devices
+            .request_device(second.public.public_key, "Second device", 1)
+            .unwrap();
         devices
-            .prove_device_request(request.request_id, second.sign(&crate::founder::device_proof_message(&request)))
+            .prove_device_request(
+                request.request_id,
+                second.sign(&crate::founder::device_proof_message(&request)),
+            )
             .unwrap();
         let approval = first_device.sign(&crate::founder::approval_message(
             &request,
@@ -473,9 +478,16 @@ mod tests {
         let mut auth = FounderLogin::new();
         let challenge = auth.request_challenge(&devices, second_id, 3, 20).unwrap();
         let session = auth
-            .complete_login(&devices, challenge.challenge_id, second.sign(&login_message(&challenge)), 4, 100)
+            .complete_login(
+                &devices,
+                challenge.challenge_id,
+                second.sign(&login_message(&challenge)),
+                4,
+                100,
+            )
             .unwrap();
-        let block_signature = first_device.sign(&crate::founder::device_control_message(second_id, true, 5));
+        let block_signature =
+            first_device.sign(&crate::founder::device_control_message(second_id, true, 5));
         devices
             .block_device(
                 second_id,

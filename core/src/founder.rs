@@ -825,7 +825,10 @@ mod tests {
                 block_signature,
             )
             .unwrap();
-        assert!(devices.approved_devices().iter().all(|d| d.device_id != second_id));
+        assert!(devices
+            .approved_devices()
+            .iter()
+            .all(|d| d.device_id != second_id));
         fs::remove_file(p).unwrap();
     }
     #[test]
@@ -911,15 +914,9 @@ mod tests {
         let mut rules = FounderRules::default();
         rules.device_approval_policy =
             DeviceApprovalPolicy::SelectedDevices(vec![device_id(&first_device.public.public_key)]);
-        let g = FounderGenesis::initialize_once(
-            &p,
-            &id,
-            first_device.public.public_key,
-            &s,
-            d,
-            rules,
-        )
-        .unwrap();
+        let g =
+            FounderGenesis::initialize_once(&p, &id, first_device.public.public_key, &s, d, rules)
+                .unwrap();
         let mut devices = FounderDevices::new(&g, "Founder phone").unwrap();
         let laptop = Identity::generate(Username::new("laptop").unwrap());
         let request = devices
