@@ -35,7 +35,7 @@ while exposing a small, stable product orchestration model on top.
 | Smart node services | `automation`, `ratelimit`, `firewall`, `cache` | Metric-driven automation with cooldowns and dry-run, keyed token-bucket limiting, prefix-based peer firewall, bounded LRU cache |
 | Trust & lifecycle services | `sessions`, `consent`, `features`, `sync` | Authenticated sessions with tick TTL and revocation, consent ledger with expiry and audit log, deterministic feature flags, coordinator-free LWW state sync |
 | Intelligence & resilience services | `insights`, `capacity`, `circuit`, `journal`, `archiver` | Rolling-window insights with anomaly detection, capacity forecasts with urgency bands, circuit breaker with cooldown, write-ahead journal with checkpoints, retention & compaction planning |
-| Developer & API services | `tasks`, `keys`, `webhooks`, `runbooks` | Priority task queue with deadlines and retry budgets, scoped API keys with rotation and expiry, event webhooks with cooldowns and dead-lettering, gated runbooks with dry-run plans |
+| Developer & API services | `tasks`, `keys`, `webhooks`, `runbooks` | Priority task queue with deadlines and retry budgets, OS-CSPRNG API keys with fingerprint-only storage, rotation and expiry, event webhooks with cooldowns and dead-lettering, gated runbooks with dry-run plans |
 | Commerce & economy services | `accounting`, `billing`, `subscriptions`, `escrow` | Double-entry ledger with balanced entries, invoice lifecycle with payments and overdue sweeps, subscription lifecycle with trial and grace periods, escrow with fees, release and refund |
 | AWENETwork & founder economy | `founder`, `awenetwork`, `resource_economy`, `price_control`, `treasury` | Founder-exclusive authority with an immutable audit log, founder-published work tasks with approve-then-pay rewards, consented resource contributions with reliability-weighted payouts, official price control with history, treasury issuance vs circulation accounting |
 | Founder identity & control plane | `founder_identity`, `founder_admin`, `founder_auth`, `founder_runtime` | Signed one-time Genesis, approved-device admission, device-bound login, signed control-plane state and emergency locks |
@@ -168,8 +168,8 @@ a bounded archive budget and deterministic compaction plans). See
 
 Four deterministic core modules give the node a developer and automation
 plane: `tasks.rs` (bounded priority task queue with explicit-tick deadlines
-and a retry budget), `keys.rs` (scoped API keys with issue/verify/rotate and
-revoke plus typed expiry errors), `webhooks.rs` (event subscriptions with
+and a retry budget), `keys.rs` (OS-CSPRNG 256-bit bearer keys with fingerprint-only storage,
+one-time secret return, issue/verify/rotate and revoke plus typed expiry errors), `webhooks.rs` (event subscriptions with
 per-hook cooldowns, retry hints and dead-lettering) and `runbooks.rs` (gated
 runbooks with health and alert gates, dry-run plans and abort-with-reason
 execution). See [docs/DEVELOPER-UPGRADE-2026-11-03.md](docs/DEVELOPER-UPGRADE-2026-11-03.md).
