@@ -30,6 +30,10 @@ pub enum SimError {
     QueueFull,
     #[error("time cannot move backwards from tick {0}")]
     TimeWarp(u64),
+    #[error("simulator tick arithmetic overflowed")]
+    TimeOverflow,
+    #[error("envelope id space is exhausted")]
+    EnvelopeIdExhausted,
 }
 
 /// A node with an explicit online flag driven by the caller.
@@ -190,14 +194,21 @@ impl Sim {
             return Err(SimError::QueueFull);
         }
         let id = self.next_envelope;
-        self.next_envelope += 1;
+        self.next_envelope = self
+            .next_envelope
+            .checked_add(1)
+            .ok_or(SimError::EnvelopeIdExhausted)?;
+        let deliver_tick = self
+            .tick
+            .checked_add(latency)
+            .ok_or(SimError::TimeOverflow)?;
         self.stats.sent += 1;
         let envelope = Envelope {
             id,
             from,
             to,
             sent_tick: self.tick,
-            deliver_tick: self.tick + latency,
+            deliver_tick,
         };
         self.scheduled
             .entry(envelope.deliver_tick)
@@ -208,7 +219,7 @@ impl Sim {
 
     /// Advances one tick and returns how many envelopes were delivered.
     pub fn step(&mut self) -> u64 {
-        self.tick += 1;
+        self.tick = self.tick.saturating_add(1);
         let delivered = match self.scheduled.remove(&self.tick) {
             Some(batch) => batch.len() as u64,
             None => 0,
@@ -372,5 +383,14 @@ mod tests {
         assert_eq!(s.drain(), 2);
         assert_eq!(s.in_flight(), 0);
         assert_eq!(s.tick(), 5);
+    }
+
+    #[test]
+    fn scheduling_rejects_tick_overflow() {
+        let mut s = sim(2);
+        s.tick = u64::MAX;
+        assert_eq!(s.send(1, 2, 1).unwrap_err(), SimError::TimeOverflow);
+        assert_eq!(s.in_flight(), 0);
+        assert_eq!(s.stats().sent, 0);
     }
 }

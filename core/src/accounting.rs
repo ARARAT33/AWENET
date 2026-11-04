@@ -19,6 +19,8 @@ pub enum LedgerError {
     LedgerFull,
     #[error("account {0} already exists")]
     AccountExists(String),
+    #[error("account name must not be empty")]
+    EmptyAccountName,
     #[error("unknown account {0}")]
     UnknownAccount(String),
     #[error("entry name must not be empty")]
@@ -29,6 +31,12 @@ pub enum LedgerError {
     InvalidAmount,
     #[error("journal entry is unbalanced: debits {0} do not equal credits {1}")]
     Unbalanced(u64, u64),
+    #[error("journal entry arithmetic overflowed")]
+    Overflow,
+    #[error("account balance would overflow")]
+    BalanceOverflow,
+    #[error("journal entry id space is exhausted")]
+    EntryIdExhausted,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -87,6 +95,9 @@ impl Ledger {
     }
 
     pub fn add_account(&mut self, name: &str, kind: AccountKind) -> Result<(), LedgerError> {
+        if name.is_empty() {
+            return Err(LedgerError::EmptyAccountName);
+        }
         if self.accounts.len() >= self.max_accounts {
             return Err(LedgerError::LedgerFull);
         }
@@ -125,22 +136,34 @@ impl Ledger {
             if !self.accounts.contains_key(&line.account) {
                 return Err(LedgerError::UnknownAccount(line.account.clone()));
             }
-            debits = debits.saturating_add(line.debit);
-            credits = credits.saturating_add(line.credit);
+            debits = debits
+                .checked_add(line.debit)
+                .ok_or(LedgerError::Overflow)?;
+            credits = credits
+                .checked_add(line.credit)
+                .ok_or(LedgerError::Overflow)?;
         }
         if debits != credits {
             return Err(LedgerError::Unbalanced(debits, credits));
         }
+        let mut next_balances = self.balances.clone();
         for line in &lines {
-            let balance = self.balances.get_mut(&line.account).expect("checked above");
-            if line.debit > 0 {
-                *balance += i64::try_from(line.debit).expect("validated to fit i64");
+            let balance = next_balances.get_mut(&line.account).expect("checked above");
+            let amount = if line.debit > 0 {
+                i64::try_from(line.debit).expect("validated to fit i64")
             } else {
-                *balance -= i64::try_from(line.credit).expect("validated to fit i64");
-            }
+                -i64::try_from(line.credit).expect("validated to fit i64")
+            };
+            *balance = balance
+                .checked_add(amount)
+                .ok_or(LedgerError::BalanceOverflow)?;
         }
+        self.balances = next_balances;
         let id = self.next_entry_id;
-        self.next_entry_id += 1;
+        self.next_entry_id = self
+            .next_entry_id
+            .checked_add(1)
+            .ok_or(LedgerError::EntryIdExhausted)?;
         self.entries.push(Entry {
             id,
             name: name.to_string(),
@@ -201,6 +224,10 @@ mod tests {
             LedgerError::InvalidCapacity
         );
         let mut ledger = ledger();
+        assert_eq!(
+            ledger.add_account("", AccountKind::Asset).unwrap_err(),
+            LedgerError::EmptyAccountName
+        );
         assert_eq!(
             ledger
                 .add_account("wallet", AccountKind::Asset)
@@ -323,5 +350,31 @@ mod tests {
         assert_eq!(trial.len(), 2);
         assert_eq!(trial[0], ("fees", -12));
         assert_eq!(trial[1], ("wallet", 12));
+    }
+
+    #[test]
+    fn rejects_balance_overflow_without_partial_commit() {
+        let mut ledger = ledger();
+        ledger
+            .post(
+                "large",
+                1,
+                vec![
+                    line("wallet", i64::MAX as u64, 0),
+                    line("fees", 0, i64::MAX as u64),
+                ],
+            )
+            .unwrap();
+        assert_eq!(
+            ledger
+                .post(
+                    "overflow",
+                    2,
+                    vec![line("wallet", 1, 0), line("fees", 0, 1)]
+                )
+                .unwrap_err(),
+            LedgerError::BalanceOverflow
+        );
+        assert_eq!(ledger.entry_count(), 1);
     }
 }

@@ -21,6 +21,8 @@ pub enum EscrowError {
     ZeroAmount,
     #[error("buyer and seller must differ")]
     SameParty,
+    #[error("buyer and seller must not be empty")]
+    EmptyParty,
     #[error("fee {fee} exceeds the escrow amount {amount}")]
     FeeExceedsAmount { fee: u64, amount: u64 },
     #[error("unknown escrow {0}")]
@@ -29,6 +31,10 @@ pub enum EscrowError {
     NotFunded(u64),
     #[error("escrow {0} is in state {1:?}")]
     InvalidState(u64, EscrowState),
+    #[error("escrow expiry must be after creation")]
+    InvalidExpiry,
+    #[error("escrow id space is exhausted")]
+    IdExhausted,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -96,8 +102,14 @@ impl Escrows {
         if amount == 0 {
             return Err(EscrowError::ZeroAmount);
         }
+        if buyer.is_empty() || seller.is_empty() {
+            return Err(EscrowError::EmptyParty);
+        }
         if buyer == seller {
             return Err(EscrowError::SameParty);
+        }
+        if expiry_tick.is_some_and(|expiry| expiry <= created_tick) {
+            return Err(EscrowError::InvalidExpiry);
         }
         if fee > amount {
             return Err(EscrowError::FeeExceedsAmount { fee, amount });
@@ -106,7 +118,10 @@ impl Escrows {
             return Err(EscrowError::RegistryFull);
         }
         let id = self.next_id;
-        self.next_id += 1;
+        self.next_id = self
+            .next_id
+            .checked_add(1)
+            .ok_or(EscrowError::IdExhausted)?;
         self.escrows.insert(
             id,
             Escrow {
@@ -208,6 +223,14 @@ mod tests {
                 fee: 11,
                 amount: 10
             }
+        );
+        assert_eq!(
+            escrows.create("", "b", 10, 0, 0, None).unwrap_err(),
+            EscrowError::EmptyParty
+        );
+        assert_eq!(
+            escrows.create("a", "b", 10, 0, 10, Some(10)).unwrap_err(),
+            EscrowError::InvalidExpiry
         );
     }
 
