@@ -432,6 +432,49 @@ fn three_node_product_smoke() {
                 && downloaded.contains(&format!(r#""data_hex":"{hex}""#)),
             "storage get: {downloaded}"
         );
+
+        // A successful shard transfer is not enough: the upload must fail
+        // visibly if its ID-addressed manifest cannot be committed.
+        let manifest_dir = dirs[0].join("storage").join("manifests");
+        let manifest_backup = dirs[0].join("storage").join("manifests-backup");
+        fs::rename(&manifest_dir, &manifest_backup).expect("move manifest directory");
+        fs::write(&manifest_dir, b"not-a-directory").expect("block manifest directory");
+
+        let failed_payload = "AWEP2P-MANIFEST-PERSISTENCE-FAILURE";
+        let failed_hex = failed_payload
+            .as_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        let failed_put = post(
+            "127.0.0.1:46201",
+            "/api/storage/put",
+            &format!(r#"{{"filename":"manifest-failure.txt","data_hex":"{failed_hex}"}}"#),
+        );
+        let failed_json: serde_json::Value =
+            serde_json::from_str(&failed_put).expect("failed storage put JSON");
+        assert_eq!(
+            failed_json.get("status").and_then(|v| v.as_str()),
+            Some("error"),
+            "manifest failure must not be reported as stored: {failed_put}"
+        );
+        assert_eq!(
+            failed_json.get("error").and_then(|v| v.as_str()),
+            Some("manifest_persist_failed"),
+            "manifest persistence failure must be explicit: {failed_put}"
+        );
+        let failed_file_id = failed_json
+            .get("file_id")
+            .and_then(|v| v.as_str())
+            .expect("failed upload file id")
+            .to_string();
+
+        fs::remove_file(&manifest_dir).expect("remove manifest blocker");
+        fs::rename(&manifest_backup, &manifest_dir).expect("restore manifest directory");
+        assert!(
+            !manifest_dir.join(format!("{failed_file_id}.json")).exists(),
+            "failed upload must not leave a published manifest"
+        );
     });
 
     for child in &mut children {
