@@ -365,3 +365,19 @@ A release is not complete until all applicable checks pass with evidence:
 8. Only then mark the PR ready and merge through the repository's normal review process.
 
 **Completion definition:** Founder Authority is complete only when the founder can securely authenticate from an approved device, manage the network through real protected operations, recover safely, delegate bounded tasks, inspect verifiable audit history, and retain immutable founder authority without operating a server — and every security and release acceptance check above has passed.
+
+## 16. Implemented HTTP surface (2026-11-04)
+
+The current node exposes a deliberately small founder-authentication surface:
+
+- `GET /api/founder/status` returns non-secret initialization and health metadata.
+- `POST /api/founder/login/challenge` issues a short-lived challenge to an approved device.
+- `POST /api/founder/login/complete` verifies the device signature and returns a bearer session token once.
+- `GET /api/founder/session` validates the presented founder session.
+- `POST /api/founder/logout` revokes the presented session.
+- `GET /api/founder/admin/overview` requires `Authorization: Bearer <hex-token>` and revalidates the device-bound session before returning the founder/network IDs, snapshot sequence, approved devices, pending device requests, active Neters, Neter applications/audit and emergency-lock status.
+
+The overview endpoint is read-only. Missing, malformed, duplicate, expired, revoked or device-invalid bearer credentials are rejected; an emergency account lock returns `423 Locked`. It does not provide device approval, Neter mutation or general user administration.
+
+**Security boundary:** this endpoint is not a substitute for shared authorization middleware. Federation, storage, messenger, store and other user/node routes are not thereby authenticated. Founder sessions and login challenges remain memory-only and are invalidated by process restart. Do not describe the control plane as production-complete until durable session/recovery, signed mutation commands, shared route authorization and endpoint-by-endpoint negative tests are implemented.
+
