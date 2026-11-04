@@ -73,3 +73,8 @@ claimed as working:
 36 new unit tests across the five new modules plus the ledger idempotency
 test run in the existing CI matrix (cargo test --workspace on Linux and
 Windows, with fmt and clippy gates).
+
+Control-plane counters fail closed on identifier exhaustion rather than
+wrapping, and founder snapshot temporary files use private permissions on Unix
+before atomic publication. These protections prevent sequence collisions and
+reduce exposure of signed administrative state during writes.

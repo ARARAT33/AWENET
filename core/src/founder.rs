@@ -24,6 +24,8 @@ pub enum FounderError {
     LogFull,
     #[error("action detail exceeds {MAX_ACTION_DETAIL_CHARS} characters")]
     DetailTooLong,
+    #[error("founder audit sequence is exhausted")]
+    SequenceExhausted,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -118,7 +120,10 @@ impl FounderAuthority {
             return Err(FounderError::LogFull);
         }
         let sequence = self.next_sequence;
-        self.next_sequence += 1;
+        self.next_sequence = self
+            .next_sequence
+            .checked_add(1)
+            .ok_or(FounderError::SequenceExhausted)?;
         self.log.push(FounderAuditEntry {
             sequence,
             action,
@@ -245,5 +250,24 @@ mod tests {
             FounderError::DetailTooLong
         );
         assert_eq!(authority.log_len(), 0);
+    }
+
+    #[test]
+    fn audit_sequence_exhaustion_does_not_append_or_wrap() {
+        let founder = identity("founder");
+        let mut authority = FounderAuthority::install(&founder, 0);
+        authority.next_sequence = u64::MAX;
+
+        assert_eq!(
+            authority.authorize(
+                &founder.public.public_key,
+                FounderAction::ManageTreasury,
+                1,
+                "exhausted",
+            ),
+            Err(FounderError::SequenceExhausted)
+        );
+        assert_eq!(authority.log_len(), 0);
+        assert_eq!(authority.next_sequence, u64::MAX);
     }
 }
