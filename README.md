@@ -37,6 +37,7 @@ while exposing a small, stable product orchestration model on top.
 | Intelligence & resilience services | `insights`, `capacity`, `circuit`, `journal`, `archiver` | Rolling-window insights with anomaly detection, capacity forecasts with urgency bands, circuit breaker with cooldown, write-ahead journal with checkpoints, retention & compaction planning |
 | Developer & API services | `tasks`, `keys`, `webhooks`, `runbooks` | Priority task queue with deadlines and retry budgets, scoped API keys with rotation and expiry, event webhooks with cooldowns and dead-lettering, gated runbooks with dry-run plans |
 | Commerce & economy services | `accounting`, `billing`, `subscriptions`, `escrow` | Double-entry ledger with balanced entries, invoice lifecycle with payments and overdue sweeps, subscription lifecycle with trial and grace periods, escrow with fees, release and refund |
+| AWENETwork & founder economy | `founder`, `awenetwork`, `resource_economy`, `price_control`, `treasury` | Founder-exclusive authority with an immutable audit log, founder-published work tasks with approve-then-pay rewards, consented resource contributions with reliability-weighted payouts, official price control with history, treasury issuance vs circulation accounting |
 | Identity & security | `identity`, `security`, `crypto`, `defense`, `sandbox` | Ed25519 identity, authenticated encrypted transport, hostile-traffic limits |
 | Discovery & routing | `discovery`, `routing`, `network_topology`, `lan_mesh` | DHT-style lookup, Data Centre topology, relay failover, LAN mesh |
 | Data plane | `data_plane`, `storage`, `replication`, `repair`, `recovery` | Chunked content-addressed storage, replica placement, repair planning |
@@ -176,6 +177,25 @@ with line items, payment allocation and overdue sweeps), `subscriptions.rs`
 and `escrow.rs` (escrow with fees, release, refund and expiry). See
 [docs/COMMERCE-UPGRADE-2026-11-03.md](docs/COMMERCE-UPGRADE-2026-11-03.md).
 
+## AWENETwork & founder economy services
+
+Five deterministic core modules implement the founder-governed ONECOIN
+economy: `founder.rs` (immutable founder authority installed once, with
+action-scoped authorization and a bounded append-only audit log),
+`awenetwork.rs` (the founder-published work platform: draft, publish, modify
+and close official tasks, community suggestions that stay unofficial until
+founder approval, accept/submit/revise flows, founder-only approve-and-pay
+with exactly-once payout ids, team splits that must sum to the published
+reward, contributor profiles and levels that never mint),
+`resource_economy.rs` (consented resource contributions with per-resource
+limits, multi-signal usage evidence, reliability-weighted settlement and
+idempotent rewards), `price_control.rs` (founder-only official price with
+effective times and append-only history) and `treasury.rs` (issuance vs
+circulation vs escrow accounting with inflation-risk bands). The ONECOIN
+ledger gains an idempotent, verifier-gated mint for founder-approved
+payouts. See
+[docs/AWENETWORK-UPGRADE-2026-11-04.md](docs/AWENETWORK-UPGRADE-2026-11-04.md).
+
 ## Important status rule
 
 A source module or UI screen is not proof of end-to-end functionality.
@@ -203,6 +223,7 @@ model is in [docs/PRODUCT-ARCHITECTURE.md](docs/PRODUCT-ARCHITECTURE.md) and
 - [Intelligence & resilience services upgrade](docs/RESILIENCE-UPGRADE-2026-11-02.md)
 - [Developer & API services upgrade](docs/DEVELOPER-UPGRADE-2026-11-03.md)
 - [Commerce & economy services upgrade](docs/COMMERCE-UPGRADE-2026-11-03.md)
+- [AWENETwork & founder economy upgrade](docs/AWENETWORK-UPGRADE-2026-11-04.md)
 
 ## Security
 
