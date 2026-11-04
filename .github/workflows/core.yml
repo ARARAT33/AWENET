@@ -99,10 +99,11 @@ jobs:
             fi
             if [ "${{ steps.clippy.outcome }}" = "failure" ]; then
               echo ""
-              echo "#### clippy (short)"
+              echo "#### clippy (tail, colors stripped)"
               echo '```'
               cargo clippy --workspace --all-targets --message-format=short > clippy.txt 2>&1; echo "clippy exit: $?" >> clippy.txt
-              grep -E 'error(\[[^]]*\])?:|warning:' clippy.txt | head -n 60
+              sed -i 's/\x1B\[[0-9;]*m//g' clippy.txt || true
+              tail -n 120 clippy.txt
               echo '```'
             fi
           } > diagnostics.md
