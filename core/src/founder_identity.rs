@@ -121,6 +121,8 @@ pub enum FounderError {
     InvalidGovernanceSignature,
     #[error("network governance is emergency-locked")]
     GovernanceLocked,
+    #[error("operating-system secure random generation failed")]
+    EntropyUnavailable,
 }
 
 #[derive(Serialize)]
