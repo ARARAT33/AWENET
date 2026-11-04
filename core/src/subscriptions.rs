@@ -18,6 +18,12 @@ pub enum SubscriptionError {
     RegistryFull,
     #[error("plan period must be greater than zero ticks")]
     InvalidPeriod,
+    #[error("subscriber must not be empty")]
+    EmptySubscriber,
+    #[error("subscription tick arithmetic overflowed")]
+    Overflow,
+    #[error("subscription id space is exhausted")]
+    IdExhausted,
     #[error("unknown subscription {0}")]
     UnknownSubscription(u64),
     #[error("subscription {0} is in state {1:?}")]
@@ -90,6 +96,9 @@ impl Subscriptions {
         now: u64,
         trial_ticks: Option<u64>,
     ) -> Result<u64, SubscriptionError> {
+        if subscriber.is_empty() {
+            return Err(SubscriptionError::EmptySubscriber);
+        }
         if plan.period_ticks == 0 {
             return Err(SubscriptionError::InvalidPeriod);
         }
@@ -97,10 +106,21 @@ impl Subscriptions {
             return Err(SubscriptionError::RegistryFull);
         }
         let id = self.next_id;
-        self.next_id += 1;
+        self.next_id = self
+            .next_id
+            .checked_add(1)
+            .ok_or(SubscriptionError::IdExhausted)?;
         let (state, current_period_end, trial_end) = match trial_ticks {
-            Some(trial) => (SubscriptionState::Trialing, now + trial, Some(now + trial)),
-            None => (SubscriptionState::Active, now + plan.period_ticks, None),
+            Some(trial) => {
+                let end = now.checked_add(trial).ok_or(SubscriptionError::Overflow)?;
+                (SubscriptionState::Trialing, end, Some(end))
+            }
+            None => (
+                SubscriptionState::Active,
+                now.checked_add(plan.period_ticks)
+                    .ok_or(SubscriptionError::Overflow)?,
+                None,
+            ),
         };
         self.subscriptions.insert(
             id,
@@ -127,7 +147,9 @@ impl Subscriptions {
             return Err(SubscriptionError::InvalidState(id, subscription.state));
         }
         subscription.state = SubscriptionState::Active;
-        subscription.current_period_end = now + subscription.plan.period_ticks;
+        subscription.current_period_end = now
+            .checked_add(subscription.plan.period_ticks)
+            .ok_or(SubscriptionError::Overflow)?;
         Ok(())
     }
 
@@ -142,7 +164,9 @@ impl Subscriptions {
         match subscription.state {
             SubscriptionState::Trialing | SubscriptionState::Active => {
                 subscription.state = SubscriptionState::Active;
-                subscription.current_period_end = now + subscription.plan.period_ticks;
+                subscription.current_period_end = now
+                    .checked_add(subscription.plan.period_ticks)
+                    .ok_or(SubscriptionError::Overflow)?;
                 Ok(subscription.current_period_end)
             }
             state => Err(SubscriptionError::InvalidState(id, state)),
@@ -225,8 +249,17 @@ mod tests {
         );
         let mut subs = Subscriptions::new(4).unwrap();
         assert_eq!(
+            subs.subscribe("", plan(1, 0), 0, None).unwrap_err(),
+            SubscriptionError::EmptySubscriber
+        );
+        assert_eq!(
             subs.subscribe("alice", plan(0, 0), 0, None).unwrap_err(),
             SubscriptionError::InvalidPeriod
+        );
+        assert_eq!(
+            subs.subscribe("alice", plan(1, 0), u64::MAX, None)
+                .unwrap_err(),
+            SubscriptionError::Overflow
         );
     }
 

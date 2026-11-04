@@ -59,6 +59,12 @@ held escrows whose expiry passed.
 - `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets
   -- -D warnings` — the modules follow the repository style and lint set.
 
+The economic primitives fail closed on arithmetic overflow: journal balances,
+invoice totals, lifecycle ticks, escrow terms and simulator delivery ticks are
+checked before state is committed. Invalid empty identities and backwards due
+or expiry windows are rejected, and failed mutations leave the prior state
+unchanged.
+
 ## Layer summary
 
 The README layer table now includes a Commerce & economy services row,

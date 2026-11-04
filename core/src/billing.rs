@@ -19,6 +19,10 @@ pub enum InvoiceError {
     BillingFull,
     #[error("invoice number must not be empty")]
     InvalidInvoiceNumber,
+    #[error("invoice due tick must not precede creation tick")]
+    InvalidDueTick,
+    #[error("invoice id space is exhausted")]
+    IdExhausted,
     #[error("an invoice needs between 1 and {MAX_LINE_ITEMS} line items")]
     InvalidLineItems,
     #[error("line quantities and unit prices must be greater than zero")]
@@ -120,6 +124,9 @@ impl Billing {
         if number.is_empty() {
             return Err(InvoiceError::InvalidInvoiceNumber);
         }
+        if due_tick < created_tick {
+            return Err(InvoiceError::InvalidDueTick);
+        }
         if items.is_empty() || items.len() > MAX_LINE_ITEMS {
             return Err(InvoiceError::InvalidLineItems);
         }
@@ -132,7 +139,10 @@ impl Billing {
             return Err(InvoiceError::BillingFull);
         }
         let id = self.next_id;
-        self.next_id += 1;
+        self.next_id = self
+            .next_id
+            .checked_add(1)
+            .ok_or(InvoiceError::IdExhausted)?;
         self.invoices.insert(
             id,
             Invoice {
@@ -282,6 +292,12 @@ mod tests {
                 .create("INV-1", vec![item("a", 0, 10)], 0, 5)
                 .unwrap_err(),
             InvoiceError::ZeroAmount
+        );
+        assert_eq!(
+            billing
+                .create("INV-2", vec![item("a", 1, 10)], 10, 9)
+                .unwrap_err(),
+            InvoiceError::InvalidDueTick
         );
     }
 
