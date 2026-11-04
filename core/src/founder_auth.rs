@@ -329,6 +329,10 @@ impl FounderLogin {
                 changed += 1;
             }
         }
+        // A pending signed challenge could otherwise be completed immediately
+        // after global logout to mint a fresh session on a device that is
+        // already approved. Global logout invalidates in-flight logins too.
+        self.challenges.clear();
         changed
     }
 
@@ -516,8 +520,14 @@ mod tests {
             Err(FounderAuthError::InvalidSession)
         );
         assert!(auth.validate_session(&devices, &s2.token, 5).is_ok());
+        let pending = auth.request_challenge(&devices, id, 6, 20).unwrap();
+        let pending_signature = device.sign(&login_message(&pending));
         assert_eq!(auth.revoke_all_sessions(), 2);
-        assert_eq!(auth.active_session_count(5), 0);
+        assert_eq!(
+            auth.complete_login(&devices, pending.challenge_id, pending_signature, 7, 100),
+            Err(FounderAuthError::InvalidChallenge)
+        );
+        assert_eq!(auth.active_session_count(7), 0);
         fs::remove_file(path).unwrap();
     }
 
