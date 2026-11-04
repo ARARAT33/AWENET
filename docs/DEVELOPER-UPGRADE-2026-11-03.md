@@ -1,9 +1,10 @@
 # Developer & API services upgrade (2026-11-03)
 
-This upgrade adds a developer and automation plane to AWENET as four
-deterministic core modules. Like every AWENET service module they are pure
-data: no wall clock, no threads and no ambient I/O. Time is an explicit tick
-supplied by the caller, which keeps behaviour replay-friendly and testable.
+This upgrade adds a bounded developer and automation plane to AWENET. Lifecycle
+decisions use explicit caller-supplied ticks and remain deterministic, while
+bearer credentials are deliberately generated from the operating system's
+cryptographically secure random source. The registry stores only one-way
+fingerprints, never reusable API-key secrets.
 
 ## New modules
 
@@ -25,11 +26,15 @@ summarises the queue by state.
 
 ## keys.rs
 
-`ApiKeys` issues deterministic `awenet-<id>-<token>` key material from an
-internal counter (splitmix64), with a label, scope set and optional expiry
-tick. `verify` returns typed errors for unknown, revoked and expired keys,
-`rotate` revokes the old material and issues fresh material with the same
-label, scopes and expiry, and `active` lists the keys that verify at a tick.
+`ApiKeys` issues 256-bit bearer secrets using the OS CSPRNG. The secret is
+returned once in `IssuedApiKey`; its custom `Debug` implementation redacts the
+secret, and the registry retains only a domain-separated SHA-256 fingerprint.
+Labels, scopes and expiry are validated, scopes are normalized, and malformed
+or unknown credentials produce errors that never echo the supplied secret.
+Rotation creates the replacement before revoking the old credential, so an
+entropy or capacity failure leaves the old key valid. The key registry is a
+core primitive only: it is not yet persisted or connected to HTTP route
+authorization, and no API endpoint should be considered protected by it.
 
 ## webhooks.rs
 
