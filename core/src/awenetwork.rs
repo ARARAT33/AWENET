@@ -1134,8 +1134,10 @@ mod tests {
             )
             .unwrap();
         assert_eq!(market.task(task_id).unwrap().status, WorkTaskStatus::Draft);
-        let mut published_only = TaskFilter::default();
-        published_only.status = Some(WorkTaskStatus::Published);
+        let published_only = TaskFilter {
+            status: Some(WorkTaskStatus::Published),
+            ..TaskFilter::default()
+        };
         assert_eq!(market.find_tasks(&published_only).len(), 0);
         market
             .publish_draft(&mut authority, &founder.public.public_key, task_id, 2)
@@ -1567,15 +1569,21 @@ mod tests {
         market
             .publish_task(&mut authority, &founder.public.public_key, big, 2)
             .unwrap();
-        let mut engineering = TaskFilter::default();
-        engineering.category = Some(WorkCategory::Engineering);
+        let engineering = TaskFilter {
+            category: Some(WorkCategory::Engineering),
+            ..TaskFilter::default()
+        };
         assert_eq!(market.find_tasks(&engineering).len(), 1);
         assert_eq!(market.find_tasks(&engineering)[0].spec.title, "Big feature");
-        let mut rich = TaskFilter::default();
-        rich.min_reward_atoms = 50;
+        let rich = TaskFilter {
+            min_reward_atoms: 50,
+            ..TaskFilter::default()
+        };
         assert_eq!(market.find_tasks(&rich).len(), 1);
-        let mut published = TaskFilter::default();
-        published.status = Some(WorkTaskStatus::Published);
+        let published = TaskFilter {
+            status: Some(WorkTaskStatus::Published),
+            ..TaskFilter::default()
+        };
         assert_eq!(market.find_tasks(&published).len(), 2);
     }
 

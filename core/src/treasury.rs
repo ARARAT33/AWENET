@@ -204,7 +204,7 @@ impl Treasury {
     pub fn period_stats(&self, start_unix: u64, end_unix: u64) -> TreasuryPeriodStats {
         let mut stats = TreasuryPeriodStats::default();
         for entry in &self.entries {
-            if entry.at_unix >= start_unix && entry.at_unix < end_unix {
+            if (start_unix..end_unix).contains(&entry.at_unix) {
                 stats.entries += 1;
                 if entry.flow.is_issuance() {
                     stats.issued_atoms = stats.issued_atoms.saturating_add(entry.amount_atoms);
@@ -233,8 +233,7 @@ impl Treasury {
         let summary = self.summary();
         let mut issued_atoms = 0u128;
         for entry in &self.entries {
-            if entry.at_unix >= window_start_unix
-                && entry.at_unix < window_end_unix
+            if (window_start_unix..window_end_unix).contains(&entry.at_unix)
                 && entry.flow.is_issuance()
                 && !matches!(entry.flow, TreasuryFlow::GenesisIssued)
             {
