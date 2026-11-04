@@ -405,7 +405,10 @@ impl LocalNodeStore {
             let Some(name) = name.to_str() else {
                 continue;
             };
-            if hex::decode(name).map(|bytes| bytes.len() == 32).unwrap_or(false) {
+            if hex::decode(name)
+                .map(|bytes| bytes.len() == 32)
+                .unwrap_or(false)
+            {
                 let metadata = e.metadata()?;
                 s.used += metadata.len();
                 s.objects += 1;
@@ -721,7 +724,7 @@ mod tests {
         assert_eq!(store.put(b"durable object").unwrap(), id);
         assert_eq!(store.get(&id).unwrap(), b"durable object");
         fs::remove_dir_all(dir).unwrap();
-    } 
+    }
     #[test]
     fn storage_stats_ignore_temporary_and_non_content_addressed_files() {
         let dir = unique_storage_test_dir("stats-filter");
@@ -736,5 +739,4 @@ mod tests {
         assert_eq!(stats.used, b"count this object".len() as u64);
         fs::remove_dir_all(dir).unwrap();
     }
-
 }
