@@ -306,7 +306,7 @@ The network must fail closed for founder-only operations when authorization cann
 - Reserved founder identity and distinct founder/device key roles.
 - Device proof-of-possession and all-approved/selected-device approval policies.
 - Signed device decisions and controls, including last-approved-device protection.
-- Device-bound login challenges, replay protection, lockout, expiring/revocable/restrictable sessions and global logout.
+- Device-bound login challenges, replay protection, lockout, expiring/revocable/restrictable sessions and global logout. Global logout also clears outstanding challenges so an in-flight login cannot mint a fresh session immediately after logout.
 - Signed sequence/hash-chained founder governance updates.
 - Neter applications, appointments, scoped delegation and founder-controlled compensation/status.
 - Two signed emergency-lock levels and audit records.
