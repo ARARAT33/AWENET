@@ -200,13 +200,11 @@ impl AweHost {
         Ok(data)
     }
     pub fn save_manifest(&self, manifest: &SiteManifest) -> io::Result<()> {
-        let p = self.manifest_path(&manifest.domain);
-        fs::write(
-            p,
-            serde_json::to_vec_pretty(manifest).map_err(|_| {
-                io::Error::new(io::ErrorKind::InvalidData, "manifest serialization failed")
-            })?,
-        )
+        let path = self.manifest_path(&manifest.domain);
+        let bytes = serde_json::to_vec_pretty(manifest).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidData, "manifest serialization failed")
+        })?;
+        crate::storage::save_manifest(path, &bytes)
     }
     pub fn load_manifest(&self, domain: &str) -> io::Result<SiteManifest> {
         let b = fs::read(self.manifest_path(domain))?;
