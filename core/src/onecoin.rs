@@ -754,7 +754,12 @@ mod tests {
             .is_err());
         // a non-verifier member cannot mint
         assert!(l
-            .mint_approved_reward(&outsider.public.public_key, &worker.public.awe_id, 1, [8; 32])
+            .mint_approved_reward(
+                &outsider.public.public_key,
+                &worker.public.awe_id,
+                1,
+                [8; 32]
+            )
             .is_err());
         assert_eq!(
             l.balance_atoms(&worker.public.awe_id),

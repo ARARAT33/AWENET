@@ -144,7 +144,11 @@ impl UsageEvidence {
             cpu_core_ticks: signals.iter().map(|s| s.cpu_core_ticks).min().unwrap_or(0),
             gpu_unit_ticks: signals.iter().map(|s| s.gpu_unit_ticks).min().unwrap_or(0),
             ram_mb_hours: signals.iter().map(|s| s.ram_mb_hours).min().unwrap_or(0),
-            storage_gb_hours: signals.iter().map(|s| s.storage_gb_hours).min().unwrap_or(0),
+            storage_gb_hours: signals
+                .iter()
+                .map(|s| s.storage_gb_hours)
+                .min()
+                .unwrap_or(0),
             bandwidth_gb: signals.iter().map(|s| s.bandwidth_gb).min().unwrap_or(0),
             uptime_hours: signals.iter().map(|s| s.uptime_hours).min().unwrap_or(0),
         })
@@ -272,7 +276,10 @@ impl ResourceEconomy {
     ) -> Result<(), ResourceEconomyError> {
         limits.validate()?;
         let key = owner.public.awe_id.to_hex();
-        let grant = self.grants.get_mut(&key).ok_or(ResourceEconomyError::NoGrant)?;
+        let grant = self
+            .grants
+            .get_mut(&key)
+            .ok_or(ResourceEconomyError::NoGrant)?;
         grant.limits = limits;
         grant.granted_at_unix = now_unix;
         Ok(())
@@ -369,15 +376,20 @@ impl ResourceEconomy {
         let reliability_bps = FULL_RELIABILITY_BPS - penalty;
 
         let rates = self.rates.clone();
-        let cpu_atoms = (clamped.cpu_core_ticks as u128).saturating_mul(rates.atoms_per_cpu_core_tick);
-        let gpu_atoms = (clamped.gpu_unit_ticks as u128).saturating_mul(rates.atoms_per_gpu_unit_tick);
-        let ram_atoms = clamped.ram_mb_hours.saturating_mul(rates.atoms_per_ram_mb_hour);
+        let cpu_atoms =
+            (clamped.cpu_core_ticks as u128).saturating_mul(rates.atoms_per_cpu_core_tick);
+        let gpu_atoms =
+            (clamped.gpu_unit_ticks as u128).saturating_mul(rates.atoms_per_gpu_unit_tick);
+        let ram_atoms = clamped
+            .ram_mb_hours
+            .saturating_mul(rates.atoms_per_ram_mb_hour);
         let storage_atoms = clamped
             .storage_gb_hours
             .saturating_mul(rates.atoms_per_storage_gb_hour);
         let bandwidth_atoms =
             (clamped.bandwidth_gb as u128).saturating_mul(rates.atoms_per_bandwidth_gb);
-        let uptime_atoms = (clamped.uptime_hours as u128).saturating_mul(rates.atoms_per_uptime_hour);
+        let uptime_atoms =
+            (clamped.uptime_hours as u128).saturating_mul(rates.atoms_per_uptime_hour);
         let usage_atoms = cpu_atoms
             .saturating_add(gpu_atoms)
             .saturating_add(ram_atoms)
@@ -542,7 +554,14 @@ mod tests {
             ..ResourceLimits::default()
         };
         economy.update_limits(&owner, tighter, 5).unwrap();
-        assert_eq!(economy.grant_for(&owner.public.awe_id).unwrap().limits.cpu_core_ticks, 1);
+        assert_eq!(
+            economy
+                .grant_for(&owner.public.awe_id)
+                .unwrap()
+                .limits
+                .cpu_core_ticks,
+            1
+        );
     }
 
     #[test]
@@ -551,11 +570,32 @@ mod tests {
         let heavy = identity("heavy");
         let light = identity("light");
         let mut economy = ResourceEconomy::default();
-        let mut ledger = ledger(&founder, &[heavy.public.awe_id.clone(), light.public.awe_id.clone()]);
+        let mut ledger = ledger(
+            &founder,
+            &[heavy.public.awe_id.clone(), light.public.awe_id.clone()],
+        );
         economy.grant(&heavy, limits(), 1).unwrap();
         economy.grant(&light, limits(), 1).unwrap();
-        economy.settle(&mut ledger, &founder, &heavy.public.awe_id, &evidence(80, 0), 0, 3_600).unwrap();
-        economy.settle(&mut ledger, &founder, &light.public.awe_id, &evidence(20, 0), 0, 3_600).unwrap();
+        economy
+            .settle(
+                &mut ledger,
+                &founder,
+                &heavy.public.awe_id,
+                &evidence(80, 0),
+                0,
+                3_600,
+            )
+            .unwrap();
+        economy
+            .settle(
+                &mut ledger,
+                &founder,
+                &light.public.awe_id,
+                &evidence(20, 0),
+                0,
+                3_600,
+            )
+            .unwrap();
         let log = economy.settlement_log();
         assert_eq!(log[0].usage_atoms, 80_000);
         assert_eq!(log[1].usage_atoms, 20_000);
@@ -582,7 +622,14 @@ mod tests {
         single.delivered_results = None;
         assert!(matches!(
             economy
-                .settle(&mut ledger, &founder, &node.public.awe_id, &single, 0, 3_600)
+                .settle(
+                    &mut ledger,
+                    &founder,
+                    &node.public.awe_id,
+                    &single,
+                    0,
+                    3_600
+                )
                 .unwrap_err(),
             ResourceEconomyError::InsufficientSignals
         ));
@@ -597,17 +644,38 @@ mod tests {
         economy.grant(&node, limits(), 1).unwrap();
         let beyond = evidence(150, 0);
         let settlement = economy
-            .settle(&mut ledger, &founder, &node.public.awe_id, &beyond, 0, 3_600)
+            .settle(
+                &mut ledger,
+                &founder,
+                &node.public.awe_id,
+                &beyond,
+                0,
+                3_600,
+            )
             .unwrap();
         assert_eq!(settlement.violations, vec![ResourceKind::Cpu]);
         assert_eq!(settlement.reliability_bps, 9_000);
         assert_eq!(settlement.usage_atoms, 90_000);
         let second = economy
-            .settle(&mut ledger, &founder, &node.public.awe_id, &evidence(10, 0), 3_600, 7_200)
+            .settle(
+                &mut ledger,
+                &founder,
+                &node.public.awe_id,
+                &evidence(10, 0),
+                3_600,
+                7_200,
+            )
             .unwrap();
         assert_eq!(second.reliability_bps, 9_000);
         let third = economy
-            .settle(&mut ledger, &founder, &node.public.awe_id, &beyond, 7_200, 10_800)
+            .settle(
+                &mut ledger,
+                &founder,
+                &node.public.awe_id,
+                &beyond,
+                7_200,
+                10_800,
+            )
             .unwrap();
         assert_eq!(third.reliability_bps, 8_000);
     }
@@ -619,10 +687,26 @@ mod tests {
         let mut economy = ResourceEconomy::default();
         let mut ledger = ledger(&founder, &[node.public.awe_id.clone()]);
         economy.grant(&node, limits(), 1).unwrap();
-        economy.settle(&mut ledger, &founder, &node.public.awe_id, &evidence(10, 1), 0, 3_600).unwrap();
+        economy
+            .settle(
+                &mut ledger,
+                &founder,
+                &node.public.awe_id,
+                &evidence(10, 1),
+                0,
+                3_600,
+            )
+            .unwrap();
         assert!(matches!(
             economy
-                .settle(&mut ledger, &founder, &node.public.awe_id, &evidence(10, 1), 0, 3_600)
+                .settle(
+                    &mut ledger,
+                    &founder,
+                    &node.public.awe_id,
+                    &evidence(10, 1),
+                    0,
+                    3_600
+                )
                 .unwrap_err(),
             ResourceEconomyError::AlreadySettled
         ));
@@ -640,7 +724,14 @@ mod tests {
         let mut ledger = ledger(&founder, &[node.public.awe_id.clone()]);
         economy.grant(&node, limits(), 1).unwrap();
         let settlement = economy
-            .settle(&mut ledger, &founder, &node.public.awe_id, &evidence(0, 2), 0, 3_600)
+            .settle(
+                &mut ledger,
+                &founder,
+                &node.public.awe_id,
+                &evidence(0, 2),
+                0,
+                3_600,
+            )
             .unwrap();
         assert_eq!(settlement.usage_atoms, 200);
         assert_eq!(settlement.availability_atoms, 100);
@@ -658,10 +749,20 @@ mod tests {
         economy.withdraw(&node).unwrap();
         assert!(matches!(
             economy
-                .settle(&mut ledger, &founder, &node.public.awe_id, &evidence(10, 1), 0, 3_600)
+                .settle(
+                    &mut ledger,
+                    &founder,
+                    &node.public.awe_id,
+                    &evidence(10, 1),
+                    0,
+                    3_600
+                )
                 .unwrap_err(),
             ResourceEconomyError::NoGrant
         ));
-        assert_eq!(ledger.balance_atoms(&node.public.awe_id), 10 * ATOMS_PER_COIN);
+        assert_eq!(
+            ledger.balance_atoms(&node.public.awe_id),
+            10 * ATOMS_PER_COIN
+        );
     }
 }

@@ -65,7 +65,9 @@ pub enum WorkError {
     InvalidEvidence,
     #[error("review reason is required and must not exceed {MAX_REVIEW_REASON_CHARS} characters")]
     InvalidReason,
-    #[error("payout split must be non-empty, at most {MAX_SPLITS} parts and sum to the task reward")]
+    #[error(
+        "payout split must be non-empty, at most {MAX_SPLITS} parts and sum to the task reward"
+    )]
     InvalidSplit,
     #[error("phase rewards must sum to the task reward")]
     PhaseRewardsMismatch,
@@ -415,7 +417,9 @@ impl WorkMarket {
         self.tasks
             .values()
             .filter(|task| {
-                filter.category.is_none_or(|category| task.spec.category == category)
+                filter
+                    .category
+                    .is_none_or(|category| task.spec.category == category)
                     && filter
                         .complexity
                         .is_none_or(|complexity| task.spec.complexity == complexity)
@@ -535,7 +539,10 @@ impl WorkMarket {
             .tasks
             .get_mut(&task_id)
             .ok_or(WorkError::UnknownTask(task_id))?;
-        if !matches!(task.status, WorkTaskStatus::Draft | WorkTaskStatus::Published) {
+        if !matches!(
+            task.status,
+            WorkTaskStatus::Draft | WorkTaskStatus::Published
+        ) {
             return Err(WorkError::TaskNotOpen(task_id));
         }
         task.spec = spec;
@@ -559,7 +566,10 @@ impl WorkMarket {
             .tasks
             .get_mut(&task_id)
             .ok_or(WorkError::UnknownTask(task_id))?;
-        if !matches!(task.status, WorkTaskStatus::Draft | WorkTaskStatus::Published) {
+        if !matches!(
+            task.status,
+            WorkTaskStatus::Draft | WorkTaskStatus::Published
+        ) {
             return Err(WorkError::TaskNotOpen(task_id));
         }
         task.status = WorkTaskStatus::Closed;
@@ -583,7 +593,10 @@ impl WorkMarket {
             .tasks
             .get_mut(&task_id)
             .ok_or(WorkError::UnknownTask(task_id))?;
-        if !matches!(task.status, WorkTaskStatus::Draft | WorkTaskStatus::Published) {
+        if !matches!(
+            task.status,
+            WorkTaskStatus::Draft | WorkTaskStatus::Published
+        ) {
             return Err(WorkError::TaskNotOpen(task_id));
         }
         task.status = WorkTaskStatus::Cancelled;
@@ -1076,7 +1089,12 @@ mod tests {
         let mut market = WorkMarket::new();
         assert!(matches!(
             market
-                .publish_task(&mut authority, &member.public.public_key, spec("Task", 5), 1)
+                .publish_task(
+                    &mut authority,
+                    &member.public.public_key,
+                    spec("Task", 5),
+                    1
+                )
                 .unwrap_err(),
             WorkError::Founder(FounderError::NotFounder)
         ));
@@ -1108,12 +1126,14 @@ mod tests {
         let mut authority = FounderAuthority::install(&founder, 0);
         let mut market = WorkMarket::new();
         let task_id = market
-            .create_draft_task(&mut authority, &founder.public.public_key, spec("Draft", 5), 1)
+            .create_draft_task(
+                &mut authority,
+                &founder.public.public_key,
+                spec("Draft", 5),
+                1,
+            )
             .unwrap();
-        assert_eq!(
-            market.task(task_id).unwrap().status,
-            WorkTaskStatus::Draft
-        );
+        assert_eq!(market.task(task_id).unwrap().status, WorkTaskStatus::Draft);
         let mut published_only = TaskFilter::default();
         published_only.status = Some(WorkTaskStatus::Published);
         assert_eq!(market.find_tasks(&published_only).len(), 0);
@@ -1140,9 +1160,17 @@ mod tests {
             )
             .unwrap();
         let mut ledger = ledger_for(&founder, &[worker.public.awe_id.clone()]);
-        market.accept_task(&worker.public.awe_id, task_id, 2).unwrap();
+        market
+            .accept_task(&worker.public.awe_id, task_id, 2)
+            .unwrap();
         let submission_id = market
-            .submit_work(&worker.public.awe_id, task_id, vec!["patch.rs".into()], None, 3)
+            .submit_work(
+                &worker.public.awe_id,
+                task_id,
+                vec!["patch.rs".into()],
+                None,
+                3,
+            )
             .unwrap();
         let receipt = market
             .approve_and_pay(&mut authority, &founder, &mut ledger, submission_id, 4)
@@ -1169,12 +1197,25 @@ mod tests {
         let mut authority = FounderAuthority::install(&founder, 0);
         let mut market = WorkMarket::new();
         let task_id = market
-            .publish_task(&mut authority, &founder.public.public_key, spec("Fix bug", 5), 1)
+            .publish_task(
+                &mut authority,
+                &founder.public.public_key,
+                spec("Fix bug", 5),
+                1,
+            )
             .unwrap();
         let mut ledger = ledger_for(&founder, &[worker.public.awe_id.clone()]);
-        market.accept_task(&worker.public.awe_id, task_id, 2).unwrap();
+        market
+            .accept_task(&worker.public.awe_id, task_id, 2)
+            .unwrap();
         let submission_id = market
-            .submit_work(&worker.public.awe_id, task_id, vec!["fix.rs".into()], None, 3)
+            .submit_work(
+                &worker.public.awe_id,
+                task_id,
+                vec!["fix.rs".into()],
+                None,
+                3,
+            )
             .unwrap();
         assert!(matches!(
             market
@@ -1225,12 +1266,25 @@ mod tests {
         let mut authority = FounderAuthority::install(&founder, 0);
         let mut market = WorkMarket::new();
         let task_id = market
-            .publish_task(&mut authority, &founder.public.public_key, spec("Polish UI", 5), 1)
+            .publish_task(
+                &mut authority,
+                &founder.public.public_key,
+                spec("Polish UI", 5),
+                1,
+            )
             .unwrap();
         let mut ledger = ledger_for(&founder, &[worker.public.awe_id.clone()]);
-        market.accept_task(&worker.public.awe_id, task_id, 2).unwrap();
+        market
+            .accept_task(&worker.public.awe_id, task_id, 2)
+            .unwrap();
         let submission_id = market
-            .submit_work(&worker.public.awe_id, task_id, vec!["v1.png".into()], None, 3)
+            .submit_work(
+                &worker.public.awe_id,
+                task_id,
+                vec!["v1.png".into()],
+                None,
+                3,
+            )
             .unwrap();
         market
             .request_revision(
@@ -1246,10 +1300,20 @@ mod tests {
             SubmissionStatus::Revising
         );
         assert!(market
-            .resubmit(&other.public.awe_id, submission_id, vec!["v2.png".into()], 5)
+            .resubmit(
+                &other.public.awe_id,
+                submission_id,
+                vec!["v2.png".into()],
+                5
+            )
             .is_err());
         market
-            .resubmit(&worker.public.awe_id, submission_id, vec!["v2.png".into()], 5)
+            .resubmit(
+                &worker.public.awe_id,
+                submission_id,
+                vec!["v2.png".into()],
+                5,
+            )
             .unwrap();
         assert_eq!(
             market.submission(submission_id).unwrap().status,
@@ -1275,10 +1339,18 @@ mod tests {
         let task_id = market
             .publish_task(&mut authority, &founder.public.public_key, s, 1)
             .unwrap();
-        market.accept_task(&worker.public.awe_id, task_id, 9).unwrap();
+        market
+            .accept_task(&worker.public.awe_id, task_id, 9)
+            .unwrap();
         assert!(matches!(
             market
-                .submit_work(&worker.public.awe_id, task_id, vec!["late.rs".into()], None, 11)
+                .submit_work(
+                    &worker.public.awe_id,
+                    task_id,
+                    vec!["late.rs".into()],
+                    None,
+                    11
+                )
                 .unwrap_err(),
             WorkError::DeadlinePassed(_)
         ));
@@ -1298,18 +1370,37 @@ mod tests {
         let mut authority = FounderAuthority::install(&founder, 0);
         let mut market = WorkMarket::new();
         let task_id = market
-            .publish_task(&mut authority, &founder.public.public_key, spec("Open task", 5), 1)
+            .publish_task(
+                &mut authority,
+                &founder.public.public_key,
+                spec("Open task", 5),
+                1,
+            )
             .unwrap();
         assert!(matches!(
             market
-                .submit_work(&worker.public.awe_id, task_id, vec!["patch".into()], None, 2)
+                .submit_work(
+                    &worker.public.awe_id,
+                    task_id,
+                    vec!["patch".into()],
+                    None,
+                    2
+                )
                 .unwrap_err(),
             WorkError::NotAssigned(_)
         ));
-        market.accept_task(&worker.public.awe_id, task_id, 2).unwrap();
+        market
+            .accept_task(&worker.public.awe_id, task_id, 2)
+            .unwrap();
         assert_eq!(market.assignment_count(task_id), 1);
         assert!(market
-            .submit_work(&worker.public.awe_id, task_id, vec!["patch".into()], None, 3)
+            .submit_work(
+                &worker.public.awe_id,
+                task_id,
+                vec!["patch".into()],
+                None,
+                3
+            )
             .is_ok());
     }
 
@@ -1422,7 +1513,12 @@ mod tests {
         let mut authority = FounderAuthority::install(&founder, 0);
         let mut market = WorkMarket::new();
         let task_id = market
-            .publish_task(&mut authority, &founder.public.public_key, spec("Solo task", 5), 1)
+            .publish_task(
+                &mut authority,
+                &founder.public.public_key,
+                spec("Solo task", 5),
+                1,
+            )
             .unwrap();
         let mut ledger = ledger_for(
             &founder,
@@ -1430,7 +1526,13 @@ mod tests {
         );
         market.accept_task(&lead.public.awe_id, task_id, 2).unwrap();
         let submission_id = market
-            .submit_work(&lead.public.awe_id, task_id, vec!["solo.rs".into()], None, 3)
+            .submit_work(
+                &lead.public.awe_id,
+                task_id,
+                vec!["solo.rs".into()],
+                None,
+                3,
+            )
             .unwrap();
         assert!(matches!(
             market
@@ -1468,10 +1570,7 @@ mod tests {
         let mut engineering = TaskFilter::default();
         engineering.category = Some(WorkCategory::Engineering);
         assert_eq!(market.find_tasks(&engineering).len(), 1);
-        assert_eq!(
-            market.find_tasks(&engineering)[0].spec.title,
-            "Big feature"
-        );
+        assert_eq!(market.find_tasks(&engineering)[0].spec.title, "Big feature");
         let mut rich = TaskFilter::default();
         rich.min_reward_atoms = 50;
         assert_eq!(market.find_tasks(&rich).len(), 1);
@@ -1495,7 +1594,10 @@ mod tests {
             ContributorLevel::Advanced
         );
         assert_eq!(ContributorLevel::from_approved(7), ContributorLevel::Expert);
-        assert_eq!(ContributorLevel::from_approved(12), ContributorLevel::Master);
+        assert_eq!(
+            ContributorLevel::from_approved(12),
+            ContributorLevel::Master
+        );
 
         let founder = identity("founder");
         let worker = identity("worker");
@@ -1503,11 +1605,24 @@ mod tests {
         let mut market = WorkMarket::new();
         let mut ledger = ledger_for(&founder, &[worker.public.awe_id.clone()]);
         let task_id = market
-            .publish_task(&mut authority, &founder.public.public_key, spec("First task", 5), 1)
+            .publish_task(
+                &mut authority,
+                &founder.public.public_key,
+                spec("First task", 5),
+                1,
+            )
             .unwrap();
-        market.accept_task(&worker.public.awe_id, task_id, 2).unwrap();
+        market
+            .accept_task(&worker.public.awe_id, task_id, 2)
+            .unwrap();
         let submission_id = market
-            .submit_work(&worker.public.awe_id, task_id, vec!["one.rs".into()], None, 3)
+            .submit_work(
+                &worker.public.awe_id,
+                task_id,
+                vec!["one.rs".into()],
+                None,
+                3,
+            )
             .unwrap();
         let before = market.contributor_profile(&worker.public.awe_id);
         assert_eq!(before.accepted_tasks, vec![task_id]);
@@ -1535,7 +1650,12 @@ mod tests {
         let mut authority = FounderAuthority::install(&founder, 0);
         let mut market = WorkMarket::new();
         let task_id = market
-            .publish_task(&mut authority, &founder.public.public_key, spec("Closing", 5), 1)
+            .publish_task(
+                &mut authority,
+                &founder.public.public_key,
+                spec("Closing", 5),
+                1,
+            )
             .unwrap();
         market
             .close_task(&mut authority, &founder.public.public_key, task_id, 2)
@@ -1552,10 +1672,7 @@ mod tests {
                 .unwrap_err(),
             WorkError::TaskNotPublished(_)
         ));
-        assert_eq!(
-            market.task(task_id).unwrap().status,
-            WorkTaskStatus::Closed
-        );
+        assert_eq!(market.task(task_id).unwrap().status, WorkTaskStatus::Closed);
         // a closed task cannot be modified or closed again
         assert!(market
             .modify_task(

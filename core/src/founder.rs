@@ -175,10 +175,20 @@ mod tests {
         let founder = identity("founder");
         let mut authority = FounderAuthority::install(&founder, 10);
         let first = authority
-            .authorize(&founder.public.public_key, FounderAction::PublishTask, 20, "publish")
+            .authorize(
+                &founder.public.public_key,
+                FounderAction::PublishTask,
+                20,
+                "publish",
+            )
             .unwrap();
         let second = authority
-            .authorize(&founder.public.public_key, FounderAction::ReviewSubmission, 30, "review")
+            .authorize(
+                &founder.public.public_key,
+                FounderAction::ReviewSubmission,
+                30,
+                "review",
+            )
             .unwrap();
         assert_eq!(first, 1);
         assert_eq!(second, 2);
@@ -196,13 +206,23 @@ mod tests {
         let mut authority = FounderAuthority::install(&founder, 0);
         for i in 0..MAX_FOUNDER_LOG as u64 {
             authority
-                .authorize(&founder.public.public_key, FounderAction::ManageTreasury, i, "tick")
+                .authorize(
+                    &founder.public.public_key,
+                    FounderAction::ManageTreasury,
+                    i,
+                    "tick",
+                )
                 .unwrap();
         }
         assert_eq!(authority.log_len(), MAX_FOUNDER_LOG);
         assert_eq!(
             authority
-                .authorize(&founder.public.public_key, FounderAction::ManageTreasury, 1, "full")
+                .authorize(
+                    &founder.public.public_key,
+                    FounderAction::ManageTreasury,
+                    1,
+                    "full"
+                )
                 .unwrap_err(),
             FounderError::LogFull
         );
@@ -215,7 +235,12 @@ mod tests {
         let long = "x".repeat(MAX_ACTION_DETAIL_CHARS + 1);
         assert_eq!(
             authority
-                .authorize(&founder.public.public_key, FounderAction::ManageTreasury, 1, &long)
+                .authorize(
+                    &founder.public.public_key,
+                    FounderAction::ManageTreasury,
+                    1,
+                    &long
+                )
                 .unwrap_err(),
             FounderError::DetailTooLong
         );

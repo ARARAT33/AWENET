@@ -149,9 +149,8 @@ impl Treasury {
                     summary.total_issued_atoms = summary
                         .total_issued_atoms
                         .saturating_add(entry.amount_atoms);
-                    summary.task_reward_atoms = summary
-                        .task_reward_atoms
-                        .saturating_add(entry.amount_atoms);
+                    summary.task_reward_atoms =
+                        summary.task_reward_atoms.saturating_add(entry.amount_atoms);
                 }
                 TreasuryFlow::ResourceRewardIssued => {
                     summary.total_issued_atoms = summary
@@ -182,14 +181,12 @@ impl Treasury {
                         .saturating_add(entry.amount_atoms);
                 }
                 TreasuryFlow::EscrowHold => {
-                    summary.escrow_held_atoms = summary
-                        .escrow_held_atoms
-                        .saturating_add(entry.amount_atoms);
+                    summary.escrow_held_atoms =
+                        summary.escrow_held_atoms.saturating_add(entry.amount_atoms);
                 }
                 TreasuryFlow::EscrowRelease | TreasuryFlow::EscrowRefund => {
-                    summary.escrow_held_atoms = summary
-                        .escrow_held_atoms
-                        .saturating_sub(entry.amount_atoms);
+                    summary.escrow_held_atoms =
+                        summary.escrow_held_atoms.saturating_sub(entry.amount_atoms);
                 }
                 TreasuryFlow::MarketplaceFee => {
                     summary.fee_atoms = summary.fee_atoms.saturating_add(entry.amount_atoms);
@@ -219,9 +216,8 @@ impl Treasury {
                     entry.flow,
                     TreasuryFlow::StorePurchase | TreasuryFlow::SellerIncome
                 ) {
-                    stats.store_volume_atoms = stats
-                        .store_volume_atoms
-                        .saturating_add(entry.amount_atoms);
+                    stats.store_volume_atoms =
+                        stats.store_volume_atoms.saturating_add(entry.amount_atoms);
                 }
             }
         }
@@ -282,8 +278,12 @@ mod tests {
     #[test]
     fn issuance_and_circulation_stay_separated() {
         let mut treasury = Treasury::new();
-        treasury.record(TreasuryFlow::TaskRewardIssued, 100, 1).unwrap();
-        treasury.record(TreasuryFlow::ResourceRewardIssued, 40, 2).unwrap();
+        treasury
+            .record(TreasuryFlow::TaskRewardIssued, 100, 1)
+            .unwrap();
+        treasury
+            .record(TreasuryFlow::ResourceRewardIssued, 40, 2)
+            .unwrap();
         treasury.record(TreasuryFlow::PeerTransfer, 50, 3).unwrap();
         treasury.record(TreasuryFlow::StorePurchase, 20, 4).unwrap();
         treasury.record(TreasuryFlow::SellerIncome, 20, 5).unwrap();
@@ -300,12 +300,16 @@ mod tests {
     #[test]
     fn escrow_hold_and_release_track_circulating_atoms() {
         let mut treasury = Treasury::new();
-        treasury.record(TreasuryFlow::GenesisIssued, 1_000, 1).unwrap();
+        treasury
+            .record(TreasuryFlow::GenesisIssued, 1_000, 1)
+            .unwrap();
         treasury.record(TreasuryFlow::EscrowHold, 400, 2).unwrap();
         let held = treasury.summary();
         assert_eq!(held.escrow_held_atoms, 400);
         assert_eq!(held.circulating_atoms, 600);
-        treasury.record(TreasuryFlow::EscrowRelease, 400, 3).unwrap();
+        treasury
+            .record(TreasuryFlow::EscrowRelease, 400, 3)
+            .unwrap();
         let released = treasury.summary();
         assert_eq!(released.escrow_held_atoms, 0);
         assert_eq!(released.circulating_atoms, 1_000);
@@ -329,18 +333,26 @@ mod tests {
     #[test]
     fn inflation_risk_bands() {
         let mut treasury = Treasury::new();
-        treasury.record(TreasuryFlow::GenesisIssued, 10_000, 1).unwrap();
+        treasury
+            .record(TreasuryFlow::GenesisIssued, 10_000, 1)
+            .unwrap();
         assert_eq!(treasury.inflation_risk(0, 100), InflationRisk::Low);
-        treasury.record(TreasuryFlow::TaskRewardIssued, 600, 10).unwrap();
+        treasury
+            .record(TreasuryFlow::TaskRewardIssued, 600, 10)
+            .unwrap();
         assert_eq!(treasury.inflation_risk(5, 100), InflationRisk::Medium);
-        treasury.record(TreasuryFlow::TaskRewardIssued, 2_000, 20).unwrap();
+        treasury
+            .record(TreasuryFlow::TaskRewardIssued, 2_000, 20)
+            .unwrap();
         assert_eq!(treasury.inflation_risk(5, 100), InflationRisk::High);
     }
 
     #[test]
     fn period_stats_respect_the_window() {
         let mut treasury = Treasury::new();
-        treasury.record(TreasuryFlow::TaskRewardIssued, 10, 1).unwrap();
+        treasury
+            .record(TreasuryFlow::TaskRewardIssued, 10, 1)
+            .unwrap();
         treasury.record(TreasuryFlow::PeerTransfer, 4, 2).unwrap();
         treasury.record(TreasuryFlow::StorePurchase, 6, 3).unwrap();
         let stats = treasury.period_stats(2, 3);
@@ -358,7 +370,9 @@ mod tests {
     fn zero_amounts_are_rejected() {
         let mut treasury = Treasury::new();
         assert_eq!(
-            treasury.record(TreasuryFlow::PeerTransfer, 0, 1).unwrap_err(),
+            treasury
+                .record(TreasuryFlow::PeerTransfer, 0, 1)
+                .unwrap_err(),
             TreasuryError::ZeroAmount
         );
         assert_eq!(treasury.entry_count(), 0);

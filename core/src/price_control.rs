@@ -135,7 +135,14 @@ mod tests {
         let mut control = OfficialPriceControl::new(100).unwrap();
         assert_eq!(
             control
-                .set_price(&mut authority, &other.public.public_key, 200, 10, 5, "growth")
+                .set_price(
+                    &mut authority,
+                    &other.public.public_key,
+                    200,
+                    10,
+                    5,
+                    "growth"
+                )
                 .unwrap_err(),
             PriceControlError::Founder(FounderError::NotFounder)
         );
@@ -149,10 +156,24 @@ mod tests {
         let mut authority = FounderAuthority::install(&founder, 0);
         let mut control = OfficialPriceControl::new(100).unwrap();
         control
-            .set_price(&mut authority, &founder.public.public_key, 150, 100, 10, "demand grew")
+            .set_price(
+                &mut authority,
+                &founder.public.public_key,
+                150,
+                100,
+                10,
+                "demand grew",
+            )
             .unwrap();
         control
-            .set_price(&mut authority, &founder.public.public_key, 120, 200, 150, "stabilizing")
+            .set_price(
+                &mut authority,
+                &founder.public.public_key,
+                120,
+                200,
+                150,
+                "stabilizing",
+            )
             .unwrap();
         assert_eq!(control.price_at(50), 100);
         assert_eq!(control.price_at(150), 150);
@@ -179,16 +200,37 @@ mod tests {
         );
         assert_eq!(
             control
-                .set_price(&mut authority, &founder.public.public_key, 200, 10, 5, "   ")
+                .set_price(
+                    &mut authority,
+                    &founder.public.public_key,
+                    200,
+                    10,
+                    5,
+                    "   "
+                )
                 .unwrap_err(),
             PriceControlError::InvalidReason
         );
         control
-            .set_price(&mut authority, &founder.public.public_key, 200, 100, 5, "first")
+            .set_price(
+                &mut authority,
+                &founder.public.public_key,
+                200,
+                100,
+                5,
+                "first",
+            )
             .unwrap();
         assert_eq!(
             control
-                .set_price(&mut authority, &founder.public.public_key, 300, 50, 6, "backdated")
+                .set_price(
+                    &mut authority,
+                    &founder.public.public_key,
+                    300,
+                    50,
+                    6,
+                    "backdated"
+                )
                 .unwrap_err(),
             PriceControlError::NonMonotonicEffectiveTime
         );
