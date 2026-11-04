@@ -442,8 +442,7 @@ fn atomic_write_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
                 format!("secure temporary-file name generation failed: {error}"),
             )
         })?;
-        let temporary_path =
-            parent.join(format!(".awenet-state-{}.tmp", hex::encode(nonce)));
+        let temporary_path = parent.join(format!(".awenet-state-{}.tmp", hex::encode(nonce)));
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(unix)]
@@ -716,5 +715,4 @@ mod tests {
         assert_eq!(store.get(&id).unwrap(), b"durable object");
         fs::remove_dir_all(dir).unwrap();
     }
-
 }
