@@ -75,6 +75,8 @@ pub enum WorkError {
     SuggestionAlreadyApproved(u64),
     #[error("ledger rejected the payout: {0}")]
     Ledger(String),
+    #[error("work market identifier space is exhausted")]
+    IdExhausted,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -448,7 +450,10 @@ impl WorkMarket {
             "publish official task",
         )?;
         let id = self.next_task_id;
-        self.next_task_id += 1;
+        self.next_task_id = self
+            .next_task_id
+            .checked_add(1)
+            .ok_or(WorkError::IdExhausted)?;
         self.tasks.insert(
             id,
             WorkTask {
@@ -481,7 +486,10 @@ impl WorkMarket {
             "draft official task",
         )?;
         let id = self.next_task_id;
-        self.next_task_id += 1;
+        self.next_task_id = self
+            .next_task_id
+            .checked_add(1)
+            .ok_or(WorkError::IdExhausted)?;
         self.tasks.insert(
             id,
             WorkTask {
@@ -616,7 +624,10 @@ impl WorkMarket {
             return Err(WorkError::SuggestionRegistryFull);
         }
         let id = self.next_suggestion_id;
-        self.next_suggestion_id += 1;
+        self.next_suggestion_id = self
+            .next_suggestion_id
+            .checked_add(1)
+            .ok_or(WorkError::IdExhausted)?;
         self.suggestions.insert(
             id,
             TaskSuggestion {
@@ -657,7 +668,10 @@ impl WorkMarket {
         suggestion.approved = true;
         let spec = suggestion.spec.clone();
         let id = self.next_task_id;
-        self.next_task_id += 1;
+        self.next_task_id = self
+            .next_task_id
+            .checked_add(1)
+            .ok_or(WorkError::IdExhausted)?;
         self.tasks.insert(
             id,
             WorkTask {
@@ -735,7 +749,10 @@ impl WorkMarket {
             return Err(WorkError::SubmissionRegistryFull);
         }
         let id = self.next_submission_id;
-        self.next_submission_id += 1;
+        self.next_submission_id = self
+            .next_submission_id
+            .checked_add(1)
+            .ok_or(WorkError::IdExhausted)?;
         self.submissions.insert(
             id,
             TaskSubmission {

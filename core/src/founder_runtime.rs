@@ -250,11 +250,14 @@ fn write_new_snapshot(path: &Path, bytes: &[u8]) -> Result<(), FounderStateError
     let mut nonce = [0u8; 16];
     OsRng.fill_bytes(&mut nonce);
     let temp_path = parent.join(format!(".snapshot-{}.tmp", hex::encode(nonce)));
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temp_path)
-        .map_err(storage_error)?;
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&temp_path).map_err(storage_error)?;
     if let Err(error) = file.write_all(bytes).and_then(|_| file.sync_all()) {
         drop(file);
         let _ = fs::remove_file(&temp_path);

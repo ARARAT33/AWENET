@@ -24,6 +24,8 @@ pub enum FounderError {
     LogFull,
     #[error("action detail exceeds {MAX_ACTION_DETAIL_CHARS} characters")]
     DetailTooLong,
+    #[error("founder audit sequence is exhausted")]
+    SequenceExhausted,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -118,7 +120,10 @@ impl FounderAuthority {
             return Err(FounderError::LogFull);
         }
         let sequence = self.next_sequence;
-        self.next_sequence += 1;
+        self.next_sequence = self
+            .next_sequence
+            .checked_add(1)
+            .ok_or(FounderError::SequenceExhausted)?;
         self.log.push(FounderAuditEntry {
             sequence,
             action,

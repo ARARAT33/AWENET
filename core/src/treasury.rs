@@ -24,6 +24,8 @@ pub enum TreasuryError {
         treasury_atoms: u128,
         ledger_atoms: u128,
     },
+    #[error("treasury sequence is exhausted")]
+    SequenceExhausted,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -118,7 +120,10 @@ impl Treasury {
             return Err(TreasuryError::LogFull);
         }
         let sequence = self.next_sequence;
-        self.next_sequence += 1;
+        self.next_sequence = self
+            .next_sequence
+            .checked_add(1)
+            .ok_or(TreasuryError::SequenceExhausted)?;
         self.entries.push(TreasuryEntry {
             sequence,
             flow,
