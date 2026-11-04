@@ -411,5 +411,4 @@ mod tests {
         assert!(treasury.entries.is_empty());
         assert_eq!(treasury.next_sequence, u64::MAX);
     }
-
 }

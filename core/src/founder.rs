@@ -270,5 +270,4 @@ mod tests {
         assert_eq!(authority.log_len(), 0);
         assert_eq!(authority.next_sequence, u64::MAX);
     }
-
 }

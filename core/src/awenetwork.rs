@@ -1758,17 +1758,12 @@ mod tests {
         market.next_task_id = u64::MAX;
 
         assert_eq!(
-            market.approve_suggestion(
-                &mut authority,
-                &founder.public.public_key,
-                suggestion_id,
-                2,
-            ),
+            market
+                .approve_suggestion(&mut authority, &founder.public.public_key, suggestion_id, 2,),
             Err(WorkError::IdExhausted)
         );
         assert!(!market.suggestion(suggestion_id).unwrap().approved);
         assert!(market.tasks.is_empty());
         assert_eq!(authority.log_len(), 0);
     }
-
 }
