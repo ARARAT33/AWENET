@@ -5,7 +5,7 @@
 //! device already admitted by FounderDevices. Persist this state securely and
 //! deliver the challenge to the same device before exposing the Control Center.
 
-use crate::{crypto::hash, founder::FounderDevices, founder_admin::FounderEmergencyLock};
+use crate::{crypto::hash, founder_admin::FounderEmergencyLock, founder_identity::FounderDevices};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
@@ -364,7 +364,7 @@ impl FounderLogin {
 mod tests {
     use super::*;
     use crate::{
-        founder::{device_id, FounderDevices, FounderGenesis, FounderRules},
+        founder_identity::{device_id, FounderDevices, FounderGenesis, FounderRules},
         identity::{Identity, Username},
     };
     use rand::rngs::OsRng;
