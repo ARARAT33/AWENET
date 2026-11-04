@@ -9,7 +9,7 @@ use crate::{crypto::hash, founder::FounderDevices, founder_admin::FounderEmergen
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, fmt};
 use thiserror::Error;
 
 pub const MAX_LOGIN_CHALLENGES: usize = 128;
@@ -35,6 +35,10 @@ pub enum FounderAuthError {
     AccountLocked,
     #[error("founder session is invalid, expired, revoked, or restricted")]
     InvalidSession,
+    #[error("operating-system secure random generation failed")]
+    EntropyUnavailable,
+    #[error("authentication tick arithmetic overflowed")]
+    TickOverflow,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -46,12 +50,22 @@ pub struct FounderLoginChallenge {
     pub expires_tick: u64,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct IssuedFounderSession {
     /// Treat this as a bearer secret. Never log it or send it to another device.
     pub token: [u8; 32],
     pub device_id: [u8; 32],
     pub expires_tick: u64,
+}
+
+impl fmt::Debug for IssuedFounderSession {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("IssuedFounderSession")
+            .field("token", &"[REDACTED]")
+            .field("device_id", &self.device_id)
+            .field("expires_tick", &self.expires_tick)
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -117,6 +131,9 @@ impl FounderLogin {
         {
             return Err(FounderAuthError::UnapprovedDevice);
         }
+        let expires_tick = now
+            .checked_add(ttl.max(1))
+            .ok_or(FounderAuthError::TickOverflow)?;
         let failure = self
             .failures
             .get(&hex::encode(requested_device_id))
@@ -132,8 +149,11 @@ impl FounderLogin {
             }
         }
         let mut nonce = [0u8; 32];
-        OsRng.fill_bytes(&mut nonce);
-        let expires_tick = now.saturating_add(ttl.max(1));
+        let mut rng = OsRng;
+        if rng.try_fill_bytes(&mut nonce).is_err() {
+            nonce.fill(0);
+            return Err(FounderAuthError::EntropyUnavailable);
+        }
         let challenge_id = hash(
             b"AWENET/FOUNDER-LOGIN-CHALLENGE/v1",
             &[
@@ -181,6 +201,9 @@ impl FounderLogin {
         now: u64,
         session_ttl: u64,
     ) -> Result<IssuedFounderSession, FounderAuthError> {
+        let expires_tick = now
+            .checked_add(session_ttl.max(1))
+            .ok_or(FounderAuthError::TickOverflow)?;
         let key = hex::encode(challenge_id);
         let challenge = self
             .challenges
@@ -230,9 +253,12 @@ impl FounderLogin {
         }
         self.failures.remove(&hex::encode(challenge.device_id));
         let mut token = [0u8; 32];
-        OsRng.fill_bytes(&mut token);
+        let mut rng = OsRng;
+        if rng.try_fill_bytes(&mut token).is_err() {
+            token.fill(0);
+            return Err(FounderAuthError::EntropyUnavailable);
+        }
         let token_hash = hash(b"AWENET/FOUNDER-SESSION/v1", &token);
-        let expires_tick = now.saturating_add(session_ttl.max(1));
         self.sessions.insert(
             hex::encode(token_hash),
             SessionRecord {
@@ -567,4 +593,56 @@ mod tests {
         );
         fs::remove_file(path).unwrap();
     }
+
+    #[test]
+    fn issued_session_debug_redacts_bearer_token() {
+        let session = IssuedFounderSession {
+            token: [0xA5; 32],
+            device_id: [0x5A; 32],
+            expires_tick: 42,
+        };
+        let debug = format!("{session:?}");
+        assert!(!debug.contains(&hex::encode(session.token)));
+        assert!(debug.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn challenge_expiry_overflow_is_rejected_without_mutation() {
+        let (_founder, device, devices, path) = setup();
+        let mut auth = FounderLogin::new();
+        assert_eq!(
+            auth.request_challenge(&devices, device_id(&device.public.public_key), u64::MAX, 1),
+            Err(FounderAuthError::TickOverflow)
+        );
+        assert!(auth.challenges.is_empty());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn session_expiry_overflow_does_not_issue_a_session() {
+        let (_founder, device, devices, path) = setup();
+        let mut auth = FounderLogin::new();
+        let challenge = auth
+            .request_challenge(
+                &devices,
+                device_id(&device.public.public_key),
+                u64::MAX - 10,
+                10,
+            )
+            .unwrap();
+        let signature = device.sign(&login_message(&challenge));
+        assert_eq!(
+            auth.complete_login(
+                &devices,
+                challenge.challenge_id,
+                signature,
+                u64::MAX - 1,
+                2,
+            ),
+            Err(FounderAuthError::TickOverflow)
+        );
+        assert_eq!(auth.active_session_count(u64::MAX - 1), 0);
+        fs::remove_file(path).unwrap();
+    }
+
 }
