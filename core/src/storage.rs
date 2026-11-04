@@ -738,7 +738,7 @@ mod tests {
         assert_eq!(stats.objects, 1);
         assert_eq!(stats.used, b"count this object".len() as u64);
         fs::remove_dir_all(dir).unwrap();
-    } 
+    }
 
     #[test]
     fn concurrent_content_addressed_writers_publish_one_verified_object() {
