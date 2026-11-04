@@ -242,7 +242,7 @@ fn founder_admin_overview(
                 "label": pending.label,
                 "requested_at": pending.requested_at,
                 "proof_verified": pending.proof_verified,
-                "required_approvers": pending.required_approvers.iter().map(hex::encode).collect::<Vec<_>>(),
+                "required_approvers": pending.required_approvers.iter().map(|id| hex::encode(id)).collect::<Vec<_>>(),
                 "approvals_received": pending.approvals.len()
             })
         })
@@ -3023,9 +3023,10 @@ mod founder_admin_api_tests {
         let request = admin_request(&hex::encode(token));
         let overview = founder_admin_overview(&Some(state), &request, 12).unwrap();
 
+        let expected_device_id = hex::encode(device_id);
         assert_eq!(
             overview["authenticated_device_id"].as_str(),
-            Some(hex::encode(device_id).as_str())
+            Some(expected_device_id.as_str())
         );
         assert_eq!(overview["approved_devices"].as_array().unwrap().len(), 1);
         assert_eq!(
