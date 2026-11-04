@@ -144,11 +144,11 @@ fn three_node_product_smoke() {
             let response = request_raw(
                 ui,
                 &format!(
-                    "GET /api/founder/admin/overview HTTP/1.1\\r\\nHost: {ui}\\r\\nConnection: close\\r\\n\\r\\n"
+                    "GET /api/founder/admin/overview HTTP/1.1\r\nHost: {ui}\r\nConnection: close\r\n\r\n"
                 ),
             );
             let (headers, body) = response
-                .split_once("\\r\\n\\r\\n")
+                .split_once("\r\n\r\n")
                 .expect("founder admin response headers");
             assert!(
                 headers.starts_with("HTTP/1.1 409 Conflict"),
