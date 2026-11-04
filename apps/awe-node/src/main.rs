@@ -7,6 +7,9 @@ use awep2p_core::diagnostics::{NodeDiagnostics, NodeMetrics};
 use awep2p_core::federation::{
     self, AweNetConfig, AweNodeConfig, DataCentreConfig, DataGroupConfig,
 };
+use awep2p_core::founder_identity::{bootstrap_digest, FounderRules, FOUNDER_USERNAME};
+use awep2p_core::founder_auth::login_message;
+use awep2p_core::founder_runtime::FounderPersistentState;
 use awep2p_core::identity::{AweId, AweSecret, Identity, LocalVault, Username};
 use awep2p_core::lan_mesh::LanPeerBeacon;
 use awep2p_core::messenger::format_uid;
@@ -48,6 +51,7 @@ type CommunityState = Arc<Mutex<serde_json::Value>>;
 type ConsensusState = Arc<Mutex<Option<OnecoinConsensusRuntime>>>;
 type OnecoinLedgerState = Arc<Mutex<OnecoinLedger>>;
 type ContributionState = Arc<Mutex<ResourceContribution>>;
+type FounderState = Arc<Mutex<FounderPersistentState>>;
 
 #[derive(Clone)]
 struct UiState {
@@ -65,6 +69,7 @@ struct UiState {
     onecoin_offers_path: PathBuf,
     contribution: ContributionState,
     contribution_path: PathBuf,
+    founder_state: Option<FounderState>,
 }
 
 async fn build_onecoin_validators(
@@ -102,7 +107,7 @@ fn default_vault() -> PathBuf {
 }
 
 fn usage() -> ! {
-    eprintln!("AWEp2P\n\nUsage:\n  awe-node                 Start the complete local product\n  awe-node app             Start UI + local node\n  awe-node secret <username> [out-file]\n  awe-node init <username> [vault-file]\n  awe-node run <vault-file> <password> <listen-addr> [bootstrap-addr ...]\n  awe-node id <vault-file> <password> <username>\n  awe-node status [vault-file]\n  awe-node diagnostics\n  awe-node mesh <listen-port>\n  awe-node health\n  awe-node probe <address>");
+    eprintln!("AWEp2P\n\nUsage:\n  awe-node                 Start the complete local product\n  awe-node founder-digest <bootstrap-secret-file>\n  awe-node founder-init <founder-vault> <device-vault> <device-username> <bootstrap-secret-file>\n  awe-node founder-status [data-directory]\n  awe-node app             Start UI + local node\n  awe-node secret <username> [out-file]\n  awe-node init <username> [vault-file]\n  awe-node run <vault-file> <password> <listen-addr> [bootstrap-addr ...]\n  awe-node id <vault-file> <password> <username>\n  awe-node status [vault-file]\n  awe-node diagnostics\n  awe-node mesh <listen-port>\n  awe-node health\n  awe-node probe <address>");
     std::process::exit(2)
 }
 
@@ -163,7 +168,7 @@ fn load_identity(path: &PathBuf, password: &str, username: &str) -> Result<Ident
 }
 
 async fn http_response(status: &str, content_type: &str, body: &str) -> Vec<u8> {
-    format!("HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: content-type\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}", body.len()).into_bytes()
+    format!("HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}", body.len()).into_bytes()
 }
 
 async fn read_http_request(stream: &mut tokio::net::TcpStream) -> Result<String> {
@@ -277,6 +282,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         onecoin_offers_path,
         contribution,
         contribution_path,
+        founder_state,
     } = state;
     let request = read_http_request(&mut stream).await?;
     let request_line = request.lines().next().unwrap_or("");
@@ -454,6 +460,165 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         "/api/policy" => {
             let policy = policy_state.lock().map(|p| p.clone()).unwrap_or_default();
             ("200 OK", "application/json; charset=utf-8", serde_json::to_string(&policy).unwrap_or_else(|_| "{}".into()))
+        },
+        "/api/founder/login/challenge" if method == "POST" => {
+            let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+            let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+            let device_hex = parsed.get("device_id").and_then(|v| v.as_str()).unwrap_or("");
+            let decoded = hex::decode(device_hex);
+            match (&founder_state, decoded) {
+                (Some(founder), Ok(bytes)) if bytes.len() == 32 => {
+                    let mut device_id = [0u8; 32];
+                    device_id.copy_from_slice(&bytes);
+                    match founder.lock() {
+                        Ok(mut state) => {
+                            let devices = state.devices.clone();
+                            let emergency = state.emergency.clone();
+                            match state.login.request_challenge_guarded(
+                                &devices,
+                                &emergency,
+                                device_id,
+                                now_unix(),
+                                120,
+                            ) {
+                            Ok(challenge) => {
+                                let signed_message = login_message(&challenge);
+                                ("200 OK", "application/json; charset=utf-8", serde_json::json!({
+                                    "challenge_id": hex::encode(challenge.challenge_id),
+                                    "device_id": hex::encode(challenge.device_id),
+                                    "nonce": hex::encode(challenge.nonce),
+                                    "issued_tick": challenge.issued_tick,
+                                    "expires_tick": challenge.expires_tick,
+                                    "message": hex::encode(signed_message),
+                                    "algorithm": "Ed25519",
+                                    "domain": "AWENET/FOUNDER-LOGIN/v1"
+                                }).to_string())
+                            }
+                            Err(error) => ("403 Forbidden", "application/json; charset=utf-8", serde_json::json!({"error":"founder_login_challenge_rejected","detail":error.to_string()}).to_string())
+                            }
+                        },
+                        Err(_) => ("500 Internal Server Error", "application/json; charset=utf-8", serde_json::json!({"error":"founder_state_lock_poisoned"}).to_string())
+                    }
+                }
+                (None, _) => ("409 Conflict", "application/json; charset=utf-8", serde_json::json!({"error":"founder_not_initialized"}).to_string()),
+                (_, Ok(_)) => ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"error":"device_id_must_be_32_bytes"}).to_string()),
+                (_, Err(_)) => ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"error":"invalid_device_id_hex"}).to_string())
+            }
+        },
+        "/api/founder/login/complete" if method == "POST" => {
+            let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+            let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+            let challenge_hex = parsed.get("challenge_id").and_then(|v| v.as_str()).unwrap_or("");
+            let signature_hex = parsed.get("signature").and_then(|v| v.as_str()).unwrap_or("");
+            let challenge_bytes = hex::decode(challenge_hex);
+            let signature_bytes = hex::decode(signature_hex);
+            match (&founder_state, challenge_bytes, signature_bytes) {
+                (Some(founder), Ok(challenge), Ok(signature_bytes)) if challenge.len() == 32 && signature_bytes.len() == 64 => {
+                    let mut challenge_id = [0u8; 32];
+                    challenge_id.copy_from_slice(&challenge);
+                    let mut signature = [0u8; 64];
+                    signature.copy_from_slice(&signature_bytes);
+                    match founder.lock() {
+                        Ok(mut state) => {
+                            if state.emergency.ensure_login_allowed().is_err() {
+                                ("423 Locked", "application/json; charset=utf-8", serde_json::json!({"error":"founder_account_locked"}).to_string())
+                            } else {
+                                let devices = state.devices.clone();
+                                match state.login.complete_login(&devices, challenge_id, signature, now_unix(), 8 * 60 * 60) {
+                                    Ok(session) => ("200 OK", "application/json; charset=utf-8", serde_json::json!({
+                                        "token": hex::encode(session.token),
+                                        "device_id": hex::encode(session.device_id),
+                                        "expires_tick": session.expires_tick,
+                                        "token_type": "Bearer",
+                                        "storage": "memory_only_until_durable_session_store_is_enabled"
+                                    }).to_string()),
+                                    Err(error) => ("401 Unauthorized", "application/json; charset=utf-8", serde_json::json!({"error":"founder_login_failed","detail":error.to_string()}).to_string())
+                                }
+                            }
+                        }
+                        Err(_) => ("500 Internal Server Error", "application/json; charset=utf-8", serde_json::json!({"error":"founder_state_lock_poisoned"}).to_string())
+                    }
+                }
+                (None, _, _) => ("409 Conflict", "application/json; charset=utf-8", serde_json::json!({"error":"founder_not_initialized"}).to_string()),
+                (_, Ok(_), Ok(_)) => ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"error":"invalid_challenge_or_signature_length"}).to_string()),
+                _ => ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"error":"invalid_challenge_or_signature_hex"}).to_string())
+            }
+        },
+        "/api/founder/session" if method == "GET" => {
+            let token_hex = request.lines().find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                if name.eq_ignore_ascii_case("authorization") {
+                    value.trim().strip_prefix("Bearer ").map(str::to_owned)
+                } else { None }
+            }).unwrap_or_default();
+            match (&founder_state, hex::decode(token_hex)) {
+                (Some(founder), Ok(bytes)) if bytes.len() == 32 => {
+                    let mut token = [0u8; 32];
+                    token.copy_from_slice(&bytes);
+                    match founder.lock() {
+                        Ok(state) => {
+                            if state.emergency.ensure_login_allowed().is_err() {
+                                ("423 Locked", "application/json; charset=utf-8", serde_json::json!({"authenticated":false,"error":"founder_account_locked"}).to_string())
+                            } else {
+                                match state.authorize_founder_session(&token, now_unix()) {
+                                    Ok(device_id) => ("200 OK", "application/json; charset=utf-8", serde_json::json!({"authenticated":true,"username":FOUNDER_USERNAME,"founder_awe_id":state.founder_id(),"device_id":hex::encode(device_id)}).to_string()),
+                                    Err(_) => ("401 Unauthorized", "application/json; charset=utf-8", serde_json::json!({"authenticated":false,"error":"invalid_or_expired_session"}).to_string())
+                                }
+                            }
+                        }
+                        Err(_) => ("500 Internal Server Error", "application/json; charset=utf-8", serde_json::json!({"error":"founder_state_lock_poisoned"}).to_string())
+                    }
+                }
+                (None, _) => ("409 Conflict", "application/json; charset=utf-8", serde_json::json!({"error":"founder_not_initialized"}).to_string()),
+                (_, _) => ("401 Unauthorized", "application/json; charset=utf-8", serde_json::json!({"authenticated":false,"error":"missing_or_invalid_bearer_token"}).to_string())
+            }
+        },
+        "/api/founder/logout" if method == "POST" => {
+            let token_hex = request.lines().find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                if name.eq_ignore_ascii_case("authorization") {
+                    value.trim().strip_prefix("Bearer ").map(str::to_owned)
+                } else { None }
+            }).unwrap_or_default();
+            match (&founder_state, hex::decode(token_hex)) {
+                (Some(founder), Ok(bytes)) if bytes.len() == 32 => {
+                    let mut token = [0u8; 32];
+                    token.copy_from_slice(&bytes);
+                    match founder.lock() {
+                        Ok(mut state) => match state.login.revoke_session(&token) {
+                            Ok(()) => ("200 OK", "application/json; charset=utf-8", serde_json::json!({"logged_out":true}).to_string()),
+                            Err(_) => ("401 Unauthorized", "application/json; charset=utf-8", serde_json::json!({"error":"invalid_or_revoked_session"}).to_string())
+                        },
+                        Err(_) => ("500 Internal Server Error", "application/json; charset=utf-8", serde_json::json!({"error":"founder_state_lock_poisoned"}).to_string())
+                    }
+                }
+                (None, _) => ("409 Conflict", "application/json; charset=utf-8", serde_json::json!({"error":"founder_not_initialized"}).to_string()),
+                _ => ("401 Unauthorized", "application/json; charset=utf-8", serde_json::json!({"error":"missing_or_invalid_bearer_token"}).to_string())
+            }
+        },
+        "/api/founder/status" if method == "GET" => {
+            match &founder_state {
+                Some(founder) => match founder.lock() {
+                    Ok(state) => ("200 OK", "application/json; charset=utf-8", serde_json::json!({
+                        "initialized": true,
+                        "username": FOUNDER_USERNAME,
+                        "founder_awe_id": state.founder_id(),
+                        "network_id": hex::encode(state.genesis.payload.network_id),
+                        "snapshot_sequence": state.snapshot_sequence(),
+                        "approved_devices": state.devices.approved_devices().len(),
+                        "pending_device_requests": state.devices.pending_requests().count(),
+                        "active_neters": state.neters.active().len(),
+                        "account_locked": state.emergency.account_locked(),
+                        "governance_locked": state.emergency.governance_locked()
+                    }).to_string()),
+                    Err(_) => ("500 Internal Server Error", "application/json; charset=utf-8", serde_json::json!({"error":"founder state lock poisoned"}).to_string())
+                },
+                None => ("200 OK", "application/json; charset=utf-8", serde_json::json!({
+                    "initialized": false,
+                    "username": FOUNDER_USERNAME,
+                    "message": "Founder Genesis has not been initialized on this installation"
+                }).to_string())
+            }
         },
         "/api/status" => {
             let peers = node.closest_peers(node.identity.public.awe_id.as_bytes(), 64).await;
@@ -1630,6 +1795,16 @@ async fn run_product() -> Result<()> {
         PathBuf::from(".awep2p")
     };
     fs::create_dir_all(&data_dir)?;
+    let founder_directory = data_dir.join("founder");
+    let founder_state: Option<FounderState> = if founder_directory.join("genesis.json").exists() {
+        Some(Arc::new(Mutex::new(
+            FounderPersistentState::load(&founder_directory).context(
+                "Founder Authority Genesis exists but its signed state could not be loaded",
+            )?,
+        )))
+    } else {
+        None
+    };
     let secret_path = data_dir.join("node.awesecret");
     let identity = if secret_path.exists() {
         AweSecret::from_bytes(&fs::read(&secret_path)?)
@@ -2340,6 +2515,7 @@ async fn run_product() -> Result<()> {
             let api_onecoin_offers_path = onecoin_offers_path.clone();
             let api_contribution = contribution.clone();
             let api_contribution_path = contribution_path.clone();
+            let api_founder_state = founder_state.clone();
             tokio::spawn(async move {
                 if let Err(e) = serve_ui(
                     stream,
@@ -2358,6 +2534,7 @@ async fn run_product() -> Result<()> {
                         onecoin_offers_path: api_onecoin_offers_path,
                         contribution: api_contribution,
                         contribution_path: api_contribution_path,
+                        founder_state: api_founder_state,
                     },
                 )
                 .await
@@ -2467,11 +2644,127 @@ async fn probe(address: SocketAddr) -> Result<()> {
     Ok(())
 }
 
+fn founder_data_directory() -> PathBuf {
+    if let Some(value) = env::var_os("AWE_DATA_DIR") {
+        PathBuf::from(value)
+    } else if let Some(home) = env::var_os("USERPROFILE").or_else(|| env::var_os("HOME")) {
+        PathBuf::from(home).join(".awep2p")
+    } else {
+        PathBuf::from(".awep2p")
+    }
+}
+
+// Prints only the domain-separated digest; raw bootstrap bytes never leave this process.
+fn print_founder_bootstrap_digest(secret_path: PathBuf) -> Result<()> {
+    let secret =
+        fs::read(&secret_path).context("could not read the founder bootstrap secret file")?;
+    if secret.len() < 32 {
+        anyhow::bail!("founder bootstrap secret must contain at least 32 random bytes");
+    }
+    println!(
+        "AWE_FOUNDER_BOOTSTRAP_DIGEST={}",
+        hex::encode(bootstrap_digest(&secret))
+    );
+    Ok(())
+}
+
+fn initialize_founder(
+    founder_vault: PathBuf,
+    device_vault: PathBuf,
+    device_username: String,
+    bootstrap_secret_path: PathBuf,
+) -> Result<()> {
+    let digest_text = env::var("AWE_FOUNDER_BOOTSTRAP_DIGEST").context(
+        "set AWE_FOUNDER_BOOTSTRAP_DIGEST to the pinned 32-byte hex digest before initialization",
+    )?;
+    let digest_bytes = hex::decode(digest_text.trim())
+        .context("AWE_FOUNDER_BOOTSTRAP_DIGEST must be 64 hexadecimal characters")?;
+    let expected_digest: [u8; 32] = digest_bytes.try_into().map_err(|_| {
+        anyhow::anyhow!("AWE_FOUNDER_BOOTSTRAP_DIGEST must decode to exactly 32 bytes")
+    })?;
+    let founder_password = rpassword::prompt_password("Founder vault password: ")?;
+    let device_password = rpassword::prompt_password("Initial device vault password: ")?;
+    let founder = load_identity(&founder_vault, &founder_password, FOUNDER_USERNAME)?;
+    let device = load_identity(&device_vault, &device_password, &device_username)?;
+    let bootstrap_secret = fs::read(&bootstrap_secret_path)
+        .context("could not read the out-of-band founder bootstrap secret file")?;
+    let directory = founder_data_directory().join("founder");
+    let state = FounderPersistentState::initialize(
+        &directory,
+        &founder,
+        device.public.public_key,
+        &bootstrap_secret,
+        expected_digest,
+        "Initial founder device",
+        FounderRules::default(),
+    )
+    .context("Founder Genesis initialization failed")?;
+    println!("Founder Genesis initialized.");
+    println!("Founder username: {}", FOUNDER_USERNAME);
+    println!("Founder AWE-ID: {}", state.founder_id());
+    println!(
+        "Network ID: {}",
+        hex::encode(state.genesis.payload.network_id)
+    );
+    println!("Signed state snapshot: {}", state.snapshot_sequence());
+    println!("Stored under: {}", directory.display());
+    Ok(())
+}
+
+fn print_founder_status(directory: PathBuf) -> Result<()> {
+    let state = FounderPersistentState::load(&directory.join("founder"))?;
+    println!("Founder: {}", FOUNDER_USERNAME);
+    println!("Founder AWE-ID: {}", state.founder_id());
+    println!(
+        "Network ID: {}",
+        hex::encode(state.genesis.payload.network_id)
+    );
+    println!("Snapshot sequence: {}", state.snapshot_sequence());
+    println!(
+        "Approved devices: {}",
+        state.devices.approved_devices().len()
+    );
+    println!(
+        "Pending device requests: {}",
+        state.devices.pending_requests().count()
+    );
+    println!("Active Neters: {}", state.neters.active().len());
+    println!(
+        "Account emergency lock: {}",
+        state.emergency.account_locked()
+    );
+    println!(
+        "Governance emergency lock: {}",
+        state.emergency.governance_locked()
+    );
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let mut args = env::args().skip(1);
     match args.next().as_deref() {
         None | Some("app") | Some("gui") => run_product().await,
+        Some("founder-digest") => print_founder_bootstrap_digest(
+            args.next().map(PathBuf::from).unwrap_or_else(|| usage()),
+        ),
+        Some("founder-init") => {
+            let founder_vault = args.next().map(PathBuf::from).unwrap_or_else(|| usage());
+            let device_vault = args.next().map(PathBuf::from).unwrap_or_else(|| usage());
+            let device_username = args.next().unwrap_or_else(|| usage());
+            let bootstrap_secret = args.next().map(PathBuf::from).unwrap_or_else(|| usage());
+            initialize_founder(
+                founder_vault,
+                device_vault,
+                device_username,
+                bootstrap_secret,
+            )
+        }
+        Some("founder-status") => print_founder_status(
+            args.next()
+                .map(PathBuf::from)
+                .unwrap_or_else(founder_data_directory),
+        ),
         Some("secret") => {
             let username = args.next().unwrap_or_else(|| usage());
             generate_secret_file(&username, args.next().map(PathBuf::from))
