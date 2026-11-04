@@ -171,6 +171,144 @@ async fn http_response(status: &str, content_type: &str, body: &str) -> Vec<u8> 
     format!("HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}", body.len()).into_bytes()
 }
 
+fn parse_bearer_token(request: &str) -> Option<[u8; 32]> {
+    let mut authorization = None;
+    for line in request.lines().skip(1) {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        if name.trim().eq_ignore_ascii_case("authorization") {
+            if authorization.is_some() {
+                return None;
+            }
+            authorization = Some(value.trim());
+        }
+    }
+
+    let mut parts = authorization?.split_ascii_whitespace();
+    if !parts.next()?.eq_ignore_ascii_case("bearer") {
+        return None;
+    }
+    let encoded = parts.next()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    let bytes = hex::decode(encoded).ok()?;
+    bytes.try_into().ok()
+}
+
+/// Read-only founder control-plane overview. Every returned record is
+/// disclosed only after the device-bound founder session is revalidated.
+fn founder_admin_overview(
+    founder_state: &Option<FounderState>,
+    request: &str,
+    now: u64,
+) -> Result<serde_json::Value, (&'static str, &'static str)> {
+    let Some(founder) = founder_state else {
+        return Err(("409 Conflict", "founder_not_initialized"));
+    };
+    let token = parse_bearer_token(request)
+        .ok_or(("401 Unauthorized", "missing_or_invalid_bearer_token"))?;
+    let state = founder
+        .lock()
+        .map_err(|_| ("500 Internal Server Error", "founder_state_lock_poisoned"))?;
+    if state.emergency.ensure_login_allowed().is_err() {
+        return Err(("423 Locked", "founder_account_locked"));
+    }
+    let device_id = state
+        .authorize_founder_session(&token, now)
+        .map_err(|_| ("401 Unauthorized", "invalid_or_expired_session"))?;
+
+    let approved_devices = state
+        .devices
+        .approved_devices()
+        .into_iter()
+        .map(|device| {
+            serde_json::json!({
+                "device_id": hex::encode(device.device_id),
+                "public_key": hex::encode(device.public_key),
+                "label": device.label,
+                "approved_at": device.approved_at
+            })
+        })
+        .collect::<Vec<_>>();
+    let pending_devices = state
+        .devices
+        .pending_requests()
+        .map(|pending| {
+            serde_json::json!({
+                "request_id": hex::encode(pending.request_id),
+                "public_key": hex::encode(pending.public_key),
+                "label": pending.label,
+                "requested_at": pending.requested_at,
+                "proof_verified": pending.proof_verified,
+                "required_approvers": pending.required_approvers.iter().map(hex::encode).collect::<Vec<_>>(),
+                "approvals_received": pending.approvals.len()
+            })
+        })
+        .collect::<Vec<_>>();
+    let active_neters = state
+        .neters
+        .active()
+        .into_iter()
+        .map(|neter| {
+            serde_json::json!({
+                "neter_id": hex::encode(neter.neter_id),
+                "public_key": hex::encode(neter.public_key),
+                "display_name": neter.display_name,
+                "scopes": neter.scopes,
+                "can_appoint_neter": neter.can_appoint_neter,
+                "compensation_atoms_per_task": neter.compensation_atoms_per_task.to_string(),
+                "status": neter.status,
+                "appointed_by": hex::encode(neter.appointed_by),
+                "created_tick": neter.created_tick
+            })
+        })
+        .collect::<Vec<_>>();
+    let neter_applications = state
+        .neters
+        .applications()
+        .map(|application| {
+            serde_json::json!({
+                "application_id": hex::encode(application.application_id),
+                "public_key": hex::encode(application.public_key),
+                "display_name": application.display_name,
+                "requested_scopes": application.requested_scopes,
+                "message": application.message,
+                "submitted_tick": application.submitted_tick
+            })
+        })
+        .collect::<Vec<_>>();
+    let neter_audit = state
+        .neters
+        .audit()
+        .map(|entry| {
+            serde_json::json!({
+                "sequence": entry.sequence,
+                "tick": entry.tick,
+                "action": entry.action,
+                "actor_id": hex::encode(entry.actor_id),
+                "target_id": hex::encode(entry.target_id)
+            })
+        })
+        .collect::<Vec<_>>();
+
+    Ok(serde_json::json!({
+        "founder_awe_id": state.founder_id(),
+        "network_id": hex::encode(state.genesis.payload.network_id),
+        "snapshot_sequence": state.snapshot_sequence(),
+        "authenticated_device_id": hex::encode(device_id),
+        "active_sessions": state.login.active_session_count(now),
+        "approved_devices": approved_devices,
+        "pending_device_requests": pending_devices,
+        "active_neters": active_neters,
+        "neter_applications": neter_applications,
+        "neter_audit": neter_audit,
+        "account_locked": state.emergency.account_locked(),
+        "governance_locked": state.emergency.governance_locked()
+    }))
+}
+
 async fn read_http_request(stream: &mut tokio::net::TcpStream) -> Result<String> {
     const HEADER_LIMIT: usize = 64 * 1024;
     const BODY_LIMIT: usize = 64 * 1024 * 1024;
@@ -594,6 +732,16 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                 }
                 (None, _) => ("409 Conflict", "application/json; charset=utf-8", serde_json::json!({"error":"founder_not_initialized"}).to_string()),
                 _ => ("401 Unauthorized", "application/json; charset=utf-8", serde_json::json!({"error":"missing_or_invalid_bearer_token"}).to_string())
+            }
+        },
+        "/api/founder/admin/overview" if method == "GET" => {
+            match founder_admin_overview(&founder_state, &request, now_unix()) {
+                Ok(overview) => ("200 OK", "application/json; charset=utf-8", overview.to_string()),
+                Err((status, error)) => (
+                    status,
+                    "application/json; charset=utf-8",
+                    serde_json::json!({"error": error}).to_string(),
+                ),
             }
         },
         "/api/founder/status" if method == "GET" => {
@@ -2813,3 +2961,121 @@ async fn main() -> Result<()> {
         _ => usage(),
     }
 }
+
+#[cfg(test)]
+mod founder_admin_api_tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn setup_founder_session() -> (FounderState, [u8; 32], [u8; 32], PathBuf) {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = env::temp_dir().join(format!(
+            "awenet-founder-admin-api-{}-{nonce}",
+            std::process::id()
+        ));
+        let founder = Identity::generate(Username::new(FOUNDER_USERNAME).unwrap());
+        let device = Identity::generate(Username::new("founder-device").unwrap());
+        let bootstrap_secret = [0x52u8; 48];
+        let mut state = FounderPersistentState::initialize(
+            &directory,
+            &founder,
+            device.public.public_key,
+            &bootstrap_secret,
+            bootstrap_digest(&bootstrap_secret),
+            "Test founder device",
+            FounderRules::default(),
+        )
+        .unwrap();
+
+        let device_id = state.devices.approved_devices()[0].device_id;
+        let devices = state.devices.clone();
+        let emergency = state.emergency.clone();
+        let challenge = state
+            .login
+            .request_challenge_guarded(&devices, &emergency, device_id, 10, 120)
+            .unwrap();
+        let signature = device.sign(&login_message(&challenge));
+        let session = state
+            .login
+            .complete_login(&devices, challenge.challenge_id, signature, 11, 600)
+            .unwrap();
+
+        (
+            Arc::new(Mutex::new(state)),
+            session.token,
+            device_id,
+            directory,
+        )
+    }
+
+    fn admin_request(token: &str) -> String {
+        format!(
+            "GET /api/founder/admin/overview HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\n\r\n"
+        )
+    }
+
+    #[test]
+    fn founder_admin_overview_requires_a_valid_device_bound_session() {
+        let (state, token, device_id, directory) = setup_founder_session();
+        let request = admin_request(&hex::encode(token));
+        let overview = founder_admin_overview(&Some(state), &request, 12).unwrap();
+
+        assert_eq!(
+            overview["authenticated_device_id"].as_str(),
+            Some(hex::encode(device_id).as_str())
+        );
+        assert_eq!(overview["approved_devices"].as_array().unwrap().len(), 1);
+        assert_eq!(overview["pending_device_requests"].as_array().unwrap().len(), 0);
+        assert_eq!(overview["active_neters"].as_array().unwrap().len(), 0);
+        assert_eq!(overview["active_sessions"].as_u64(), Some(1));
+
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn founder_admin_overview_rejects_missing_duplicate_and_revoked_tokens() {
+        let (state, token, _, directory) = setup_founder_session();
+        assert_eq!(
+            founder_admin_overview(&None, "", 12),
+            Err(("409 Conflict", "founder_not_initialized"))
+        );
+
+        let missing = "GET /api/founder/admin/overview HTTP/1.1\r\nHost: localhost\r\n\r\n";
+        assert_eq!(
+            founder_admin_overview(&Some(state.clone()), missing, 12),
+            Err(("401 Unauthorized", "missing_or_invalid_bearer_token"))
+        );
+
+        let encoded = hex::encode(token);
+        let duplicate = format!(
+            "GET /api/founder/admin/overview HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {encoded}\r\nAuthorization: Bearer {encoded}\r\n\r\n"
+        );
+        assert_eq!(parse_bearer_token(&duplicate), None);
+        assert_eq!(
+            founder_admin_overview(&Some(state.clone()), &duplicate, 12),
+            Err(("401 Unauthorized", "missing_or_invalid_bearer_token"))
+        );
+
+        state.lock().unwrap().login.revoke_session(&token).unwrap();
+        assert_eq!(
+            founder_admin_overview(&Some(state), &admin_request(&encoded), 12),
+            Err(("401 Unauthorized", "invalid_or_expired_session"))
+        );
+
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn bearer_header_name_and_scheme_are_case_insensitive() {
+        let token = [0xABu8; 32];
+        let request = format!(
+            "GET /api/founder/admin/overview HTTP/1.1\r\nauthorization: bEaReR {}\r\n\r\n",
+            hex::encode(token)
+        );
+        assert_eq!(parse_bearer_token(&request), Some(token));
+    }
+}
+
