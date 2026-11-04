@@ -6,9 +6,9 @@
 //! The caller must invoke save() after every successful state mutation.
 
 use crate::{
-    founder_identity::{FounderDevices, FounderError, FounderGenesis, FounderRules},
     founder_admin::{FounderEmergencyLock, NeterRegistry},
     founder_auth::FounderLogin,
+    founder_identity::{FounderDevices, FounderError, FounderGenesis, FounderRules},
     identity::Identity,
 };
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
