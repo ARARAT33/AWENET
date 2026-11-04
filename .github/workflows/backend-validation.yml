@@ -1,0 +1,52 @@
+name: Phase 2 Backend Validation
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'core/**'
+      - 'apps/awe-node/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/backend-validation.yml'
+  push:
+    branches: [phase-2-backend-hardening]
+    paths:
+      - 'core/**'
+      - 'apps/awe-node/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/backend-validation.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phase-2-backend-validation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust format, check and tests
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Compile workspace
+        run: cargo check --workspace --all-targets
+
+      - name: Run workspace tests
+        run: cargo test --workspace

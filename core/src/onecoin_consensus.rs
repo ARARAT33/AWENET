@@ -180,6 +180,9 @@ pub struct OnecoinFinalizedState {
     pub ledger: OnecoinLedger,
     pub height: u64,
     pub tip_hash: [u8; 32],
+    /// Persisted local validator votes prevent double-voting after process restarts.
+    #[serde(default)]
+    pub local_votes: BTreeMap<u64, [u8; 32]>,
 }
 
 impl Default for OnecoinFinalizedState {
@@ -188,11 +191,34 @@ impl Default for OnecoinFinalizedState {
             ledger: OnecoinLedger::default(),
             height: 0,
             tip_hash: [0; 32],
+            local_votes: BTreeMap::new(),
         }
     }
 }
 
 impl OnecoinFinalizedState {
+    /// Validate transaction execution against a clone of the current ledger without committing it.
+    /// Validators use this before signing a proposal so invalid blocks cannot collect votes.
+    pub fn validate_block_transactions(&self, block: &OnecoinBlock) -> Result<(), String> {
+        self.execute_transactions(block).map(|_| ())
+    }
+
+    fn execute_transactions(&self, block: &OnecoinBlock) -> Result<OnecoinLedger, String> {
+        block.validate_shape()?;
+        let mut next = self.ledger.clone();
+        let mut seen = BTreeMap::new();
+        for tx in &block.transactions {
+            let txid = tx.id();
+            if seen.insert(txid, true).is_some() {
+                return Err("duplicate transaction in block".into());
+            }
+            let sender_key = next.ledger_sender_key(tx)?;
+            // Consensus execution must apply the same ONEBANK fee rule as wallet admission.
+            next.apply_transfer_with_fee(tx, &sender_key, 100)?;
+        }
+        Ok(next)
+    }
+
     pub fn finalize(
         &mut self,
         block: &OnecoinBlock,
@@ -216,20 +242,11 @@ impl OnecoinFinalizedState {
 
         // Execute against a clone first. A failed transaction must never leave
         // the live state half-applied.
-        let mut next = self.ledger.clone();
-        let mut seen = BTreeMap::new();
-        for tx in &block.transactions {
-            let txid = tx.id();
-            if seen.insert(txid, true).is_some() {
-                return Err("duplicate transaction in block".into());
-            }
-            let sender_key = next.ledger_sender_key(tx)?;
-            next.apply_transfer(tx, &sender_key)?;
-        }
-
+        let next = self.execute_transactions(block)?;
         self.ledger = next;
         self.height = block.header.height;
         self.tip_hash = block.hash();
+        self.local_votes.remove(&block.header.height);
         Ok(self.tip_hash)
     }
 }
@@ -262,6 +279,59 @@ mod tests {
 
     fn id(name: &str) -> Identity {
         Identity::generate(Username::new(name).unwrap())
+    }
+
+    #[test]
+    fn finalized_transfer_applies_onebank_fee_exactly_once() {
+        use crate::onecoin::ATOMS_PER_COIN;
+
+        let sender = id("fee-sender");
+        let validator_b = id("fee-validator-b");
+        let validator_c = id("fee-validator-c");
+        let recipient = id("fee-recipient");
+        let mut state = OnecoinFinalizedState::default();
+        state
+            .ledger
+            .initialize_genesis(&[
+                sender.public.awe_id.clone(),
+                validator_b.public.awe_id.clone(),
+                validator_c.public.awe_id.clone(),
+                recipient.public.awe_id.clone(),
+            ])
+            .unwrap();
+        let validators = BTreeMap::from([
+            (sender.public.awe_id.to_hex(), sender.public.public_key),
+            (
+                validator_b.public.awe_id.to_hex(),
+                validator_b.public.public_key,
+            ),
+            (
+                validator_c.public.awe_id.to_hex(),
+                validator_c.public.public_key,
+            ),
+        ]);
+        let tx =
+            OnecoinTransaction::new(&sender, 0, &recipient.public.awe_id, ATOMS_PER_COIN, None);
+        let block = OnecoinBlock::new(&sender, 1, [0; 32], vec![tx], 11).unwrap();
+        let certificate = QuorumCertificate {
+            block_hash: block.hash(),
+            height: 1,
+            votes: vec![
+                SignedBlockVote::new(&sender, &block, true),
+                SignedBlockVote::new(&validator_b, &block, true),
+            ],
+        };
+
+        state.finalize(&block, &certificate, &validators).unwrap();
+        assert_eq!(
+            state.ledger.balance_atoms(&sender.public.awe_id),
+            INITIAL_GENESIS_ALLOCATION - ATOMS_PER_COIN - ATOMS_PER_COIN / 100
+        );
+        assert_eq!(
+            state.ledger.balance_atoms(&recipient.public.awe_id),
+            INITIAL_GENESIS_ALLOCATION + ATOMS_PER_COIN
+        );
+        assert_eq!(state.ledger.collected_fee_atoms, ATOMS_PER_COIN / 100);
     }
 
     #[test]

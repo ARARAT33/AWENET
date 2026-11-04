@@ -5,6 +5,7 @@
 //! when its configured validator set contains its AWEID and public key.
 
 use crate::identity::{AweId, Identity};
+use crate::onecoin::OnecoinTransaction;
 use crate::onecoin_consensus::{
     OnecoinBlock, OnecoinFinalizedState, QuorumCertificate, SignedBlockVote,
 };
@@ -13,13 +14,22 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
-pub const ONECOIN_CONSENSUS_STREAM: u32 = 200;
+pub const ONECOIN_CONSENSUS_STREAM: u32 = 202;
 pub const MAX_CONSENSUS_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
+fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
 const MAX_PENDING_BLOCKS: usize = 256;
 const MAX_VOTES_PER_BLOCK: usize = 4096;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum OnecoinConsensusMessage {
+    /// A signed transaction submitted by a non-validator to a validator for inclusion.
+    TransactionSubmission(OnecoinTransaction),
     Proposal(OnecoinBlock),
     Vote(SignedBlockVote),
     Certificate(QuorumCertificate),
@@ -79,23 +89,131 @@ impl OnecoinConsensusRuntime {
             .is_some_and(|key| key == &identity.public.public_key)
     }
 
+    /// Propose a block from the current finalized tip and emit it to the configured validators.
+    /// The local validator's signed vote is recorded immediately; state only advances once a quorum
+    /// certificate is verified and persisted.
+    pub fn propose(
+        &mut self,
+        identity: &Identity,
+        transactions: Vec<OnecoinTransaction>,
+        timestamp_unix: u64,
+    ) -> Result<Vec<([u8; 32], OnecoinConsensusMessage)>, String> {
+        if !self.local_is_validator(identity) {
+            return Err("local identity is not an authorized ONECOIN validator".into());
+        }
+        if self.pending.len() >= MAX_PENDING_BLOCKS {
+            return Err("too many pending consensus blocks".into());
+        }
+        let block = OnecoinBlock::new(
+            identity,
+            self.state.state.height.saturating_add(1),
+            self.state.state.tip_hash,
+            transactions,
+            timestamp_unix,
+        )?;
+        block.validate_shape()?;
+        self.state.state.validate_block_transactions(&block)?;
+        let hash = block.hash();
+        if self.pending.contains_key(&hash) {
+            return Err("duplicate pending ONECOIN proposal".into());
+        }
+        self.record_local_vote(&block)?;
+        self.pending.insert(hash, block.clone());
+
+        // A proposer must count its own signed vote; otherwise a single-validator testnet can
+        // never finalize and multi-validator networks waste one quorum slot.
+        let local_vote = SignedBlockVote::new(identity, &block, true);
+        let mut outbound = self.handle_vote(*identity.public.awe_id.as_bytes(), local_vote)?;
+        for (validator_id, public_key) in &self.validators {
+            if public_key != &identity.public.public_key {
+                let peer_id = hex::decode(validator_id)
+                    .map_err(|_| "invalid validator AWEID encoding".to_string())?;
+                let peer_id: [u8; 32] = peer_id
+                    .try_into()
+                    .map_err(|_| "invalid validator AWEID length".to_string())?;
+                outbound.push((peer_id, OnecoinConsensusMessage::Proposal(block.clone())));
+            }
+        }
+        Ok(outbound)
+    }
+
     pub fn handle(
         &mut self,
         sender: [u8; 32],
         identity: &Identity,
         message: OnecoinConsensusMessage,
     ) -> Result<Vec<([u8; 32], OnecoinConsensusMessage)>, String> {
-        let sender_id = AweId::from_public_key(&sender).to_hex();
-        if self.validators.get(&sender_id) != Some(&sender) {
-            return Err("consensus sender is not a validator".into());
-        }
+        // The transport authenticates peers by AWEID, not by raw public key.
+        // Non-validators may submit a signed transaction, but only configured validators
+        // may propose blocks, vote, or distribute finality certificates.
         match message {
+            OnecoinConsensusMessage::TransactionSubmission(tx) => {
+                self.handle_submission(sender, identity, tx)
+            }
             OnecoinConsensusMessage::Proposal(block) => {
+                self.require_validator_sender(sender)?;
                 self.handle_proposal(sender, identity, block)
             }
-            OnecoinConsensusMessage::Vote(vote) => self.handle_vote(sender, vote),
-            OnecoinConsensusMessage::Certificate(cert) => self.handle_certificate(cert),
+            OnecoinConsensusMessage::Vote(vote) => {
+                self.require_validator_sender(sender)?;
+                self.handle_vote(sender, vote)
+            }
+            OnecoinConsensusMessage::Certificate(cert) => {
+                self.require_validator_sender(sender)?;
+                self.handle_certificate(cert)
+            }
         }
+    }
+
+    fn require_validator_sender(&self, sender: [u8; 32]) -> Result<(), String> {
+        if self.validators.contains_key(&hex::encode(sender)) {
+            Ok(())
+        } else {
+            Err("consensus sender is not a validator".into())
+        }
+    }
+
+    fn handle_submission(
+        &mut self,
+        sender: [u8; 32],
+        identity: &Identity,
+        tx: OnecoinTransaction,
+    ) -> Result<Vec<([u8; 32], OnecoinConsensusMessage)>, String> {
+        let sender_aweid = AweId::from_public_key(&tx.sender);
+        if sender_aweid.as_bytes() != &sender {
+            return Err("transaction sender does not match authenticated peer".into());
+        }
+        if !self.local_is_validator(identity) {
+            return Err("only a configured validator can accept transaction submissions".into());
+        }
+        if self.pending.values().any(|block| {
+            block
+                .transactions
+                .iter()
+                .any(|pending_tx| pending_tx.id() == tx.id())
+        }) {
+            return Err("transaction is already pending consensus".into());
+        }
+        let sender_key = sender_aweid.to_hex();
+        let recipient_key = hex::encode(tx.recipient);
+        if !self.state.state.ledger.members.contains_key(&sender_key) {
+            return Err("transaction sender is not a member of finalized ONECOIN state".into());
+        }
+        if !self.state.state.ledger.members.contains_key(&recipient_key) {
+            return Err("transaction recipient is not a member of finalized ONECOIN state".into());
+        }
+        // Reuse deterministic block execution to validate signature, nonce, fee, and balance
+        // before a validator creates or signs a proposal.
+        self.state
+            .state
+            .validate_block_transactions(&OnecoinBlock::new(
+                identity,
+                self.state.state.height.saturating_add(1),
+                self.state.state.tip_hash,
+                vec![tx.clone()],
+                0,
+            )?)?;
+        self.propose(identity, vec![tx], now_unix())
     }
 
     fn handle_proposal(
@@ -105,7 +223,7 @@ impl OnecoinConsensusRuntime {
         block: OnecoinBlock,
     ) -> Result<Vec<([u8; 32], OnecoinConsensusMessage)>, String> {
         block.validate_shape()?;
-        if block.header.proposer != AweId::from_public_key(&sender) {
+        if block.header.proposer.as_bytes() != &sender {
             return Err("proposal sender does not match block proposer".into());
         }
         let proposer_key = self
@@ -120,10 +238,15 @@ impl OnecoinConsensusRuntime {
         {
             return Err("proposal does not extend finalized state".into());
         }
+        // Never vote for a block whose transactions would fail deterministic execution.
+        self.state.state.validate_block_transactions(&block)?;
         if self.pending.len() >= MAX_PENDING_BLOCKS && !self.pending.contains_key(&block.hash()) {
             return Err("too many pending consensus blocks".into());
         }
         let hash = block.hash();
+        if self.local_is_validator(identity) {
+            self.record_local_vote(&block)?;
+        }
         self.pending.insert(hash, block.clone());
 
         if self.local_is_validator(identity) {
@@ -139,7 +262,7 @@ impl OnecoinConsensusRuntime {
         sender: [u8; 32],
         vote: SignedBlockVote,
     ) -> Result<Vec<([u8; 32], OnecoinConsensusMessage)>, String> {
-        if vote.voter != AweId::from_public_key(&sender) {
+        if vote.voter.as_bytes() != &sender {
             return Err("vote sender does not match voter".into());
         }
         let key = self
@@ -180,7 +303,13 @@ impl OnecoinConsensusRuntime {
                 .validators
                 .values()
                 .copied()
-                .map(|peer| (peer, OnecoinConsensusMessage::Certificate(cert.clone())))
+                .map(|public_key| {
+                    let peer_id = AweId::from_public_key(&public_key);
+                    (
+                        *peer_id.as_bytes(),
+                        OnecoinConsensusMessage::Certificate(cert.clone()),
+                    )
+                })
                 .collect());
         }
         Ok(Vec::new())
@@ -201,7 +330,352 @@ impl OnecoinConsensusRuntime {
         Ok(Vec::new())
     }
 
+    fn record_local_vote(&mut self, block: &OnecoinBlock) -> Result<(), String> {
+        let height = block.header.height;
+        let hash = block.hash();
+        if let Some(previous) = self.state.state.local_votes.get(&height) {
+            if previous != &hash {
+                return Err(
+                    "local validator already voted for a different block at this height".into(),
+                );
+            }
+            return Ok(());
+        }
+        self.state.state.local_votes.insert(height, hash);
+        if let Err(error) = self.state.save() {
+            self.state.state.local_votes.remove(&height);
+            return Err(format!(
+                "failed to persist local validator vote lock: {error}"
+            ));
+        }
+        Ok(())
+    }
+
     pub fn persisted_state(&self) -> &OnecoinFinalizedState {
         &self.state.state
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::identity::Username;
+    use std::fs;
+
+    #[test]
+    fn single_validator_proposal_finalizes_and_persists() {
+        let dir =
+            std::env::temp_dir().join(format!("awenet-consensus-propose-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+        let identity = Identity::generate(Username::new("validator").unwrap());
+        let validators =
+            BTreeMap::from([(identity.public.awe_id.to_hex(), identity.public.public_key)]);
+        let mut runtime = OnecoinConsensusRuntime::open(&path, validators.clone()).unwrap();
+        runtime
+            .state
+            .state
+            .ledger
+            .initialize_genesis(std::slice::from_ref(&identity.public.awe_id))
+            .unwrap();
+        runtime.state.save().unwrap();
+
+        let outbound = runtime.propose(&identity, Vec::new(), 100).unwrap();
+        assert_eq!(runtime.persisted_state().height, 1);
+        assert!(outbound
+            .iter()
+            .any(|(_, message)| matches!(message, OnecoinConsensusMessage::Certificate(_))));
+
+        let reopened = OnecoinConsensusRuntime::open(&path, validators).unwrap();
+        assert_eq!(reopened.persisted_state().height, 1);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn non_validator_transaction_submission_is_validated_and_proposed() {
+        let dir = std::env::temp_dir().join(format!(
+            "awenet-consensus-submission-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let validator = Identity::generate(Username::new("submission-validator").unwrap());
+        let sender = Identity::generate(Username::new("submission-sender").unwrap());
+        let recipient = Identity::generate(Username::new("submission-recipient").unwrap());
+        let validators = BTreeMap::from([(
+            validator.public.awe_id.to_hex(),
+            validator.public.public_key,
+        )]);
+        let mut runtime =
+            OnecoinConsensusRuntime::open(dir.join("state.json"), validators).unwrap();
+        runtime
+            .state
+            .state
+            .ledger
+            .initialize_genesis(&[
+                validator.public.awe_id.clone(),
+                sender.public.awe_id.clone(),
+                recipient.public.awe_id.clone(),
+            ])
+            .unwrap();
+        runtime.state.save().unwrap();
+
+        let tx = OnecoinTransaction::new(
+            &sender,
+            0,
+            &recipient.public.awe_id,
+            100,
+            Some("test submission".into()),
+        );
+        let outbound = runtime
+            .handle(
+                *sender.public.awe_id.as_bytes(),
+                &validator,
+                OnecoinConsensusMessage::TransactionSubmission(tx),
+            )
+            .unwrap();
+        assert_eq!(runtime.persisted_state().height, 1);
+        assert!(outbound
+            .iter()
+            .any(|(_, message)| { matches!(message, OnecoinConsensusMessage::Certificate(_)) }));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn duplicate_pending_transaction_submission_is_rejected() {
+        let dir = std::env::temp_dir().join(format!(
+            "awenet-consensus-submission-duplicate-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let validator = Identity::generate(Username::new("duplicate-validator").unwrap());
+        let second_validator = Identity::generate(Username::new("duplicate-validator2").unwrap());
+        let sender = Identity::generate(Username::new("duplicate-sender").unwrap());
+        let recipient = Identity::generate(Username::new("duplicate-recipient").unwrap());
+        let validators = BTreeMap::from([
+            (
+                validator.public.awe_id.to_hex(),
+                validator.public.public_key,
+            ),
+            (
+                second_validator.public.awe_id.to_hex(),
+                second_validator.public.public_key,
+            ),
+        ]);
+        let mut runtime =
+            OnecoinConsensusRuntime::open(dir.join("state.json"), validators).unwrap();
+        runtime
+            .state
+            .state
+            .ledger
+            .initialize_genesis(&[
+                validator.public.awe_id.clone(),
+                second_validator.public.awe_id.clone(),
+                sender.public.awe_id.clone(),
+                recipient.public.awe_id.clone(),
+            ])
+            .unwrap();
+        runtime.state.save().unwrap();
+        let tx = OnecoinTransaction::new(&sender, 0, &recipient.public.awe_id, 100, None);
+        runtime
+            .handle(
+                *sender.public.awe_id.as_bytes(),
+                &validator,
+                OnecoinConsensusMessage::TransactionSubmission(tx.clone()),
+            )
+            .unwrap();
+        assert_eq!(runtime.persisted_state().height, 0);
+        assert!(runtime
+            .handle(
+                *sender.public.awe_id.as_bytes(),
+                &validator,
+                OnecoinConsensusMessage::TransactionSubmission(tx),
+            )
+            .unwrap_err()
+            .contains("already pending"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn transaction_submission_rejects_transport_identity_mismatch() {
+        let dir = std::env::temp_dir().join(format!(
+            "awenet-consensus-submission-forgery-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let validator = Identity::generate(Username::new("submission-validator2").unwrap());
+        let sender = Identity::generate(Username::new("submission-sender2").unwrap());
+        let impostor = Identity::generate(Username::new("submission-impostor").unwrap());
+        let recipient = Identity::generate(Username::new("submission-recipient2").unwrap());
+        let validators = BTreeMap::from([(
+            validator.public.awe_id.to_hex(),
+            validator.public.public_key,
+        )]);
+        let mut runtime =
+            OnecoinConsensusRuntime::open(dir.join("state.json"), validators).unwrap();
+        runtime
+            .state
+            .state
+            .ledger
+            .initialize_genesis(&[
+                validator.public.awe_id.clone(),
+                sender.public.awe_id.clone(),
+                impostor.public.awe_id.clone(),
+                recipient.public.awe_id.clone(),
+            ])
+            .unwrap();
+        runtime.state.save().unwrap();
+        let tx = OnecoinTransaction::new(&sender, 0, &recipient.public.awe_id, 100, None);
+        assert!(runtime
+            .handle(
+                *impostor.public.awe_id.as_bytes(),
+                &validator,
+                OnecoinConsensusMessage::TransactionSubmission(tx),
+            )
+            .is_err());
+        assert_eq!(runtime.persisted_state().height, 0);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn validator_rejects_unspendable_transaction_before_voting() {
+        use crate::onecoin::INITIAL_GENESIS_ALLOCATION;
+
+        let dir = std::env::temp_dir().join(format!(
+            "awenet-consensus-invalid-tx-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let proposer = Identity::generate(Username::new("proposer").unwrap());
+        let validator = Identity::generate(Username::new("validator2").unwrap());
+        let recipient = Identity::generate(Username::new("recipient").unwrap());
+        let validators = BTreeMap::from([
+            (proposer.public.awe_id.to_hex(), proposer.public.public_key),
+            (
+                validator.public.awe_id.to_hex(),
+                validator.public.public_key,
+            ),
+        ]);
+        let mut runtime =
+            OnecoinConsensusRuntime::open(dir.join("state.json"), validators).unwrap();
+        runtime
+            .state
+            .state
+            .ledger
+            .initialize_genesis(&[
+                proposer.public.awe_id.clone(),
+                validator.public.awe_id.clone(),
+                recipient.public.awe_id.clone(),
+            ])
+            .unwrap();
+        runtime.state.save().unwrap();
+        let tx = OnecoinTransaction::new(
+            &proposer,
+            0,
+            &recipient.public.awe_id,
+            INITIAL_GENESIS_ALLOCATION + 1,
+            None,
+        );
+        let block = OnecoinBlock::new(
+            &proposer,
+            1,
+            runtime.persisted_state().tip_hash,
+            vec![tx],
+            101,
+        )
+        .unwrap();
+        let result = runtime.handle(
+            *proposer.public.awe_id.as_bytes(),
+            &validator,
+            OnecoinConsensusMessage::Proposal(block),
+        );
+        assert!(result.is_err());
+        assert_eq!(runtime.persisted_state().height, 0);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn validator_does_not_double_vote_even_after_restart() {
+        let dir = std::env::temp_dir().join(format!(
+            "awenet-consensus-double-vote-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+        let proposer_a = Identity::generate(Username::new("proposer-a").unwrap());
+        let proposer_b = Identity::generate(Username::new("proposer-b").unwrap());
+        let local = Identity::generate(Username::new("local-validator").unwrap());
+        let validators = BTreeMap::from([
+            (
+                proposer_a.public.awe_id.to_hex(),
+                proposer_a.public.public_key,
+            ),
+            (
+                proposer_b.public.awe_id.to_hex(),
+                proposer_b.public.public_key,
+            ),
+            (local.public.awe_id.to_hex(), local.public.public_key),
+        ]);
+        let mut runtime = OnecoinConsensusRuntime::open(&path, validators.clone()).unwrap();
+        runtime
+            .state
+            .state
+            .ledger
+            .initialize_genesis(&[
+                proposer_a.public.awe_id.clone(),
+                proposer_b.public.awe_id.clone(),
+                local.public.awe_id.clone(),
+            ])
+            .unwrap();
+        runtime.state.save().unwrap();
+        let first = OnecoinBlock::new(&proposer_a, 1, [0; 32], Vec::new(), 100).unwrap();
+        let conflicting = OnecoinBlock::new(&proposer_b, 1, [0; 32], Vec::new(), 101).unwrap();
+        runtime
+            .handle(
+                *proposer_a.public.awe_id.as_bytes(),
+                &local,
+                OnecoinConsensusMessage::Proposal(first),
+            )
+            .unwrap();
+        assert!(runtime
+            .handle(
+                *proposer_b.public.awe_id.as_bytes(),
+                &local,
+                OnecoinConsensusMessage::Proposal(conflicting.clone()),
+            )
+            .is_err());
+
+        let mut reopened = OnecoinConsensusRuntime::open(&path, validators).unwrap();
+        assert!(reopened
+            .handle(
+                *proposer_b.public.awe_id.as_bytes(),
+                &local,
+                OnecoinConsensusMessage::Proposal(conflicting),
+            )
+            .is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn non_validator_cannot_propose() {
+        let dir =
+            std::env::temp_dir().join(format!("awenet-consensus-deny-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let validator = Identity::generate(Username::new("validator").unwrap());
+        let outsider = Identity::generate(Username::new("outsider").unwrap());
+        let validators = BTreeMap::from([(
+            validator.public.awe_id.to_hex(),
+            validator.public.public_key,
+        )]);
+        let mut runtime =
+            OnecoinConsensusRuntime::open(dir.join("state.json"), validators).unwrap();
+        assert!(runtime.propose(&outsider, Vec::new(), 100).is_err());
+        let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -146,6 +146,7 @@ dependencies = [
  "blake3",
  "eframe",
  "hex",
+ "rand",
  "rpassword",
  "serde",
  "serde_json",

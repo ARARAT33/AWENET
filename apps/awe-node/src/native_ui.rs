@@ -31,7 +31,7 @@ impl Page {
     }
 }
 
-pub fn run(addr: SocketAddr) -> Result<(), String> {
+pub fn run(addr: SocketAddr, api_token: String) -> Result<(), String> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1240.0, 780.0])
@@ -42,13 +42,14 @@ pub fn run(addr: SocketAddr) -> Result<(), String> {
     eframe::run_native(
         "AWENET",
         options,
-        Box::new(move |_cc| Ok(Box::new(AweNetDesktop::new(addr)))),
+        Box::new(move |_cc| Ok(Box::new(AweNetDesktop::new(addr, api_token)))),
     )
     .map_err(|error| error.to_string())
 }
 
 struct AweNetDesktop {
     addr: SocketAddr,
+    api_token: String,
     page: Page,
     status: Value,
     wallet: Value,
@@ -62,9 +63,10 @@ struct AweNetDesktop {
 }
 
 impl AweNetDesktop {
-    fn new(addr: SocketAddr) -> Self {
+    fn new(addr: SocketAddr, api_token: String) -> Self {
         let mut app = Self {
             addr,
+            api_token,
             page: Page::Home,
             status: Value::Null,
             wallet: Value::Null,
@@ -91,7 +93,8 @@ impl AweNetDesktop {
             .map_err(|e| e.to_string())?;
         let body_bytes = body.unwrap_or("").as_bytes();
         let request = format!(
-            "{method} {path} HTTP/1.1\r\nHost: awenet\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            "{method} {path} HTTP/1.1\r\nHost: awenet\r\nX-AWENET-Session: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            self.api_token,
             body_bytes.len(),
             body.unwrap_or("")
         );

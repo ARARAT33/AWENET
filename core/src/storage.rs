@@ -351,7 +351,10 @@ impl LocalNodeStore {
         let id = content_id(data);
         let p = self.path(&id);
         if p.exists() {
-            return Ok(id);
+            match fs::read(&p) {
+                Ok(existing) if content_id(&existing) == id => return Ok(id),
+                _ => fs::remove_file(&p)?,
+            }
         }
         let used = self.stats()?.used;
         if used.saturating_add(data.len() as u64) > self.quota {
@@ -361,7 +364,12 @@ impl LocalNodeStore {
             ));
         }
         let tmp = p.with_extension("part");
-        fs::write(&tmp, data)?;
+        let mut file = fs::File::create(&tmp)?;
+        file.write_all(data)?;
+        // The receiver only acknowledges a shard after its contents have been
+        // flushed to stable storage and the content-addressed path is committed.
+        file.sync_all()?;
+        drop(file);
         fs::rename(tmp, p)?;
         Ok(id)
     }
@@ -554,6 +562,18 @@ mod tests {
         let id = s.put(b"hello").unwrap();
         assert_eq!(s.get(&id).unwrap(), b"hello");
         s.remove(&id).unwrap();
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn content_addressed_store_repairs_corrupt_existing_objects() {
+        let dir = std::env::temp_dir().join(format!("awe-drive-corrupt-{}", std::process::id()));
+        let s = LocalNodeStore::open(&dir, 1_000_000).unwrap();
+        let id = s.put(b"correct payload").unwrap();
+        fs::write(s.path(&id), b"corrupt payload").unwrap();
+        assert!(s.get(&id).is_err());
+        assert_eq!(s.put(b"correct payload").unwrap(), id);
+        assert_eq!(s.get(&id).unwrap(), b"correct payload");
         let _ = fs::remove_dir_all(dir);
     }
 
