@@ -738,5 +738,28 @@ mod tests {
         assert_eq!(stats.objects, 1);
         assert_eq!(stats.used, b"count this object".len() as u64);
         fs::remove_dir_all(dir).unwrap();
+    } 
+
+    #[test]
+    fn concurrent_content_addressed_writers_publish_one_verified_object() {
+        let dir = unique_storage_test_dir("object-concurrent");
+        let store = std::sync::Arc::new(LocalNodeStore::open(&dir, 1_000_000).unwrap());
+        let writers = (0..8)
+            .map(|_| {
+                let store = store.clone();
+                std::thread::spawn(move || store.put(b"shared durable object").unwrap())
+            })
+            .collect::<Vec<_>>();
+        let ids = writers
+            .into_iter()
+            .map(|writer| writer.join().unwrap())
+            .collect::<Vec<_>>();
+
+        assert!(ids.iter().all(|id| *id == ids[0]));
+        assert_eq!(store.get(&ids[0]).unwrap(), b"shared durable object");
+        let stats = store.stats().unwrap();
+        assert_eq!(stats.objects, 1);
+        assert_eq!(stats.used, b"shared durable object".len() as u64);
+        fs::remove_dir_all(dir).unwrap();
     }
 }
