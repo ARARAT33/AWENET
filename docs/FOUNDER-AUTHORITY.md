@@ -302,6 +302,8 @@ The network must fail closed for founder-only operations when authorization cann
 
 ### Implemented in the current branch (must remain subject to CI verification)
 
+- The signed Genesis/device trust-root implementation lives in `core/src/founder_identity.rs`; `core/src/founder.rs` remains the separate ONECOIN/economy founder-authority module.
+
 - Signed one-time Genesis and bootstrap-digest validation.
 - Reserved founder identity and distinct founder/device key roles.
 - Device proof-of-possession and all-approved/selected-device approval policies.
