@@ -38,11 +38,18 @@ while exposing a small, stable product orchestration model on top.
 | Developer & API services | `tasks`, `keys`, `webhooks`, `runbooks` | Priority task queue with deadlines and retry budgets, scoped API keys with rotation and expiry, event webhooks with cooldowns and dead-lettering, gated runbooks with dry-run plans |
 | Commerce & economy services | `accounting`, `billing`, `subscriptions`, `escrow` | Double-entry ledger with balanced entries, invoice lifecycle with payments and overdue sweeps, subscription lifecycle with trial and grace periods, escrow with fees, release and refund |
 | AWENETwork & founder economy | `founder`, `awenetwork`, `resource_economy`, `price_control`, `treasury` | Founder-exclusive authority with an immutable audit log, founder-published work tasks with approve-then-pay rewards, consented resource contributions with reliability-weighted payouts, official price control with history, treasury issuance vs circulation accounting |
+| Founder identity & control plane | `founder_identity`, `founder_admin`, `founder_auth`, `founder_runtime` | Signed one-time Genesis, approved-device admission, device-bound login, signed control-plane state and emergency locks |
 | Identity & security | `identity`, `security`, `crypto`, `defense`, `sandbox` | Ed25519 identity, authenticated encrypted transport, hostile-traffic limits |
 | Discovery & routing | `discovery`, `routing`, `network_topology`, `lan_mesh` | DHT-style lookup, Data Centre topology, relay failover, LAN mesh |
 | Data plane | `data_plane`, `storage`, `replication`, `repair`, `recovery` | Chunked content-addressed storage, replica placement, repair planning |
 | Names, Store, Messenger | `namespace`, `host`, `store`, `messenger` | AWEwww/AWETLD names, hosted sites, Store, Messenger |
 | Economy (ONECOIN) | `onecoin*`, `onebank`, `governance` | Distributed finality, payments, wallets, governance |
+
+## Founder Authority
+
+AWENET has one immutable founder identity, `AWENeter`, established by a signed one-time Genesis trust record. Founder authority is independent of node operation: the founder can govern from an approved device without running a server. Device approval, device-bound sessions, signed governance, bounded Neter delegation, emergency locks and auditable administration are defined in the [Founder Authority specification](docs/FOUNDER-AUTHORITY.md).
+
+The implementation is being integrated into the node and all privileged control paths. The current branch contains the cryptographic domain core, signed persistent snapshots, explicit founder bootstrap CLI and read-only founder status endpoint. The full Control Center, recovery, remote approval delivery and mandatory authorization middleware are still in progress; this is not yet production-ready.
 
 ## Product architecture
 
