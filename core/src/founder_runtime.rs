@@ -6,7 +6,7 @@
 //! The caller must invoke save() after every successful state mutation.
 
 use crate::{
-    founder::{FounderDevices, FounderError, FounderGenesis, FounderRules},
+    founder_identity::{FounderDevices, FounderError, FounderGenesis, FounderRules},
     founder_admin::{FounderEmergencyLock, NeterRegistry},
     founder_auth::FounderLogin,
     identity::Identity,
