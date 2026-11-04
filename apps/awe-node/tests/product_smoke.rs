@@ -8,7 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-fn request(addr: &str, request: &str) -> String {
+fn request_raw(addr: &str, request: &str) -> String {
     let mut stream = TcpStream::connect(addr).expect("connect");
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
@@ -42,7 +42,11 @@ fn request(addr: &str, request: &str) -> String {
             Err(err) => panic!("read: {err}"),
         }
     }
-    String::from_utf8_lossy(&out)
+    String::from_utf8_lossy(&out).to_string()
+}
+
+fn request(addr: &str, request: &str) -> String {
+    request_raw(addr, request)
         .split("\r\n\r\n")
         .nth(1)
         .unwrap_or("")
@@ -131,6 +135,28 @@ fn three_node_product_smoke() {
             assert!(
                 status.contains(&format!("127.0.0.1:{port}")),
                 "address {port}: {status}"
+            );
+        }
+
+        // The founder admin endpoint must fail closed on a fresh node.
+        // This exercises the actual HTTP route, not only its authorization helper.
+        for ui in ["127.0.0.1:46201", "127.0.0.1:46202", "127.0.0.1:46203"] {
+            let response = request_raw(
+                ui,
+                &format!(
+                    "GET /api/founder/admin/overview HTTP/1.1\\r\\nHost: {ui}\\r\\nConnection: close\\r\\n\\r\\n"
+                ),
+            );
+            let (headers, body) = response
+                .split_once("\\r\\n\\r\\n")
+                .expect("founder admin response headers");
+            assert!(
+                headers.starts_with("HTTP/1.1 409 Conflict"),
+                "founder admin endpoint must fail closed for uninitialized node: {headers}"
+            );
+            assert!(
+                body.contains(r#""error":"founder_not_initialized""#),
+                "founder admin error body: {body}"
             );
         }
 
