@@ -398,4 +398,18 @@ mod tests {
         );
         assert_eq!(treasury.entry_count(), 0);
     }
+
+    #[test]
+    fn sequence_exhaustion_does_not_record_or_wrap() {
+        let mut treasury = Treasury::new();
+        treasury.next_sequence = u64::MAX;
+
+        assert_eq!(
+            treasury.record(TreasuryFlow::GenesisIssued, 1, 1),
+            Err(TreasuryError::SequenceExhausted)
+        );
+        assert!(treasury.entries.is_empty());
+        assert_eq!(treasury.next_sequence, u64::MAX);
+    }
+
 }
