@@ -242,7 +242,7 @@ fn founder_admin_overview(
                 "label": pending.label,
                 "requested_at": pending.requested_at,
                 "proof_verified": pending.proof_verified,
-                "required_approvers": pending.required_approvers.iter().map(|id| hex::encode(id)).collect::<Vec<_>>(),
+                "required_approvers": pending.required_approvers.iter().map(hex::encode).collect::<Vec<_>>(),
                 "approvals_received": pending.approvals.len()
             })
         })
