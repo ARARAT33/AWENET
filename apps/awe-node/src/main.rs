@@ -3028,7 +3028,13 @@ mod founder_admin_api_tests {
             Some(hex::encode(device_id).as_str())
         );
         assert_eq!(overview["approved_devices"].as_array().unwrap().len(), 1);
-        assert_eq!(overview["pending_device_requests"].as_array().unwrap().len(), 0);
+        assert_eq!(
+            overview["pending_device_requests"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
         assert_eq!(overview["active_neters"].as_array().unwrap().len(), 0);
         assert_eq!(overview["active_sessions"].as_u64(), Some(1));
 
@@ -3078,4 +3084,3 @@ mod founder_admin_api_tests {
         assert_eq!(parse_bearer_token(&request), Some(token));
     }
 }
-
