@@ -251,4 +251,24 @@ mod tests {
         );
         assert_eq!(authority.log_len(), 0);
     }
+
+    #[test]
+    fn audit_sequence_exhaustion_does_not_append_or_wrap() {
+        let founder = identity("founder");
+        let mut authority = FounderAuthority::install(&founder, 0);
+        authority.next_sequence = u64::MAX;
+
+        assert_eq!(
+            authority.authorize(
+                &founder.public.public_key,
+                FounderAction::ManageTreasury,
+                1,
+                "exhausted",
+            ),
+            Err(FounderError::SequenceExhausted)
+        );
+        assert_eq!(authority.log_len(), 0);
+        assert_eq!(authority.next_sequence, u64::MAX);
+    }
+
 }
