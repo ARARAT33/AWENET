@@ -332,7 +332,7 @@ pub struct TaskFilter {
     pub min_reward_atoms: u128,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkMarket {
     next_task_id: u64,
     next_submission_id: u64,
@@ -1204,7 +1204,7 @@ mod tests {
                 1,
             )
             .unwrap();
-        let mut ledger = ledger_for(&founder, &[worker.public.awe_id.clone()]);
+        let ledger = ledger_for(&founder, &[worker.public.awe_id.clone()]);
         market
             .accept_task(&worker.public.awe_id, task_id, 2)
             .unwrap();

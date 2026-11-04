@@ -121,7 +121,7 @@ impl OfficialPriceControl {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::identity::Username;
+    use crate::identity::{Identity, Username};
 
     fn identity(name: &str) -> Identity {
         Identity::generate(Username::new(name).unwrap())
