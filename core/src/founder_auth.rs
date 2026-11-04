@@ -560,8 +560,9 @@ mod tests {
                 100,
             )
             .unwrap();
-        let block_signature =
-            first_device.sign(&crate::founder_identity::device_control_message(second_id, true, 5));
+        let block_signature = first_device.sign(&crate::founder_identity::device_control_message(
+            second_id, true, 5,
+        ));
         devices
             .block_device(
                 second_id,
@@ -632,17 +633,10 @@ mod tests {
             .unwrap();
         let signature = device.sign(&login_message(&challenge));
         assert_eq!(
-            auth.complete_login(
-                &devices,
-                challenge.challenge_id,
-                signature,
-                u64::MAX - 1,
-                2,
-            ),
+            auth.complete_login(&devices, challenge.challenge_id, signature, u64::MAX - 1, 2,),
             Err(FounderAuthError::TickOverflow)
         );
         assert_eq!(auth.active_session_count(u64::MAX - 1), 0);
         fs::remove_file(path).unwrap();
     }
-
 }

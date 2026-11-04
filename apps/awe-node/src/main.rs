@@ -7,8 +7,8 @@ use awep2p_core::diagnostics::{NodeDiagnostics, NodeMetrics};
 use awep2p_core::federation::{
     self, AweNetConfig, AweNodeConfig, DataCentreConfig, DataGroupConfig,
 };
-use awep2p_core::founder_identity::{bootstrap_digest, FounderRules, FOUNDER_USERNAME};
 use awep2p_core::founder_auth::login_message;
+use awep2p_core::founder_identity::{bootstrap_digest, FounderRules, FOUNDER_USERNAME};
 use awep2p_core::founder_runtime::FounderPersistentState;
 use awep2p_core::identity::{AweId, AweSecret, Identity, LocalVault, Username};
 use awep2p_core::lan_mesh::LanPeerBeacon;
