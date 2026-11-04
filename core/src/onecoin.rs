@@ -255,6 +255,9 @@ pub struct OnecoinLedger {
     pub reward_policy: ContributionRewardPolicy,
     pub reward_verifiers: BTreeMap<String, [u8; 32]>,
     pub rewarded_receipts: BTreeMap<[u8; 32], u128>,
+    /// Founder-approved reward purposes already paid; a reward id pays once.
+    #[serde(default)]
+    pub rewarded_purposes: BTreeMap<[u8; 32], u128>,
 }
 
 impl Default for OnecoinLedger {
@@ -272,6 +275,7 @@ impl Default for OnecoinLedger {
             reward_policy: ContributionRewardPolicy::default(),
             reward_verifiers: BTreeMap::new(),
             rewarded_receipts: BTreeMap::new(),
+            rewarded_purposes: BTreeMap::new(),
         }
     }
 }
@@ -421,6 +425,40 @@ impl OnecoinLedger {
             receipt_hash: receipt_key,
             reward_atoms,
         })
+    }
+
+    /// Mints a founder-approved reward for a unique purpose (an AWENETwork
+    /// payout or a resource settlement). Idempotent: a reward id can be paid
+    /// exactly once, and only an authorized reward verifier may mint.
+    pub fn mint_approved_reward(
+        &mut self,
+        authorizer_public_key: &[u8; 32],
+        recipient: &AweId,
+        amount_atoms: u128,
+        reward_id: [u8; 32],
+    ) -> Result<u128, String> {
+        let authorizer_id = AweId::from_public_key(authorizer_public_key);
+        if !self
+            .reward_verifiers
+            .contains_key(&Self::key(&authorizer_id))
+        {
+            return Err("caller is not an authorized reward verifier".into());
+        }
+        if amount_atoms == 0 {
+            return Err("approved reward must be positive".into());
+        }
+        if self.rewarded_purposes.contains_key(&reward_id) {
+            return Err("approved reward was already paid".into());
+        }
+        let recipient_key = Self::key(recipient);
+        if !self.members.contains_key(&recipient_key) {
+            return Err("reward recipient is not a member".into());
+        }
+        let balance = self.balances.entry(recipient_key).or_insert(0);
+        *balance = balance.saturating_add(amount_atoms);
+        self.total_issued_atoms = self.total_issued_atoms.saturating_add(amount_atoms);
+        self.rewarded_purposes.insert(reward_id, amount_atoms);
+        Ok(amount_atoms)
     }
 
     pub fn apply_transfer_with_fee(
@@ -676,5 +714,51 @@ mod tests {
         assert_eq!(p.floor_usd_cents, 2_100);
         p.observe_reference_price_usd_cents(9_000);
         assert_eq!(p.floor_usd_cents, 2_100);
+    }
+
+    #[test]
+    fn approved_reward_is_idempotent_and_verifier_gated() {
+        let worker = id("worker");
+        let founder = id("reward-founder");
+        let outsider = id("outsider");
+        let mut l = OnecoinLedger::default();
+        l.initialize_genesis_with_verifiers(
+            &[
+                worker.public.awe_id.clone(),
+                founder.public.awe_id.clone(),
+                outsider.public.awe_id.clone(),
+            ],
+            &[founder.public.public_key],
+        )
+        .unwrap();
+        let before = l.balance_atoms(&worker.public.awe_id);
+        l.mint_approved_reward(
+            &founder.public.public_key,
+            &worker.public.awe_id,
+            ATOMS_PER_COIN,
+            [7; 32],
+        )
+        .unwrap();
+        assert_eq!(
+            l.balance_atoms(&worker.public.awe_id),
+            before + ATOMS_PER_COIN
+        );
+        // paying the same reward id twice is rejected
+        assert!(l
+            .mint_approved_reward(
+                &founder.public.public_key,
+                &worker.public.awe_id,
+                ATOMS_PER_COIN,
+                [7; 32]
+            )
+            .is_err());
+        // a non-verifier member cannot mint
+        assert!(l
+            .mint_approved_reward(&outsider.public.public_key, &worker.public.awe_id, 1, [8; 32])
+            .is_err());
+        assert_eq!(
+            l.balance_atoms(&worker.public.awe_id),
+            before + ATOMS_PER_COIN
+        );
     }
 }
