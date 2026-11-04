@@ -5,7 +5,7 @@
 //! compensation. Delegation is available only to a Neter explicitly granted
 //! that capability by the founder; delegated Neters cannot pass that right on.
 
-use crate::{crypto::hash, founder::FounderGenesis, identity::Identity};
+use crate::{crypto::hash, founder_identity::FounderGenesis, identity::Identity};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
