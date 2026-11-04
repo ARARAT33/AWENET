@@ -224,19 +224,31 @@ impl Treasury {
         stats
     }
 
-    /// Issuance inside the window measured against the coins currently in
-    /// circulation. High issuance against low circulation is inflationary.
+    /// Ongoing reward issuance inside the window measured against the
+    /// coins currently in circulation. High issuance against low
+    /// circulation is inflationary. Genesis issuance bootstraps the
+    /// initial supply and is excluded, so a freshly seeded economy is not
+    /// inflationary by itself.
     pub fn inflation_risk(&self, window_start_unix: u64, window_end_unix: u64) -> InflationRisk {
         let summary = self.summary();
-        let stats = self.period_stats(window_start_unix, window_end_unix);
+        let mut issued_atoms = 0u128;
+        for entry in &self.entries {
+            if entry.at_unix >= window_start_unix
+                && entry.at_unix < window_end_unix
+                && entry.flow.is_issuance()
+                && !matches!(entry.flow, TreasuryFlow::GenesisIssued)
+            {
+                issued_atoms = issued_atoms.saturating_add(entry.amount_atoms);
+            }
+        }
         if summary.circulating_atoms == 0 {
-            return if stats.issued_atoms > 0 {
+            return if issued_atoms > 0 {
                 InflationRisk::High
             } else {
                 InflationRisk::Low
             };
         }
-        let ratio_bps = stats.issued_atoms.saturating_mul(10_000) / summary.circulating_atoms;
+        let ratio_bps = issued_atoms.saturating_mul(10_000) / summary.circulating_atoms;
         if ratio_bps < 500 {
             InflationRisk::Low
         } else if ratio_bps < 2_000 {
@@ -270,6 +282,7 @@ impl Default for Treasury {
 mod tests {
     use super::*;
     use crate::identity::{Identity, Username};
+    use crate::onecoin::ATOMS_PER_COIN;
 
     fn identity(name: &str) -> Identity {
         Identity::generate(Username::new(name).unwrap())
@@ -324,9 +337,13 @@ mod tests {
             .initialize_genesis(&[founder.public.awe_id.clone(), member.public.awe_id.clone()])
             .unwrap();
         let mut treasury = Treasury::new();
-        treasury.record(TreasuryFlow::GenesisIssued, 5, 1).unwrap();
+        treasury
+            .record(TreasuryFlow::GenesisIssued, 10 * ATOMS_PER_COIN, 1)
+            .unwrap();
         assert!(treasury.reconcile(&ledger).is_err());
-        treasury.record(TreasuryFlow::GenesisIssued, 15, 2).unwrap();
+        treasury
+            .record(TreasuryFlow::GenesisIssued, 10 * ATOMS_PER_COIN, 2)
+            .unwrap();
         treasury.reconcile(&ledger).unwrap();
     }
 

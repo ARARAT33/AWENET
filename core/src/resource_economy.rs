@@ -712,7 +712,7 @@ mod tests {
         ));
         assert_eq!(
             ledger.balance_atoms(&node.public.awe_id),
-            10 * ATOMS_PER_COIN + 10_050
+            10 * ATOMS_PER_COIN + 10_150
         );
     }
 
