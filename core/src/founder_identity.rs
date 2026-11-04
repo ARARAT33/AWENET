@@ -93,6 +93,8 @@ pub enum FounderError {
     InvalidGenesis,
     #[error("storage operation failed: {0}")]
     Storage(String),
+    #[error("operating-system secure random generation failed")]
+    EntropyUnavailable,
     #[error("device registry is full")]
     DeviceLimit,
     #[error("pending device request registry is full")]
