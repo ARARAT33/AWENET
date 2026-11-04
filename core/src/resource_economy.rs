@@ -615,7 +615,7 @@ mod tests {
         let founder = identity("founder");
         let node = identity("node");
         let mut economy = ResourceEconomy::default();
-        let mut ledger = ledger(&founder, &[node.public.awe_id.clone()]);
+        let mut ledger = ledger(&founder, std::slice::from_ref(&node.public.awe_id));
         economy.grant(&node, limits(), 1).unwrap();
         let mut single = evidence(50, 1);
         single.network_measurement = None;
@@ -640,7 +640,7 @@ mod tests {
         let founder = identity("founder");
         let node = identity("node");
         let mut economy = ResourceEconomy::default();
-        let mut ledger = ledger(&founder, &[node.public.awe_id.clone()]);
+        let mut ledger = ledger(&founder, std::slice::from_ref(&node.public.awe_id));
         economy.grant(&node, limits(), 1).unwrap();
         let beyond = evidence(150, 0);
         let settlement = economy
@@ -685,7 +685,7 @@ mod tests {
         let founder = identity("founder");
         let node = identity("node");
         let mut economy = ResourceEconomy::default();
-        let mut ledger = ledger(&founder, &[node.public.awe_id.clone()]);
+        let mut ledger = ledger(&founder, std::slice::from_ref(&node.public.awe_id));
         economy.grant(&node, limits(), 1).unwrap();
         economy
             .settle(
@@ -721,7 +721,7 @@ mod tests {
         let founder = identity("founder");
         let node = identity("node");
         let mut economy = ResourceEconomy::default();
-        let mut ledger = ledger(&founder, &[node.public.awe_id.clone()]);
+        let mut ledger = ledger(&founder, std::slice::from_ref(&node.public.awe_id));
         economy.grant(&node, limits(), 1).unwrap();
         let settlement = economy
             .settle(
@@ -744,7 +744,7 @@ mod tests {
         let founder = identity("founder");
         let node = identity("node");
         let mut economy = ResourceEconomy::default();
-        let mut ledger = ledger(&founder, &[node.public.awe_id.clone()]);
+        let mut ledger = ledger(&founder, std::slice::from_ref(&node.public.awe_id));
         economy.grant(&node, limits(), 1).unwrap();
         economy.withdraw(&node).unwrap();
         assert!(matches!(

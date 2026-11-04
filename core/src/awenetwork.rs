@@ -1161,7 +1161,7 @@ mod tests {
                 1,
             )
             .unwrap();
-        let mut ledger = ledger_for(&founder, &[worker.public.awe_id.clone()]);
+        let mut ledger = ledger_for(&founder, std::slice::from_ref(&worker.public.awe_id));
         market
             .accept_task(&worker.public.awe_id, task_id, 2)
             .unwrap();
@@ -1206,7 +1206,7 @@ mod tests {
                 1,
             )
             .unwrap();
-        let ledger = ledger_for(&founder, &[worker.public.awe_id.clone()]);
+        let ledger = ledger_for(&founder, std::slice::from_ref(&worker.public.awe_id));
         market
             .accept_task(&worker.public.awe_id, task_id, 2)
             .unwrap();
@@ -1275,7 +1275,7 @@ mod tests {
                 1,
             )
             .unwrap();
-        let mut ledger = ledger_for(&founder, &[worker.public.awe_id.clone()]);
+        let mut ledger = ledger_for(&founder, std::slice::from_ref(&worker.public.awe_id));
         market
             .accept_task(&worker.public.awe_id, task_id, 2)
             .unwrap();
@@ -1611,7 +1611,7 @@ mod tests {
         let worker = identity("worker");
         let mut authority = FounderAuthority::install(&founder, 0);
         let mut market = WorkMarket::new();
-        let mut ledger = ledger_for(&founder, &[worker.public.awe_id.clone()]);
+        let mut ledger = ledger_for(&founder, std::slice::from_ref(&worker.public.awe_id));
         let task_id = market
             .publish_task(
                 &mut authority,
