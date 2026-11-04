@@ -50,6 +50,31 @@ struct PendingStorageAck {
     ack: StorageShardAck,
 }
 
+fn storage_ack_failure(
+    received: &PendingStorageAck,
+    expected_peer: &[u8; 32],
+    expected_file: &[u8; 32],
+    expected_index: u16,
+    expected_object_hash: &[u8; 32],
+) -> Option<&'static str> {
+    if received.sender != *expected_peer {
+        return Some("authenticated_sender_mismatch");
+    }
+    if received.ack.version != awep2p_core::data_plane::STORAGE_PROTOCOL_VERSION {
+        return Some("protocol_version_mismatch");
+    }
+    if received.ack.file_id != *expected_file {
+        return Some("file_id_mismatch");
+    }
+    if received.ack.shard_index != expected_index {
+        return Some("shard_index_mismatch");
+    }
+    if received.ack.stored_object_id != *expected_object_hash {
+        return Some("stored_object_hash_mismatch");
+    }
+    None
+}
+
 fn storage_ack_matches(
     received: &PendingStorageAck,
     expected_peer: &[u8; 32],
@@ -57,11 +82,14 @@ fn storage_ack_matches(
     expected_index: u16,
     expected_object_hash: &[u8; 32],
 ) -> bool {
-    received.sender == *expected_peer
-        && received.ack.version == awep2p_core::data_plane::STORAGE_PROTOCOL_VERSION
-        && received.ack.file_id == *expected_file
-        && received.ack.shard_index == expected_index
-        && received.ack.stored_object_id == *expected_object_hash
+    storage_ack_failure(
+        received,
+        expected_peer,
+        expected_file,
+        expected_index,
+        expected_object_hash,
+    )
+    .is_none()
 }
 
 type PendingAcks = Arc<Mutex<BTreeMap<[u8; 16], PendingStorageAck>>>;
@@ -992,21 +1020,26 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                                                 remote_jobs.spawn(async move {
                                                     let _permit = task_limit.acquire_owned().await
                                                         .map_err(|_| "storage transfer scheduler closed".to_string())?;
-                                                    match task_node.send_to_peer(&peer_id, STORAGE_STREAM, bytes).await {
+                                                    match task_node.send_to_peer_confirmed(&peer_id, STORAGE_STREAM, bytes).await {
                                                         Ok(_) => {
                                                             let deadline = tokio::time::Instant::now()
                                                                 + std::time::Duration::from_secs(5);
                                                             let mut confirmed = false;
+                                                            let mut ack_failure = "remote storage ACK timed out";
                                                             while tokio::time::Instant::now() < deadline {
                                                                 if let Ok(mut acks) = task_pending_acks.lock() {
                                                                     if let Some(received) = acks.remove(&request_id) {
-                                                                        confirmed = storage_ack_matches(
+                                                                        if let Some(reason) = storage_ack_failure(
                                                                             &received,
                                                                             &peer_id,
                                                                             &file_id,
                                                                             index as u16,
                                                                             &shard_hash,
-                                                                        );
+                                                                        ) {
+                                                                            ack_failure = reason;
+                                                                        } else {
+                                                                            confirmed = true;
+                                                                        }
                                                                         break;
                                                                     }
                                                                 }
@@ -1022,7 +1055,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                                                                     Some(serde_json::json!({
                                                                         "shard": index,
                                                                         "node": target_name,
-                                                                        "error": "remote storage ACK not confirmed by target peer"
+                                                                        "error": ack_failure
                                                                     })),
                                                                 ))
                                                             }
@@ -1650,7 +1683,7 @@ async fn autonomous_repair_cycle(
                             continue;
                         };
                         if node
-                            .send_to_peer(target_id, STORAGE_STREAM, transfer_bytes)
+                            .send_to_peer_confirmed(target_id, STORAGE_STREAM, transfer_bytes)
                             .await
                             .is_err()
                         {
@@ -2354,7 +2387,7 @@ async fn run_product() -> Result<()> {
                     }
                     if let Ok(bytes) = serde_json::to_vec(&transfer) {
                         let _ = dispatcher_node
-                            .send_to_peer(&sender, STORAGE_STREAM, bytes)
+                            .send_to_peer_confirmed(&sender, STORAGE_STREAM, bytes)
                             .await;
                     }
                     continue;
@@ -2377,7 +2410,7 @@ async fn run_product() -> Result<()> {
                 );
                 if let Ok(bytes) = serde_json::to_vec(&ack) {
                     let _ = dispatcher_node
-                        .send_to_peer(&sender, STORAGE_STREAM, bytes)
+                        .send_to_peer_confirmed(&sender, STORAGE_STREAM, bytes)
                         .await;
                 }
             }
@@ -2624,6 +2657,10 @@ mod storage_ack_tests {
             4,
             &object_hash,
         ));
+        assert_eq!(
+            storage_ack_failure(&received, &[6u8; 32], &file_id, 4, &object_hash),
+            Some("authenticated_sender_mismatch")
+        );
         assert!(!storage_ack_matches(
             &received,
             &[6u8; 32],
