@@ -398,9 +398,16 @@ impl LocalNodeStore {
         };
         for e in fs::read_dir(self.root.join("objects"))? {
             let e = e?;
-            let m = e.metadata()?;
-            if m.is_file() {
-                s.used += m.len();
+            if !e.file_type()?.is_file() {
+                continue;
+            }
+            let name = e.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            if hex::decode(name).map(|bytes| bytes.len() == 32).unwrap_or(false) {
+                let metadata = e.metadata()?;
+                s.used += metadata.len();
                 s.objects += 1;
             }
         }
@@ -714,5 +721,20 @@ mod tests {
         assert_eq!(store.put(b"durable object").unwrap(), id);
         assert_eq!(store.get(&id).unwrap(), b"durable object");
         fs::remove_dir_all(dir).unwrap();
+    } 
+    #[test]
+    fn storage_stats_ignore_temporary_and_non_content_addressed_files() {
+        let dir = unique_storage_test_dir("stats-filter");
+        let store = LocalNodeStore::open(&dir, 1_000_000).unwrap();
+        let objects = dir.join("objects");
+        fs::write(objects.join(".awenet-state-interrupted.tmp"), b"temporary").unwrap();
+        fs::write(objects.join("not-a-content-id"), b"junk").unwrap();
+
+        store.put(b"count this object").unwrap();
+        let stats = store.stats().unwrap();
+        assert_eq!(stats.objects, 1);
+        assert_eq!(stats.used, b"count this object".len() as u64);
+        fs::remove_dir_all(dir).unwrap();
     }
+
 }
