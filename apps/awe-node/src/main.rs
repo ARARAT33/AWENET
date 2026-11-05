@@ -2354,9 +2354,23 @@ async fn run_product() -> Result<()> {
                 }
                 if let Ok(ack) = serde_json::from_slice::<StorageShardAck>(&payload) {
                     if ack.version == awep2p_core::data_plane::STORAGE_PROTOCOL_VERSION {
+                        let request_id = hex::encode(ack.request_id);
                         if let Ok(mut pending) = dispatcher_acks.lock() {
                             pending.insert(ack.request_id, PendingStorageAck { sender, ack });
+                            if env::var_os("AWE_DEBUG_STORAGE").is_some() {
+                                eprintln!(
+                                    "[storage-debug] received durable ACK request={} from={}",
+                                    request_id,
+                                    hex::encode(sender)
+                                );
+                            }
                         }
+                    } else if env::var_os("AWE_DEBUG_STORAGE").is_some() {
+                        eprintln!(
+                            "[storage-debug] rejected ACK with protocol version {} from={}",
+                            ack.version,
+                            hex::encode(sender)
+                        );
                     }
                     continue;
                 }
@@ -2394,14 +2408,54 @@ async fn run_product() -> Result<()> {
                 }
 
                 let Ok(transfer) = serde_json::from_slice::<StorageShardTransfer>(&payload) else {
+                    if env::var_os("AWE_DEBUG_STORAGE").is_some() {
+                        eprintln!(
+                            "[storage-debug] ignored non-transfer storage payload from={}",
+                            hex::encode(sender)
+                        );
+                    }
                     continue;
                 };
-                if transfer.sender != sender || transfer.verify().is_err() {
+                if transfer.sender != sender {
+                    if env::var_os("AWE_DEBUG_STORAGE").is_some() {
+                        eprintln!(
+                            "[storage-debug] rejected transfer sender mismatch authenticated={} claimed={}",
+                            hex::encode(sender),
+                            hex::encode(transfer.sender)
+                        );
+                    }
                     continue;
                 }
-                let Ok(object_id) = dispatcher_storage.put(&transfer.payload) else {
+                if let Err(error) = transfer.verify() {
+                    eprintln!(
+                        "[storage] rejected invalid shard transfer from={} shard={} error={}",
+                        hex::encode(sender),
+                        transfer.shard_index,
+                        error
+                    );
                     continue;
+                }
+                let object_id = match dispatcher_storage.put(&transfer.payload) {
+                    Ok(object_id) => object_id,
+                    Err(error) => {
+                        eprintln!(
+                            "[storage] shard persistence failed from={} shard={} error={}",
+                            hex::encode(sender),
+                            transfer.shard_index,
+                            error
+                        );
+                        continue;
+                    }
                 };
+                if env::var_os("AWE_DEBUG_STORAGE").is_some() {
+                    eprintln!(
+                        "[storage-debug] stored shard request={} peer={} shard={} object={}",
+                        hex::encode(transfer.request_id),
+                        hex::encode(sender),
+                        transfer.shard_index,
+                        hex::encode(object_id)
+                    );
+                }
                 let ack = StorageShardAck::new(
                     transfer.request_id,
                     transfer.file_id,
@@ -2409,9 +2463,26 @@ async fn run_product() -> Result<()> {
                     object_id,
                 );
                 if let Ok(bytes) = serde_json::to_vec(&ack) {
-                    let _ = dispatcher_node
+                    match dispatcher_node
                         .send_to_peer_confirmed(&sender, STORAGE_STREAM, bytes)
-                        .await;
+                        .await
+                    {
+                        Ok(_) => {
+                            if env::var_os("AWE_DEBUG_STORAGE").is_some() {
+                                eprintln!(
+                                    "[storage-debug] sent durable ACK request={} to={}",
+                                    hex::encode(transfer.request_id),
+                                    hex::encode(sender)
+                                );
+                            }
+                        }
+                        Err(error) => eprintln!(
+                            "[storage] durable ACK delivery failed request={} to={} error={}",
+                            hex::encode(transfer.request_id),
+                            hex::encode(sender),
+                            error
+                        ),
+                    }
                 }
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
