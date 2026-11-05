@@ -69,7 +69,10 @@ where
     F: FnMut(&mut [u8]) -> Result<(), ()>,
 {
     let mut entropy = [0u8; JOIN_TOKEN_BYTES];
-    fill(&mut entropy).map_err(|_| "secure_random_unavailable".to_string())?;
+    if fill(&mut entropy).is_err() {
+        entropy.zeroize();
+        return Err("secure_random_unavailable".to_string());
+    }
     let encoded = hex::encode(&entropy);
     entropy.zeroize();
     Ok(format!("{prefix}-{encoded}"))
