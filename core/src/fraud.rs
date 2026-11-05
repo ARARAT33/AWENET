@@ -688,7 +688,9 @@ mod tests {
         let mut detector = FraudDetector::new(policy);
         let node = identity("evidence-node");
         for at in 0..(MAX_OBSERVATIONS as u64) + 10 {
-            detector.observe_payout([at as u8; 32], at).unwrap();
+            let mut reward_id = [0u8; 32];
+            reward_id[..8].copy_from_slice(&at.to_be_bytes());
+            detector.observe_payout(reward_id, at).unwrap();
         }
         assert_eq!(detector.observations().len(), MAX_OBSERVATIONS);
         let _ = node;

@@ -478,7 +478,7 @@ mod tests {
     fn achievements_and_levels_reflect_verified_work() {
         let mut rankings = Rankings::new();
         let steady = contributor("steady");
-        for week in 0..STEADY_CONTRIBUTOR_WEEKS {
+        for week in 0..FIVE_CONTRIBUTIONS_EVENTS {
             record(
                 &mut rankings,
                 &steady,

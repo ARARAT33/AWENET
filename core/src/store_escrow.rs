@@ -54,6 +54,8 @@ pub enum StoreEscrowError {
     AmountTooLarge,
     #[error("dispute reason exceeds {MAX_DISPUTE_REASON_CHARS} characters")]
     ReasonTooLong,
+    #[error("store escrow amount exceeds the escrow engine limit")]
+    AmountTooLarge,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -298,10 +300,10 @@ impl StoreEscrow {
             ledger,
             operator,
             &seller,
-            net_atoms,
+            net_atoms.into(),
             format!("store-order-release:{order_id}"),
         )?;
-        Ok(net_atoms)
+        Ok(net_atoms.into())
     }
 
     /// Refunds a held, undisputed order: the buyer receives the full
@@ -330,10 +332,10 @@ impl StoreEscrow {
             ledger,
             operator,
             &buyer,
-            amount_atoms,
+            amount_atoms.into(),
             format!("store-order-refund:{order_id}"),
         )?;
-        Ok(amount_atoms)
+        Ok(amount_atoms.into())
     }
 
     /// Opens a dispute on a held order; only the buyer or the seller may
@@ -428,10 +430,10 @@ impl StoreEscrow {
             ledger,
             operator,
             &recipient,
-            amount_atoms,
+            amount_atoms.into(),
             format!("store-order-dispute:{order_id}"),
         )?;
-        Ok(amount_atoms)
+        Ok(amount_atoms.into())
     }
 
     /// Expires held, undisputed orders whose expiry tick has passed and
@@ -468,7 +470,7 @@ impl StoreEscrow {
                 ledger,
                 operator,
                 &buyer,
-                amount_atoms,
+                amount_atoms.into(),
                 format!("store-order-expiry-refund:{order_id}"),
             )?;
             refunded.push(order_id);
