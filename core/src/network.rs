@@ -1200,7 +1200,10 @@ impl Node {
             .acquire()
             .await
             .map_err(|_| NetworkError::Protocol("outbound limiter closed".into()))?;
-        let connection = if let Some(connection) = self.active.read().await.get(peer_id).cloned() {
+
+        // End the read-guard scope before the fallback path takes the write lock.
+        let existing = { self.active.read().await.get(peer_id).cloned() };
+        let connection = if let Some(connection) = existing {
             connection
         } else {
             let address = self
@@ -1210,13 +1213,18 @@ impl Node {
                 .get(peer_id)
                 .and_then(|peer| peer.addresses.first().copied())
                 .ok_or_else(|| NetworkError::Protocol("peer address is unknown".into()))?;
-            let connection = Arc::new(tokio::sync::Mutex::new(self.connect(address).await?));
+            let candidate = Arc::new(tokio::sync::Mutex::new(self.connect(address).await?));
             let mut active = self.active.write().await;
-            if active.len() < MAX_ACTIVE_CONNECTIONS {
-                active.insert(*peer_id, connection.clone());
+            if let Some(existing) = active.get(peer_id) {
+                existing.clone()
+            } else {
+                if active.len() < MAX_ACTIVE_CONNECTIONS {
+                    active.insert(*peer_id, candidate.clone());
+                }
+                candidate
             }
-            connection
         };
+
         let mut connection = connection.lock().await;
         let started = Instant::now();
         let result = connection
@@ -1224,14 +1232,17 @@ impl Node {
             .await
             .map(|_| started.elapsed());
         if result.is_err() {
+            drop(connection);
             self.active.write().await.remove(peer_id);
         }
         result
     }
 
-    /// Send application data over a fresh authenticated connection and wait for
-    /// the receiver's network-level DataAck. This is used for application-level
-    /// acknowledgements so a stale cached callback connection cannot be reused.
+    /// Send application data over an authenticated peer connection and wait for
+    /// the receiver's network-level DataAck. Reuse the cached connection when
+    /// available: opening one TCP handshake per shard can trip pre-auth IP
+    /// admission limits and turn a healthy peer into a false storage failure.
+    /// A failed cached connection is evicted and retried once with a new session.
     pub async fn send_to_peer_confirmed(
         &self,
         peer_id: &[u8; 32],
@@ -1243,15 +1254,73 @@ impl Node {
             .acquire()
             .await
             .map_err(|_| NetworkError::Protocol("outbound limiter closed".into()))?;
-        let address = self
-            .peers
-            .read()
-            .await
-            .get(peer_id)
-            .and_then(|peer| peer.addresses.first().copied())
-            .ok_or_else(|| NetworkError::Protocol("peer address is unknown".into()))?;
-        let mut connection = self.connect(address).await?;
-        connection.send_data_roundtrip(stream, payload).await
+
+        for attempt in 0..2 {
+            // Keep the read lock in its own scope. An if-let scrutinee can
+            // otherwise retain the guard while the fallback branch needs a
+            // write lock to publish a newly established connection.
+            let existing = { self.active.read().await.get(peer_id).cloned() };
+            let (connection, cached) = if let Some(connection) = existing {
+                (connection, true)
+            } else {
+                let address = self
+                    .peers
+                    .read()
+                    .await
+                    .get(peer_id)
+                    .and_then(|peer| peer.addresses.first().copied())
+                    .ok_or_else(|| NetworkError::Protocol("peer address is unknown".into()))?;
+                let candidate = Arc::new(tokio::sync::Mutex::new(self.connect(address).await?));
+                let mut active = self.active.write().await;
+                if let Some(existing) = active.get(peer_id) {
+                    (existing.clone(), true)
+                } else if active.len() < MAX_ACTIVE_CONNECTIONS {
+                    active.insert(*peer_id, candidate.clone());
+                    (candidate, true)
+                } else {
+                    (candidate, false)
+                }
+            };
+
+            let mut connection_guard = connection.lock().await;
+            if cached {
+                let is_current = self
+                    .active
+                    .read()
+                    .await
+                    .get(peer_id)
+                    .is_some_and(|current| Arc::ptr_eq(current, &connection));
+                if !is_current {
+                    drop(connection_guard);
+                    continue;
+                }
+            }
+
+            let result = connection_guard
+                .send_data_roundtrip(stream, payload.clone())
+                .await;
+            if result.is_ok() {
+                return result;
+            }
+
+            drop(connection_guard);
+            if cached {
+                let mut active = self.active.write().await;
+                if active
+                    .get(peer_id)
+                    .is_some_and(|current| Arc::ptr_eq(current, &connection))
+                {
+                    active.remove(peer_id);
+                }
+            }
+            if attempt == 1 {
+                return result;
+            }
+        }
+
+        Err(NetworkError::Protocol(
+            "peer connection changed during confirmed send".into(),
+        ))
     }
 
     pub fn take_inbox(&self) -> Vec<([u8; 32], u32, Vec<u8>)> {
@@ -1494,6 +1563,159 @@ mod tests {
             .unwrap();
         assert!(elapsed < HELLO_TIMEOUT);
         t.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn outbound_send_paths_connect_when_no_cached_connection() {
+        let reservation = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = reservation.local_addr().unwrap();
+        drop(reservation);
+
+        let server = Node::new(
+            Identity::generate(Username::new("outbound-server").unwrap()),
+            address,
+        );
+        let server_id = *server.identity.public.awe_id.as_bytes();
+        let server_key = server.identity.public.public_key;
+        let server_task = {
+            let server = server.clone();
+            tokio::spawn(async move {
+                let _ = server.listen().await;
+            })
+        };
+
+        let listener_deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            if TcpStream::connect(address).await.is_ok() {
+                break;
+            }
+            if tokio::time::Instant::now() >= listener_deadline {
+                server_task.abort();
+                panic!("server listener did not become ready");
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        let unconfirmed_sender = Node::new(
+            Identity::generate(Username::new("send-client").unwrap()),
+            "127.0.0.1:0".parse().unwrap(),
+        );
+        unconfirmed_sender.peers.write().await.insert(
+            server_id,
+            PeerRecord {
+                awe_id: server_id,
+                public_key: server_key,
+                addresses: vec![address],
+                protocol_version: VERSION,
+                last_seen_unix: now(),
+            },
+        );
+        unconfirmed_sender
+            .send_to_peer(&server_id, 200, b"unconfirmed-send".to_vec())
+            .await
+            .unwrap();
+        assert_eq!(unconfirmed_sender.active_peer_count().await, 1);
+
+        let confirmed_sender = Node::new(
+            Identity::generate(Username::new("confirmed-client").unwrap()),
+            "127.0.0.1:0".parse().unwrap(),
+        );
+        confirmed_sender.peers.write().await.insert(
+            server_id,
+            PeerRecord {
+                awe_id: server_id,
+                public_key: server_key,
+                addresses: vec![address],
+                protocol_version: VERSION,
+                last_seen_unix: now(),
+            },
+        );
+        confirmed_sender
+            .send_to_peer_confirmed(&server_id, 200, b"confirmed-send".to_vec())
+            .await
+            .unwrap();
+        assert_eq!(confirmed_sender.active_peer_count().await, 1);
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        let mut received = Vec::new();
+        while received.len() < 2 {
+            received.extend(server.take_inbox());
+            if tokio::time::Instant::now() >= deadline {
+                server_task.abort();
+                panic!(
+                    "server did not receive both outbound sends: {}",
+                    received.len()
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(received
+            .iter()
+            .any(|(_, stream, payload)| { *stream == 200 && payload == b"unconfirmed-send" }));
+        assert!(received
+            .iter()
+            .any(|(_, stream, payload)| { *stream == 200 && payload == b"confirmed-send" }));
+
+        server_task.abort();
+        let _ = server_task.await;
+    }
+
+    #[tokio::test]
+    async fn confirmed_sends_reuse_cached_connection_under_ip_admission_limit() {
+        let reservation = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = reservation.local_addr().unwrap();
+        drop(reservation);
+
+        let server = Node::new(
+            Identity::generate(Username::new("ack-server").unwrap()),
+            address,
+        );
+        let server_id = *server.identity.public.awe_id.as_bytes();
+        let server_task = {
+            let server = server.clone();
+            tokio::spawn(async move {
+                let _ = server.listen().await;
+            })
+        };
+
+        let client = Node::new(
+            Identity::generate(Username::new("ack-client").unwrap()),
+            "127.0.0.1:0".parse().unwrap(),
+        );
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        while client.active_peer_count().await == 0 {
+            let _ = client.bootstrap(&[address]).await;
+            if tokio::time::Instant::now() >= deadline {
+                server_task.abort();
+                panic!("client did not establish an authenticated bootstrap connection");
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        // The bootstrap connection is already authenticated. Permit only one
+        // additional handshake from this IP: all subsequent confirmed sends
+        // must reuse the cached connection rather than open a socket per shard.
+        *server.preauth.lock().unwrap() = IpAdmission::new(4, 1, 1);
+
+        for index in 0..12 {
+            client
+                .send_to_peer_confirmed(
+                    &server_id,
+                    200,
+                    format!("storage-shard-{index}").into_bytes(),
+                )
+                .await
+                .unwrap();
+        }
+
+        let received = server.take_inbox();
+        assert_eq!(received.len(), 12);
+        assert!(received.iter().all(|(sender, stream, _)| {
+            *sender == *client.identity.public.awe_id.as_bytes() && *stream == 200
+        }));
+
+        server_task.abort();
+        let _ = server_task.await;
     }
 
     #[tokio::test]

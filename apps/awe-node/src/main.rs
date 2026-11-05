@@ -18,7 +18,9 @@ use awep2p_core::onecoin_consensus_runtime::{
 };
 use awep2p_core::policy::{self, NetworkPolicy};
 use awep2p_core::reputation::NodeReputation;
-use awep2p_core::storage::{encode_shards, recover_shards, LocalNodeStore, StoragePolicy};
+use awep2p_core::storage::{
+    encode_shards, recover_shards, save_manifest, LocalNodeStore, StoragePolicy,
+};
 use awep2p_core::store::{AppCapability, Store};
 use awep2p_core::supervisor::{PeerSupervisor, SupervisorConfig};
 use std::{
@@ -41,7 +43,56 @@ const DEFAULT_UI_ADDR: &str = "127.0.0.1:41800";
 type MessengerLog = Arc<Mutex<Vec<serde_json::Value>>>;
 type FederationState = Arc<Mutex<AweNetConfig>>;
 type StorageState = Arc<LocalNodeStore>;
-type PendingAcks = Arc<Mutex<BTreeMap<[u8; 16], StorageShardAck>>>;
+
+#[derive(Clone)]
+struct PendingStorageAck {
+    sender: [u8; 32],
+    ack: StorageShardAck,
+}
+
+fn storage_ack_failure(
+    received: &PendingStorageAck,
+    expected_peer: &[u8; 32],
+    expected_file: &[u8; 32],
+    expected_index: u16,
+    expected_object_hash: &[u8; 32],
+) -> Option<&'static str> {
+    if received.sender != *expected_peer {
+        return Some("authenticated_sender_mismatch");
+    }
+    if received.ack.version != awep2p_core::data_plane::STORAGE_PROTOCOL_VERSION {
+        return Some("protocol_version_mismatch");
+    }
+    if received.ack.file_id != *expected_file {
+        return Some("file_id_mismatch");
+    }
+    if received.ack.shard_index != expected_index {
+        return Some("shard_index_mismatch");
+    }
+    if received.ack.stored_object_id != *expected_object_hash {
+        return Some("stored_object_hash_mismatch");
+    }
+    None
+}
+
+fn storage_ack_matches(
+    received: &PendingStorageAck,
+    expected_peer: &[u8; 32],
+    expected_file: &[u8; 32],
+    expected_index: u16,
+    expected_object_hash: &[u8; 32],
+) -> bool {
+    storage_ack_failure(
+        received,
+        expected_peer,
+        expected_file,
+        expected_index,
+        expected_object_hash,
+    )
+    .is_none()
+}
+
+type PendingAcks = Arc<Mutex<BTreeMap<[u8; 16], PendingStorageAck>>>;
 type PendingShards = Arc<Mutex<BTreeMap<[u8; 16], StorageShardTransfer>>>;
 type PolicyState = Arc<Mutex<NetworkPolicy>>;
 type CommunityState = Arc<Mutex<serde_json::Value>>;
@@ -969,17 +1020,26 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                                                 remote_jobs.spawn(async move {
                                                     let _permit = task_limit.acquire_owned().await
                                                         .map_err(|_| "storage transfer scheduler closed".to_string())?;
-                                                    match task_node.send_to_peer(&peer_id, STORAGE_STREAM, bytes).await {
+                                                    match task_node.send_to_peer_confirmed(&peer_id, STORAGE_STREAM, bytes).await {
                                                         Ok(_) => {
                                                             let deadline = tokio::time::Instant::now()
                                                                 + std::time::Duration::from_secs(5);
                                                             let mut confirmed = false;
+                                                            let mut ack_failure = "remote storage ACK timed out";
                                                             while tokio::time::Instant::now() < deadline {
                                                                 if let Ok(mut acks) = task_pending_acks.lock() {
-                                                                    if let Some(ack) = acks.remove(&request_id) {
-                                                                        confirmed = ack.file_id == file_id
-                                                                            && ack.shard_index == index as u16
-                                                                            && ack.stored_object_id == shard_hash;
+                                                                    if let Some(received) = acks.remove(&request_id) {
+                                                                        if let Some(reason) = storage_ack_failure(
+                                                                            &received,
+                                                                            &peer_id,
+                                                                            &file_id,
+                                                                            index as u16,
+                                                                            &shard_hash,
+                                                                        ) {
+                                                                            ack_failure = reason;
+                                                                        } else {
+                                                                            confirmed = true;
+                                                                        }
                                                                         break;
                                                                     }
                                                                 }
@@ -988,16 +1048,14 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                                                             if confirmed {
                                                                 Ok((1usize, None))
                                                             } else {
-                                                                // The transport accepted the shard and the receiver's data-plane
-                                                                // handler persists it before attempting the application ACK.
-                                                                // Keep the transfer successful when only the ACK callback is
-                                                                // unavailable, while exposing that the application ACK was missed.
+                                                                // A transport send is not proof of durable remote storage.
+                                                                // Without an ACK from the exact target peer, this placement fails.
                                                                 Ok((
-                                                                    1usize,
+                                                                    0usize,
                                                                     Some(serde_json::json!({
                                                                         "shard": index,
                                                                         "node": target_name,
-                                                                        "warning": "remote storage ACK not confirmed"
+                                                                        "error": ack_failure
                                                                     })),
                                                                 ))
                                                             }
@@ -1032,49 +1090,98 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                                         }
                                     }
 
-                                    let manifest_path = PathBuf::from(data_dir_for_api())
-                                        .join("storage")
-                                        .join("manifests");
-                                    let _ = fs::create_dir_all(&manifest_path);
-                                    let manifest = serde_json::json!({
-                                        "version": 1,
-                                        "file_id": hex::encode(file_id),
-                                        "filename": filename,
-                                        "original_size": data.len(),
-                                        "shards": policy.total_shards(),
-                                        "data_shards": policy.data_shards,
-                                        "parity_shards": policy.parity_shards,
-                                        "replicas": 3,
-                                        "shard_hashes": shard_hashes,
-                                        "placements": plan.placements,
-                                        "stored_local": stored_local,
-                                        "sent_remote": sent_remote
-                                    });
-                                    let _ = fs::write(
-                                        manifest_path.join(format!("{}.json", hex::encode(file_id))),
-                                        serde_json::to_vec_pretty(&manifest).unwrap_or_default(),
-                                    );
-
-                                    let status = if failed
+                                    let expected_placements = plan
+                                        .placements
                                         .iter()
-                                        .all(|entry| entry.get("error").is_none())
+                                        .map(|placement| placement.nodes.len())
+                                        .sum::<usize>();
+                                    let confirmed_placements = stored_local + sent_remote;
+
+                                    if !failed.is_empty()
+                                        || confirmed_placements != expected_placements
                                     {
-                                        "stored"
+                                        (
+                                            "503 Service Unavailable",
+                                            "application/json; charset=utf-8",
+                                            serde_json::json!({
+                                                "status": "partial",
+                                                "error": "storage_placement_incomplete",
+                                                "manifest_persisted": false,
+                                                "file_id": hex::encode(file_id),
+                                                "shards": policy.total_shards(),
+                                                "replicas": policy.replica_count,
+                                                "confirmed_placements": confirmed_placements,
+                                                "required_placements": expected_placements,
+                                                "failures": failed
+                                            })
+                                            .to_string(),
+                                        )
                                     } else {
-                                        "partial"
-                                    };
-                                    ("200 OK", "application/json; charset=utf-8",
-                                        serde_json::json!({
-                                            "status": status,
+                                        let manifest = serde_json::json!({
+                                            "version": 1,
                                             "file_id": hex::encode(file_id),
                                             "filename": filename,
                                             "original_size": data.len(),
-                                            "shards": 1000,
-                                            "replicas": 3,
+                                            "shards": policy.total_shards(),
+                                            "data_shards": policy.data_shards,
+                                            "parity_shards": policy.parity_shards,
+                                            "replicas": policy.replica_count,
+                                            "shard_hashes": shard_hashes,
+                                            "placements": plan.placements,
                                             "stored_local": stored_local,
-                                            "sent_remote": sent_remote,
-                                            "failures": failed
-                                        }).to_string())
+                                            "sent_remote": sent_remote
+                                        });
+                                        let manifest_file = PathBuf::from(data_dir_for_api())
+                                            .join("storage")
+                                            .join("manifests")
+                                            .join(format!("{}.json", hex::encode(file_id)));
+                                        match serde_json::to_vec_pretty(&manifest) {
+                                            Err(error) => (
+                                                "500 Internal Server Error",
+                                                "application/json; charset=utf-8",
+                                                serde_json::json!({
+                                                    "status": "error",
+                                                    "error": "manifest_serialization_failed",
+                                                    "detail": error.to_string(),
+                                                    "file_id": hex::encode(file_id)
+                                                })
+                                                .to_string(),
+                                            ),
+                                            Ok(bytes) => match save_manifest(&manifest_file, &bytes) {
+                                                Ok(()) => (
+                                                    "200 OK",
+                                                    "application/json; charset=utf-8",
+                                                    serde_json::json!({
+                                                        "status": "stored",
+                                                        "manifest_persisted": true,
+                                                        "file_id": hex::encode(file_id),
+                                                        "filename": filename,
+                                                        "original_size": data.len(),
+                                                        "shards": policy.total_shards(),
+                                                        "replicas": policy.replica_count,
+                                                        "stored_local": stored_local,
+                                                        "sent_remote": sent_remote,
+                                                        "confirmed_placements": confirmed_placements,
+                                                        "required_placements": expected_placements,
+                                                        "failures": []
+                                                    })
+                                                    .to_string(),
+                                                ),
+                                                Err(error) => (
+                                                    "500 Internal Server Error",
+                                                    "application/json; charset=utf-8",
+                                                    serde_json::json!({
+                                                        "status": "error",
+                                                        "error": "manifest_persist_failed",
+                                                        "detail": error.to_string(),
+                                                        "manifest_persisted": false,
+                                                        "file_id": hex::encode(file_id)
+                                                    })
+                                                    .to_string(),
+                                                ),
+                                            },
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1576,7 +1683,7 @@ async fn autonomous_repair_cycle(
                             continue;
                         };
                         if node
-                            .send_to_peer(target_id, STORAGE_STREAM, transfer_bytes)
+                            .send_to_peer_confirmed(target_id, STORAGE_STREAM, transfer_bytes)
                             .await
                             .is_err()
                         {
@@ -1586,11 +1693,14 @@ async fn autonomous_repair_cycle(
                             tokio::time::Instant::now() + std::time::Duration::from_secs(5);
                         while tokio::time::Instant::now() < deadline {
                             if let Ok(mut acks) = pending_acks.lock() {
-                                if let Some(ack) = acks.remove(&request_id) {
-                                    if ack.file_id == file_id
-                                        && ack.shard_index == index as u16
-                                        && ack.stored_object_id == expected_hash
-                                    {
+                                if let Some(received) = acks.remove(&request_id) {
+                                    if storage_ack_matches(
+                                        &received,
+                                        target_id,
+                                        &file_id,
+                                        index as u16,
+                                        &expected_hash,
+                                    ) {
                                         nodes_value.push(serde_json::Value::String(target.clone()));
                                         repaired = true;
                                     }
@@ -1613,10 +1723,14 @@ async fn autonomous_repair_cycle(
         }
 
         if manifest_changed {
-            let _ = fs::write(
-                &path,
-                serde_json::to_vec_pretty(&manifest).unwrap_or_default(),
-            );
+            match serde_json::to_vec_pretty(&manifest) {
+                Ok(bytes) => {
+                    if let Err(error) = save_manifest(&path, &bytes) {
+                        eprintln!("storage repair manifest save failed: {error}");
+                    }
+                }
+                Err(error) => eprintln!("storage repair manifest serialization failed: {error}"),
+            }
         }
     }
 }
@@ -2240,9 +2354,23 @@ async fn run_product() -> Result<()> {
                 }
                 if let Ok(ack) = serde_json::from_slice::<StorageShardAck>(&payload) {
                     if ack.version == awep2p_core::data_plane::STORAGE_PROTOCOL_VERSION {
+                        let request_id = hex::encode(ack.request_id);
                         if let Ok(mut pending) = dispatcher_acks.lock() {
-                            pending.insert(ack.request_id, ack);
+                            pending.insert(ack.request_id, PendingStorageAck { sender, ack });
+                            if env::var_os("AWE_DEBUG_STORAGE").is_some() {
+                                eprintln!(
+                                    "[storage-debug] received durable ACK request={} from={}",
+                                    request_id,
+                                    hex::encode(sender)
+                                );
+                            }
                         }
+                    } else if env::var_os("AWE_DEBUG_STORAGE").is_some() {
+                        eprintln!(
+                            "[storage-debug] rejected ACK with protocol version {} from={}",
+                            ack.version,
+                            hex::encode(sender)
+                        );
                     }
                     continue;
                 }
@@ -2273,21 +2401,61 @@ async fn run_product() -> Result<()> {
                     }
                     if let Ok(bytes) = serde_json::to_vec(&transfer) {
                         let _ = dispatcher_node
-                            .send_to_peer(&sender, STORAGE_STREAM, bytes)
+                            .send_to_peer_confirmed(&sender, STORAGE_STREAM, bytes)
                             .await;
                     }
                     continue;
                 }
 
                 let Ok(transfer) = serde_json::from_slice::<StorageShardTransfer>(&payload) else {
+                    if env::var_os("AWE_DEBUG_STORAGE").is_some() {
+                        eprintln!(
+                            "[storage-debug] ignored non-transfer storage payload from={}",
+                            hex::encode(sender)
+                        );
+                    }
                     continue;
                 };
-                if transfer.sender != sender || transfer.verify().is_err() {
+                if transfer.sender != sender {
+                    if env::var_os("AWE_DEBUG_STORAGE").is_some() {
+                        eprintln!(
+                            "[storage-debug] rejected transfer sender mismatch authenticated={} claimed={}",
+                            hex::encode(sender),
+                            hex::encode(transfer.sender)
+                        );
+                    }
                     continue;
                 }
-                let Ok(object_id) = dispatcher_storage.put(&transfer.payload) else {
+                if let Err(error) = transfer.verify() {
+                    eprintln!(
+                        "[storage] rejected invalid shard transfer from={} shard={} error={}",
+                        hex::encode(sender),
+                        transfer.shard_index,
+                        error
+                    );
                     continue;
+                }
+                let object_id = match dispatcher_storage.put(&transfer.payload) {
+                    Ok(object_id) => object_id,
+                    Err(error) => {
+                        eprintln!(
+                            "[storage] shard persistence failed from={} shard={} error={}",
+                            hex::encode(sender),
+                            transfer.shard_index,
+                            error
+                        );
+                        continue;
+                    }
                 };
+                if env::var_os("AWE_DEBUG_STORAGE").is_some() {
+                    eprintln!(
+                        "[storage-debug] stored shard request={} peer={} shard={} object={}",
+                        hex::encode(transfer.request_id),
+                        hex::encode(sender),
+                        transfer.shard_index,
+                        hex::encode(object_id)
+                    );
+                }
                 let ack = StorageShardAck::new(
                     transfer.request_id,
                     transfer.file_id,
@@ -2295,9 +2463,26 @@ async fn run_product() -> Result<()> {
                     object_id,
                 );
                 if let Ok(bytes) = serde_json::to_vec(&ack) {
-                    let _ = dispatcher_node
-                        .send_to_peer(&sender, STORAGE_STREAM, bytes)
-                        .await;
+                    match dispatcher_node
+                        .send_to_peer_confirmed(&sender, STORAGE_STREAM, bytes)
+                        .await
+                    {
+                        Ok(_) => {
+                            if env::var_os("AWE_DEBUG_STORAGE").is_some() {
+                                eprintln!(
+                                    "[storage-debug] sent durable ACK request={} to={}",
+                                    hex::encode(transfer.request_id),
+                                    hex::encode(sender)
+                                );
+                            }
+                        }
+                        Err(error) => eprintln!(
+                            "[storage] durable ACK delivery failed request={} to={} error={}",
+                            hex::encode(transfer.request_id),
+                            hex::encode(sender),
+                            error
+                        ),
+                    }
                 }
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -2518,5 +2703,55 @@ async fn main() -> Result<()> {
             .await
         }
         _ => usage(),
+    }
+}
+
+#[cfg(test)]
+mod storage_ack_tests {
+    use super::*;
+
+    #[test]
+    fn storage_ack_requires_authenticated_target_and_matching_object() {
+        let expected_peer = [7u8; 32];
+        let file_id = [8u8; 32];
+        let object_hash = [9u8; 32];
+        let ack = StorageShardAck::new([1u8; 16], file_id, 4, object_hash);
+        let received = PendingStorageAck {
+            sender: expected_peer,
+            ack,
+        };
+
+        assert!(storage_ack_matches(
+            &received,
+            &expected_peer,
+            &file_id,
+            4,
+            &object_hash,
+        ));
+        assert_eq!(
+            storage_ack_failure(&received, &[6u8; 32], &file_id, 4, &object_hash),
+            Some("authenticated_sender_mismatch")
+        );
+        assert!(!storage_ack_matches(
+            &received,
+            &[6u8; 32],
+            &file_id,
+            4,
+            &object_hash,
+        ));
+        assert!(!storage_ack_matches(
+            &received,
+            &expected_peer,
+            &file_id,
+            5,
+            &object_hash,
+        ));
+        assert!(!storage_ack_matches(
+            &received,
+            &expected_peer,
+            &file_id,
+            4,
+            &[5u8; 32],
+        ));
     }
 }

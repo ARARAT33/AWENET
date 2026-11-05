@@ -7,7 +7,7 @@ use reed_solomon_erasure::galois_8::ReedSolomon;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
-    fs,
+    fs::{self, OpenOptions},
     io::{self, Read, Write},
     path::{Path, PathBuf},
 };
@@ -350,19 +350,31 @@ impl LocalNodeStore {
     pub fn put(&self, data: &[u8]) -> io::Result<[u8; 32]> {
         let id = content_id(data);
         let p = self.path(&id);
-        if p.exists() {
-            return Ok(id);
-        }
-        let used = self.stats()?.used;
+        let existing_len = match fs::metadata(&p) {
+            Ok(metadata) => match self.get(&id) {
+                Ok(_) => return Ok(id),
+                Err(error) if error.kind() == io::ErrorKind::InvalidData => metadata.len(),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => 0,
+                Err(error) => return Err(error),
+            },
+            Err(error) if error.kind() == io::ErrorKind::NotFound => 0,
+            Err(error) => return Err(error),
+        };
+        let used = self.stats()?.used.saturating_sub(existing_len);
         if used.saturating_add(data.len() as u64) > self.quota {
             return Err(io::Error::new(
                 io::ErrorKind::StorageFull,
                 "AWE node storage quota exceeded",
             ));
         }
-        let tmp = p.with_extension("part");
-        fs::write(&tmp, data)?;
-        fs::rename(tmp, p)?;
+        if let Err(error) = atomic_write_file(&p, data) {
+            // Another writer may have published the same content-addressed
+            // object concurrently. Accept it only after verifying its hash.
+            if self.get(&id).is_ok() {
+                return Ok(id);
+            }
+            return Err(error);
+        }
         Ok(id)
     }
     pub fn get(&self, id: &[u8; 32]) -> io::Result<Vec<u8>> {
@@ -386,9 +398,19 @@ impl LocalNodeStore {
         };
         for e in fs::read_dir(self.root.join("objects"))? {
             let e = e?;
-            let m = e.metadata()?;
-            if m.is_file() {
-                s.used += m.len();
+            if !e.file_type()?.is_file() {
+                continue;
+            }
+            let name = e.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            if hex::decode(name)
+                .map(|bytes| bytes.len() == 32)
+                .unwrap_or(false)
+            {
+                let metadata = e.metadata()?;
+                s.used += metadata.len();
                 s.objects += 1;
             }
         }
@@ -414,14 +436,72 @@ impl LocalNodeStore {
     }
 }
 
+fn atomic_write_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)?;
+
+    let mut opened = None;
+    for _ in 0..8 {
+        let mut nonce = [0u8; 16];
+        OsRng.try_fill_bytes(&mut nonce).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("secure temporary-file name generation failed: {error}"),
+            )
+        })?;
+        let temporary_path = parent.join(format!(".awenet-state-{}.tmp", hex::encode(nonce)));
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        match options.open(&temporary_path) {
+            Ok(file) => {
+                opened = Some((temporary_path, file));
+                break;
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+
+    let Some((temporary_path, mut file)) = opened else {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "could not allocate a unique AWENET temporary file",
+        ));
+    };
+
+    if let Err(error) = file.write_all(bytes).and_then(|_| file.sync_all()) {
+        drop(file);
+        let _ = fs::remove_file(&temporary_path);
+        return Err(error);
+    }
+    drop(file);
+
+    if let Err(error) = fs::rename(&temporary_path, path) {
+        let _ = fs::remove_file(&temporary_path);
+        return Err(error);
+    }
+
+    // The file itself is durable before publication. Syncing the parent
+    // directory is best-effort because not every supported filesystem allows it.
+    #[cfg(unix)]
+    if let Ok(directory) = OpenOptions::new().read(true).open(parent) {
+        let _ = directory.sync_all();
+    }
+    Ok(())
+}
+
+/// Atomically publishes a manifest. The previous manifest remains intact if
+/// serialization, temporary-file creation, writing, syncing, or rename fails.
 pub fn save_manifest(path: impl AsRef<Path>, manifest: &[u8]) -> io::Result<()> {
-    let path = path.as_ref();
-    let tmp = path.with_extension("part");
-    let mut f = fs::File::create(&tmp)?;
-    f.write_all(manifest)?;
-    f.sync_all()?;
-    drop(f);
-    fs::rename(tmp, path)
+    atomic_write_file(path.as_ref(), manifest)
 }
 pub fn load_manifest(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
     let mut f = fs::File::open(path)?;
@@ -571,5 +651,115 @@ mod tests {
 
         // Wrong password fails
         assert!(sf_package.unlock_and_decrypt("WrongPassword").is_err());
+    }
+
+    fn unique_storage_test_dir(label: &str) -> PathBuf {
+        let mut nonce = [0u8; 16];
+        OsRng.fill_bytes(&mut nonce);
+        std::env::temp_dir().join(format!(
+            "awenet-{label}-{}-{}",
+            std::process::id(),
+            hex::encode(nonce)
+        ))
+    }
+
+    #[test]
+    fn manifest_save_replaces_existing_content_and_leaves_no_temp_file() {
+        let dir = unique_storage_test_dir("manifest-replace");
+        let path = dir.join("site.json");
+        save_manifest(&path, b"{\"version\":1}").unwrap();
+        save_manifest(&path, b"{\"version\":2}").unwrap();
+
+        assert_eq!(fs::read(&path).unwrap(), b"{\"version\":2}");
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn manifest_save_cleans_temp_file_when_publish_fails() {
+        let dir = unique_storage_test_dir("manifest-failure");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("site.json");
+        fs::create_dir(&path).unwrap();
+
+        assert!(save_manifest(&path, b"manifest").is_err());
+        assert!(path.is_dir());
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn concurrent_manifest_writers_publish_only_complete_payloads() {
+        let dir = unique_storage_test_dir("manifest-concurrent");
+        let path = dir.join("site.json");
+        let writers = (0..8)
+            .map(|index| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    let payload = format!("complete-writer-{index}");
+                    save_manifest(&path, payload.as_bytes()).unwrap();
+                    payload
+                })
+            })
+            .collect::<Vec<_>>();
+        let expected = writers
+            .into_iter()
+            .map(|writer| writer.join().unwrap())
+            .collect::<Vec<_>>();
+
+        let published = fs::read_to_string(&path).unwrap();
+        assert!(expected.iter().any(|candidate| candidate == &published));
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn content_addressed_store_repairs_corrupt_existing_object() {
+        let dir = unique_storage_test_dir("object-repair");
+        let store = LocalNodeStore::open(&dir, 1_000_000).unwrap();
+        let id = store.put(b"durable object").unwrap();
+        fs::write(store.path(&id), b"corrupt bytes").unwrap();
+
+        assert!(store.get(&id).is_err());
+        assert_eq!(store.put(b"durable object").unwrap(), id);
+        assert_eq!(store.get(&id).unwrap(), b"durable object");
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn storage_stats_ignore_temporary_and_non_content_addressed_files() {
+        let dir = unique_storage_test_dir("stats-filter");
+        let store = LocalNodeStore::open(&dir, 1_000_000).unwrap();
+        let objects = dir.join("objects");
+        fs::write(objects.join(".awenet-state-interrupted.tmp"), b"temporary").unwrap();
+        fs::write(objects.join("not-a-content-id"), b"junk").unwrap();
+
+        store.put(b"count this object").unwrap();
+        let stats = store.stats().unwrap();
+        assert_eq!(stats.objects, 1);
+        assert_eq!(stats.used, b"count this object".len() as u64);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn concurrent_content_addressed_writers_publish_one_verified_object() {
+        let dir = unique_storage_test_dir("object-concurrent");
+        let store = std::sync::Arc::new(LocalNodeStore::open(&dir, 1_000_000).unwrap());
+        let writers = (0..8)
+            .map(|_| {
+                let store = store.clone();
+                std::thread::spawn(move || store.put(b"shared durable object").unwrap())
+            })
+            .collect::<Vec<_>>();
+        let ids = writers
+            .into_iter()
+            .map(|writer| writer.join().unwrap())
+            .collect::<Vec<_>>();
+
+        assert!(ids.iter().all(|id| *id == ids[0]));
+        assert_eq!(store.get(&ids[0]).unwrap(), b"shared durable object");
+        let stats = store.stats().unwrap();
+        assert_eq!(stats.objects, 1);
+        assert_eq!(stats.used, b"shared durable object".len() as u64);
+        fs::remove_dir_all(dir).unwrap();
     }
 }
