@@ -349,9 +349,7 @@ mod tests {
         at_unix: u64,
     ) {
         rankings
-            .record(
-                EarningEvent::new(who.clone(), category, atoms, at_unix).unwrap(),
-            )
+            .record(EarningEvent::new(who.clone(), category, atoms, at_unix).unwrap())
             .unwrap();
     }
 
@@ -370,14 +368,18 @@ mod tests {
         let mut rankings = Rankings::new();
         let id = contributor("ranking-bounded");
         for i in 0..MAX_EVENTS {
-            record(&mut rankings, &id, ContributionCategory::Resource, 1, i as u64 + 1);
+            record(
+                &mut rankings,
+                &id,
+                ContributionCategory::Resource,
+                1,
+                i as u64 + 1,
+            );
         }
-        let result = rankings.record(EarningEvent::new(
-            id,
-            ContributionCategory::Resource,
-            1,
-            MAX_EVENTS as u64 + 1,
-        ).unwrap());
+        let result = rankings.record(
+            EarningEvent::new(id, ContributionCategory::Resource, 1, MAX_EVENTS as u64 + 1)
+                .unwrap(),
+        );
         assert_eq!(result.unwrap_err(), RankingsError::HistoryFull);
         assert_eq!(rankings.event_count(), MAX_EVENTS);
     }
@@ -388,8 +390,20 @@ mod tests {
         let aram = contributor("aram");
         let karen = contributor("karen");
         let davit = contributor("davit");
-        record(&mut rankings, &aram, ContributionCategory::Resource, 800, 100);
-        record(&mut rankings, &karen, ContributionCategory::Resource, 400, 100);
+        record(
+            &mut rankings,
+            &aram,
+            ContributionCategory::Resource,
+            800,
+            100,
+        );
+        record(
+            &mut rankings,
+            &karen,
+            ContributionCategory::Resource,
+            400,
+            100,
+        );
         record(&mut rankings, &davit, ContributionCategory::Work, 900, 100);
         record(&mut rankings, &aram, ContributionCategory::Work, 50, 900);
         // all categories since the beginning: ranked by atoms descending
@@ -419,10 +433,34 @@ mod tests {
         let mut rankings = Rankings::new();
         let id = contributor("stats-id");
         let week = WEEK_SECS;
-        record(&mut rankings, &id, ContributionCategory::Resource, 100, week + 10);
-        record(&mut rankings, &id, ContributionCategory::Work, 200, week + 20);
-        record(&mut rankings, &id, ContributionCategory::StoreRevenue, 300, week * 2 + 5);
-        record(&mut rankings, &id, ContributionCategory::Work, 400, week * 9 + 5);
+        record(
+            &mut rankings,
+            &id,
+            ContributionCategory::Resource,
+            100,
+            week + 10,
+        );
+        record(
+            &mut rankings,
+            &id,
+            ContributionCategory::Work,
+            200,
+            week + 20,
+        );
+        record(
+            &mut rankings,
+            &id,
+            ContributionCategory::StoreRevenue,
+            300,
+            week * 2 + 5,
+        );
+        record(
+            &mut rankings,
+            &id,
+            ContributionCategory::Work,
+            400,
+            week * 9 + 5,
+        );
         let stats = rankings.stats(&id);
         assert_eq!(stats.resource_atoms, 100);
         assert_eq!(stats.work_atoms, 600);
@@ -454,18 +492,35 @@ mod tests {
         assert!(achievements.contains(&Achievement::FiveContributions));
         assert!(achievements.contains(&Achievement::SteadyContributor));
         assert!(!achievements.contains(&Achievement::ResourceVeteran));
-        assert_eq!(rankings.level(&steady), ContributorLevel::AdvancedContributor);
+        assert_eq!(
+            rankings.level(&steady),
+            ContributorLevel::AdvancedContributor
+        );
 
         let seller = contributor("seller");
         for i in 0..TRUSTED_SELLER_EVENTS {
-            record(&mut rankings, &seller, ContributionCategory::StoreRevenue, 10, i + 1);
+            record(
+                &mut rankings,
+                &seller,
+                ContributionCategory::StoreRevenue,
+                10,
+                i + 1,
+            );
         }
-        assert!(rankings.achievements(&seller).contains(&Achievement::TrustedSeller));
+        assert!(rankings
+            .achievements(&seller)
+            .contains(&Achievement::TrustedSeller));
         assert_eq!(rankings.level(&seller), ContributorLevel::Expert);
 
         let pillar = contributor("pillar");
         for i in 0..PILLAR_OF_COMMUNITY_EVENTS {
-            record(&mut rankings, &pillar, ContributionCategory::Resource, 10, i + 1);
+            record(
+                &mut rankings,
+                &pillar,
+                ContributionCategory::Resource,
+                10,
+                i + 1,
+            );
         }
         let pillar_achievements = rankings.achievements(&pillar);
         assert!(pillar_achievements.contains(&Achievement::PillarOfCommunity));
