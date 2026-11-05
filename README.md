@@ -38,6 +38,7 @@ while exposing a small, stable product orchestration model on top.
 | Developer & API services | `tasks`, `keys`, `webhooks`, `runbooks` | Priority task queue with deadlines and retry budgets, scoped API keys with rotation and expiry, event webhooks with cooldowns and dead-lettering, gated runbooks with dry-run plans |
 | Commerce & economy services | `accounting`, `billing`, `subscriptions`, `escrow` | Double-entry ledger with balanced entries, invoice lifecycle with payments and overdue sweeps, subscription lifecycle with trial and grace periods, escrow with fees, release and refund |
 | AWENETwork & founder economy | `founder`, `awenetwork`, `resource_economy`, `price_control`, `treasury` | Founder-exclusive authority with an immutable audit log, founder-published work tasks with approve-then-pay rewards, consented resource contributions with reliability-weighted payouts, official price control with history, treasury issuance vs circulation accounting |
+| Founder protection & economy completion | `founder_guard`, `resource_meter`, `store_escrow`, `fraud`, `rankings` | Passkey-protected founder step-up authorization, host resource metering with multi-verifier usage reports, store escrow orders over ONECOIN, advisory fraud detection with bounded evidence, contributor rankings and achievements that never mint |
 | Identity & security | `identity`, `security`, `crypto`, `defense`, `sandbox` | Ed25519 identity, authenticated encrypted transport, hostile-traffic limits |
 | Discovery & routing | `discovery`, `routing`, `network_topology`, `lan_mesh` | DHT-style lookup, Data Centre topology, relay failover, LAN mesh |
 | Data plane | `data_plane`, `storage`, `replication`, `repair`, `recovery` | Chunked content-addressed storage, replica placement, repair planning |
@@ -196,6 +197,26 @@ ledger gains an idempotent, verifier-gated mint for founder-approved
 payouts. See
 [docs/AWENETWORK-UPGRADE-2026-11-04.md](docs/AWENETWORK-UPGRADE-2026-11-04.md).
 
+## Founder protection & economy completion services
+
+Five deterministic core modules complete the founder-governed ONECOIN
+economy: `founder_guard.rs` (passkey credential enrollment signed by the
+founder, MFA step-up challenges with a bounded TTL and single-use recovery
+codes, all wrapping the immutable founder authority),
+`resource_meter.rs` (host system counters read from /proc on Linux with
+honest unsupported-platform errors, per-period usage deltas and signed
+usage reports that settle only with at least two distinct verifier
+signatures), `store_escrow.rs` (store orders over the ONECOIN ledger with
+escrowed funding, buyer-confirmed delivery net of a bounded fee, refunds,
+founder-only dispute resolution and expiry sweeps),
+`fraud.rs` (advisory detection of inflated usage reports, duplicate
+payouts, resubmitted work, self-dealing orders, wash trading and transfer
+velocity, with bounded evidence retention and no autonomous powers) and
+`rankings.rs` (leaderboards, per-contributor statistics, levels and
+achievements derived only from recorded earning events and never minting
+ONECOIN). See
+[docs/ECONOMY-COMPLETION-2026-11-05.md](docs/ECONOMY-COMPLETION-2026-11-05.md).
+
 ## Important status rule
 
 A source module or UI screen is not proof of end-to-end functionality.
@@ -224,6 +245,7 @@ model is in [docs/PRODUCT-ARCHITECTURE.md](docs/PRODUCT-ARCHITECTURE.md) and
 - [Developer & API services upgrade](docs/DEVELOPER-UPGRADE-2026-11-03.md)
 - [Commerce & economy services upgrade](docs/COMMERCE-UPGRADE-2026-11-03.md)
 - [AWENETwork & founder economy upgrade](docs/AWENETWORK-UPGRADE-2026-11-04.md)
+- [Founder protection & economy completion](docs/ECONOMY-COMPLETION-2026-11-05.md)
 
 ## Security
 
