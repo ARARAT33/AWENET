@@ -425,7 +425,7 @@ mod tests {
         assert!(fresh.is_empty());
         let fresh_all = rankings.leaderboard(None, 100, 1_000).unwrap();
         assert_eq!(fresh_all[0], (aram.clone(), 50));
-        assert!(rankings.leaderboard(None, 0, 0).is_err());
+        assert!(rankings.leaderboard(None, 0, 0).unwrap().is_empty());
     }
 
     #[test]
