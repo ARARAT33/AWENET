@@ -71,3 +71,9 @@ evidence of independent-machine, NAT, or Internet-wide reliability.
 Record the exact commit, OS, node count, response fields, and test output. A
 partial placement or missing/mismatched peer-bound durable ACK must never be
 reported as a successful stored object.
+
+Outbound connection-cache behavior is also covered by core network regression tests:
+when no cached peer connection exists, both send paths must release the active-map
+read lock before dialing and publishing the new connection. Repeated confirmed
+shard sends should reuse the authenticated cached session rather than opening a
+new handshake for every shard.
