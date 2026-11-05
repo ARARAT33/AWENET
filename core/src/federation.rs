@@ -310,14 +310,16 @@ mod tests {
             vec![n.endpoint.clone()],
             vec![n.node_id.clone()],
             1,
-        ).unwrap();
+        )
+        .unwrap();
         validate_awedc(&dc).unwrap();
         let dg = generate_dgc(
             &dc.data_centre_id,
             "Group",
             vec![dc.data_centre_id.clone(), "dc-2".into()],
             1,
-        ).unwrap();
+        )
+        .unwrap();
         validate_dgc(&dg).unwrap();
     }
 
@@ -349,7 +351,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn malformed_join_tokens_are_rejected() {
         let mut node = generate_awenode("node-1", "DC One", "127.0.0.1:41000", vec![], 1).unwrap();
@@ -363,7 +364,8 @@ mod tests {
             vec!["127.0.0.1:41000".into()],
             vec!["node-1".into()],
             1,
-        ).unwrap();
+        )
+        .unwrap();
         dc.join_token = format!("node-{}", "a".repeat(JOIN_TOKEN_BYTES * 2));
         assert!(validate_awedc(&dc).is_err());
     }
@@ -382,5 +384,4 @@ mod tests {
         assert!(validate_join_token("node-not-hex", "node").is_err());
         assert!(validate_join_token(&format!("dg-{}", "a".repeat(65)), "dg").is_err());
     }
-
 }
