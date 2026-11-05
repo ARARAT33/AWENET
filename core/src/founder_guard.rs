@@ -49,6 +49,8 @@ pub enum FounderGuardError {
     RecoveryCodeUsed,
     #[error("recovery code set is too large (max {MAX_RECOVERY_CODES} codes)")]
     TooManyRecoveryCodes,
+    #[error("recovery code set contains duplicates")]
+    DuplicateRecoveryCode,
     #[error("recovery requires at least one code")]
     EmptyRecoverySet,
     #[error("credential label exceeds {MAX_CREDENTIAL_LABEL_CHARS} characters")]
@@ -257,6 +259,10 @@ impl FounderGuard {
         }
         if codes.len() > MAX_RECOVERY_CODES {
             return Err(FounderGuardError::TooManyRecoveryCodes);
+        }
+        let mut unique_codes = std::collections::BTreeSet::new();
+        if codes.iter().any(|code| !unique_codes.insert(*code)) {
+            return Err(FounderGuardError::DuplicateRecoveryCode);
         }
         let mut message = Vec::new();
         message.extend_from_slice(RECOVERY_CONTEXT);
@@ -486,6 +492,21 @@ mod tests {
             .set_recovery_codes(&signature, std::slice::from_ref(&code), 5)
             .unwrap();
         assert_eq!(guard.recovery_codes_remaining(), 1);
+        let duplicate_message = {
+            let mut message = Vec::new();
+            message.extend_from_slice(RECOVERY_CONTEXT);
+            message.extend_from_slice(&code);
+            message.extend_from_slice(&code);
+            message.extend_from_slice(&6u64.to_be_bytes());
+            message
+        };
+        let duplicate_signature = founder.sign(&duplicate_message);
+        assert_eq!(
+            guard
+                .set_recovery_codes(&duplicate_signature, &[code, code], 6)
+                .unwrap_err(),
+            FounderGuardError::DuplicateRecoveryCode
+        );
         assert_eq!(
             guard
                 .recover_with_code(&[1; 32], &replacement, "new", 6)

@@ -107,9 +107,7 @@ pub(crate) fn parse_proc_net_dev(netdev: &str) -> Option<(u64, u64)> {
     let mut rx_bytes = 0u64;
     let mut tx_bytes = 0u64;
     for line in netdev.lines().skip(2) {
-        let Some((iface, rest)) = line.split_once(':') else {
-            return None;
-        };
+        let (iface, rest) = line.split_once(':')?;
         if iface.trim() == "lo" {
             continue;
         }
@@ -117,8 +115,8 @@ pub(crate) fn parse_proc_net_dev(netdev: &str) -> Option<(u64, u64)> {
         if fields.len() < 9 {
             continue;
         }
-        rx_bytes = rx_bytes.saturating_add(fields[0].parse::<u64>().unwrap_or(0));
-        tx_bytes = tx_bytes.saturating_add(fields[8].parse::<u64>().unwrap_or(0));
+        rx_bytes = rx_bytes.saturating_add(fields[0].parse::<u64>().ok()?);
+        tx_bytes = tx_bytes.saturating_add(fields[8].parse::<u64>().ok()?);
     }
     Some((rx_bytes, tx_bytes))
 }
@@ -304,6 +302,9 @@ impl UsageVerification {
         period_start_unix: u64,
         period_end_unix: u64,
     ) -> Option<MeasuredUsage> {
+        if period_start_unix >= period_end_unix {
+            return None;
+        }
         let valid: Vec<&SignedUsageReport> = self
             .reports
             .iter()
@@ -481,6 +482,9 @@ mod tests {
             .consensus_usage(&node.public.awe_id, 0, 3_600)
             .unwrap();
         assert_eq!(consensus, usage);
+        assert!(verification
+            .consensus_usage(&node.public.awe_id, 3_600, 3_600)
+            .is_none());
         // the consensus ignores reports about a different period
         assert!(verification
             .consensus_usage(&node.public.awe_id, 3_600, 7_200)
@@ -597,8 +601,8 @@ mod tests {
                 7_200,
             )
             .unwrap();
-        // cpu 100 * 1000 + ram 976 * 10 + uptime 2 * 100 = 110_760 usage atoms
-        assert_eq!(settlement.usage_atoms, 110_760);
+        // cpu 100 * 1000 + ram 976 * 10 + uptime 2 * 100 = 109_960 usage atoms
+        assert_eq!(settlement.usage_atoms, 109_960);
         assert_eq!(settlement.availability_atoms, 100);
         let _ = FounderAuthority::install(&founder, 0);
     }
