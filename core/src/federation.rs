@@ -58,7 +58,11 @@ pub struct AweNetConfig {
     pub bootstrap_endpoints: Vec<String>,
 }
 
-/// Creates an unguessable, one-time federation invitation token.
+/// Creates a high-entropy bearer credential for a federation invitation.
+///
+/// This token is not globally one-time: until issuer-side registration and
+/// consumption are implemented, a copied invitation can be replayed at
+/// multiple recipients. Format validation alone is not issuer authorization.
 ///
 /// The token is deliberately independent from public configuration fields and
 /// timestamps. A configuration can therefore be regenerated without deriving
