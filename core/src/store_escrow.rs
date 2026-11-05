@@ -50,6 +50,8 @@ pub enum StoreEscrowError {
     SelfDealing,
     #[error("item title exceeds {MAX_ITEM_TITLE_CHARS} characters")]
     TitleTooLong,
+    #[error("store order amount exceeds the escrow amount limit")]
+    AmountTooLarge,
     #[error("dispute reason exceeds {MAX_DISPUTE_REASON_CHARS} characters")]
     ReasonTooLong,
 }
@@ -163,11 +165,14 @@ impl StoreEscrow {
             return Err(StoreEscrowError::SelfDealing);
         }
         let fee_atoms = amount_atoms.saturating_mul(self.fee_bps as u128) / 10_000;
+        let escrow_amount =
+            u64::try_from(amount_atoms).map_err(|_| StoreEscrowError::AmountTooLarge)?;
+        let escrow_fee = u64::try_from(fee_atoms).map_err(|_| StoreEscrowError::AmountTooLarge)?;
         let escrow_id = self.escrows.create(
             &buyer.to_hex(),
             &seller.to_hex(),
-            amount_atoms,
-            fee_atoms,
+            escrow_amount,
+            escrow_fee,
             now_tick,
             expiry_tick,
         )?;
@@ -285,7 +290,7 @@ impl StoreEscrow {
             }
             order.seller.clone()
         };
-        let net_atoms = self.escrows.release(order_id)?;
+        let net_atoms = u128::from(self.escrows.release(order_id)?);
         if let Some(order) = self.orders.get_mut(&order_id) {
             order.funded = false;
         }
@@ -317,7 +322,7 @@ impl StoreEscrow {
             }
             order.buyer.clone()
         };
-        let amount_atoms = self.escrows.refund(order_id)?;
+        let amount_atoms = u128::from(self.escrows.refund(order_id)?);
         if let Some(order) = self.orders.get_mut(&order_id) {
             order.funded = false;
         }
@@ -403,7 +408,7 @@ impl StoreEscrow {
                     .expect("checked above")
                     .buyer
                     .clone();
-                (buyer, self.escrows.refund(order_id)?)
+                (buyer, u128::from(self.escrows.refund(order_id)?))
             }
             DisputeRuling::ReleaseSeller => {
                 let seller = self
@@ -412,7 +417,7 @@ impl StoreEscrow {
                     .expect("checked above")
                     .seller
                     .clone();
-                (seller, self.escrows.release(order_id)?)
+                (seller, u128::from(self.escrows.release(order_id)?))
             }
         };
         if let Some(order) = self.orders.get_mut(&order_id) {
@@ -455,7 +460,7 @@ impl StoreEscrow {
                 .expect("collected from the order map")
                 .buyer
                 .clone();
-            let amount_atoms = self.escrows.refund(order_id)?;
+            let amount_atoms = u128::from(self.escrows.refund(order_id)?);
             if let Some(order) = self.orders.get_mut(&order_id) {
                 order.funded = false;
             }

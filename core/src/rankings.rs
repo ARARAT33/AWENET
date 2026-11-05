@@ -341,24 +341,28 @@ mod tests {
             .awe_id
     }
 
+    fn record(
+        rankings: &mut Rankings,
+        who: &AweId,
+        category: ContributionCategory,
+        atoms: u128,
+        at_unix: u64,
+    ) {
+        rankings
+            .record(
+                EarningEvent::new(who.clone(), category, atoms, at_unix).unwrap(),
+            )
+            .unwrap();
+    }
+
     #[test]
     fn events_are_validated_and_recorded() {
         let mut rankings = Rankings::new();
         let id = contributor("ranking-a");
-        let event = EarningEvent::new(id.clone(), ContributionCategory::Work, 500, 100).unwrap();
-        rankings.record(event).unwrap();
+        record(&mut rankings, &id, ContributionCategory::Work, 500, 100);
         assert_eq!(rankings.event_count(), 1);
-        assert!(rankings
-            .record(EarningEvent::new(
-                id.clone(),
-                ContributionCategory::Work,
-                0,
-                100
-            ))
-            .is_err());
-        assert!(rankings
-            .record(EarningEvent::new(id, ContributionCategory::Work, 500, 0))
-            .is_err());
+        assert!(EarningEvent::new(id.clone(), ContributionCategory::Work, 0, 100).is_err());
+        assert!(EarningEvent::new(id, ContributionCategory::Work, 500, 0).is_err());
     }
 
     #[test]
@@ -366,21 +370,14 @@ mod tests {
         let mut rankings = Rankings::new();
         let id = contributor("ranking-bounded");
         for i in 0..MAX_EVENTS {
-            rankings
-                .record(EarningEvent::new(
-                    id.clone(),
-                    ContributionCategory::Resource,
-                    1,
-                    i as u64 + 1,
-                ))
-                .unwrap();
+            record(&mut rankings, &id, ContributionCategory::Resource, 1, i as u64 + 1);
         }
         let result = rankings.record(EarningEvent::new(
             id,
             ContributionCategory::Resource,
             1,
             MAX_EVENTS as u64 + 1,
-        ));
+        ).unwrap());
         assert_eq!(result.unwrap_err(), RankingsError::HistoryFull);
         assert_eq!(rankings.event_count(), MAX_EVENTS);
     }
@@ -391,38 +388,10 @@ mod tests {
         let aram = contributor("aram");
         let karen = contributor("karen");
         let davit = contributor("davit");
-        rankings
-            .record(EarningEvent::new(
-                aram.clone(),
-                ContributionCategory::Resource,
-                800,
-                100,
-            ))
-            .unwrap();
-        rankings
-            .record(EarningEvent::new(
-                karen.clone(),
-                ContributionCategory::Resource,
-                400,
-                100,
-            ))
-            .unwrap();
-        rankings
-            .record(EarningEvent::new(
-                davit.clone(),
-                ContributionCategory::Work,
-                900,
-                100,
-            ))
-            .unwrap();
-        rankings
-            .record(EarningEvent::new(
-                aram.clone(),
-                ContributionCategory::Work,
-                50,
-                900,
-            ))
-            .unwrap();
+        record(&mut rankings, &aram, ContributionCategory::Resource, 800, 100);
+        record(&mut rankings, &karen, ContributionCategory::Resource, 400, 100);
+        record(&mut rankings, &davit, ContributionCategory::Work, 900, 100);
+        record(&mut rankings, &aram, ContributionCategory::Work, 50, 900);
         // all categories since the beginning: ranked by atoms descending
         let all = rankings.leaderboard(None, 1_000, 1_000).unwrap();
         assert_eq!(all[0], (davit.clone(), 900));
@@ -450,38 +419,10 @@ mod tests {
         let mut rankings = Rankings::new();
         let id = contributor("stats-id");
         let week = WEEK_SECS;
-        rankings
-            .record(EarningEvent::new(
-                id.clone(),
-                ContributionCategory::Resource,
-                100,
-                week + 10,
-            ))
-            .unwrap();
-        rankings
-            .record(EarningEvent::new(
-                id.clone(),
-                ContributionCategory::Work,
-                200,
-                week + 20,
-            ))
-            .unwrap();
-        rankings
-            .record(EarningEvent::new(
-                id.clone(),
-                ContributionCategory::StoreRevenue,
-                300,
-                week * 2 + 5,
-            ))
-            .unwrap();
-        rankings
-            .record(EarningEvent::new(
-                id.clone(),
-                ContributionCategory::Work,
-                400,
-                week * 9 + 5,
-            ))
-            .unwrap();
+        record(&mut rankings, &id, ContributionCategory::Resource, 100, week + 10);
+        record(&mut rankings, &id, ContributionCategory::Work, 200, week + 20);
+        record(&mut rankings, &id, ContributionCategory::StoreRevenue, 300, week * 2 + 5);
+        record(&mut rankings, &id, ContributionCategory::Work, 400, week * 9 + 5);
         let stats = rankings.stats(&id);
         assert_eq!(stats.resource_atoms, 100);
         assert_eq!(stats.work_atoms, 600);
@@ -500,51 +441,31 @@ mod tests {
         let mut rankings = Rankings::new();
         let steady = contributor("steady");
         for week in 0..STEADY_CONTRIBUTOR_WEEKS {
-            rankings
-                .record(EarningEvent::new(
-                    steady.clone(),
-                    ContributionCategory::Work,
-                    10,
-                    week * WEEK_SECS + 1,
-                ))
-                .unwrap();
+            record(
+                &mut rankings,
+                &steady,
+                ContributionCategory::Work,
+                10,
+                week * WEEK_SECS + 1,
+            );
         }
         let achievements = rankings.achievements(&steady);
         assert!(achievements.contains(&Achievement::FirstEarning));
         assert!(achievements.contains(&Achievement::FiveContributions));
         assert!(achievements.contains(&Achievement::SteadyContributor));
         assert!(!achievements.contains(&Achievement::ResourceVeteran));
-        assert_eq!(
-            rankings.level(&steady),
-            ContributorLevel::AdvancedContributor
-        );
+        assert_eq!(rankings.level(&steady), ContributorLevel::AdvancedContributor);
 
         let seller = contributor("seller");
         for i in 0..TRUSTED_SELLER_EVENTS {
-            rankings
-                .record(EarningEvent::new(
-                    seller.clone(),
-                    ContributionCategory::StoreRevenue,
-                    10,
-                    i + 1,
-                ))
-                .unwrap();
+            record(&mut rankings, &seller, ContributionCategory::StoreRevenue, 10, i + 1);
         }
-        assert!(rankings
-            .achievements(&seller)
-            .contains(&Achievement::TrustedSeller));
+        assert!(rankings.achievements(&seller).contains(&Achievement::TrustedSeller));
         assert_eq!(rankings.level(&seller), ContributorLevel::Expert);
 
         let pillar = contributor("pillar");
         for i in 0..PILLAR_OF_COMMUNITY_EVENTS {
-            rankings
-                .record(EarningEvent::new(
-                    pillar.clone(),
-                    ContributionCategory::Resource,
-                    10,
-                    i + 1,
-                ))
-                .unwrap();
+            record(&mut rankings, &pillar, ContributionCategory::Resource, 10, i + 1);
         }
         let pillar_achievements = rankings.achievements(&pillar);
         assert!(pillar_achievements.contains(&Achievement::PillarOfCommunity));
@@ -561,9 +482,7 @@ mod tests {
         let mut rankings = Rankings::new();
         for i in 0..(MAX_LEADERBOARD_SIZE + 10) {
             let id = contributor(&format!("cap-{i}"));
-            rankings
-                .record(EarningEvent::new(id, ContributionCategory::Work, 10, 1))
-                .unwrap();
+            record(&mut rankings, &id, ContributionCategory::Work, 10, 1);
         }
         let board = rankings.leaderboard(None, 1_000, 1_000).unwrap();
         assert_eq!(board.len(), MAX_LEADERBOARD_SIZE);
