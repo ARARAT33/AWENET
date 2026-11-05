@@ -1247,29 +1247,28 @@ impl Node {
             .map_err(|_| NetworkError::Protocol("outbound limiter closed".into()))?;
 
         for attempt in 0..2 {
-            let (connection, cached) = if let Some(connection) =
-                self.active.read().await.get(peer_id).cloned()
-            {
-                (connection, true)
-            } else {
-                let address = self
-                    .peers
-                    .read()
-                    .await
-                    .get(peer_id)
-                    .and_then(|peer| peer.addresses.first().copied())
-                    .ok_or_else(|| NetworkError::Protocol("peer address is unknown".into()))?;
-                let candidate = Arc::new(tokio::sync::Mutex::new(self.connect(address).await?));
-                let mut active = self.active.write().await;
-                if let Some(existing) = active.get(peer_id) {
-                    (existing.clone(), true)
-                } else if active.len() < MAX_ACTIVE_CONNECTIONS {
-                    active.insert(*peer_id, candidate.clone());
-                    (candidate, true)
+            let (connection, cached) =
+                if let Some(connection) = self.active.read().await.get(peer_id).cloned() {
+                    (connection, true)
                 } else {
-                    (candidate, false)
-                }
-            };
+                    let address = self
+                        .peers
+                        .read()
+                        .await
+                        .get(peer_id)
+                        .and_then(|peer| peer.addresses.first().copied())
+                        .ok_or_else(|| NetworkError::Protocol("peer address is unknown".into()))?;
+                    let candidate = Arc::new(tokio::sync::Mutex::new(self.connect(address).await?));
+                    let mut active = self.active.write().await;
+                    if let Some(existing) = active.get(peer_id) {
+                        (existing.clone(), true)
+                    } else if active.len() < MAX_ACTIVE_CONNECTIONS {
+                        active.insert(*peer_id, candidate.clone());
+                        (candidate, true)
+                    } else {
+                        (candidate, false)
+                    }
+                };
 
             let mut connection_guard = connection.lock().await;
             if cached {
