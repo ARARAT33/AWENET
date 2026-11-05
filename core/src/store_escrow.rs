@@ -113,7 +113,11 @@ pub struct StoreEscrow {
 }
 
 impl StoreEscrow {
-    pub fn new(operator: &Identity, max_orders: usize, fee_bps: u16) -> Result<Self, StoreEscrowError> {
+    pub fn new(
+        operator: &Identity,
+        max_orders: usize,
+        fee_bps: u16,
+    ) -> Result<Self, StoreEscrowError> {
         if fee_bps > MAX_FEE_BPS {
             return Err(StoreEscrowError::InvalidFee);
         }
@@ -228,11 +232,7 @@ impl StoreEscrow {
         }
         let amount_atoms = order.amount_atoms;
         let buyer_id = order.buyer.clone();
-        let nonce = ledger
-            .nonces
-            .get(&buyer_id.to_hex())
-            .copied()
-            .unwrap_or(0);
+        let nonce = ledger.nonces.get(&buyer_id.to_hex()).copied().unwrap_or(0);
         let tx = OnecoinTransaction::new(
             buyer,
             nonce,
@@ -397,11 +397,21 @@ impl StoreEscrow {
         )?;
         let (recipient, amount_atoms) = match ruling {
             DisputeRuling::RefundBuyer => {
-                let buyer = self.orders.get(&order_id).expect("checked above").buyer.clone();
+                let buyer = self
+                    .orders
+                    .get(&order_id)
+                    .expect("checked above")
+                    .buyer
+                    .clone();
                 (buyer, self.escrows.refund(order_id)?)
             }
             DisputeRuling::ReleaseSeller => {
-                let seller = self.orders.get(&order_id).expect("checked above").seller.clone();
+                let seller = self
+                    .orders
+                    .get(&order_id)
+                    .expect("checked above")
+                    .seller
+                    .clone();
                 (seller, self.escrows.release(order_id)?)
             }
         };
@@ -474,9 +484,7 @@ impl StoreEscrow {
             return Ok(OrderStatus::Disputed);
         }
         Ok(match escrow.state {
-            EscrowState::Created
-                if order.expiry_tick.is_some_and(|expiry| expiry <= now_tick) =>
-            {
+            EscrowState::Created if order.expiry_tick.is_some_and(|expiry| expiry <= now_tick) => {
                 OrderStatus::Expired
             }
             EscrowState::Created => OrderStatus::AwaitingPayment,
@@ -539,20 +547,41 @@ mod tests {
         );
         assert_eq!(
             market
-                .open_order(&operator.public.awe_id, &seller.public.awe_id, 10, "x", 0, None)
+                .open_order(
+                    &operator.public.awe_id,
+                    &seller.public.awe_id,
+                    10,
+                    "x",
+                    0,
+                    None
+                )
                 .unwrap_err(),
             StoreEscrowError::SelfDealing
         );
         assert_eq!(
             market
-                .open_order(&buyer.public.awe_id, &operator.public.awe_id, 10, "x", 0, None)
+                .open_order(
+                    &buyer.public.awe_id,
+                    &operator.public.awe_id,
+                    10,
+                    "x",
+                    0,
+                    None
+                )
                 .unwrap_err(),
             StoreEscrowError::SelfDealing
         );
         let long = "x".repeat(MAX_ITEM_TITLE_CHARS + 1);
         assert_eq!(
             market
-                .open_order(&buyer.public.awe_id, &seller.public.awe_id, 10, &long, 0, None)
+                .open_order(
+                    &buyer.public.awe_id,
+                    &seller.public.awe_id,
+                    10,
+                    &long,
+                    0,
+                    None
+                )
                 .unwrap_err(),
             StoreEscrowError::TitleTooLong
         );
@@ -574,8 +603,13 @@ mod tests {
             )
             .unwrap();
         assert_eq!(market.order_count(), 1);
-        assert_eq!(market.status(order, 0).unwrap(), OrderStatus::AwaitingPayment);
-        market.fund(&mut ledger, &buyer, &operator, order, 1).unwrap();
+        assert_eq!(
+            market.status(order, 0).unwrap(),
+            OrderStatus::AwaitingPayment
+        );
+        market
+            .fund(&mut ledger, &buyer, &operator, order, 1)
+            .unwrap();
         assert_eq!(market.status(order, 1).unwrap(), OrderStatus::Held);
         assert_eq!(
             ledger.balance_atoms(&buyer.public.awe_id),
@@ -608,9 +642,18 @@ mod tests {
         let (buyer, seller, operator, _founder, mut ledger) = setup();
         let mut market = StoreEscrow::new(&operator, 8, 100).unwrap();
         let order = market
-            .open_order(&buyer.public.awe_id, &seller.public.awe_id, 1_000_000, "mouse", 0, None)
+            .open_order(
+                &buyer.public.awe_id,
+                &seller.public.awe_id,
+                1_000_000,
+                "mouse",
+                0,
+                None,
+            )
             .unwrap();
-        market.fund(&mut ledger, &buyer, &operator, order, 1).unwrap();
+        market
+            .fund(&mut ledger, &buyer, &operator, order, 1)
+            .unwrap();
         assert_eq!(
             market
                 .confirm_delivery(&mut ledger, &operator, &seller.public.awe_id, order)
@@ -624,9 +667,18 @@ mod tests {
         let (buyer, seller, operator, _founder, mut ledger) = setup();
         let mut market = StoreEscrow::new(&operator, 8, 100).unwrap();
         let order = market
-            .open_order(&buyer.public.awe_id, &seller.public.awe_id, 1_000_000, "cable", 0, None)
+            .open_order(
+                &buyer.public.awe_id,
+                &seller.public.awe_id,
+                1_000_000,
+                "cable",
+                0,
+                None,
+            )
             .unwrap();
-        market.fund(&mut ledger, &buyer, &operator, order, 1).unwrap();
+        market
+            .fund(&mut ledger, &buyer, &operator, order, 1)
+            .unwrap();
         let refunded = market.refund(&mut ledger, &operator, order).unwrap();
         assert_eq!(refunded, 1_000_000);
         assert_eq!(
@@ -641,9 +693,18 @@ mod tests {
         let (buyer, seller, operator, _founder, mut ledger) = setup();
         let mut market = StoreEscrow::new(&operator, 8, 100).unwrap();
         let order = market
-            .open_order(&buyer.public.awe_id, &seller.public.awe_id, 1_000_000, "ssd", 0, Some(10))
+            .open_order(
+                &buyer.public.awe_id,
+                &seller.public.awe_id,
+                1_000_000,
+                "ssd",
+                0,
+                Some(10),
+            )
             .unwrap();
-        assert!(market.fund(&mut ledger, &buyer, &operator, order, 10).is_err());
+        assert!(market
+            .fund(&mut ledger, &buyer, &operator, order, 10)
+            .is_err());
         assert_eq!(
             ledger.balance_atoms(&buyer.public.awe_id),
             INITIAL_GENESIS_ALLOCATION
@@ -660,12 +721,28 @@ mod tests {
         let (buyer, seller, operator, _founder, mut ledger) = setup();
         let mut market = StoreEscrow::new(&operator, 8, 100).unwrap();
         let held = market
-            .open_order(&buyer.public.awe_id, &seller.public.awe_id, 1_000_000, "ram", 0, Some(10))
+            .open_order(
+                &buyer.public.awe_id,
+                &seller.public.awe_id,
+                1_000_000,
+                "ram",
+                0,
+                Some(10),
+            )
             .unwrap();
         let unfunded = market
-            .open_order(&buyer.public.awe_id, &seller.public.awe_id, 500_000, "fan", 0, Some(10))
+            .open_order(
+                &buyer.public.awe_id,
+                &seller.public.awe_id,
+                500_000,
+                "fan",
+                0,
+                Some(10),
+            )
             .unwrap();
-        market.fund(&mut ledger, &buyer, &operator, held, 1).unwrap();
+        market
+            .fund(&mut ledger, &buyer, &operator, held, 1)
+            .unwrap();
         let refunded = market.expire(&mut ledger, &operator, 10).unwrap();
         assert_eq!(refunded, vec![held]);
         assert_eq!(
@@ -674,7 +751,10 @@ mod tests {
         );
         assert_eq!(market.status(held, 10).unwrap(), OrderStatus::Refunded);
         assert_eq!(market.status(unfunded, 10).unwrap(), OrderStatus::Expired);
-        assert!(market.expire(&mut ledger, &operator, 11).unwrap().is_empty());
+        assert!(market
+            .expire(&mut ledger, &operator, 11)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -699,7 +779,9 @@ mod tests {
                 .unwrap_err(),
             StoreEscrowError::NotHeld(order)
         );
-        market.fund(&mut ledger, &buyer, &operator, order, 1).unwrap();
+        market
+            .fund(&mut ledger, &buyer, &operator, order, 1)
+            .unwrap();
         assert_eq!(
             market
                 .dispute(&outsider.public.awe_id, order, "x", 2)
@@ -784,7 +866,9 @@ mod tests {
                 None,
             )
             .unwrap();
-        market.fund(&mut ledger, &buyer, &operator, order, 11).unwrap();
+        market
+            .fund(&mut ledger, &buyer, &operator, order, 11)
+            .unwrap();
         market
             .dispute(&buyer.public.awe_id, order, "wrong item", 12)
             .unwrap();

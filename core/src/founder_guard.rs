@@ -267,7 +267,10 @@ impl FounderGuard {
         if !Identity::verify(&self.founder_public_key, &message, founder_signature) {
             return Err(FounderGuardError::InvalidFounderSignature);
         }
-        self.recovery_codes = codes.iter().map(|code| *blake3::hash(code).as_bytes()).collect();
+        self.recovery_codes = codes
+            .iter()
+            .map(|code| *blake3::hash(code).as_bytes())
+            .collect();
         self.used_recovery_codes.clear();
         Ok(())
     }
@@ -357,13 +360,17 @@ mod tests {
             let credential = identity(&format!("bound-pass-{i}"));
             let message = FounderGuard::enrollment_message(&credential.public.public_key);
             let signature = founder.sign(&message);
-            guard.enroll_passkey(&signature, &credential, "key", 1).unwrap();
+            guard
+                .enroll_passkey(&signature, &credential, "key", 1)
+                .unwrap();
         }
         let extra = identity("bound-pass-extra");
         let message = FounderGuard::enrollment_message(&extra.public.public_key);
         let signature = founder.sign(&message);
         assert_eq!(
-            guard.enroll_passkey(&signature, &extra, "key", 2).unwrap_err(),
+            guard
+                .enroll_passkey(&signature, &extra, "key", 2)
+                .unwrap_err(),
             FounderGuardError::PasskeyLimitReached
         );
         let long = "x".repeat(MAX_CREDENTIAL_LABEL_CHARS + 1);
@@ -381,11 +388,18 @@ mod tests {
         let passkey = identity("stepup-passkey");
         let mut authority = FounderAuthority::install(&founder, 0);
         let mut guard = FounderGuard::install(&founder, 0);
-        let enroll = founder.sign(&FounderGuard::enrollment_message(&passkey.public.public_key));
+        let enroll = founder.sign(&FounderGuard::enrollment_message(
+            &passkey.public.public_key,
+        ));
         guard.enroll_passkey(&enroll, &passkey, "key", 0).unwrap();
         assert_eq!(
             guard
-                .authorize(&mut authority, FounderAction::SetOfficialPrice, 100, "price")
+                .authorize(
+                    &mut authority,
+                    FounderAction::SetOfficialPrice,
+                    100,
+                    "price"
+                )
                 .unwrap_err(),
             FounderGuardError::StepUpExpired
         );
@@ -415,7 +429,12 @@ mod tests {
             .unwrap();
         assert!(guard.session_active(100));
         let sequence = guard
-            .authorize(&mut authority, FounderAction::SetOfficialPrice, 200, "price")
+            .authorize(
+                &mut authority,
+                FounderAction::SetOfficialPrice,
+                200,
+                "price",
+            )
             .unwrap();
         assert_eq!(sequence, 1);
         // the session expires after the TTL and later actions are refused
@@ -423,7 +442,12 @@ mod tests {
         assert!(!guard.session_active(past_ttl));
         assert_eq!(
             guard
-                .authorize(&mut authority, FounderAction::SetOfficialPrice, past_ttl, "price")
+                .authorize(
+                    &mut authority,
+                    FounderAction::SetOfficialPrice,
+                    past_ttl,
+                    "price"
+                )
                 .unwrap_err(),
             FounderGuardError::StepUpExpired
         );
@@ -436,7 +460,9 @@ mod tests {
         let passkey = identity("recovery-passkey");
         let replacement = identity("recovery-replacement");
         let mut guard = FounderGuard::install(&founder, 0);
-        let enroll = founder.sign(&FounderGuard::enrollment_message(&passkey.public.public_key));
+        let enroll = founder.sign(&FounderGuard::enrollment_message(
+            &passkey.public.public_key,
+        ));
         guard.enroll_passkey(&enroll, &passkey, "key", 0).unwrap();
         let code = [7u8; 32];
         let mut message = Vec::new();
@@ -446,14 +472,10 @@ mod tests {
         let signature = founder.sign(&message);
         // empty and oversized sets are refused
         assert_eq!(
-            guard
-                .set_recovery_codes(&signature, &[], 5)
-                .unwrap_err(),
+            guard.set_recovery_codes(&signature, &[], 5).unwrap_err(),
             FounderGuardError::EmptyRecoverySet
         );
-        let too_many: Vec<[u8; 32]> = (0..=MAX_RECOVERY_CODES)
-            .map(|i| [i as u8; 32])
-            .collect();
+        let too_many: Vec<[u8; 32]> = (0..=MAX_RECOVERY_CODES).map(|i| [i as u8; 32]).collect();
         assert_eq!(
             guard
                 .set_recovery_codes(&signature, &too_many, 5)
@@ -470,9 +492,14 @@ mod tests {
                 .unwrap_err(),
             FounderGuardError::InvalidRecoveryCode
         );
-        guard.recover_with_code(&code, &replacement, "new", 6).unwrap();
+        guard
+            .recover_with_code(&code, &replacement, "new", 6)
+            .unwrap();
         assert_eq!(guard.passkeys().len(), 1);
-        assert_eq!(guard.passkeys()[0].public_key, replacement.public.public_key);
+        assert_eq!(
+            guard.passkeys()[0].public_key,
+            replacement.public.public_key
+        );
         assert_eq!(guard.recovery_codes_remaining(), 0);
         assert_eq!(
             guard

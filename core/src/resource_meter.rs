@@ -42,18 +42,16 @@ pub struct HostMeter;
 #[cfg(target_os = "linux")]
 impl SystemMeter for HostMeter {
     fn read(&mut self) -> io::Result<SystemCounters> {
-        let cpu_core_ticks =
-            parse_proc_stat_cpu_ticks(&std::fs::read_to_string("/proc/stat")?)
-                .ok_or_else(|| invalid_data("cannot parse /proc/stat cpu line"))?;
+        let cpu_core_ticks = parse_proc_stat_cpu_ticks(&std::fs::read_to_string("/proc/stat")?)
+            .ok_or_else(|| invalid_data("cannot parse /proc/stat cpu line"))?;
         let (ram_total_kb, ram_available_kb) =
             parse_proc_meminfo(&std::fs::read_to_string("/proc/meminfo")?)
                 .ok_or_else(|| invalid_data("cannot parse /proc/meminfo"))?;
         let (net_rx_bytes, net_tx_bytes) =
             parse_proc_net_dev(&std::fs::read_to_string("/proc/net/dev")?)
                 .ok_or_else(|| invalid_data("cannot parse /proc/net/dev"))?;
-        let uptime_secs =
-            parse_proc_uptime_secs(&std::fs::read_to_string("/proc/uptime")?)
-                .ok_or_else(|| invalid_data("cannot parse /proc/uptime"))?;
+        let uptime_secs = parse_proc_uptime_secs(&std::fs::read_to_string("/proc/uptime")?)
+            .ok_or_else(|| invalid_data("cannot parse /proc/uptime"))?;
         Ok(SystemCounters {
             cpu_core_ticks,
             ram_total_kb,
@@ -191,19 +189,23 @@ impl<M: SystemMeter> UsagePeriodMeter<M> {
         let Some(previous) = self.last.replace(current) else {
             return Ok(None);
         };
-        let delta_ticks = current.cpu_core_ticks.saturating_sub(previous.cpu_core_ticks);
+        let delta_ticks = current
+            .cpu_core_ticks
+            .saturating_sub(previous.cpu_core_ticks);
         let delta_secs = current.uptime_secs.saturating_sub(previous.uptime_secs);
-        let used_kb_before = previous.ram_total_kb.saturating_sub(previous.ram_available_kb);
-        let used_kb_now = current.ram_total_kb.saturating_sub(current.ram_available_kb);
+        let used_kb_before = previous
+            .ram_total_kb
+            .saturating_sub(previous.ram_available_kb);
+        let used_kb_now = current
+            .ram_total_kb
+            .saturating_sub(current.ram_available_kb);
         let average_used_kb = used_kb_before.saturating_add(used_kb_now) / 2;
         let average_used_mb = (average_used_kb as u128) / 1_024;
         let ram_mb_hours = average_used_mb.saturating_mul(delta_secs as u128) / 3_600;
         let transferred_bytes = current
             .net_rx_bytes
             .saturating_sub(previous.net_rx_bytes)
-            .saturating_add(
-                current.net_tx_bytes.saturating_sub(previous.net_tx_bytes),
-            );
+            .saturating_add(current.net_tx_bytes.saturating_sub(previous.net_tx_bytes));
         let bandwidth_gb = (transferred_bytes as u128) / 1_000_000_000;
         let uptime_hours = (delta_secs as u128) / 3_600;
         Ok(Some(MeasuredUsage {
@@ -312,24 +314,44 @@ impl UsageVerification {
                     && report.period_end_unix == period_end_unix
             })
             .collect();
-        let verifiers: BTreeSet<[u8; 32]> =
-            valid.iter().map(|report| report.verifier_public_key).collect();
-        if valid.len() < MIN_INDEPENDENT_VERIFIERS
-            || verifiers.len() < MIN_INDEPENDENT_VERIFIERS
-        {
+        let verifiers: BTreeSet<[u8; 32]> = valid
+            .iter()
+            .map(|report| report.verifier_public_key)
+            .collect();
+        if valid.len() < MIN_INDEPENDENT_VERIFIERS || verifiers.len() < MIN_INDEPENDENT_VERIFIERS {
             return None;
         }
         Some(MeasuredUsage {
-            cpu_core_ticks: valid.iter().map(|r| r.usage.cpu_core_ticks).min().unwrap_or(0),
-            gpu_unit_ticks: valid.iter().map(|r| r.usage.gpu_unit_ticks).min().unwrap_or(0),
-            ram_mb_hours: valid.iter().map(|r| r.usage.ram_mb_hours).min().unwrap_or(0),
+            cpu_core_ticks: valid
+                .iter()
+                .map(|r| r.usage.cpu_core_ticks)
+                .min()
+                .unwrap_or(0),
+            gpu_unit_ticks: valid
+                .iter()
+                .map(|r| r.usage.gpu_unit_ticks)
+                .min()
+                .unwrap_or(0),
+            ram_mb_hours: valid
+                .iter()
+                .map(|r| r.usage.ram_mb_hours)
+                .min()
+                .unwrap_or(0),
             storage_gb_hours: valid
                 .iter()
                 .map(|r| r.usage.storage_gb_hours)
                 .min()
                 .unwrap_or(0),
-            bandwidth_gb: valid.iter().map(|r| r.usage.bandwidth_gb).min().unwrap_or(0),
-            uptime_hours: valid.iter().map(|r| r.usage.uptime_hours).min().unwrap_or(0),
+            bandwidth_gb: valid
+                .iter()
+                .map(|r| r.usage.bandwidth_gb)
+                .min()
+                .unwrap_or(0),
+            uptime_hours: valid
+                .iter()
+                .map(|r| r.usage.uptime_hours)
+                .min()
+                .unwrap_or(0),
         })
     }
 
@@ -426,7 +448,13 @@ mod tests {
             uptime_hours: 1,
         };
         let mut verification = UsageVerification::default();
-        let report_a = SignedUsageReport::new(&verifier_a, node.public.awe_id.clone(), 0, 3_600, usage.clone());
+        let report_a = SignedUsageReport::new(
+            &verifier_a,
+            node.public.awe_id.clone(),
+            0,
+            3_600,
+            usage.clone(),
+        );
         // a single report is not consensus
         verification.add(report_a.clone());
         assert_eq!(verification.distinct_verifiers(), 1);
@@ -440,7 +468,13 @@ mod tests {
             .consensus_usage(&node.public.awe_id, 0, 3_600)
             .is_none());
         // a second distinct verifier completes the consensus
-        let report_b = SignedUsageReport::new(&verifier_b, node.public.awe_id.clone(), 0, 3_600, usage.clone());
+        let report_b = SignedUsageReport::new(
+            &verifier_b,
+            node.public.awe_id.clone(),
+            0,
+            3_600,
+            usage.clone(),
+        );
         verification.add(report_b);
         assert_eq!(verification.distinct_verifiers(), 2);
         let consensus = verification
@@ -466,8 +500,13 @@ mod tests {
             bandwidth_gb: 0,
             uptime_hours: 1,
         };
-        let mut tampered =
-            SignedUsageReport::new(&verifier_a, node.public.awe_id.clone(), 0, 3_600, usage.clone());
+        let mut tampered = SignedUsageReport::new(
+            &verifier_a,
+            node.public.awe_id.clone(),
+            0,
+            3_600,
+            usage.clone(),
+        );
         tampered.usage.cpu_core_ticks = 10_000;
         assert!(!tampered.verify());
         let mut verification = UsageVerification::default();
@@ -525,7 +564,13 @@ mod tests {
             node_report.clone(),
         ));
         let evidence = verification
-            .evidence(node_report.clone(), &node_owner.public.awe_id, 0, 7_200, Some(node_report))
+            .evidence(
+                node_report.clone(),
+                &node_owner.public.awe_id,
+                0,
+                7_200,
+                Some(node_report),
+            )
             .unwrap();
         let mut economy = ResourceEconomy::default();
         economy

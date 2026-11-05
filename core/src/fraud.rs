@@ -186,7 +186,10 @@ impl FraudDetector {
     }
 
     pub fn open_alerts(&self) -> Vec<&FraudAlert> {
-        self.alerts.iter().filter(|alert| !alert.acknowledged).collect()
+        self.alerts
+            .iter()
+            .filter(|alert| !alert.acknowledged)
+            .collect()
     }
 
     pub fn observations(&self) -> &VecDeque<ObservationRecord> {
@@ -257,22 +260,42 @@ impl FraudDetector {
     ) -> Result<Option<u64>, FraudError> {
         let tolerance = self.policy.report_tolerance_bps as u128;
         let mut inflated: Vec<&'static str> = Vec::new();
-        if usage_claim_exceeds(claimed.cpu_core_ticks as u128, measured.cpu_core_ticks as u128, tolerance) {
+        if usage_claim_exceeds(
+            claimed.cpu_core_ticks as u128,
+            measured.cpu_core_ticks as u128,
+            tolerance,
+        ) {
             inflated.push("cpu");
         }
-        if usage_claim_exceeds(claimed.gpu_unit_ticks as u128, measured.gpu_unit_ticks as u128, tolerance) {
+        if usage_claim_exceeds(
+            claimed.gpu_unit_ticks as u128,
+            measured.gpu_unit_ticks as u128,
+            tolerance,
+        ) {
             inflated.push("gpu");
         }
         if usage_claim_exceeds(claimed.ram_mb_hours, measured.ram_mb_hours, tolerance) {
             inflated.push("ram");
         }
-        if usage_claim_exceeds(claimed.storage_gb_hours, measured.storage_gb_hours, tolerance) {
+        if usage_claim_exceeds(
+            claimed.storage_gb_hours,
+            measured.storage_gb_hours,
+            tolerance,
+        ) {
             inflated.push("storage");
         }
-        if usage_claim_exceeds(claimed.bandwidth_gb as u128, measured.bandwidth_gb as u128, tolerance) {
+        if usage_claim_exceeds(
+            claimed.bandwidth_gb as u128,
+            measured.bandwidth_gb as u128,
+            tolerance,
+        ) {
             inflated.push("bandwidth");
         }
-        if usage_claim_exceeds(claimed.uptime_hours as u128, measured.uptime_hours as u128, tolerance) {
+        if usage_claim_exceeds(
+            claimed.uptime_hours as u128,
+            measured.uptime_hours as u128,
+            tolerance,
+        ) {
             inflated.push("uptime");
         }
         let mut payload = Vec::new();
@@ -280,7 +303,8 @@ impl FraudDetector {
         payload.extend_from_slice(node.as_bytes());
         payload.extend_from_slice(&serde_json::to_vec(claimed).unwrap_or_default());
         payload.extend_from_slice(&serde_json::to_vec(measured).unwrap_or_default());
-        let evidence_hash = self.record_observation(Some(node.clone()), at_unix, "resource report", &payload);
+        let evidence_hash =
+            self.record_observation(Some(node.clone()), at_unix, "resource report", &payload);
         if inflated.is_empty() {
             return Ok(None);
         }
@@ -302,7 +326,11 @@ impl FraudDetector {
 
     /// Tracks reward purposes: the same payout id may only ever be
     /// presented once.
-    pub fn observe_payout(&mut self, reward_id: [u8; 32], at_unix: u64) -> Result<Option<u64>, FraudError> {
+    pub fn observe_payout(
+        &mut self,
+        reward_id: [u8; 32],
+        at_unix: u64,
+    ) -> Result<Option<u64>, FraudError> {
         let mut payload = Vec::new();
         payload.extend_from_slice(b"AWENET-FRAUD-PAYOUT/v1");
         payload.extend_from_slice(&reward_id);
@@ -339,7 +367,8 @@ impl FraudDetector {
         payload.extend_from_slice(b"AWENET-FRAUD-SUBMISSION/v1");
         payload.extend_from_slice(&key.0);
         payload.extend_from_slice(&key.1);
-        let evidence_hash = self.record_observation(Some(contributor.clone()), at_unix, "submission", &payload);
+        let evidence_hash =
+            self.record_observation(Some(contributor.clone()), at_unix, "submission", &payload);
         if self.submission_keys.contains(&key) {
             let id = self.push_alert(
                 AlertKind::DuplicateSubmission,
@@ -373,7 +402,8 @@ impl FraudDetector {
         payload.extend_from_slice(buyer.as_bytes());
         payload.extend_from_slice(seller.as_bytes());
         payload.extend_from_slice(&amount_atoms.to_be_bytes());
-        let evidence_hash = self.record_observation(Some(buyer.clone()), at_unix, "store order", &payload);
+        let evidence_hash =
+            self.record_observation(Some(buyer.clone()), at_unix, "store order", &payload);
         if buyer == seller {
             let id = self.push_alert(
                 AlertKind::SelfDealingOrder,
@@ -421,11 +451,16 @@ impl FraudDetector {
     }
 
     /// Tracks transfer velocity per sender inside a rolling window.
-    pub fn observe_transfer(&mut self, sender: &AweId, at_unix: u64) -> Result<Option<u64>, FraudError> {
+    pub fn observe_transfer(
+        &mut self,
+        sender: &AweId,
+        at_unix: u64,
+    ) -> Result<Option<u64>, FraudError> {
         let mut payload = Vec::new();
         payload.extend_from_slice(b"AWENET-FRAUD-TRANSFER/v1");
         payload.extend_from_slice(sender.as_bytes());
-        let evidence_hash = self.record_observation(Some(sender.clone()), at_unix, "transfer", &payload);
+        let evidence_hash =
+            self.record_observation(Some(sender.clone()), at_unix, "transfer", &payload);
         let window = self.policy.velocity_window_secs;
         let max_transfers = self.policy.max_transfers_per_window;
         let key = sender.to_hex();
@@ -515,20 +550,16 @@ mod tests {
         assert!(alert.detail.contains("cpu"));
         // 10% above stays inside the tolerance
         let borderline = usage(110, 0, 10, 1);
-        assert!(
-            detector
-                .observe_resource_report(&node, &borderline, &measured, 20)
-                .unwrap()
-                .is_none()
-        );
+        assert!(detector
+            .observe_resource_report(&node, &borderline, &measured, 20)
+            .unwrap()
+            .is_none());
         // a claim with no measurement behind it is flagged too
         let unverifiable = usage(1, 0, 0, 0);
-        assert!(
-            detector
-                .observe_resource_report(&node, &unverifiable, &usage(0, 0, 0, 0), 30)
-                .unwrap()
-                .is_some()
-        );
+        assert!(detector
+            .observe_resource_report(&node, &unverifiable, &usage(0, 0, 0, 0), 30)
+            .unwrap()
+            .is_some());
         assert_eq!(detector.observations().len(), 3);
     }
 
@@ -549,11 +580,23 @@ mod tests {
         let contributor = identity("fraud-contributor");
         let other = identity("fraud-other");
         let content = [3u8; 32];
-        assert!(detector.observe_submission(&contributor, content, 1).unwrap().is_none());
-        detector.observe_submission(&contributor, content, 2).unwrap().unwrap();
-        assert_eq!(detector.alerts().last().unwrap().kind, AlertKind::DuplicateSubmission);
+        assert!(detector
+            .observe_submission(&contributor, content, 1)
+            .unwrap()
+            .is_none());
+        detector
+            .observe_submission(&contributor, content, 2)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            detector.alerts().last().unwrap().kind,
+            AlertKind::DuplicateSubmission
+        );
         // the same content from a different contributor is a new key
-        assert!(detector.observe_submission(&other, content, 3).unwrap().is_none());
+        assert!(detector
+            .observe_submission(&other, content, 3)
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -564,7 +607,10 @@ mod tests {
             .observe_store_order(&account, &account, 1_000, 1)
             .unwrap()
             .unwrap();
-        assert_eq!(detector.alerts().last().unwrap().kind, AlertKind::SelfDealingOrder);
+        assert_eq!(
+            detector.alerts().last().unwrap().kind,
+            AlertKind::SelfDealingOrder
+        );
     }
 
     #[test]
@@ -573,25 +619,24 @@ mod tests {
         let buyer = identity("wash-buyer");
         let seller = identity("wash-seller");
         for at in 0..(DEFAULT_WASH_REPEAT_THRESHOLD - 1) as u64 {
-            assert!(
-                detector
-                    .observe_store_order(&buyer, &seller, 5_000, at)
-                    .unwrap()
-                    .is_none()
-            );
+            assert!(detector
+                .observe_store_order(&buyer, &seller, 5_000, at)
+                .unwrap()
+                .is_none());
         }
         detector
             .observe_store_order(&buyer, &seller, 5_000, 10)
             .unwrap()
             .unwrap();
-        assert_eq!(detector.alerts().last().unwrap().kind, AlertKind::WashTrading);
-        // a different amount is tracked separately
-        assert!(
-            detector
-                .observe_store_order(&buyer, &seller, 7_000, 11)
-                .unwrap()
-                .is_none()
+        assert_eq!(
+            detector.alerts().last().unwrap().kind,
+            AlertKind::WashTrading
         );
+        // a different amount is tracked separately
+        assert!(detector
+            .observe_store_order(&buyer, &seller, 7_000, 11)
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -601,15 +646,19 @@ mod tests {
         for at in 0..DEFAULT_MAX_TRANSFERS_PER_WINDOW as u64 {
             assert!(detector.observe_transfer(&sender, at).unwrap().is_none());
         }
-        detector.observe_transfer(&sender, DEFAULT_MAX_TRANSFERS_PER_WINDOW as u64).unwrap().unwrap();
-        assert_eq!(detector.alerts().last().unwrap().kind, AlertKind::TransferVelocity);
-        // the next transfer inside the same window does not repeat the alert
-        assert!(
-            detector
-                .observe_transfer(&sender, DEFAULT_MAX_TRANSFERS_PER_WINDOW as u64 + 1)
-                .unwrap()
-                .is_none()
+        detector
+            .observe_transfer(&sender, DEFAULT_MAX_TRANSFERS_PER_WINDOW as u64)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            detector.alerts().last().unwrap().kind,
+            AlertKind::TransferVelocity
         );
+        // the next transfer inside the same window does not repeat the alert
+        assert!(detector
+            .observe_transfer(&sender, DEFAULT_MAX_TRANSFERS_PER_WINDOW as u64 + 1)
+            .unwrap()
+            .is_none());
         // a fresh window resets the count
         let later = DEFAULT_VELOCITY_WINDOW_SECS + 100;
         assert!(detector.observe_transfer(&sender, later).unwrap().is_none());
@@ -639,9 +688,7 @@ mod tests {
         let mut detector = FraudDetector::new(policy);
         let node = identity("evidence-node");
         for at in 0..(MAX_OBSERVATIONS as u64) + 10 {
-            detector
-                .observe_payout([at as u8; 32], at)
-                .unwrap();
+            detector.observe_payout([at as u8; 32], at).unwrap();
         }
         assert_eq!(detector.observations().len(), MAX_OBSERVATIONS);
         let _ = node;

@@ -74,7 +74,12 @@ impl EarningEvent {
         if at_unix == 0 {
             return Err(RankingsError::InvalidTime);
         }
-        Ok(Self { contributor, category, atoms, at_unix })
+        Ok(Self {
+            contributor,
+            category,
+            atoms,
+            at_unix,
+        })
     }
 }
 
@@ -135,8 +140,7 @@ pub struct ContributorStats {
 
 impl ContributorStats {
     pub fn total_atoms(&self) -> u128 {
-        self
-            .resource_atoms
+        self.resource_atoms
             .saturating_add(self.work_atoms)
             .saturating_add(self.store_revenue_atoms)
     }
@@ -219,7 +223,9 @@ impl Rankings {
             }
             let key = event.contributor.to_hex();
             *totals.entry(key.clone()).or_default() += event.atoms;
-            contributors.entry(key).or_insert_with(|| event.contributor.clone());
+            contributors
+                .entry(key)
+                .or_insert_with(|| event.contributor.clone());
         }
         let mut ranked: Vec<(AweId, u128)> = totals
             .into_iter()
@@ -277,10 +283,14 @@ impl Rankings {
         if stats.continuity_weeks >= STEADY_CONTRIBUTOR_WEEKS {
             achievements.push(Achievement::SteadyContributor);
         }
-        if self.category_event_count(contributor, ContributionCategory::Resource) >= RESOURCE_VETERAN_EVENTS {
+        if self.category_event_count(contributor, ContributionCategory::Resource)
+            >= RESOURCE_VETERAN_EVENTS
+        {
             achievements.push(Achievement::ResourceVeteran);
         }
-        if self.category_event_count(contributor, ContributionCategory::StoreRevenue) >= TRUSTED_SELLER_EVENTS {
+        if self.category_event_count(contributor, ContributionCategory::StoreRevenue)
+            >= TRUSTED_SELLER_EVENTS
+        {
             achievements.push(Achievement::TrustedSeller);
         }
         if stats.event_count >= PILLAR_OF_COMMUNITY_EVENTS {
@@ -308,8 +318,7 @@ impl Rankings {
 
     fn category_event_count(&self, contributor: &AweId, category: ContributionCategory) -> u64 {
         let key = contributor.to_hex();
-        self
-            .per_contributor
+        self.per_contributor
             .get(&key)
             .map(|indices| {
                 indices
@@ -339,8 +348,17 @@ mod tests {
         let event = EarningEvent::new(id.clone(), ContributionCategory::Work, 500, 100).unwrap();
         rankings.record(event).unwrap();
         assert_eq!(rankings.event_count(), 1);
-        assert!(rankings.record(EarningEvent::new(id.clone(), ContributionCategory::Work, 0, 100)).is_err());
-        assert!(rankings.record(EarningEvent::new(id, ContributionCategory::Work, 500, 0)).is_err());
+        assert!(rankings
+            .record(EarningEvent::new(
+                id.clone(),
+                ContributionCategory::Work,
+                0,
+                100
+            ))
+            .is_err());
+        assert!(rankings
+            .record(EarningEvent::new(id, ContributionCategory::Work, 500, 0))
+            .is_err());
     }
 
     #[test]
@@ -349,10 +367,20 @@ mod tests {
         let id = contributor("ranking-bounded");
         for i in 0..MAX_EVENTS {
             rankings
-                .record(EarningEvent::new(id.clone(), ContributionCategory::Resource, 1, i as u64 + 1))
+                .record(EarningEvent::new(
+                    id.clone(),
+                    ContributionCategory::Resource,
+                    1,
+                    i as u64 + 1,
+                ))
                 .unwrap();
         }
-        let result = rankings.record(EarningEvent::new(id, ContributionCategory::Resource, 1, MAX_EVENTS as u64 + 1));
+        let result = rankings.record(EarningEvent::new(
+            id,
+            ContributionCategory::Resource,
+            1,
+            MAX_EVENTS as u64 + 1,
+        ));
         assert_eq!(result.unwrap_err(), RankingsError::HistoryFull);
         assert_eq!(rankings.event_count(), MAX_EVENTS);
     }
@@ -363,22 +391,54 @@ mod tests {
         let aram = contributor("aram");
         let karen = contributor("karen");
         let davit = contributor("davit");
-        rankings.record(EarningEvent::new(aram.clone(), ContributionCategory::Resource, 800, 100)).unwrap();
-        rankings.record(EarningEvent::new(karen.clone(), ContributionCategory::Resource, 400, 100)).unwrap();
-        rankings.record(EarningEvent::new(davit.clone(), ContributionCategory::Work, 900, 100)).unwrap();
-        rankings.record(EarningEvent::new(aram.clone(), ContributionCategory::Work, 50, 900)).unwrap();
+        rankings
+            .record(EarningEvent::new(
+                aram.clone(),
+                ContributionCategory::Resource,
+                800,
+                100,
+            ))
+            .unwrap();
+        rankings
+            .record(EarningEvent::new(
+                karen.clone(),
+                ContributionCategory::Resource,
+                400,
+                100,
+            ))
+            .unwrap();
+        rankings
+            .record(EarningEvent::new(
+                davit.clone(),
+                ContributionCategory::Work,
+                900,
+                100,
+            ))
+            .unwrap();
+        rankings
+            .record(EarningEvent::new(
+                aram.clone(),
+                ContributionCategory::Work,
+                50,
+                900,
+            ))
+            .unwrap();
         // all categories since the beginning: ranked by atoms descending
         let all = rankings.leaderboard(None, 1_000, 1_000).unwrap();
         assert_eq!(all[0], (davit.clone(), 900));
         assert_eq!(all[1], (aram.clone(), 850));
         assert_eq!(all[2], (karen.clone(), 400));
         // resource only
-        let resource = rankings.leaderboard(Some(ContributionCategory::Resource), 1_000, 1_000).unwrap();
+        let resource = rankings
+            .leaderboard(Some(ContributionCategory::Resource), 1_000, 1_000)
+            .unwrap();
         assert_eq!(resource[0], (aram.clone(), 800));
         assert_eq!(resource[1], (karen.clone(), 400));
         assert_eq!(resource.len(), 2);
         // a narrow window excludes the old resource earnings
-        let fresh = rankings.leaderboard(Some(ContributionCategory::Resource), 100, 1_000).unwrap();
+        let fresh = rankings
+            .leaderboard(Some(ContributionCategory::Resource), 100, 1_000)
+            .unwrap();
         assert!(fresh.is_empty());
         let fresh_all = rankings.leaderboard(None, 100, 1_000).unwrap();
         assert_eq!(fresh_all[0], (aram.clone(), 50));
@@ -390,10 +450,38 @@ mod tests {
         let mut rankings = Rankings::new();
         let id = contributor("stats-id");
         let week = WEEK_SECS;
-        rankings.record(EarningEvent::new(id.clone(), ContributionCategory::Resource, 100, week + 10)).unwrap();
-        rankings.record(EarningEvent::new(id.clone(), ContributionCategory::Work, 200, week + 20)).unwrap();
-        rankings.record(EarningEvent::new(id.clone(), ContributionCategory::StoreRevenue, 300, week * 2 + 5)).unwrap();
-        rankings.record(EarningEvent::new(id.clone(), ContributionCategory::Work, 400, week * 9 + 5)).unwrap();
+        rankings
+            .record(EarningEvent::new(
+                id.clone(),
+                ContributionCategory::Resource,
+                100,
+                week + 10,
+            ))
+            .unwrap();
+        rankings
+            .record(EarningEvent::new(
+                id.clone(),
+                ContributionCategory::Work,
+                200,
+                week + 20,
+            ))
+            .unwrap();
+        rankings
+            .record(EarningEvent::new(
+                id.clone(),
+                ContributionCategory::StoreRevenue,
+                300,
+                week * 2 + 5,
+            ))
+            .unwrap();
+        rankings
+            .record(EarningEvent::new(
+                id.clone(),
+                ContributionCategory::Work,
+                400,
+                week * 9 + 5,
+            ))
+            .unwrap();
         let stats = rankings.stats(&id);
         assert_eq!(stats.resource_atoms, 100);
         assert_eq!(stats.work_atoms, 600);
@@ -413,7 +501,12 @@ mod tests {
         let steady = contributor("steady");
         for week in 0..STEADY_CONTRIBUTOR_WEEKS {
             rankings
-                .record(EarningEvent::new(steady.clone(), ContributionCategory::Work, 10, week * WEEK_SECS + 1))
+                .record(EarningEvent::new(
+                    steady.clone(),
+                    ContributionCategory::Work,
+                    10,
+                    week * WEEK_SECS + 1,
+                ))
                 .unwrap();
         }
         let achievements = rankings.achievements(&steady);
@@ -421,21 +514,36 @@ mod tests {
         assert!(achievements.contains(&Achievement::FiveContributions));
         assert!(achievements.contains(&Achievement::SteadyContributor));
         assert!(!achievements.contains(&Achievement::ResourceVeteran));
-        assert_eq!(rankings.level(&steady), ContributorLevel::AdvancedContributor);
+        assert_eq!(
+            rankings.level(&steady),
+            ContributorLevel::AdvancedContributor
+        );
 
         let seller = contributor("seller");
         for i in 0..TRUSTED_SELLER_EVENTS {
             rankings
-                .record(EarningEvent::new(seller.clone(), ContributionCategory::StoreRevenue, 10, i + 1))
+                .record(EarningEvent::new(
+                    seller.clone(),
+                    ContributionCategory::StoreRevenue,
+                    10,
+                    i + 1,
+                ))
                 .unwrap();
         }
-        assert!(rankings.achievements(&seller).contains(&Achievement::TrustedSeller));
+        assert!(rankings
+            .achievements(&seller)
+            .contains(&Achievement::TrustedSeller));
         assert_eq!(rankings.level(&seller), ContributorLevel::Expert);
 
         let pillar = contributor("pillar");
         for i in 0..PILLAR_OF_COMMUNITY_EVENTS {
             rankings
-                .record(EarningEvent::new(pillar.clone(), ContributionCategory::Resource, 10, i + 1))
+                .record(EarningEvent::new(
+                    pillar.clone(),
+                    ContributionCategory::Resource,
+                    10,
+                    i + 1,
+                ))
                 .unwrap();
         }
         let pillar_achievements = rankings.achievements(&pillar);
