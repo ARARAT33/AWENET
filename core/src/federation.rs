@@ -73,7 +73,7 @@ where
         entropy.zeroize();
         return Err("secure_random_unavailable".to_string());
     }
-    let encoded = hex::encode(&entropy);
+    let encoded = hex::encode(entropy);
     entropy.zeroize();
     Ok(format!("{prefix}-{encoded}"))
 }
