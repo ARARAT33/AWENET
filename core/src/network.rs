@@ -1642,16 +1642,19 @@ mod tests {
             received.extend(server.take_inbox());
             if tokio::time::Instant::now() >= deadline {
                 server_task.abort();
-                panic!("server did not receive both outbound sends: {}", received.len());
+                panic!(
+                    "server did not receive both outbound sends: {}",
+                    received.len()
+                );
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        assert!(received.iter().any(|(_, stream, payload)| {
-            *stream == 200 && payload == b"unconfirmed-send"
-        }));
-        assert!(received.iter().any(|(_, stream, payload)| {
-            *stream == 200 && payload == b"confirmed-send"
-        }));
+        assert!(received
+            .iter()
+            .any(|(_, stream, payload)| { *stream == 200 && payload == b"unconfirmed-send" }));
+        assert!(received
+            .iter()
+            .any(|(_, stream, payload)| { *stream == 200 && payload == b"confirmed-send" }));
 
         server_task.abort();
         let _ = server_task.await;
