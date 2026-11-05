@@ -84,8 +84,15 @@ fn generated_join_token(response: &str, prefix: &str) -> String {
         .get("join_token")
         .and_then(|value| value.as_str())
         .expect("federation join token");
-    assert!(token.starts_with(prefix), "unexpected token prefix: {token}");
-    assert_eq!(token.len(), prefix.len() + 64, "token must contain 256 random bits");
+    assert!(
+        token.starts_with(prefix),
+        "unexpected token prefix: {token}"
+    );
+    assert_eq!(
+        token.len(),
+        prefix.len() + 64,
+        "token must contain 256 random bits"
+    );
     token.to_owned()
 }
 
@@ -169,7 +176,10 @@ fn three_node_product_smoke() {
             r#"{"kind":"awenode","name":"E2E DC"}"#,
         );
         let repeated_node_token = generated_join_token(&repeated_node_invite, "node-");
-        assert_ne!(node_token, repeated_node_token, "identical inputs must not reproduce a join token");
+        assert_ne!(
+            node_token, repeated_node_token,
+            "identical inputs must not reproduce a join token"
+        );
 
         let dc_invite = post(
             "127.0.0.1:46201",
