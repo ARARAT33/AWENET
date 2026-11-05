@@ -1200,7 +1200,10 @@ impl Node {
             .acquire()
             .await
             .map_err(|_| NetworkError::Protocol("outbound limiter closed".into()))?;
-        let connection = if let Some(connection) = self.active.read().await.get(peer_id).cloned() {
+
+        // End the read-guard scope before the fallback path takes the write lock.
+        let existing = { self.active.read().await.get(peer_id).cloned() };
+        let connection = if let Some(connection) = existing {
             connection
         } else {
             let address = self
@@ -1210,13 +1213,18 @@ impl Node {
                 .get(peer_id)
                 .and_then(|peer| peer.addresses.first().copied())
                 .ok_or_else(|| NetworkError::Protocol("peer address is unknown".into()))?;
-            let connection = Arc::new(tokio::sync::Mutex::new(self.connect(address).await?));
+            let candidate = Arc::new(tokio::sync::Mutex::new(self.connect(address).await?));
             let mut active = self.active.write().await;
-            if active.len() < MAX_ACTIVE_CONNECTIONS {
-                active.insert(*peer_id, connection.clone());
+            if let Some(existing) = active.get(peer_id) {
+                existing.clone()
+            } else {
+                if active.len() < MAX_ACTIVE_CONNECTIONS {
+                    active.insert(*peer_id, candidate.clone());
+                }
+                candidate
             }
-            connection
         };
+
         let mut connection = connection.lock().await;
         let started = Instant::now();
         let result = connection
@@ -1224,6 +1232,7 @@ impl Node {
             .await
             .map(|_| started.elapsed());
         if result.is_err() {
+            drop(connection);
             self.active.write().await.remove(peer_id);
         }
         result
@@ -1247,28 +1256,31 @@ impl Node {
             .map_err(|_| NetworkError::Protocol("outbound limiter closed".into()))?;
 
         for attempt in 0..2 {
-            let (connection, cached) =
-                if let Some(connection) = self.active.read().await.get(peer_id).cloned() {
-                    (connection, true)
+            // Keep the read lock in its own scope. An if-let scrutinee can
+            // otherwise retain the guard while the fallback branch needs a
+            // write lock to publish a newly established connection.
+            let existing = { self.active.read().await.get(peer_id).cloned() };
+            let (connection, cached) = if let Some(connection) = existing {
+                (connection, true)
+            } else {
+                let address = self
+                    .peers
+                    .read()
+                    .await
+                    .get(peer_id)
+                    .and_then(|peer| peer.addresses.first().copied())
+                    .ok_or_else(|| NetworkError::Protocol("peer address is unknown".into()))?;
+                let candidate = Arc::new(tokio::sync::Mutex::new(self.connect(address).await?));
+                let mut active = self.active.write().await;
+                if let Some(existing) = active.get(peer_id) {
+                    (existing.clone(), true)
+                } else if active.len() < MAX_ACTIVE_CONNECTIONS {
+                    active.insert(*peer_id, candidate.clone());
+                    (candidate, true)
                 } else {
-                    let address = self
-                        .peers
-                        .read()
-                        .await
-                        .get(peer_id)
-                        .and_then(|peer| peer.addresses.first().copied())
-                        .ok_or_else(|| NetworkError::Protocol("peer address is unknown".into()))?;
-                    let candidate = Arc::new(tokio::sync::Mutex::new(self.connect(address).await?));
-                    let mut active = self.active.write().await;
-                    if let Some(existing) = active.get(peer_id) {
-                        (existing.clone(), true)
-                    } else if active.len() < MAX_ACTIVE_CONNECTIONS {
-                        active.insert(*peer_id, candidate.clone());
-                        (candidate, true)
-                    } else {
-                        (candidate, false)
-                    }
-                };
+                    (candidate, false)
+                }
+            };
 
             let mut connection_guard = connection.lock().await;
             if cached {
@@ -1551,6 +1563,98 @@ mod tests {
             .unwrap();
         assert!(elapsed < HELLO_TIMEOUT);
         t.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn outbound_send_paths_connect_when_no_cached_connection() {
+        let reservation = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = reservation.local_addr().unwrap();
+        drop(reservation);
+
+        let server = Node::new(
+            Identity::generate(Username::new("outbound-server").unwrap()),
+            address,
+        );
+        let server_id = *server.identity.public.awe_id.as_bytes();
+        let server_key = server.identity.public.public_key;
+        let server_task = {
+            let server = server.clone();
+            tokio::spawn(async move {
+                let _ = server.listen().await;
+            })
+        };
+
+        let listener_deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            if TcpStream::connect(address).await.is_ok() {
+                break;
+            }
+            if tokio::time::Instant::now() >= listener_deadline {
+                server_task.abort();
+                panic!("server listener did not become ready");
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        let unconfirmed_sender = Node::new(
+            Identity::generate(Username::new("send-client").unwrap()),
+            "127.0.0.1:0".parse().unwrap(),
+        );
+        unconfirmed_sender.peers.write().await.insert(
+            server_id,
+            PeerRecord {
+                awe_id: server_id,
+                public_key: server_key,
+                addresses: vec![address],
+                protocol_version: VERSION,
+                last_seen_unix: now(),
+            },
+        );
+        unconfirmed_sender
+            .send_to_peer(&server_id, 200, b"unconfirmed-send".to_vec())
+            .await
+            .unwrap();
+        assert_eq!(unconfirmed_sender.active_peer_count().await, 1);
+
+        let confirmed_sender = Node::new(
+            Identity::generate(Username::new("confirmed-client").unwrap()),
+            "127.0.0.1:0".parse().unwrap(),
+        );
+        confirmed_sender.peers.write().await.insert(
+            server_id,
+            PeerRecord {
+                awe_id: server_id,
+                public_key: server_key,
+                addresses: vec![address],
+                protocol_version: VERSION,
+                last_seen_unix: now(),
+            },
+        );
+        confirmed_sender
+            .send_to_peer_confirmed(&server_id, 200, b"confirmed-send".to_vec())
+            .await
+            .unwrap();
+        assert_eq!(confirmed_sender.active_peer_count().await, 1);
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        let mut received = Vec::new();
+        while received.len() < 2 {
+            received.extend(server.take_inbox());
+            if tokio::time::Instant::now() >= deadline {
+                server_task.abort();
+                panic!("server did not receive both outbound sends: {}", received.len());
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(received.iter().any(|(_, stream, payload)| {
+            *stream == 200 && payload == b"unconfirmed-send"
+        }));
+        assert!(received.iter().any(|(_, stream, payload)| {
+            *stream == 200 && payload == b"confirmed-send"
+        }));
+
+        server_task.abort();
+        let _ = server_task.await;
     }
 
     #[tokio::test]
