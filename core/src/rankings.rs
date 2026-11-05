@@ -367,10 +367,10 @@ mod tests {
         rankings.record(EarningEvent::new(karen.clone(), ContributionCategory::Resource, 400, 100)).unwrap();
         rankings.record(EarningEvent::new(davit.clone(), ContributionCategory::Work, 900, 100)).unwrap();
         rankings.record(EarningEvent::new(aram.clone(), ContributionCategory::Work, 50, 900)).unwrap();
-        // all categories since the beginning
+        // all categories since the beginning: ranked by atoms descending
         let all = rankings.leaderboard(None, 1_000, 1_000).unwrap();
-        assert_eq!(all[0], (aram.clone(), 850));
-        assert_eq!(all[1], (davit.clone(), 900 - 900 + 900));
+        assert_eq!(all[0], (davit.clone(), 900));
+        assert_eq!(all[1], (aram.clone(), 850));
         assert_eq!(all[2], (karen.clone(), 400));
         // resource only
         let resource = rankings.leaderboard(Some(ContributionCategory::Resource), 1_000, 1_000).unwrap();
