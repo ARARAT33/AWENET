@@ -170,7 +170,7 @@ fn load_identity(path: &PathBuf, password: &str, username: &str) -> Result<Ident
 }
 
 fn http_response(status: &str, content_type: &str, body: &str) -> Vec<u8> {
-    format!("HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nX-Content-Type-Options: nosniff\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}", body.len()).into_bytes()
+    format!("HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nCross-Origin-Resource-Policy: same-origin\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}", body.len()).into_bytes()
 }
 
 fn is_loopback_host(host: &str) -> bool {
@@ -2765,6 +2765,9 @@ mod tests {
             .to_ascii_lowercase()
             .contains("access-control-allow-origin"));
         assert!(response.contains("X-Content-Type-Options: nosniff"));
+        assert!(response.contains("X-Frame-Options: DENY"));
+        assert!(response.contains("Referrer-Policy: no-referrer"));
+        assert!(response.contains("Cross-Origin-Resource-Policy: same-origin"));
     }
 
     #[test]
