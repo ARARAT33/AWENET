@@ -409,6 +409,16 @@ impl WorkMarket {
         self.suggestions.len()
     }
 
+    /// All submissions in id order, for review queues and dashboards.
+    pub fn submissions(&self) -> impl Iterator<Item = &TaskSubmission> {
+        self.submissions.values()
+    }
+
+    /// All task suggestions in id order, for the founder review queue.
+    pub fn suggestions(&self) -> impl Iterator<Item = &TaskSuggestion> {
+        self.suggestions.values()
+    }
+
     pub fn assignment_count(&self, task_id: u64) -> usize {
         self.assignments.get(&task_id).map_or(0, |set| set.len())
     }
@@ -1699,4 +1709,48 @@ mod tests {
             &founder.public.awe_id
         );
     }
+
+    #[test]
+    fn submission_and_suggestion_queues_are_iterable() {
+        let founder = identity("iter-founder");
+        let contributor = identity("iter-contributor");
+        let mut authority = FounderAuthority::install(&founder, 0);
+        let mut market = WorkMarket::new();
+        let task = market
+            .publish_task(
+                &mut authority,
+                &founder.public.public_key,
+                spec("Queue task", 10 * ATOMS_PER_COIN),
+                1,
+            )
+            .unwrap();
+        let suggestion = market
+            .suggest_task(
+                &contributor.public.awe_id,
+                spec("Suggested task", 5 * ATOMS_PER_COIN),
+                2,
+            )
+            .unwrap();
+        market
+            .accept_task(&contributor.public.awe_id, task, 3)
+            .unwrap();
+        let submission = market
+            .submit_work(
+                &contributor.public.awe_id,
+                task,
+                vec!["https://example.com/proof".to_string()],
+                None,
+                4,
+            )
+            .unwrap();
+        let submissions: Vec<_> = market.submissions().collect();
+        assert_eq!(submissions.len(), 1);
+        assert_eq!(submissions[0].id, submission);
+        assert_eq!(submissions[0].task_id, task);
+        let suggestions: Vec<_> = market.suggestions().collect();
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].id, suggestion);
+        assert_eq!(suggestions[0].contributor, contributor.public.awe_id);
+    }
 }
+

@@ -106,7 +106,7 @@ pub struct StoreOrder {
     pub dispute: Option<Dispute>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct StoreEscrow {
     operator: AweId,
     fee_bps: u16,
@@ -145,6 +145,11 @@ impl StoreEscrow {
 
     pub fn order(&self, order_id: u64) -> Option<&StoreOrder> {
         self.orders.get(&order_id)
+    }
+
+    /// All store orders in id order, for listing and persistence surfaces.
+    pub fn orders(&self) -> impl Iterator<Item = &StoreOrder> {
+        self.orders.values()
     }
 
     /// Opens a store order: the escrow terms are fixed up front (amount,
@@ -895,4 +900,47 @@ mod tests {
         );
         assert_eq!(market.status(order, 13).unwrap(), OrderStatus::Released);
     }
+
+    #[test]
+    fn store_escrow_serializes_and_restores_exactly() {
+        let (buyer, seller, operator, _founder, mut ledger) = setup();
+        let mut market = StoreEscrow::new(&operator, 8, 500).unwrap();
+        let order = market
+            .open_order(
+                &buyer.public.awe_id,
+                &seller.public.awe_id,
+                2_000_000,
+                "gpu rental",
+                10,
+                None,
+            )
+            .unwrap();
+        market
+            .fund(&mut ledger, &buyer, &operator, order, 11)
+            .unwrap();
+        let bytes = serde_json::to_vec(&market).unwrap();
+        let restored: StoreEscrow = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(restored.order_count(), 1);
+        assert_eq!(restored.fee_bps(), 500);
+        assert_eq!(restored.operator(), &operator.public.awe_id);
+        let restored_order = restored.order(order).unwrap();
+        assert!(restored_order.funded);
+        assert_eq!(restored_order.title, "gpu rental");
+        assert_eq!(restored_order.amount_atoms, 2_000_000);
+        assert_eq!(restored.status(order, 12).unwrap(), OrderStatus::Held);
+        assert_eq!(restored.orders().count(), 1);
+        // The restored marketplace continues the id space.
+        let next = restored
+            .open_order(
+                &buyer.public.awe_id,
+                &seller.public.awe_id,
+                5_000,
+                "cable",
+                12,
+                None,
+            )
+            .unwrap();
+        assert_eq!(next, order + 1);
+    }
 }
+
