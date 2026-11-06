@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#0b1020"><title>AWENET · One open network</title><link rel="stylesheet" href="./style.css"><link rel="stylesheet" href="./onecoin.css"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#0b1020"><title>AWENET · One open network</title><link rel="stylesheet" href="./style.css"><link rel="stylesheet" href="./onecoin.css"><link rel="stylesheet" href="./economy.css"></head>
 <body><div class="app">
 <aside class="sidebar">
 <div class="brand"><div class="logo">A</div><div><b>AWENET</b><span>One open network</span></div></div>
@@ -12,6 +12,8 @@
 <button class="nav" data-view="storage">▣ <span>Files</span></button>
 <button class="nav" data-view="store">◈ <span>Store</span></button>
 <button class="nav" data-view="onecoin">₿ <span>ONECOIN</span></button>
+<button class="nav" data-view="awenetwork">⚒ <span>AWENETwork</span></button>
+<button class="nav" data-view="storefront">◍ <span>ONECOIN Market</span></button>
 <div class="nav-label">NETWORK</div>
 <button class="nav" data-view="node">◉ <span>My Node</span></button>
 <button class="nav" data-view="network">⌁ <span>Network</span></button>
@@ -19,7 +21,8 @@
 <button class="nav" data-view="security">◇ <span>Security</span></button>
 <button class="nav" data-view="diagnostics">◌ <span>Developer</span></button>
 <button class="nav" data-view="settings">⚙ <span>Settings</span></button>
+<button class="nav" id="navFounder" data-view="founder" hidden>★ <span>Founder Center</span></button>
 <div class="sidebar-bottom"><div class="connection"><i id="sideDot"></i><span id="sideState">Connecting</span><small id="sideTransport">AWENET</small></div></div>
 </aside>
 <main class="main"><header class="topbar"><div class="crumb">AWENET <b>/</b> <strong id="pageTitle">Home</strong></div><div class="top-actions"><button class="icon-btn" id="paletteBtn" title="Command palette (Ctrl+K)" aria-label="Command palette">⌘</button><button class="icon-btn" id="themeToggle" title="Toggle theme" aria-label="Toggle theme">☾</button><span id="apiBadge" class="pill">Network · starting</span></div></header><section id="view"></section></main>
-</div><script src="./app.js"></script><script src="./vendor/qrcode.js"></script><script src="./onecoin.js"></script></body></html>
+</div><script src="./app.js"></script><script src="./vendor/qrcode.js"></script><script src="./onecoin.js"></script><script src="./awenetwork.js"></script><script src="./storefront.js"></script><script src="./founder.js"></script></body></html>
