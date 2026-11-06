@@ -25,11 +25,20 @@ summarises the queue by state.
 
 ## keys.rs
 
-`ApiKeys` issues deterministic `awenet-<id>-<token>` key material from an
-internal counter (splitmix64), with a label, scope set and optional expiry
-tick. `verify` returns typed errors for unknown, revoked and expired keys,
-`rotate` revokes the old material and issues fresh material with the same
-label, scopes and expiry, and `active` lists the keys that verify at a tick.
+`ApiKeys` issues 256-bit bearer secrets using the operating-system CSPRNG.
+The secret is returned once in `IssuedApiKey`; its custom `Debug`
+implementation redacts the secret, the secret is zeroized when the issued
+credential is dropped, and the registry retains only a domain-separated
+SHA-256 fingerprint. Labels, scopes and expiry are validated,
+scopes are normalized, and malformed or unknown credentials produce errors
+that never echo the supplied secret. Rotation creates the replacement before
+revoking the old credential, so an entropy or capacity failure leaves the old
+key valid.
+
+This is a core primitive only: the registry is not yet persisted or connected
+to HTTP route authorization. No HTTP API should be considered protected by
+this module until shared authentication and capability middleware is wired
+into every relevant endpoint.
 
 ## webhooks.rs
 
