@@ -294,7 +294,9 @@ mod tests {
     #[test]
     fn escrows_serialize_and_restore_exactly() {
         let mut escrows = Escrows::new(4).unwrap();
-        let id = escrows.create("alice", "bob", 100, 5, 10, Some(99)).unwrap();
+        let id = escrows
+            .create("alice", "bob", 100, 5, 10, Some(99))
+            .unwrap();
         escrows.fund(id, 20).unwrap();
         let bytes = serde_json::to_vec(&escrows).unwrap();
         let mut restored: Escrows = serde_json::from_slice(&bytes).unwrap();

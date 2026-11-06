@@ -943,4 +943,3 @@ mod tests {
         assert_eq!(next, order + 1);
     }
 }
-
