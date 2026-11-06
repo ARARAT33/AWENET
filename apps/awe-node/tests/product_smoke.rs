@@ -124,7 +124,7 @@ fn three_node_product_smoke() {
 
         let same_origin = request_raw(
             "127.0.0.1:46201",
-            "GET /api/status HTTP/1.1\\r\\nHost: 127.0.0.1:46201\\r\\nOrigin: http://127.0.0.1:46201\\r\\nConnection: close\\r\\n\\r\\n",
+            "GET /api/status HTTP/1.1\r\nHost: 127.0.0.1:46201\r\nOrigin: http://127.0.0.1:46201\r\nConnection: close\r\n\r\n",
         );
         assert!(
             same_origin.starts_with("HTTP/1.1 200 OK"),
@@ -132,7 +132,7 @@ fn three_node_product_smoke() {
         );
         assert!(
             !same_origin
-                .split("\\r\\n\\r\\n")
+                .split("\r\n\r\n")
                 .next()
                 .unwrap_or("")
                 .to_ascii_lowercase()
@@ -142,7 +142,7 @@ fn three_node_product_smoke() {
 
         let cross_origin = request_raw(
             "127.0.0.1:46201",
-            "GET /api/status HTTP/1.1\\r\\nHost: 127.0.0.1:46201\\r\\nOrigin: https://evil.example\\r\\nConnection: close\\r\\n\\r\\n",
+            "GET /api/status HTTP/1.1\r\nHost: 127.0.0.1:46201\r\nOrigin: https://evil.example\r\nConnection: close\r\n\r\n",
         );
         assert!(
             cross_origin.starts_with("HTTP/1.1 403 Forbidden"),
@@ -151,7 +151,7 @@ fn three_node_product_smoke() {
 
         let rebinding = request_raw(
             "127.0.0.1:46201",
-            "GET /api/status HTTP/1.1\\r\\nHost: attacker.example\\r\\nOrigin: http://attacker.example\\r\\nConnection: close\\r\\n\\r\\n",
+            "GET /api/status HTTP/1.1\r\nHost: attacker.example\r\nOrigin: http://attacker.example\r\nConnection: close\r\n\r\n",
         );
         assert!(
             rebinding.starts_with("HTTP/1.1 403 Forbidden"),
