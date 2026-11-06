@@ -198,9 +198,7 @@ fn is_loopback_host(host: &str) -> bool {
         host
     };
 
-    hostname.eq_ignore_ascii_case("localhost")
-        || hostname == "127.0.0.1"
-        || hostname == "[::1]"
+    hostname.eq_ignore_ascii_case("localhost") || hostname == "127.0.0.1" || hostname == "[::1]"
 }
 
 /// The local product API is same-origin only. Native eframe requests use the
@@ -2696,7 +2694,9 @@ async fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{http_response, is_loopback_host, local_request_allowed, parse_json_u16, parse_json_u32};
+    use super::{
+        http_response, is_loopback_host, local_request_allowed, parse_json_u16, parse_json_u32,
+    };
     use serde_json::json;
 
     #[test]
