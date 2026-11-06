@@ -1,3 +1,4 @@
+mod economy_api;
 mod native_ui;
 use anyhow::{Context, Result};
 use awep2p_core::data_plane::{
@@ -35,6 +36,10 @@ const UI_CSS: &str = include_str!("../../awe-desktop/ui/style.css");
 const UI_JS: &str = include_str!("../../awe-desktop/ui/app.js");
 const ONECOIN_JS: &str = include_str!("../../awe-desktop/ui/onecoin.js");
 const ONECOIN_CSS: &str = include_str!("../../awe-desktop/ui/onecoin.css");
+const ECONOMY_CSS: &str = include_str!("../../awe-desktop/ui/economy.css");
+const AWENETWORK_JS: &str = include_str!("../../awe-desktop/ui/awenetwork.js");
+const STOREFRONT_JS: &str = include_str!("../../awe-desktop/ui/storefront.js");
+const FOUNDER_JS: &str = include_str!("../../awe-desktop/ui/founder.js");
 const QR_JS: &str = include_str!("../../awe-desktop/ui/vendor/qrcode.js");
 const DEFAULT_UI_ADDR: &str = "127.0.0.1:41800";
 
@@ -65,6 +70,8 @@ struct UiState {
     onecoin_offers_path: PathBuf,
     contribution: ContributionState,
     contribution_path: PathBuf,
+    economy: economy_api::EconomyState,
+    economy_path: PathBuf,
 }
 
 async fn build_onecoin_validators(
@@ -223,7 +230,7 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> Result<String>
 }
 
 #[allow(clippy::too_many_arguments)]
-fn parse_onecoin_atoms(value: &serde_json::Value) -> Result<u128, String> {
+pub(crate) fn parse_onecoin_atoms(value: &serde_json::Value) -> Result<u128, String> {
     let raw = if let Some(text) = value.as_str() {
         text.trim().to_owned()
     } else if value.is_number() {
@@ -277,18 +284,25 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         onecoin_offers_path,
         contribution,
         contribution_path,
+        economy,
+        economy_path,
     } = state;
     let request = read_http_request(&mut stream).await?;
     let request_line = request.lines().next().unwrap_or("");
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or("GET");
-    let path = parts.next().unwrap_or("/").split('?').next().unwrap_or("/");
+    let target = parts.next().unwrap_or("/");
+    let path = target.split('?').next().unwrap_or("/");
     let (status, mime, body) = match path {
         "/" | "/index.html" => ("200 OK", "text/html; charset=utf-8", UI_HTML.to_string()),
         "/style.css" => ("200 OK", "text/css; charset=utf-8", UI_CSS.to_string()),
         "/app.js" => ("200 OK", "application/javascript; charset=utf-8", UI_JS.to_string()),
         "/onecoin.js" => ("200 OK", "application/javascript; charset=utf-8", ONECOIN_JS.to_string()),
         "/onecoin.css" => ("200 OK", "text/css; charset=utf-8", ONECOIN_CSS.to_string()),
+        "/economy.css" => ("200 OK", "text/css; charset=utf-8", ECONOMY_CSS.to_string()),
+        "/awenetwork.js" => ("200 OK", "application/javascript; charset=utf-8", AWENETWORK_JS.to_string()),
+        "/storefront.js" => ("200 OK", "application/javascript; charset=utf-8", STOREFRONT_JS.to_string()),
+        "/founder.js" => ("200 OK", "application/javascript; charset=utf-8", FOUNDER_JS.to_string()),
         "/vendor/qrcode.js" => ("200 OK", "application/javascript; charset=utf-8", QR_JS.to_string()),
         "/api/onebank/wallet" if method == "GET" => {
             let ledger = onecoin_ledger.lock().map(|l| l.clone()).unwrap_or_default();
@@ -1333,6 +1347,23 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                 "replication_policy": {"shards": 1000, "replicas": 3}
             }).to_string())
         },
+        _ if path.starts_with("/api/awenetwork")
+            || path.starts_with("/api/founder")
+            || path.starts_with("/api/storefront")
+            || path == "/api/onecoin/price" =>
+        {
+            let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+            economy_api::handle(
+                method,
+                target,
+                body,
+                &node.identity,
+                &onecoin_ledger,
+                &economy,
+                &economy_path,
+                &onecoin_path,
+            )
+        }
         _ => ("404 Not Found", "text/plain; charset=utf-8", "Not Found".to_string()),
     };
     stream
@@ -1795,6 +1826,46 @@ async fn run_product() -> Result<()> {
             .and_then(|b| serde_json::from_slice::<ResourceContribution>(&b).ok())
             .unwrap_or_default(),
     ));
+
+    // AWENET economy: AWENETwork tasks, ONECOIN price control, treasury,
+    // storefront and store escrow. Created once; the local node identity is
+    // the founder. This node also registers itself as a reward verifier so
+    // founder-approved task rewards can mint through the audited path.
+    let economy_path = data_dir.join("awenet-economy.json");
+    let (economy_loaded, _economy_created) =
+        economy_api::load_or_create(&node.identity, &economy_path);
+    let economy_state: economy_api::EconomyState = Arc::new(Mutex::new(economy_loaded));
+    {
+        let mut ledger = onecoin_ledger
+            .lock()
+            .map_err(|_| anyhow::anyhow!("ONECOIN ledger lock failed"))?;
+        let verifier_key = node.identity.public.awe_id.to_hex();
+        if !ledger.reward_verifiers.contains_key(&verifier_key) {
+            ledger.reward_verifiers.insert(
+                verifier_key,
+                node.identity.public.public_key,
+            );
+            let _ = fs::write(
+                &onecoin_path,
+                serde_json::to_vec_pretty(&*ledger).unwrap_or_default(),
+            );
+        }
+    }
+    let sweep_economy = economy_state.clone();
+    let sweep_ledger = onecoin_ledger.clone();
+    let sweep_economy_path = economy_path.clone();
+    let sweep_ledger_path = onecoin_path.clone();
+    tokio::spawn(async move {
+        loop {
+            economy_api::sweep_expired_orders(
+                &sweep_economy,
+                &sweep_ledger,
+                &sweep_economy_path,
+                &sweep_ledger_path,
+            );
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        }
+    });
 
     let consensus_state: ConsensusState = {
         let configured = env::var("AWE_ONECOIN_VALIDATORS")
@@ -2340,6 +2411,8 @@ async fn run_product() -> Result<()> {
             let api_onecoin_offers_path = onecoin_offers_path.clone();
             let api_contribution = contribution.clone();
             let api_contribution_path = contribution_path.clone();
+            let api_economy = economy_state.clone();
+            let api_economy_path = economy_path.clone();
             tokio::spawn(async move {
                 if let Err(e) = serve_ui(
                     stream,
@@ -2358,6 +2431,8 @@ async fn run_product() -> Result<()> {
                         onecoin_offers_path: api_onecoin_offers_path,
                         contribution: api_contribution,
                         contribution_path: api_contribution_path,
+                        economy: api_economy,
+                        economy_path: api_economy_path,
                     },
                 )
                 .await
@@ -2520,3 +2595,4 @@ async fn main() -> Result<()> {
         _ => usage(),
     }
 }
+
