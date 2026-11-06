@@ -108,6 +108,7 @@ pub mod simulator;
 pub mod storage;
 pub mod store;
 pub mod store_escrow;
+pub mod storefront;
 pub mod subscriptions;
 pub mod supervisor;
 pub mod sync;

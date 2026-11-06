@@ -39,6 +39,7 @@ while exposing a small, stable product orchestration model on top.
 | Commerce & economy services | `accounting`, `billing`, `subscriptions`, `escrow` | Double-entry ledger with balanced entries, invoice lifecycle with payments and overdue sweeps, subscription lifecycle with trial and grace periods, escrow with fees, release and refund |
 | AWENETwork & founder economy | `founder`, `awenetwork`, `resource_economy`, `price_control`, `treasury` | Founder-exclusive authority with an immutable audit log, founder-published work tasks with approve-then-pay rewards, consented resource contributions with reliability-weighted payouts, official price control with history, treasury issuance vs circulation accounting |
 | Founder protection & economy completion | `founder_guard`, `resource_meter`, `store_escrow`, `fraud`, `rankings` | Passkey-protected founder step-up authorization, host resource metering with multi-verifier usage reports, store escrow orders over ONECOIN, advisory fraud detection with bounded evidence, contributor rankings and achievements that never mint |
+| Economy product layer | `storefront`, `economy_api` (node), `awenetwork.js`, `storefront.js`, `founder.js` | Storefront catalog & search, economy HTTP API in the node, AWENETwork board, ONECOIN Market with escrowed orders, Founder Control Center, persistent economy state |
 | Identity & security | `identity`, `security`, `crypto`, `defense`, `sandbox` | Ed25519 identity, authenticated encrypted transport, hostile-traffic limits |
 | Discovery & routing | `discovery`, `routing`, `network_topology`, `lan_mesh` | DHT-style lookup, Data Centre topology, relay failover, LAN mesh |
 | Data plane | `data_plane`, `storage`, `replication`, `repair`, `recovery` | Chunked content-addressed storage, replica placement, repair planning |
@@ -103,6 +104,12 @@ desktop-style UI served from `127.0.0.1:41800`.
 - Browser for `awe://` resources and the web
 - Messenger with realtime voice/video calls, groups and channels
 - Storage, AWEStore and the ONECOIN economy screens
+- **AWENETwork task board** — founder-published ONECOIN tasks with
+  accept/submit/resubmit flows and a contributor work profile
+- **ONECOIN Market** — escrowed storefront: sellers list products, buyers
+  pay in ONECOIN, delivery confirmation releases the escrow
+- **Founder Control Center** — task publishing with phases, submission
+  review with team splits, official price control, store dispute rulings
 - **Light & dark themes** — auto-detected from your OS, manually switchable
 - **Command palette** — press `Ctrl+K` to jump to any screen or action
 - Keyboard shortcuts: `Alt+1…9` switch screens, `Alt+/` shows the shortcut hint
@@ -154,8 +161,8 @@ and z-score anomaly verdicts), `capacity.rs` (headroom, ticks-to-limit and
 urgency forecasts from a growth-per-tick estimate), `circuit.rs` (circuit
 breaker with Closed/Open/HalfOpen states and tick cooldown),
 `journal.rs` (bounded write-ahead operation journal with sequence numbers,
-replay and checkpoint truncation) and `archiver.rs` (retention tiering with
-a bounded archive budget and deterministic compaction plans). See
+replay and checkpoint truncation) and `archiver.rs` (retention tiering with a
+bounded archive budget and deterministic compaction plans). See
 [docs/RESILIENCE-UPGRADE-2026-11-02.md](docs/RESILIENCE-UPGRADE-2026-11-02.md).
 
 ## Developer & API services
@@ -217,6 +224,29 @@ achievements derived only from recorded earning events and never minting
 ONECOIN). See
 [docs/ECONOMY-COMPLETION-2026-11-05.md](docs/ECONOMY-COMPLETION-2026-11-05.md).
 
+## Economy product layer
+
+The 2026-11-06 product layer turns the economy core into a working product
+inside the local node and its UI, without changing any protocol guarantee:
+
+- `core/src/storefront.rs` — product catalog with kinds (digital, service,
+  physical), search and filters, seller stats, and explicit listing bounds.
+- `apps/awe-node`'s `economy_api` — persistent economy state (founder
+  authority, official price, treasury, AWENET work market, storefront,
+  escrow) served over the node's HTTP API. Founder-only routes are gated by
+  the backend authority, not by hidden buttons; task payouts stay
+  idempotent and verifier-gated; store orders move buyer → escrow →
+  seller through a dedicated operator account; a background sweep expires
+  held orders; the treasury records every flow.
+- UI screens served by the node: the AWENETwork task board
+  (`awenetwork.js`), the ONECOIN Market with escrowed orders
+  (`storefront.js`) and the Founder Control Center (`founder.js`), plus a
+  wallet receive-QR fix and shared `economy.css` styles.
+- Everything not yet implemented (browser WebAuthn ceremony, multi-node
+  verifiers, GPU/storage metering, multi-node marketplace sync, economy
+  screen localization, camera QR scanning) is listed honestly in the doc.
+  See [docs/PRODUCT-UI-UPGRADE-2026-11-06.md](docs/PRODUCT-UI-UPGRADE-2026-11-06.md).
+
 ## Important status rule
 
 A source module or UI screen is not proof of end-to-end functionality.
@@ -246,6 +276,7 @@ model is in [docs/PRODUCT-ARCHITECTURE.md](docs/PRODUCT-ARCHITECTURE.md) and
 - [Commerce & economy services upgrade](docs/COMMERCE-UPGRADE-2026-11-03.md)
 - [AWENETwork & founder economy upgrade](docs/AWENETWORK-UPGRADE-2026-11-04.md)
 - [Founder protection & economy completion](docs/ECONOMY-COMPLETION-2026-11-05.md)
+- [Economy product layer](docs/PRODUCT-UI-UPGRADE-2026-11-06.md)
 
 ## Security
 

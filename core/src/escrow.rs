@@ -6,6 +6,7 @@
 //! released (seller receives amount minus fee) or refunded (buyer receives
 //! the amount back), and may expire while unfunded or held.
 
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use thiserror::Error;
 
@@ -37,7 +38,7 @@ pub enum EscrowError {
     IdExhausted,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EscrowState {
     Created,
     Funded,
@@ -46,7 +47,7 @@ pub enum EscrowState {
     Expired,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Escrow {
     pub id: u64,
     pub buyer: String,
@@ -58,7 +59,7 @@ pub struct Escrow {
     pub expiry_tick: Option<u64>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Escrows {
     max_escrows: usize,
     next_id: u64,
@@ -82,7 +83,7 @@ impl Escrows {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.escrows.is_empty()
+        self.escrows.len() == 0
     }
 
     pub fn get(&self, id: u64) -> Option<&Escrow> {
@@ -288,5 +289,25 @@ mod tests {
         assert_eq!(escrows.get(held).unwrap().state, EscrowState::Expired);
         assert_eq!(escrows.get(fresh).unwrap().state, EscrowState::Created);
         assert!(escrows.expire(10).is_empty());
+    }
+
+    #[test]
+    fn escrows_serialize_and_restore_exactly() {
+        let mut escrows = Escrows::new(4).unwrap();
+        let id = escrows
+            .create("alice", "bob", 100, 5, 10, Some(99))
+            .unwrap();
+        escrows.fund(id, 20).unwrap();
+        let bytes = serde_json::to_vec(&escrows).unwrap();
+        let mut restored: Escrows = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(restored.len(), 1);
+        let escrow = restored.get(id).unwrap();
+        assert_eq!(escrow.state, EscrowState::Funded);
+        assert_eq!(escrow.amount, 100);
+        assert_eq!(escrow.fee, 5);
+        assert_eq!(escrow.expiry_tick, Some(99));
+        // The restored registry continues from the persisted id space.
+        let next = restored.create("carol", "dave", 7, 0, 30, None).unwrap();
+        assert_eq!(next, id + 1);
     }
 }
