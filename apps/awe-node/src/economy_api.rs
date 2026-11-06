@@ -404,7 +404,11 @@ fn string_field(value: &serde_json::Value, name: &str) -> Result<String, String>
 
 /// Reads an ONECOIN amount from a JSON object: either `atoms` as an
 /// integer/string of atoms, or `coins` as a decimal coin amount.
-fn amount_field(value: &serde_json::Value, coins_name: &str, atoms_name: &str) -> Result<u128, String> {
+fn amount_field(
+    value: &serde_json::Value,
+    coins_name: &str,
+    atoms_name: &str,
+) -> Result<u128, String> {
     if let Some(atoms) = value.get(atoms_name) {
         if !atoms.is_null() {
             if let Some(number) = atoms.as_u64() {
@@ -464,7 +468,9 @@ fn spec_from_json(value: &serde_json::Value) -> Result<WorkTaskSpec, String> {
         description: string_field(value, "description")?,
         category,
         complexity,
-        deadline_unix: value.get("deadline_unix").and_then(serde_json::Value::as_u64),
+        deadline_unix: value
+            .get("deadline_unix")
+            .and_then(serde_json::Value::as_u64),
         required_skills: string_array_field(value, "required_skills")
             .into_iter()
             .collect::<BTreeSet<_>>(),
@@ -509,28 +515,25 @@ pub fn handle(
     match (method, segments.as_slice()) {
         ("GET", ["api", "onecoin", "price"]) => price_public(economy_state),
         ("GET", ["api", "awenetwork", "tasks"]) => tasks_public(&params, economy_state),
-        ("GET", ["api", "awenetwork", "task", id]) => {
-            match parse_u64(id) {
-                Some(id) => task_public(id, economy_state),
-                None => err(400, "task id must be a number".to_string()),
-            }
-        }
+        ("GET", ["api", "awenetwork", "task", id]) => match parse_u64(id) {
+            Some(id) => task_public(id, economy_state),
+            None => err(400, "task id must be a number".to_string()),
+        },
         ("GET", ["api", "awenetwork", "profile"]) => work_profile(identity, economy_state),
-        ("POST", ["api", "awenetwork", "tasks"]) => {
-            publish_task(&parsed, identity, ledger, economy_state, economy_path, ledger_path)
-        }
+        ("POST", ["api", "awenetwork", "tasks"]) => publish_task(
+            &parsed,
+            identity,
+            ledger,
+            economy_state,
+            economy_path,
+            ledger_path,
+        ),
         ("POST", ["api", "awenetwork", "task", id, "accept"]) => match parse_u64(id) {
             Some(id) => accept_task(id, identity, economy_state, economy_path),
             None => err(400, "task id must be a number".to_string()),
         },
         ("POST", ["api", "awenetwork", "task", id, "submit"]) => match parse_u64(id) {
-            Some(id) => submit_work(
-                id,
-                &parsed,
-                identity,
-                economy_state,
-                economy_path,
-            ),
+            Some(id) => submit_work(id, &parsed, identity, economy_state, economy_path),
             None => err(400, "task id must be a number".to_string()),
         },
         ("POST", ["api", "awenetwork", "submission", id, "resubmit"]) => match parse_u64(id) {
@@ -546,9 +549,14 @@ pub fn handle(
             set_official_price(&parsed, identity, economy_state, economy_path)
         }
         ("POST", ["api", "founder", "submissions", id, "approve"]) => match parse_u64(id) {
-            Some(id) => {
-                approve_submission(id, identity, ledger, economy_state, economy_path, ledger_path)
-            }
+            Some(id) => approve_submission(
+                id,
+                identity,
+                ledger,
+                economy_state,
+                economy_path,
+                ledger_path,
+            ),
             None => err(400, "submission id must be a number".to_string()),
         },
         ("POST", ["api", "founder", "submissions", id, "approve-team"]) => match parse_u64(id) {
@@ -598,18 +606,29 @@ pub fn handle(
             None => err(400, "suggestion id must be a number".to_string()),
         },
         ("POST", ["api", "founder", "store", "orders", id, "resolve"]) => match parse_u64(id) {
-            Some(id) => {
-                resolve_dispute(id, &parsed, identity, ledger, economy_state, economy_path, ledger_path)
-            }
+            Some(id) => resolve_dispute(
+                id,
+                &parsed,
+                identity,
+                ledger,
+                economy_state,
+                economy_path,
+                ledger_path,
+            ),
             None => err(400, "order id must be a number".to_string()),
         },
         ("POST", ["api", "founder", "store", "orders", id, "refund"]) => match parse_u64(id) {
-            Some(id) => founder_refund(id, identity, ledger, economy_state, economy_path, ledger_path),
+            Some(id) => founder_refund(
+                id,
+                identity,
+                ledger,
+                economy_state,
+                economy_path,
+                ledger_path,
+            ),
             None => err(400, "order id must be a number".to_string()),
         },
-        ("GET", ["api", "storefront", "products"]) => {
-            products_public(&params, economy_state)
-        }
+        ("GET", ["api", "storefront", "products"]) => products_public(&params, economy_state),
         ("GET", ["api", "storefront", "seller"]) => seller_page(identity, economy_state),
         ("GET", ["api", "storefront", "orders"]) => store_orders(identity, economy_state),
         ("POST", ["api", "storefront", "products"]) => {
@@ -623,11 +642,23 @@ pub fn handle(
             Some(id) => deactivate_product(id, identity, economy_state, economy_path),
             None => err(400, "product id must be a number".to_string()),
         },
-        ("POST", ["api", "storefront", "orders"]) => {
-            place_order(&parsed, identity, ledger, economy_state, economy_path, ledger_path)
-        }
+        ("POST", ["api", "storefront", "orders"]) => place_order(
+            &parsed,
+            identity,
+            ledger,
+            economy_state,
+            economy_path,
+            ledger_path,
+        ),
         ("POST", ["api", "storefront", "orders", id, "confirm"]) => match parse_u64(id) {
-            Some(id) => confirm_order(id, identity, ledger, economy_state, economy_path, ledger_path),
+            Some(id) => confirm_order(
+                id,
+                identity,
+                ledger,
+                economy_state,
+                economy_path,
+                ledger_path,
+            ),
             None => err(400, "order id must be a number".to_string()),
         },
         ("POST", ["api", "storefront", "orders", id, "dispute"]) => match parse_u64(id) {
@@ -652,13 +683,17 @@ enum TaskClose {
     Cancel,
 }
 
-fn lock_economy(economy_state: &EconomyState) -> Result<std::sync::MutexGuard<'_, NodeEconomy>, ApiResponse> {
+fn lock_economy(
+    economy_state: &EconomyState,
+) -> Result<std::sync::MutexGuard<'_, NodeEconomy>, ApiResponse> {
     economy_state
         .lock()
         .map_err(|_| err(500, "economy state lock failed".to_string()))
 }
 
-fn lock_ledger(ledger: &LedgerState) -> Result<std::sync::MutexGuard<'_, OnecoinLedger>, ApiResponse> {
+fn lock_ledger(
+    ledger: &LedgerState,
+) -> Result<std::sync::MutexGuard<'_, OnecoinLedger>, ApiResponse> {
     ledger
         .lock()
         .map_err(|_| err(500, "ONECOIN ledger lock failed".to_string()))
@@ -996,13 +1031,15 @@ fn founder_overview(identity: &Identity, economy_state: &EconomyState) -> ApiRes
         .market
         .suggestions()
         .filter(|suggestion| !suggestion.approved)
-        .map(|suggestion| serde_json::json!({
-            "id": suggestion.id,
-            "contributor": suggestion.contributor.to_hex(),
-            "title": suggestion.spec.title,
-            "reward_atoms": suggestion.spec.reward_atoms,
-            "suggested_at_unix": suggestion.suggested_at_unix,
-        }))
+        .map(|suggestion| {
+            serde_json::json!({
+                "id": suggestion.id,
+                "contributor": suggestion.contributor.to_hex(),
+                "title": suggestion.spec.title,
+                "reward_atoms": suggestion.spec.reward_atoms,
+                "suggested_at_unix": suggestion.suggested_at_unix,
+            })
+        })
         .collect();
     let orders: Vec<serde_json::Value> = economy
         .store_escrow
@@ -1033,13 +1070,15 @@ fn founder_overview(identity: &Identity, economy_state: &EconomyState) -> ApiRes
         .iter()
         .rev()
         .take(OVERVIEW_TAIL)
-        .map(|entry| serde_json::json!({
-            "sequence": entry.sequence,
-            "action": entry.action.as_str(),
-            "actor": entry.actor.to_hex(),
-            "at_unix": entry.at_unix,
-            "detail": entry.detail,
-        }))
+        .map(|entry| {
+            serde_json::json!({
+                "sequence": entry.sequence,
+                "action": entry.action.as_str(),
+                "actor": entry.actor.to_hex(),
+                "at_unix": entry.at_unix,
+                "detail": entry.detail,
+            })
+        })
         .collect();
     ok(serde_json::json!({
         "status": "ok",
@@ -1098,7 +1137,9 @@ fn set_official_price(
     if let Some(response) = require_founder(&economy, identity) {
         return response;
     }
-    let new_price = match parsed.get("new_price_usd_cents").and_then(serde_json::Value::as_u64)
+    let new_price = match parsed
+        .get("new_price_usd_cents")
+        .and_then(serde_json::Value::as_u64)
     {
         Some(cents) => cents,
         None => return err(400, "new_price_usd_cents is required".to_string()),
@@ -1172,9 +1213,10 @@ fn approve_submission(
         now,
     ) {
         Ok(receipt) => {
-            let _ = economy
-                .treasury
-                .record(TreasuryFlow::TaskRewardIssued, receipt.paid_atoms, now);
+            let _ =
+                economy
+                    .treasury
+                    .record(TreasuryFlow::TaskRewardIssued, receipt.paid_atoms, now);
             if let Err(message) = save_ledger(&ledger, ledger_path) {
                 return err(500, message);
             }
@@ -1249,9 +1291,10 @@ fn approve_team_submission(
         now,
     ) {
         Ok(receipt) => {
-            let _ = economy
-                .treasury
-                .record(TreasuryFlow::TaskRewardIssued, receipt.paid_atoms, now);
+            let _ =
+                economy
+                    .treasury
+                    .record(TreasuryFlow::TaskRewardIssued, receipt.paid_atoms, now);
             if let Err(message) = save_ledger(&ledger, ledger_path) {
                 return err(500, message);
             }
@@ -1262,10 +1305,12 @@ fn approve_team_submission(
             let recipients: Vec<serde_json::Value> = receipt
                 .recipients
                 .iter()
-                .map(|(recipient, atoms)| serde_json::json!({
-                    "awe_id": recipient.to_hex(),
-                    "paid": money_json(*atoms),
-                }))
+                .map(|(recipient, atoms)| {
+                    serde_json::json!({
+                        "awe_id": recipient.to_hex(),
+                        "paid": money_json(*atoms),
+                    })
+                })
                 .collect();
             ok(serde_json::json!({
                 "status": "approved",
@@ -1300,16 +1345,20 @@ fn review_submission(
     };
     let now = now_unix();
     let result = match kind {
-        ReviewKind::Reject => {
-            economy
-                .market
-                .reject_submission(&mut economy.authority, &identity.public.public_key, submission_id, &reason, now)
-        }
-        ReviewKind::Revise => {
-            economy
-                .market
-                .request_revision(&mut economy.authority, &identity.public.public_key, submission_id, &reason, now)
-        }
+        ReviewKind::Reject => economy.market.reject_submission(
+            &mut economy.authority,
+            &identity.public.public_key,
+            submission_id,
+            &reason,
+            now,
+        ),
+        ReviewKind::Revise => economy.market.request_revision(
+            &mut economy.authority,
+            &identity.public.public_key,
+            submission_id,
+            &reason,
+            now,
+        ),
     };
     match result {
         Ok(()) => {
@@ -1347,16 +1396,18 @@ fn close_task(
     }
     let now = now_unix();
     let result = match kind {
-        TaskClose::Close => {
-            economy
-                .market
-                .close_task(&mut economy.authority, &identity.public.public_key, task_id, now)
-        }
-        TaskClose::Cancel => {
-            economy
-                .market
-                .cancel_task(&mut economy.authority, &identity.public.public_key, task_id, now)
-        }
+        TaskClose::Close => economy.market.close_task(
+            &mut economy.authority,
+            &identity.public.public_key,
+            task_id,
+            now,
+        ),
+        TaskClose::Cancel => economy.market.cancel_task(
+            &mut economy.authority,
+            &identity.public.public_key,
+            task_id,
+            now,
+        ),
     };
     match result {
         Ok(()) => {
@@ -1425,7 +1476,12 @@ fn resolve_dispute(
     let ruling = match parsed.get("ruling").and_then(serde_json::Value::as_str) {
         Some("refund_buyer") => DisputeRuling::RefundBuyer,
         Some("release_seller") => DisputeRuling::ReleaseSeller,
-        _ => return err(400, "ruling must be refund_buyer or release_seller".to_string()),
+        _ => {
+            return err(
+                400,
+                "ruling must be refund_buyer or release_seller".to_string(),
+            )
+        }
     };
     let (amount_atoms, fee_atoms) = match economy.store_escrow.order(order_id) {
         Some(order) => (order.amount_atoms, order.fee_atoms),
@@ -1472,9 +1528,10 @@ fn resolve_dispute(
                             .record(TreasuryFlow::SellerIncome, net, now);
                     }
                     if fee_atoms > 0 {
-                        let _ = economy
-                            .treasury
-                            .record(TreasuryFlow::MarketplaceFee, fee_atoms, now);
+                        let _ =
+                            economy
+                                .treasury
+                                .record(TreasuryFlow::MarketplaceFee, fee_atoms, now);
                     }
                 }
             }
@@ -1557,10 +1614,10 @@ fn products_public(params: &BTreeMap<String, String>, economy_state: &EconomySta
         Ok(guard) => guard,
         Err(response) => return response,
     };
-    let kind = match params.get("kind").map(|text| {
-        ProductKind::parse(text)
-            .ok_or_else(|| format!("unknown product kind: {text}"))
-    }) {
+    let kind = match params
+        .get("kind")
+        .map(|text| ProductKind::parse(text).ok_or_else(|| format!("unknown product kind: {text}")))
+    {
         Some(Ok(kind)) => Some(kind),
         Some(Err(message)) => return err(400, message),
         None => None,
@@ -1769,7 +1826,10 @@ fn place_order(
     };
     let me = identity.public.awe_id.clone();
     if product.seller == me {
-        return err(400, format!("product {product_id} is your own listing; buyer and seller must differ"));
+        return err(
+            400,
+            format!("product {product_id} is your own listing; buyer and seller must differ"),
+        );
     }
     if !product.active {
         return err(400, format!("product {product_id} is not active"));
@@ -1809,10 +1869,7 @@ fn place_order(
         .fund(&mut ledger, identity, &operator, order_id, now)
     {
         Ok(()) => {
-            if let Err(message) = economy
-                .storefront
-                .record_sale(&me, product_id, units)
-            {
+            if let Err(message) = economy.storefront.record_sale(&me, product_id, units) {
                 return err(500, format!("catalog sale recording failed: {message}"));
             }
             let _ = economy
@@ -1864,7 +1921,11 @@ fn store_orders(identity: &Identity, economy_state: &EconomyState) -> ApiRespons
                 .ok()?
                 .as_str()
                 .to_string();
-            let role = if order.buyer == *me { "buyer" } else { "seller" };
+            let role = if order.buyer == *me {
+                "buyer"
+            } else {
+                "seller"
+            };
             Some(order_json(order, &status, role, now))
         })
         .collect();

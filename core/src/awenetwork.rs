@@ -1753,4 +1753,3 @@ mod tests {
         assert_eq!(suggestions[0].contributor, contributor.public.awe_id);
     }
 }
-

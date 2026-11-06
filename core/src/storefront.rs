@@ -111,9 +111,7 @@ impl ProductFilter {
             let needle = self.query.trim().to_ascii_lowercase();
             let haystack = format!(
                 "{} {} {}",
-                product.title,
-                product.description,
-                product.category
+                product.title, product.description, product.category
             )
             .to_ascii_lowercase();
             if !haystack.contains(&needle) {
@@ -125,9 +123,7 @@ impl ProductFilter {
         }
         if let Some(category) = &self.category {
             if !category.trim().is_empty()
-                && !product
-                    .category
-                    .eq_ignore_ascii_case(category.trim())
+                && !product.category.eq_ignore_ascii_case(category.trim())
             {
                 return false;
             }
@@ -347,9 +343,7 @@ impl Storefront {
             product.stock = Some(stock - units);
         }
         product.sold_units = product.sold_units.saturating_add(units);
-        Ok(product
-            .price_atoms
-            .saturating_mul(u128::from(units)))
+        Ok(product.price_atoms.saturating_mul(u128::from(units)))
     }
 }
 
@@ -395,13 +389,31 @@ mod tests {
         let long = "x".repeat(MAX_DESCRIPTION_CHARS + 1);
         assert_eq!(
             store
-                .list_product(&seller, "App", &long, ProductKind::Digital, "apps", 5, None, 1)
+                .list_product(
+                    &seller,
+                    "App",
+                    &long,
+                    ProductKind::Digital,
+                    "apps",
+                    5,
+                    None,
+                    1
+                )
                 .unwrap_err(),
             StorefrontError::DescriptionTooLong
         );
         assert_eq!(
             store
-                .list_product(&seller, "App", "", ProductKind::Digital, "apps", 5, Some(0), 1)
+                .list_product(
+                    &seller,
+                    "App",
+                    "",
+                    ProductKind::Digital,
+                    "apps",
+                    5,
+                    Some(0),
+                    1
+                )
                 .unwrap_err(),
             StorefrontError::InsufficientStock(0)
         );
@@ -504,7 +516,16 @@ mod tests {
         let stranger = buyer();
         let mut store = Storefront::new();
         let id = store
-            .list_product(&seller, "App", "desc", ProductKind::Digital, "apps", 5, None, 1)
+            .list_product(
+                &seller,
+                "App",
+                "desc",
+                ProductKind::Digital,
+                "apps",
+                5,
+                None,
+                1,
+            )
             .unwrap();
         assert_eq!(
             store

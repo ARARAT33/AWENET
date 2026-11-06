@@ -1841,10 +1841,9 @@ async fn run_product() -> Result<()> {
             .map_err(|_| anyhow::anyhow!("ONECOIN ledger lock failed"))?;
         let verifier_key = node.identity.public.awe_id.to_hex();
         if !ledger.reward_verifiers.contains_key(&verifier_key) {
-            ledger.reward_verifiers.insert(
-                verifier_key,
-                node.identity.public.public_key,
-            );
+            ledger
+                .reward_verifiers
+                .insert(verifier_key, node.identity.public.public_key);
             let _ = fs::write(
                 &onecoin_path,
                 serde_json::to_vec_pretty(&*ledger).unwrap_or_default(),
@@ -2595,4 +2594,3 @@ async fn main() -> Result<()> {
         _ => usage(),
     }
 }
-
