@@ -59,7 +59,7 @@ pub struct Escrow {
     pub expiry_tick: Option<u64>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Escrows {
     max_escrows: usize,
     next_id: u64,

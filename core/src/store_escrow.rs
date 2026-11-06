@@ -106,7 +106,7 @@ pub struct StoreOrder {
     pub dispute: Option<Dispute>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StoreEscrow {
     operator: AweId,
     fee_bps: u16,

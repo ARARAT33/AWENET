@@ -837,18 +837,16 @@ fn publish_task(
         Ok(spec) => spec,
         Err(message) => return err(400, message),
     };
-    let mut ledger = match lock_ledger(ledger) {
+    let ledger = match lock_ledger(ledger) {
         Ok(guard) => guard,
         Err(response) => return response,
     };
     let now = now_unix();
     sync_treasury_issuance(&mut economy, &ledger, now);
-    match economy.market.publish_task(
-        &mut economy.authority,
-        &identity.public.public_key,
-        spec,
-        now,
-    ) {
+    let NodeEconomy {
+        market, authority, ..
+    } = &mut *economy;
+    match market.publish_task(authority, &identity.public.public_key, spec, now) {
         Ok(task_id) => {
             if let Err(message) = save_ledger(&ledger, ledger_path) {
                 return err(500, message);
@@ -1153,8 +1151,13 @@ fn set_official_price(
         .get("effective_at_unix")
         .and_then(serde_json::Value::as_u64)
         .unwrap_or(now);
-    match economy.price_control.set_price(
-        &mut economy.authority,
+    let NodeEconomy {
+        price_control,
+        authority,
+        ..
+    } = &mut *economy;
+    match price_control.set_price(
+        authority,
         &identity.public.public_key,
         new_price,
         effective_at,
@@ -1205,13 +1208,10 @@ fn approve_submission(
     let now = now_unix();
     sync_treasury_issuance(&mut economy, &ledger, now);
     ledger.ensure_member(&contributor);
-    match economy.market.approve_and_pay(
-        &mut economy.authority,
-        identity,
-        &mut ledger,
-        submission_id,
-        now,
-    ) {
+    let NodeEconomy {
+        market, authority, ..
+    } = &mut *economy;
+    match market.approve_and_pay(authority, identity, &mut ledger, submission_id, now) {
         Ok(receipt) => {
             let _ =
                 economy
@@ -1282,14 +1282,11 @@ fn approve_team_submission(
     for (recipient, _) in &split {
         ledger.ensure_member(recipient);
     }
-    match economy.market.approve_and_pay_team(
-        &mut economy.authority,
-        identity,
-        &mut ledger,
-        submission_id,
-        &split,
-        now,
-    ) {
+    let NodeEconomy {
+        market, authority, ..
+    } = &mut *economy;
+    match market.approve_and_pay_team(authority, identity, &mut ledger, submission_id, &split, now)
+    {
         Ok(receipt) => {
             let _ =
                 economy
@@ -1344,16 +1341,19 @@ fn review_submission(
         None => return err(400, "a reason is required".to_string()),
     };
     let now = now_unix();
+    let NodeEconomy {
+        market, authority, ..
+    } = &mut *economy;
     let result = match kind {
-        ReviewKind::Reject => economy.market.reject_submission(
-            &mut economy.authority,
+        ReviewKind::Reject => market.reject_submission(
+            authority,
             &identity.public.public_key,
             submission_id,
             &reason,
             now,
         ),
-        ReviewKind::Revise => economy.market.request_revision(
-            &mut economy.authority,
+        ReviewKind::Revise => market.request_revision(
+            authority,
             &identity.public.public_key,
             submission_id,
             &reason,
@@ -1395,19 +1395,14 @@ fn close_task(
         return response;
     }
     let now = now_unix();
+    let NodeEconomy {
+        market, authority, ..
+    } = &mut *economy;
     let result = match kind {
-        TaskClose::Close => economy.market.close_task(
-            &mut economy.authority,
-            &identity.public.public_key,
-            task_id,
-            now,
-        ),
-        TaskClose::Cancel => economy.market.cancel_task(
-            &mut economy.authority,
-            &identity.public.public_key,
-            task_id,
-            now,
-        ),
+        TaskClose::Close => market.close_task(authority, &identity.public.public_key, task_id, now),
+        TaskClose::Cancel => {
+            market.cancel_task(authority, &identity.public.public_key, task_id, now)
+        }
     };
     match result {
         Ok(()) => {
@@ -1437,8 +1432,11 @@ fn approve_suggestion(
     if let Some(response) = require_founder(&economy, identity) {
         return response;
     }
-    match economy.market.approve_suggestion(
-        &mut economy.authority,
+    let NodeEconomy {
+        market, authority, ..
+    } = &mut *economy;
+    match market.approve_suggestion(
+        authority,
         &identity.public.public_key,
         suggestion_id,
         now_unix(),
@@ -1501,8 +1499,13 @@ fn resolve_dispute(
         None => return err(404, format!("order {order_id} is unknown")),
     };
     ledger.ensure_member(&seller);
-    match economy.store_escrow.resolve_dispute(
-        &mut economy.authority,
+    let NodeEconomy {
+        store_escrow,
+        authority,
+        ..
+    } = &mut *economy;
+    match store_escrow.resolve_dispute(
+        authority,
         &identity.public.public_key,
         &mut ledger,
         &operator,
@@ -2052,14 +2055,15 @@ pub fn sweep_expired_orders(
     match economy.store_escrow.expire(&mut ledger, &operator, now) {
         Ok(refunded) if !refunded.is_empty() => {
             for order_id in refunded {
-                if let Some(order) = economy.store_escrow.order(order_id) {
-                    if order.amount_atoms > 0 {
-                        let _ = economy.treasury.record(
-                            TreasuryFlow::EscrowRefund,
-                            order.amount_atoms,
-                            now,
-                        );
-                    }
+                let amount_atoms = economy
+                    .store_escrow
+                    .order(order_id)
+                    .map(|order| order.amount_atoms)
+                    .unwrap_or(0);
+                if amount_atoms > 0 {
+                    let _ = economy
+                        .treasury
+                        .record(TreasuryFlow::EscrowRefund, amount_atoms, now);
                 }
             }
             if save_ledger(&ledger, ledger_path).is_ok() {
