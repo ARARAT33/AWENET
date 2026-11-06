@@ -919,7 +919,7 @@ mod tests {
             .fund(&mut ledger, &buyer, &operator, order, 11)
             .unwrap();
         let bytes = serde_json::to_vec(&market).unwrap();
-        let restored: StoreEscrow = serde_json::from_slice(&bytes).unwrap();
+        let mut restored: StoreEscrow = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(restored.order_count(), 1);
         assert_eq!(restored.fee_bps(), 500);
         assert_eq!(restored.operator(), &operator.public.awe_id);
@@ -943,3 +943,4 @@ mod tests {
         assert_eq!(next, order + 1);
     }
 }
+
