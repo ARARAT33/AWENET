@@ -8,7 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-fn request(addr: &str, request: &str) -> String {
+fn request_raw(addr: &str, request: &str) -> String {
     let mut stream = TcpStream::connect(addr).expect("connect");
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
@@ -42,7 +42,11 @@ fn request(addr: &str, request: &str) -> String {
             Err(err) => panic!("read: {err}"),
         }
     }
-    String::from_utf8_lossy(&out)
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn request(addr: &str, request: &str) -> String {
+    request_raw(addr, request)
         .split("\r\n\r\n")
         .nth(1)
         .unwrap_or("")
@@ -117,6 +121,42 @@ fn three_node_product_smoke() {
         wait_for_health("127.0.0.1:46201");
         wait_for_health("127.0.0.1:46202");
         wait_for_health("127.0.0.1:46203");
+
+        let same_origin = request_raw(
+            "127.0.0.1:46201",
+            "GET /api/status HTTP/1.1\\r\\nHost: 127.0.0.1:46201\\r\\nOrigin: http://127.0.0.1:46201\\r\\nConnection: close\\r\\n\\r\\n",
+        );
+        assert!(
+            same_origin.starts_with("HTTP/1.1 200 OK"),
+            "same-origin browser request should work: {same_origin}"
+        );
+        assert!(
+            !same_origin
+                .split("\\r\\n\\r\\n")
+                .next()
+                .unwrap_or("")
+                .to_ascii_lowercase()
+                .contains("access-control-allow-origin"),
+            "local API must not emit wildcard CORS headers: {same_origin}"
+        );
+
+        let cross_origin = request_raw(
+            "127.0.0.1:46201",
+            "GET /api/status HTTP/1.1\\r\\nHost: 127.0.0.1:46201\\r\\nOrigin: https://evil.example\\r\\nConnection: close\\r\\n\\r\\n",
+        );
+        assert!(
+            cross_origin.starts_with("HTTP/1.1 403 Forbidden"),
+            "cross-origin browser request must be rejected: {cross_origin}"
+        );
+
+        let rebinding = request_raw(
+            "127.0.0.1:46201",
+            "GET /api/status HTTP/1.1\\r\\nHost: attacker.example\\r\\nOrigin: http://attacker.example\\r\\nConnection: close\\r\\n\\r\\n",
+        );
+        assert!(
+            rebinding.starts_with("HTTP/1.1 403 Forbidden"),
+            "DNS-rebinding host must be rejected: {rebinding}"
+        );
 
         for (port, ui) in [
             (46101u16, 46201u16),
