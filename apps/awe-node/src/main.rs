@@ -268,6 +268,21 @@ pub(crate) fn parse_onecoin_atoms(value: &serde_json::Value) -> Result<u128, Str
         .ok_or_else(|| "amount_coins is too large".to_string())
 }
 
+fn parse_json_u64(value: &serde_json::Value, field: &str) -> Result<u64, String> {
+    value
+        .get(field)
+        .and_then(|value| value.as_u64())
+        .ok_or_else(|| format!("{field} must be a non-negative integer"))
+}
+
+fn parse_json_u32(value: &serde_json::Value, field: &str) -> Result<u32, String> {
+    u32::try_from(parse_json_u64(value, field)?).map_err(|_| format!("{field} is too large"))
+}
+
+fn parse_json_u16(value: &serde_json::Value, field: &str) -> Result<u16, String> {
+    u16::try_from(parse_json_u64(value, field)?).map_err(|_| format!("{field} is too large"))
+}
+
 async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<()> {
     let UiState {
         node,
@@ -334,29 +349,34 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         },
         "/api/onebank/contribution" if method == "POST" => {
             let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
-            let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
-            let r = ResourceContribution {
-                storage_bytes: parsed.get("storage_bytes").and_then(|v| v.as_u64()).unwrap_or(0),
-                cpu_cores: parsed.get("cpu_cores").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-                ram_bytes: parsed.get("ram_bytes").and_then(|v| v.as_u64()).unwrap_or(0),
-                gpu_units: parsed.get("gpu_units").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-                bandwidth_bytes: parsed.get("bandwidth_bytes").and_then(|v| v.as_u64()).unwrap_or(0),
-                online_hours: parsed.get("online_hours").and_then(|v| v.as_u64()).unwrap_or(0) as u16,
-                node_count: parsed.get("node_count").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-                server_count: parsed.get("server_count").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-                uptime_bps: parsed.get("uptime_bps").and_then(|v| v.as_u64()).unwrap_or(0) as u16,
-                utilization_bps: parsed.get("utilization_bps").and_then(|v| v.as_u64()).unwrap_or(0) as u16,
-            };
-            match r.validate() {
-                Ok(()) => {
-                    if let Ok(mut guard) = contribution.lock() { *guard = r.clone(); }
+            let result: Result<ResourceContribution, String> = (|| {
+                let parsed: serde_json::Value = serde_json::from_str(body)
+                    .map_err(|error| format!("invalid contribution JSON: {error}"))?;
+                Ok(ResourceContribution {
+                    storage_bytes: parse_json_u64(&parsed, "storage_bytes")?,
+                    cpu_cores: parse_json_u32(&parsed, "cpu_cores")?,
+                    ram_bytes: parse_json_u64(&parsed, "ram_bytes")?,
+                    gpu_units: parse_json_u32(&parsed, "gpu_units")?,
+                    bandwidth_bytes: parse_json_u64(&parsed, "bandwidth_bytes")?,
+                    online_hours: parse_json_u16(&parsed, "online_hours")?,
+                    node_count: parse_json_u32(&parsed, "node_count")?,
+                    server_count: parse_json_u32(&parsed, "server_count")?,
+                    uptime_bps: parse_json_u16(&parsed, "uptime_bps")?,
+                    utilization_bps: parse_json_u16(&parsed, "utilization_bps")?,
+                })
+            })();
+            match result.and_then(|r| r.validate().map(|()| r)) {
+                Ok(r) => {
                     match fs::write(&contribution_path, serde_json::to_vec_pretty(&r).unwrap_or_default()) {
-                        Ok(()) => ("200 OK", "application/json; charset=utf-8", serde_json::json!({
-                            "status":"accepted_for_verification",
-                            "tier": classify_tier(&r).wire_name(),
-                            "verified":false,
-                            "reward_status":"requires_signed_usage_receipt"
-                        }).to_string()),
+                        Ok(()) => {
+                            if let Ok(mut guard) = contribution.lock() { *guard = r.clone(); }
+                            ("200 OK", "application/json; charset=utf-8", serde_json::json!({
+                                "status":"accepted_for_verification",
+                                "tier": classify_tier(&r).wire_name(),
+                                "verified":false,
+                                "reward_status":"requires_signed_usage_receipt"
+                            }).to_string())
+                        },
                         Err(e) => ("500 Internal Server Error", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":e.to_string()}).to_string())
                     }
                 },
@@ -2592,5 +2612,27 @@ async fn main() -> Result<()> {
             .await
         }
         _ => usage(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_json_u16, parse_json_u32};
+    use serde_json::json;
+
+    #[test]
+    fn contribution_integer_parsers_reject_overflow_and_missing_values() {
+        let valid = json!({"online_hours": 24, "node_count": 4});
+        assert_eq!(parse_json_u16(&valid, "online_hours").unwrap(), 24);
+        assert_eq!(parse_json_u32(&valid, "node_count").unwrap(), 4);
+
+        let overflow = json!({"online_hours": u64::from(u16::MAX) + 1});
+        assert!(parse_json_u16(&overflow, "online_hours").is_err());
+        assert!(parse_json_u32(
+            &json!({"node_count": u64::from(u32::MAX) + 1}),
+            "node_count"
+        )
+        .is_err());
+        assert!(parse_json_u16(&json!({}), "online_hours").is_err());
     }
 }
