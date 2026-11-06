@@ -27,8 +27,9 @@ summarises the queue by state.
 
 `ApiKeys` issues 256-bit bearer secrets using the operating-system CSPRNG.
 The secret is returned once in `IssuedApiKey`; its custom `Debug`
-implementation redacts the secret, and the registry retains only a
-domain-separated SHA-256 fingerprint. Labels, scopes and expiry are validated,
+implementation redacts the secret, the secret is zeroized when the issued
+credential is dropped, and the registry retains only a domain-separated
+SHA-256 fingerprint. Labels, scopes and expiry are validated,
 scopes are normalized, and malformed or unknown credentials produce errors
 that never echo the supplied secret. Rotation creates the replacement before
 revoking the old credential, so an entropy or capacity failure leaves the old

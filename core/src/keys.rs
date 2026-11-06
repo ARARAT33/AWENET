@@ -74,6 +74,12 @@ impl fmt::Debug for IssuedApiKey {
     }
 }
 
+impl Drop for IssuedApiKey {
+    fn drop(&mut self) {
+        self.secret.zeroize();
+    }
+}
+
 #[derive(Debug)]
 pub struct ApiKeys {
     max_keys: usize,
