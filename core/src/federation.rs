@@ -1,10 +1,17 @@
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
-use std::{fs, path::Path};
+use std::{
+    fs::{self, File, OpenOptions},
+    io::Write,
+    path::Path,
+    sync::atomic::{AtomicU64, Ordering},
+    time::{SystemTime, UNIX_EPOCH},
+};
 use zeroize::Zeroize;
 
 pub const FORMAT_VERSION: u16 = 1;
 pub const JOIN_TOKEN_BYTES: usize = 32;
+static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AweNodeConfig {
@@ -193,7 +200,46 @@ pub fn save_json<T: Serialize>(value: &T, path: &Path) -> Result<(), String> {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let data = serde_json::to_vec_pretty(value).map_err(|e| e.to_string())?;
-    fs::write(path, data).map_err(|e| e.to_string())
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_nanos())
+        .unwrap_or(0);
+    let sequence = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let name = format!(
+        ".{}.{}.{}.tmp",
+        path.file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("config"),
+        std::process::id(),
+        stamp ^ u128::from(sequence)
+    );
+    let temporary = path.with_file_name(name);
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)
+        .map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o600))
+            .map_err(|e| e.to_string())?;
+    }
+    if let Err(error) = file.write_all(&data).and_then(|_| file.sync_all()) {
+        let _ = fs::remove_file(&temporary);
+        return Err(error.to_string());
+    }
+    drop(file);
+    if let Err(error) = fs::rename(&temporary, path) {
+        let _ = fs::remove_file(&temporary);
+        return Err(error.to_string());
+    }
+    if let Some(parent) = path.parent() {
+        File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 pub fn load_awenode(path: &Path) -> Result<AweNodeConfig, String> {
@@ -390,5 +436,22 @@ mod tests {
         assert!(validate_join_token(&format!("dc-{}", "b".repeat(64)), "dc").is_ok());
         assert!(validate_join_token("node-not-hex", "node").is_err());
         assert!(validate_join_token(&format!("dg-{}", "a".repeat(65)), "dg").is_err());
+    }
+
+    #[test]
+    fn config_save_is_atomic_and_roundtrips() {
+        let path = std::env::temp_dir().join(format!(
+            "awenet-federation-atomic-{}-{}.json",
+            std::process::id(),
+            TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let config = generate_awenode("node-1", "DC One", "127.0.0.1:41000", vec![], 1).unwrap();
+        save_json(&config, &path).unwrap();
+        assert_eq!(load_awenode(&path).unwrap(), config);
+        let replacement =
+            generate_awenode("node-2", "DC Two", "127.0.0.1:41001", vec![], 2).unwrap();
+        save_json(&replacement, &path).unwrap();
+        assert_eq!(load_awenode(&path).unwrap(), replacement);
+        let _ = fs::remove_file(path);
     }
 }
