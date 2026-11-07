@@ -40,6 +40,7 @@ while exposing a small, stable product orchestration model on top.
 | AWENETwork & founder economy | `founder`, `awenetwork`, `resource_economy`, `price_control`, `treasury` | Founder-exclusive authority with an immutable audit log, founder-published work tasks with approve-then-pay rewards, consented resource contributions with reliability-weighted payouts, official price control with history, treasury issuance vs circulation accounting |
 | Founder protection & economy completion | `founder_guard`, `resource_meter`, `store_escrow`, `fraud`, `rankings` | Passkey-protected founder step-up authorization, host resource metering with multi-verifier usage reports, store escrow orders over ONECOIN, advisory fraud detection with bounded evidence, contributor rankings and achievements that never mint |
 | Economy product layer | `storefront`, `economy_api` (node), `awenetwork.js`, `storefront.js`, `founder.js` | Storefront catalog & search, economy HTTP API in the node, AWENETwork board, ONECOIN Market with escrowed orders, Founder Control Center, persistent economy state |
+| Founder security & storage metering | `webauthn` (core), `founder_guard`, `resource_meter`, `economy_api` passkey routes, `founder.js` Security tab, `onecoin.js` scan-to-pay | Browser WebAuthn passkey enrollment + MFA step-up for founder mutations, contributed-storage capacity metering (statvfs), camera QR scan-to-pay where supported |
 | Identity & security | `identity`, `security`, `crypto`, `defense`, `sandbox` | Ed25519 identity, authenticated encrypted transport, hostile-traffic limits |
 | Discovery & routing | `discovery`, `routing`, `network_topology`, `lan_mesh` | DHT-style lookup, Data Centre topology, relay failover, LAN mesh |
 | Data plane | `data_plane`, `storage`, `replication`, `repair`, `recovery` | Chunked content-addressed storage, replica placement, repair planning |
@@ -210,7 +211,8 @@ Five deterministic core modules complete the founder-governed ONECOIN
 economy: `founder_guard.rs` (passkey credential enrollment signed by the
 founder, MFA step-up challenges with a bounded TTL and single-use recovery
 codes, all wrapping the immutable founder authority),
-`resource_meter.rs` (host system counters read from /proc on Linux with
+`resource_meter.rs` (host system counters read from /proc and the free
+capacity of the contributed storage directory via statvfs on Linux with
 honest unsupported-platform errors, per-period usage deltas and signed
 usage reports that settle only with at least two distinct verifier
 signatures), `store_escrow.rs` (store orders over the ONECOIN ledger with
@@ -242,10 +244,14 @@ inside the local node and its UI, without changing any protocol guarantee:
   (`awenetwork.js`), the ONECOIN Market with escrowed orders
   (`storefront.js`) and the Founder Control Center (`founder.js`), plus a
   wallet receive-QR fix and shared `economy.css` styles.
-- Everything not yet implemented (browser WebAuthn ceremony, multi-node
-  verifiers, GPU/storage metering, multi-node marketplace sync, economy
-  screen localization, camera QR scanning) is listed honestly in the doc.
-  See [docs/PRODUCT-UI-UPGRADE-2026-11-06.md](docs/PRODUCT-UI-UPGRADE-2026-11-06.md).
+- Everything not yet implemented (multi-node verifiers, GPU metering,
+  multi-node marketplace sync, economy screen localization) is listed
+  honestly in the doc. See
+  [docs/PRODUCT-UI-UPGRADE-2026-11-06.md](docs/PRODUCT-UI-UPGRADE-2026-11-06.md).
+- The 2026-11-07 upgrade adds the browser WebAuthn passkey ceremony
+  (enrollment + MFA step-up gating every founder mutation), contributed
+  storage capacity metering and camera QR scan-to-pay. See
+  [docs/PASSKEY-RESOURCE-UPGRADE-2026-11-07.md](docs/PASSKEY-RESOURCE-UPGRADE-2026-11-07.md).
 
 ## Important status rule
 
@@ -277,6 +283,7 @@ model is in [docs/PRODUCT-ARCHITECTURE.md](docs/PRODUCT-ARCHITECTURE.md) and
 - [AWENETwork & founder economy upgrade](docs/AWENETWORK-UPGRADE-2026-11-04.md)
 - [Founder protection & economy completion](docs/ECONOMY-COMPLETION-2026-11-05.md)
 - [Economy product layer](docs/PRODUCT-UI-UPGRADE-2026-11-06.md)
+- [Founder passkey & storage metering upgrade](docs/PASSKEY-RESOURCE-UPGRADE-2026-11-07.md)
 
 ## Security
 
