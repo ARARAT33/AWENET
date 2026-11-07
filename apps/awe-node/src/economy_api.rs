@@ -240,9 +240,7 @@ fn require_founder_action(economy: &NodeEconomy, identity: &Identity) -> Option<
     if let Some(response) = require_founder(economy, identity) {
         return Some(response);
     }
-    let Some(guard) = economy.founder_guard.as_ref() else {
-        return None;
-    };
+    let guard = economy.founder_guard.as_ref()?;
     if !guard.passkeys().is_empty() && !guard.session_active(now_unix()) {
         return Some(err(
             403,

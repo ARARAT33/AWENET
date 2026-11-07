@@ -41,8 +41,18 @@ fn private_file(file: &File) -> io::Result<()> {
 }
 
 fn sync_parent(path: &Path) -> io::Result<()> {
-    if let Some(parent) = path.parent() {
-        File::open(parent)?.sync_all()?;
+    #[cfg(unix)]
+    {
+        if let Some(parent) = path.parent() {
+            File::open(parent)?.sync_all()?;
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        // Windows cannot open a directory handle for fsync; the atomic
+        // rename is the durability boundary there, so the parent sync
+        // stays a Unix-only step.
+        let _ = path.parent();
     }
     Ok(())
 }
