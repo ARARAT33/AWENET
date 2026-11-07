@@ -542,4 +542,3 @@ fn three_node_product_smoke() {
     let _ = fs::remove_dir_all(&root);
     result.expect("product smoke test failed");
 }
-

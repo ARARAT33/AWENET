@@ -2844,4 +2844,3 @@ mod tests {
         assert!(parse_json_u16(&json!({}), "online_hours").is_err());
     }
 }
-
