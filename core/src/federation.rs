@@ -1,7 +1,17 @@
+use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
-use std::{fs, path::Path};
+use std::{
+    fs::{self, OpenOptions},
+    io::Write,
+    path::Path,
+    sync::atomic::{AtomicU64, Ordering},
+    time::{SystemTime, UNIX_EPOCH},
+};
+use zeroize::Zeroize;
 
 pub const FORMAT_VERSION: u16 = 1;
+pub const JOIN_TOKEN_BYTES: usize = 32;
+static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AweNodeConfig {
@@ -55,27 +65,52 @@ pub struct AweNetConfig {
     pub bootstrap_endpoints: Vec<String>,
 }
 
-fn token(prefix: &str, seed: &str) -> String {
-    let mut bytes = Vec::with_capacity(prefix.len() + seed.len() + 8);
-    bytes.extend_from_slice(prefix.as_bytes());
-    bytes.extend_from_slice(seed.as_bytes());
-    bytes.extend_from_slice(
-        &std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-            .to_be_bytes(),
-    );
-    format!(
-        "{}-{}",
-        prefix,
-        &hex::encode(blake3::hash(&bytes).as_bytes())[..32]
-    )
+/// Creates a high-entropy bearer credential for a federation invitation.
+///
+/// This token is not globally one-time: until issuer-side registration and
+/// consumption are implemented, a copied invitation can be replayed at
+/// multiple recipients. Format validation alone is not issuer authorization.
+///
+/// The token is deliberately independent from public configuration fields and
+/// timestamps. A configuration can therefore be regenerated without deriving
+/// the same credential, and two invitations for the same federation scope are
+/// not interchangeable by accident.
+fn token_with<F>(prefix: &str, mut fill: F) -> Result<String, String>
+where
+    F: FnMut(&mut [u8]) -> Result<(), ()>,
+{
+    let mut entropy = [0u8; JOIN_TOKEN_BYTES];
+    if fill(&mut entropy).is_err() {
+        entropy.zeroize();
+        return Err("secure_random_unavailable".to_string());
+    }
+    let encoded = hex::encode(entropy);
+    entropy.zeroize();
+    Ok(format!("{prefix}-{encoded}"))
+}
+
+fn token(prefix: &str) -> Result<String, String> {
+    token_with(prefix, |bytes| OsRng.try_fill_bytes(bytes).map_err(|_| ()))
 }
 
 fn id(prefix: &str, seed: &str) -> String {
     let digest = blake3::hash(format!("AWE/{prefix}/v1/{seed}").as_bytes());
     format!("{prefix}-{}", &hex::encode(digest.as_bytes())[..24])
+}
+
+fn validate_join_token(token: &str, prefix: &str) -> Result<(), String> {
+    let encoded = token
+        .strip_prefix(&format!("{prefix}-"))
+        .ok_or_else(|| format!("invalid {prefix} join token prefix"))?;
+    // Older v1 invitations used 128-bit tokens; continue accepting them
+    // while every newly generated invitation uses 256 bits.
+    if ![16, JOIN_TOKEN_BYTES].contains(&(encoded.len() / 2))
+        || encoded.len() % 2 != 0
+        || !encoded.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(format!("invalid {prefix} join token entropy"));
+    }
+    Ok(())
 }
 
 pub fn generate_awenode(
@@ -84,7 +119,7 @@ pub fn generate_awenode(
     endpoint: &str,
     bootstrap: Vec<String>,
     now: u64,
-) -> AweNodeConfig {
+) -> Result<AweNodeConfig, String> {
     generate_awenode_for_dc(
         node_id,
         &id("dc", &format!("{node_id}:{name}")),
@@ -102,8 +137,8 @@ pub fn generate_awenode_for_dc(
     endpoint: &str,
     bootstrap: Vec<String>,
     now: u64,
-) -> AweNodeConfig {
-    AweNodeConfig {
+) -> Result<AweNodeConfig, String> {
+    Ok(AweNodeConfig {
         format: "awenode".into(),
         version: FORMAT_VERSION,
         node_id: node_id.into(),
@@ -112,8 +147,8 @@ pub fn generate_awenode_for_dc(
         issued_at_unix: now,
         endpoint: endpoint.into(),
         bootstrap_endpoints: bootstrap,
-        join_token: token("node", node_id),
-    }
+        join_token: token("node")?,
+    })
 }
 
 pub fn generate_awedc(
@@ -123,8 +158,8 @@ pub fn generate_awedc(
     endpoints: Vec<String>,
     members: Vec<String>,
     now: u64,
-) -> DataCentreConfig {
-    DataCentreConfig {
+) -> Result<DataCentreConfig, String> {
+    Ok(DataCentreConfig {
         format: "awedc".into(),
         version: FORMAT_VERSION,
         data_centre_id: dc_id.into(),
@@ -134,8 +169,8 @@ pub fn generate_awedc(
         endpoints,
         member_node_ids: members,
         peer_data_centres: Vec::new(),
-        join_token: token("dc", dc_id),
-    }
+        join_token: token("dc")?,
+    })
 }
 
 pub fn generate_dgc(
@@ -143,11 +178,11 @@ pub fn generate_dgc(
     name: &str,
     data_centres: Vec<String>,
     now: u64,
-) -> DataGroupConfig {
+) -> Result<DataGroupConfig, String> {
     let mut sorted = data_centres;
     sorted.sort();
     sorted.dedup();
-    DataGroupConfig {
+    Ok(DataGroupConfig {
         format: "dgc".into(),
         version: FORMAT_VERSION,
         data_group_id: id("dg", &format!("{owner_dc_id}:{name}:{}", sorted.join(","))),
@@ -156,8 +191,8 @@ pub fn generate_dgc(
         owner_data_centre_id: owner_dc_id.into(),
         data_centre_ids: sorted,
         peer_data_groups: Vec::new(),
-        join_token: token("dg", owner_dc_id),
-    }
+        join_token: token("dg")?,
+    })
 }
 
 pub fn save_json<T: Serialize>(value: &T, path: &Path) -> Result<(), String> {
@@ -165,7 +200,56 @@ pub fn save_json<T: Serialize>(value: &T, path: &Path) -> Result<(), String> {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let data = serde_json::to_vec_pretty(value).map_err(|e| e.to_string())?;
-    fs::write(path, data).map_err(|e| e.to_string())
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_nanos())
+        .unwrap_or(0);
+    let sequence = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let name = format!(
+        ".{}.{}.{}.tmp",
+        path.file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("config"),
+        std::process::id(),
+        stamp ^ u128::from(sequence)
+    );
+    let temporary = path.with_file_name(name);
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)
+        .map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o600))
+            .map_err(|e| e.to_string())?;
+    }
+    if let Err(error) = file.write_all(&data).and_then(|_| file.sync_all()) {
+        let _ = fs::remove_file(&temporary);
+        return Err(error.to_string());
+    }
+    drop(file);
+    if let Err(error) = fs::rename(&temporary, path) {
+        let _ = fs::remove_file(&temporary);
+        return Err(error.to_string());
+    }
+    #[cfg(unix)]
+    {
+        if let Some(parent) = path.parent() {
+            fs::File::open(parent)
+                .and_then(|directory| directory.sync_all())
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        // Windows cannot open a directory handle for fsync; the completed
+        // atomic rename above is the durability boundary on that platform,
+        // so the parent directory sync stays a Unix-only step.
+        let _ = path.parent();
+    }
+    Ok(())
 }
 
 pub fn load_awenode(path: &Path) -> Result<AweNodeConfig, String> {
@@ -200,6 +284,7 @@ pub fn validate_awenode(v: &AweNodeConfig) -> Result<(), String> {
     {
         return Err("incomplete .awenode configuration".into());
     }
+    validate_join_token(&v.join_token, "node")?;
     Ok(())
 }
 
@@ -214,6 +299,7 @@ pub fn validate_awedc(v: &DataCentreConfig) -> Result<(), String> {
     {
         return Err("incomplete .awedc configuration".into());
     }
+    validate_join_token(&v.join_token, "dc")?;
     if v.member_node_ids.is_empty() {
         return Err("data centre must contain at least one node".into());
     }
@@ -227,6 +313,7 @@ pub fn validate_dgc(v: &DataGroupConfig) -> Result<(), String> {
     if v.data_group_id.is_empty() || v.owner_data_centre_id.is_empty() || v.join_token.is_empty() {
         return Err("incomplete .dgc configuration".into());
     }
+    validate_join_token(&v.join_token, "dg")?;
     if v.data_centre_ids.len() < 2 {
         return Err("data group requires at least two data centres".into());
     }
@@ -277,7 +364,7 @@ mod tests {
     use super::*;
     #[test]
     fn formats_validate() {
-        let n = generate_awenode("node-1", "DC One", "127.0.0.1:41000", vec![], 1);
+        let n = generate_awenode("node-1", "DC One", "127.0.0.1:41000", vec![], 1).unwrap();
         validate_awenode(&n).unwrap();
         let dc = generate_awedc(
             "node-1",
@@ -286,14 +373,95 @@ mod tests {
             vec![n.endpoint.clone()],
             vec![n.node_id.clone()],
             1,
-        );
+        )
+        .unwrap();
         validate_awedc(&dc).unwrap();
         let dg = generate_dgc(
             &dc.data_centre_id,
             "Group",
             vec![dc.data_centre_id.clone(), "dc-2".into()],
             1,
-        );
+        )
+        .unwrap();
         validate_dgc(&dg).unwrap();
+    }
+
+    #[test]
+    fn join_tokens_use_csprng_and_are_not_deterministic() {
+        let first = generate_awenode("node-1", "DC One", "127.0.0.1:41000", vec![], 1).unwrap();
+        let second = generate_awenode("node-1", "DC One", "127.0.0.1:41000", vec![], 1).unwrap();
+        let dc = generate_awedc(
+            "node-1",
+            "dc-1",
+            "DC One",
+            vec!["127.0.0.1:41000".into()],
+            vec!["node-1".into()],
+            1,
+        )
+        .unwrap();
+        let dg = generate_dgc("dc-1", "Group", vec!["dc-1".into(), "dc-2".into()], 1).unwrap();
+
+        assert_ne!(first.join_token, second.join_token);
+        for (prefix, value) in [
+            ("node", first.join_token.as_str()),
+            ("dc", dc.join_token.as_str()),
+            ("dg", dg.join_token.as_str()),
+        ] {
+            let (actual_prefix, secret) = value.split_once('-').unwrap();
+            assert_eq!(actual_prefix, prefix);
+            assert_eq!(secret.len(), JOIN_TOKEN_BYTES * 2);
+            assert!(secret.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        }
+    }
+
+    #[test]
+    fn malformed_join_tokens_are_rejected() {
+        let mut node = generate_awenode("node-1", "DC One", "127.0.0.1:41000", vec![], 1).unwrap();
+        node.join_token = "node-not-enough-entropy".into();
+        assert!(validate_awenode(&node).is_err());
+
+        let mut dc = generate_awedc(
+            "node-1",
+            "dc-1",
+            "DC One",
+            vec!["127.0.0.1:41000".into()],
+            vec!["node-1".into()],
+            1,
+        )
+        .unwrap();
+        dc.join_token = format!("node-{}", "a".repeat(JOIN_TOKEN_BYTES * 2));
+        assert!(validate_awedc(&dc).is_err());
+    }
+    #[test]
+    fn token_generation_fails_closed_when_entropy_is_unavailable() {
+        assert_eq!(
+            token_with("node", |_| Err(())),
+            Err("secure_random_unavailable".to_string())
+        );
+    }
+
+    #[test]
+    fn legacy_128_bit_join_tokens_remain_compatible() {
+        assert!(validate_join_token(&format!("node-{}", "a".repeat(32)), "node").is_ok());
+        assert!(validate_join_token(&format!("dc-{}", "b".repeat(64)), "dc").is_ok());
+        assert!(validate_join_token("node-not-hex", "node").is_err());
+        assert!(validate_join_token(&format!("dg-{}", "a".repeat(65)), "dg").is_err());
+    }
+
+    #[test]
+    fn config_save_is_atomic_and_roundtrips() {
+        let path = std::env::temp_dir().join(format!(
+            "awenet-federation-atomic-{}-{}.json",
+            std::process::id(),
+            TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let config = generate_awenode("node-1", "DC One", "127.0.0.1:41000", vec![], 1).unwrap();
+        save_json(&config, &path).unwrap();
+        assert_eq!(load_awenode(&path).unwrap(), config);
+        let replacement =
+            generate_awenode("node-2", "DC Two", "127.0.0.1:41001", vec![], 2).unwrap();
+        save_json(&replacement, &path).unwrap();
+        assert_eq!(load_awenode(&path).unwrap(), replacement);
+        let _ = fs::remove_file(path);
     }
 }
