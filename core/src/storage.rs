@@ -429,7 +429,7 @@ pub fn save_manifest(path: impl AsRef<Path>, manifest: &[u8]) -> io::Result<()> 
     let mut nonce = [0u8; 16];
     OsRng
         .try_fill_bytes(&mut nonce)
-        .map_err(|_| io::Error::new(io::ErrorKind::Other, "secure randomness unavailable"))?;
+        .map_err(|_| io::Error::other("secure randomness unavailable"))?;
     let temporary = parent.join(format!(
         ".{filename}.{}.{}.tmp",
         std::process::id(),
@@ -440,12 +440,16 @@ pub fn save_manifest(path: impl AsRef<Path>, manifest: &[u8]) -> io::Result<()> 
         .write(true)
         .create_new(true)
         .open(&temporary)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(fs::Permissions::from_mode(0o600))?;
-    }
-    if let Err(error) = file.write_all(manifest).and_then(|_| file.sync_all()) {
+    let write_result = (|| {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        }
+        file.write_all(manifest)?;
+        file.sync_all()
+    })();
+    if let Err(error) = write_result {
         drop(file);
         let _ = fs::remove_file(&temporary);
         return Err(error);
