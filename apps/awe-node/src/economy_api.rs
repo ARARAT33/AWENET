@@ -13,9 +13,10 @@
 //! - The local node's identity is the founder at economy genesis. The
 //!   founder-only endpoints (`/api/founder/*`) are additionally gated by
 //!   `FounderAuthority::is_founder` against the node key, and the UI
-//!   listener binds to loopback only. The browser WebAuthn ceremony for
-//!   `founder_guard.rs` is still a client-side task and is not implemented
-//!   in this layer.
+//!   listener binds to loopback only. Once a passkey is enrolled through
+//!   the browser WebAuthn ceremony below, every mutating founder endpoint
+//!   additionally requires a live MFA step-up session, so the founder key
+//!   alone can no longer publish tasks, approve rewards or change prices.
 //! - ONECOIN payouts happen only through the founder-approved, idempotent
 //!   mint inside `awenetwork.rs`; this API never mints directly.
 //! - Store revenue is always a buyer-to-seller transfer through escrow,
@@ -30,7 +31,9 @@ use awep2p_core::awenetwork::{
     WorkTask, WorkTaskSpec, WorkTaskStatus,
 };
 use awep2p_core::founder::FounderAuthority;
-use awep2p_core::identity::{AweId, Identity, Username};
+use awep2p_core::founder_guard::FounderGuard;
+use awep2p_core::identity::{secure_random, AweId, Identity, Username};
+use awep2p_core::webauthn;
 use awep2p_core::onecoin::{OnecoinLedger, ATOMS_PER_COIN};
 use awep2p_core::price_control::{OfficialPriceControl, PRICE_DISCLAIMER};
 use awep2p_core::store_escrow::{DisputeRuling, StoreEscrow, StoreOrder};
@@ -62,6 +65,10 @@ pub struct NodeEconomy {
     pub storefront: Storefront,
     pub store_escrow: StoreEscrow,
     pub store_operator: StoreOperatorKey,
+    #[serde(default)]
+    pub founder_guard: Option<FounderGuard>,
+    #[serde(default)]
+    passkey_ceremony: Option<PasskeyCeremony>,
     #[serde(default)]
     genesis_synced: bool,
 }
@@ -98,6 +105,19 @@ impl StoreOperatorKey {
     }
 }
 
+/// Browser WebAuthn ceremonies older than this are refused.
+const CEREMONY_TTL_SECS: u64 = 600;
+
+/// The in-flight browser WebAuthn ceremony state. The challenge lives
+/// server-side, is bound into clientDataJSON, and never reaches disk.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct PasskeyCeremony {
+    pub challenge: [u8; 32],
+    pub step_up: bool,
+    pub label: String,
+    pub created_at_unix: u64,
+}
+
 pub fn now_unix() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -128,6 +148,8 @@ pub fn load_or_create(identity: &Identity, path: &Path) -> (NodeEconomy, bool) {
         storefront: Storefront::new(),
         store_escrow,
         store_operator: operator,
+        founder_guard: None,
+        passkey_ceremony: None,
         genesis_synced: false,
     };
     (economy, true)
@@ -154,7 +176,15 @@ fn sync_treasury_issuance(economy: &mut NodeEconomy, ledger: &OnecoinLedger, now
 }
 
 fn save_economy(economy: &NodeEconomy, path: &Path) -> Result<(), String> {
-    let bytes = serde_json::to_vec_pretty(economy).map_err(|e| e.to_string())?;
+    // Step-up challenges, open MFA sessions and browser ceremonies are
+    // in-memory auth state by contract; only enrolled credentials and
+    // counters ever reach the durable snapshot.
+    let mut snapshot = economy.clone();
+    if let Some(guard) = snapshot.founder_guard.as_mut() {
+        guard.clear_transient_auth_state();
+    }
+    snapshot.passkey_ceremony = None;
+    let bytes = serde_json::to_vec_pretty(&snapshot).map_err(|e| e.to_string())?;
     std::fs::write(path, bytes).map_err(|e| e.to_string())
 }
 
@@ -194,6 +224,35 @@ fn require_founder(economy: &NodeEconomy, identity: &Identity) -> Option<ApiResp
             "only the AWENET founder may perform this operation".to_string(),
         ))
     }
+}
+
+fn ensure_founder_guard(economy: &mut NodeEconomy, identity: &Identity) {
+    if economy.founder_guard.is_none() {
+        economy.founder_guard = Some(FounderGuard::install(identity, now_unix()));
+    }
+}
+
+/// The gate for every mutating founder endpoint: the founder-key check plus,
+/// once any passkey is enrolled, a live MFA step-up session. Before the
+/// first enrollment the founder key alone stands, which is the honest
+/// bootstrap rule for the very first ceremony.
+fn require_founder_action(
+    economy: &NodeEconomy,
+    identity: &Identity,
+) -> Option<ApiResponse> {
+    if let Some(response) = require_founder(economy, identity) {
+        return response;
+    }
+    let Some(guard) = economy.founder_guard.as_ref() else {
+        return None;
+    };
+    if !guard.passkeys().is_empty() && !guard.session_active(now_unix()) {
+        return Some(err(
+            403,
+            "founder MFA required: complete a passkey step-up first".to_string(),
+        ));
+    }
+    None
 }
 
 fn url_decode(input: &str) -> String {
@@ -545,6 +604,21 @@ pub fn handle(
         }
         ("GET", ["api", "founder", "identity"]) => founder_identity(identity, economy_state),
         ("GET", ["api", "founder", "overview"]) => founder_overview(identity, economy_state),
+        ("GET", ["api", "founder", "passkey", "status"]) => {
+            passkey_status(identity, economy_state)
+        }
+        ("POST", ["api", "founder", "passkey", "register", "options"]) => {
+            passkey_register_options(identity, economy_state, economy_path)
+        }
+        ("POST", ["api", "founder", "passkey", "register"]) => {
+            passkey_register(&parsed, identity, economy_state, economy_path)
+        }
+        ("POST", ["api", "founder", "passkey", "step-up", "options"]) => {
+            passkey_step_up_options(identity, economy_state, economy_path)
+        }
+        ("POST", ["api", "founder", "passkey", "step-up"]) => {
+            passkey_step_up(&parsed, identity, economy_state, economy_path)
+        }
         ("POST", ["api", "founder", "price"]) => {
             set_official_price(&parsed, identity, economy_state, economy_path)
         }
@@ -830,7 +904,7 @@ fn publish_task(
         Ok(guard) => guard,
         Err(response) => return response,
     };
-    if let Some(response) = require_founder(&economy, identity) {
+    if let Some(response) = require_founder_action(&economy, identity) {
         return response;
     }
     let spec = match spec_from_json(parsed) {
@@ -994,6 +1068,342 @@ fn founder_identity(identity: &Identity, economy_state: &EconomyState) -> ApiRes
     }))
 }
 
+fn passkey_status(identity: &Identity, economy_state: &EconomyState) -> ApiResponse {
+    let economy = match lock_economy(economy_state) {
+        Ok(guard) => guard,
+        Err(response) => return response,
+    };
+    if let Some(response) = require_founder(&economy, identity) {
+        return response;
+    }
+    let guard = economy.founder_guard.as_ref();
+    ok(serde_json::json!({
+        "status": "ok",
+        "enrolled": guard.map(|g| g.passkeys().len()).unwrap_or(0),
+        "session_active": guard.map(|g| g.session_active(now_unix())).unwrap_or(false),
+        "recovery_codes_remaining": guard.map(|g| g.recovery_codes_remaining()).unwrap_or(0),
+        "relying_party_id": webauthn::RP_ID,
+        "passkeys": guard
+            .map(|g| {
+                g.passkeys()
+                    .iter()
+                    .map(|passkey| {
+                        serde_json::json!({
+                            "credential_id_hex": hex::encode(passkey.credential_id),
+                            "label": passkey.label,
+                            "enrolled_at_unix": passkey.enrolled_at_unix,
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default(),
+        "session": guard
+            .and_then(|g| g.session())
+            .map(|session| {
+                serde_json::json!({
+                    "granted_at_unix": session.granted_at_unix,
+                    "expires_at_unix": session.expires_at_unix,
+                })
+            }),
+    }))
+}
+
+fn passkey_register_options(
+    identity: &Identity,
+    economy_state: &EconomyState,
+    economy_path: &Path,
+) -> ApiResponse {
+    let mut economy = match lock_economy(economy_state) {
+        Ok(guard) => guard,
+        Err(response) => return response,
+    };
+    if let Some(response) = require_founder(&economy, identity) {
+        return response;
+    }
+    ensure_founder_guard(&mut economy, identity);
+    let challenge: [u8; 32] = *secure_random::<32>();
+    economy.passkey_ceremony = Some(PasskeyCeremony {
+        challenge,
+        step_up: false,
+        label: String::new(),
+        created_at_unix: now_unix(),
+    });
+    if let Err(message) = save_economy(&economy, economy_path) {
+        return err(500, message);
+    }
+    ok(serde_json::json!({
+        "status": "ok",
+        "challenge": webauthn::base64url_encode(&challenge),
+        "rp": {
+            "id": webauthn::RP_ID,
+            "name": "AWENET Founder",
+        },
+        "user": {
+            "id": identity.public.awe_id.to_hex(),
+            "name": identity.public.awe_id.to_hex(),
+            "display_name": "AWENET founder",
+        },
+        "pub_key_cred_params": [{ "type": "public-key", "alg": -8 }],
+        "attestation": "none",
+    }))
+}
+
+fn passkey_register(
+    parsed: &serde_json::Value,
+    identity: &Identity,
+    economy_state: &EconomyState,
+    economy_path: &Path,
+) -> ApiResponse {
+    let mut economy = match lock_economy(economy_state) {
+        Ok(guard) => guard,
+        Err(response) => return response,
+    };
+    if let Some(response) = require_founder_action(&economy, identity) {
+        return response;
+    }
+    let ceremony = match economy.passkey_ceremony.take() {
+        Some(ceremony) if !ceremony.step_up => ceremony,
+        Some(_) => {
+            return err(
+                400,
+                "a step-up ceremony is pending; complete it first".to_string(),
+            )
+        }
+        None => return err(400, "start a registration ceremony first".to_string()),
+    };
+    if now_unix() > ceremony.created_at_unix.saturating_add(CEREMONY_TTL_SECS) {
+        return err(400, "the ceremony expired; start a new one".to_string());
+    }
+    let client_data_json = match parsed
+        .get("client_data_json")
+        .and_then(serde_json::Value::as_str)
+    {
+        Some(text) => text.to_string(),
+        None => return err(400, "client_data_json is required".to_string()),
+    };
+    let ceremony_type = webauthn::client_data_field(&client_data_json, "type");
+    if ceremony_type.as_deref() != Some("webauthn.create") {
+        return err(400, "client data is not a creation ceremony".to_string());
+    }
+    match webauthn::client_data_field(&client_data_json, "challenge") {
+        Some(challenge) if challenge == webauthn::base64url_encode(&ceremony.challenge) => {}
+        _ => return err(400, "the ceremony challenge does not match".to_string()),
+    }
+    let attestation_object = match parsed
+        .get("attestation_object")
+        .and_then(serde_json::Value::as_str)
+    {
+        Some(text) => match webauthn::base64url_decode(text.trim()) {
+            Ok(bytes) => bytes,
+            Err(_) => return err(400, "attestation_object is not valid base64url".to_string()),
+        },
+        None => return err(400, "attestation_object is required".to_string()),
+    };
+    let (authenticator_data, _format) =
+        match webauthn::parse_attestation_object(&attestation_object) {
+            Ok(attestation) => attestation,
+            Err(message) => {
+                return err(400, format!("the attestation is not acceptable: {message}"))
+            }
+        };
+    if authenticator_data.rp_id_hash != webauthn::rp_id_hash() {
+        return err(400, "the credential is bound to a different relying party".to_string());
+    }
+    let attested = match authenticator_data.attested_credential {
+        Some(attested) => attested,
+        None => return err(400, "the attestation carries no credential".to_string()),
+    };
+    ensure_founder_guard(&mut economy, identity);
+    // The founder node key signs the enrollment authorization locally on
+    // the founder machine; the signature never travels the wire.
+    let founder_signature = identity.sign(&FounderGuard::enrollment_message(&attested.public_key));
+    let label = parsed
+        .get("label")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .unwrap_or("founder passkey");
+    let now = now_unix();
+    if let Err(message) = economy
+        .founder_guard
+        .as_mut()
+        .expect("the founder guard was just ensured")
+        .enroll_passkey_bytes(&founder_signature, &attested.public_key, label, now)
+    {
+        return err(400, message.to_string());
+    }
+    if let Err(message) = save_economy(&economy, economy_path) {
+        return err(500, message);
+    }
+    ok(serde_json::json!({
+        "status": "enrolled",
+        "credential_id_hex": hex::encode(attested.credential_id),
+        "label": label,
+    }))
+}
+
+fn passkey_step_up_options(
+    identity: &Identity,
+    economy_state: &EconomyState,
+    economy_path: &Path,
+) -> ApiResponse {
+    let mut economy = match lock_economy(economy_state) {
+        Ok(guard) => guard,
+        Err(response) => return response,
+    };
+    if let Some(response) = require_founder(&economy, identity) {
+        return response;
+    }
+    ensure_founder_guard(&mut economy, identity);
+    if economy
+        .founder_guard
+        .as_ref()
+        .expect("the founder guard was just ensured")
+        .passkeys()
+        .is_empty()
+    {
+        return err(400, "enroll a passkey before requesting a step-up".to_string());
+    }
+    let challenge: [u8; 32] = *secure_random::<32>();
+    economy
+        .founder_guard
+        .as_mut()
+        .expect("the founder guard was just ensured")
+        .begin_step_up();
+    economy.passkey_ceremony = Some(PasskeyCeremony {
+        challenge,
+        step_up: true,
+        label: String::new(),
+        created_at_unix: now_unix(),
+    });
+    if let Err(message) = save_economy(&economy, economy_path) {
+        return err(500, message);
+    }
+    ok(serde_json::json!({
+        "status": "ok",
+        "challenge": webauthn::base64url_encode(&challenge),
+        "rp_id": webauthn::RP_ID,
+        "user_verification": "preferred",
+    }))
+}
+
+fn passkey_step_up(
+    parsed: &serde_json::Value,
+    identity: &Identity,
+    economy_state: &EconomyState,
+    economy_path: &Path,
+) -> ApiResponse {
+    let mut economy = match lock_economy(economy_state) {
+        Ok(guard) => guard,
+        Err(response) => return response,
+    };
+    if let Some(response) = require_founder(&economy, identity) {
+        return response;
+    }
+    let ceremony = match economy.passkey_ceremony.take() {
+        Some(ceremony) if ceremony.step_up => ceremony,
+        Some(_) => {
+            return err(
+                400,
+                "a registration ceremony is pending; complete it first".to_string(),
+            )
+        }
+        None => return err(400, "start a step-up ceremony first".to_string()),
+    };
+    if now_unix() > ceremony.created_at_unix.saturating_add(CEREMONY_TTL_SECS) {
+        return err(400, "the ceremony expired; start a new one".to_string());
+    }
+    let client_data_json = match parsed
+        .get("client_data_json")
+        .and_then(serde_json::Value::as_str)
+    {
+        Some(text) => text.to_string(),
+        None => return err(400, "client_data_json is required".to_string()),
+    };
+    let ceremony_type = webauthn::client_data_field(&client_data_json, "type");
+    if ceremony_type.as_deref() != Some("webauthn.get") {
+        return err(400, "client data is not an assertion".to_string());
+    }
+    match webauthn::client_data_field(&client_data_json, "challenge") {
+        Some(challenge) if challenge == webauthn::base64url_encode(&ceremony.challenge) => {}
+        _ => return err(400, "the step-up challenge does not match".to_string()),
+    }
+    let authenticator_data = match parsed
+        .get("authenticator_data")
+        .and_then(serde_json::Value::as_str)
+    {
+        Some(text) => match webauthn::base64url_decode(text.trim()) {
+            Ok(bytes) => bytes,
+            Err(_) => return err(400, "authenticator_data is not valid base64url".to_string()),
+        },
+        None => return err(400, "authenticator_data is required".to_string()),
+    };
+    let signature = match parsed.get("signature").and_then(serde_json::Value::as_str) {
+        Some(text) => match webauthn::base64url_decode(text.trim()) {
+            Ok(bytes) if bytes.len() == 64 => {
+                let mut signature = [0u8; 64];
+                signature.copy_from_slice(&bytes);
+                signature
+            }
+            _ => return err(400, "signature must be 64 bytes of base64url".to_string()),
+        },
+        None => return err(400, "signature is required".to_string()),
+    };
+    ensure_founder_guard(&mut economy, identity);
+    let enrolled = economy
+        .founder_guard
+        .as_ref()
+        .expect("the founder guard was just ensured")
+        .passkeys()
+        .to_vec();
+    let possession_message =
+        webauthn::assertion_message(&authenticator_data, client_data_json.as_bytes());
+    let credential_public_key = enrolled
+        .iter()
+        .find(|passkey| {
+            webauthn::verify_assertion(
+                &passkey.public_key,
+                &authenticator_data,
+                client_data_json.as_bytes(),
+                &signature,
+            )
+        })
+        .map(|passkey| passkey.public_key);
+    let Some(credential_public_key) = credential_public_key else {
+        return err(
+            403,
+            "no enrolled passkey produced a valid assertion".to_string(),
+        );
+    };
+    if let Err(message) = economy
+        .founder_guard
+        .as_mut()
+        .expect("the founder guard was just ensured")
+        .complete_step_up_assertion(
+            &credential_public_key,
+            &possession_message,
+            &signature,
+            now_unix(),
+        )
+    {
+        return err(403, message.to_string());
+    }
+    let expires_at_unix = economy
+        .founder_guard
+        .as_ref()
+        .expect("the founder guard was just ensured")
+        .session()
+        .map(|session| session.expires_at_unix);
+    if let Err(message) = save_economy(&economy, economy_path) {
+        return err(500, message);
+    }
+    ok(serde_json::json!({
+        "status": "ok",
+        "session_active": true,
+        "expires_at_unix": expires_at_unix,
+    }))
+}
+
 fn founder_overview(identity: &Identity, economy_state: &EconomyState) -> ApiResponse {
     let economy = match lock_economy(economy_state) {
         Ok(guard) => guard,
@@ -1132,7 +1542,7 @@ fn set_official_price(
         Ok(guard) => guard,
         Err(response) => return response,
     };
-    if let Some(response) = require_founder(&economy, identity) {
+    if let Some(response) = require_founder_action(&economy, identity) {
         return response;
     }
     let new_price = match parsed
@@ -1194,7 +1604,7 @@ fn approve_submission(
         Ok(guard) => guard,
         Err(response) => return response,
     };
-    if let Some(response) = require_founder(&economy, identity) {
+    if let Some(response) = require_founder_action(&economy, identity) {
         return response;
     }
     let contributor = match economy.market.submission(submission_id) {
@@ -1250,7 +1660,7 @@ fn approve_team_submission(
         Ok(guard) => guard,
         Err(response) => return response,
     };
-    if let Some(response) = require_founder(&economy, identity) {
+    if let Some(response) = require_founder_action(&economy, identity) {
         return response;
     }
     let mut split: Vec<(AweId, u128)> = Vec::new();
@@ -1333,7 +1743,7 @@ fn review_submission(
         Ok(guard) => guard,
         Err(response) => return response,
     };
-    if let Some(response) = require_founder(&economy, identity) {
+    if let Some(response) = require_founder_action(&economy, identity) {
         return response;
     }
     let reason = match parsed.get("reason").and_then(serde_json::Value::as_str) {
@@ -1391,7 +1801,7 @@ fn close_task(
         Ok(guard) => guard,
         Err(response) => return response,
     };
-    if let Some(response) = require_founder(&economy, identity) {
+    if let Some(response) = require_founder_action(&economy, identity) {
         return response;
     }
     let now = now_unix();
@@ -1429,7 +1839,7 @@ fn approve_suggestion(
         Ok(guard) => guard,
         Err(response) => return response,
     };
-    if let Some(response) = require_founder(&economy, identity) {
+    if let Some(response) = require_founder_action(&economy, identity) {
         return response;
     }
     let NodeEconomy {
@@ -1468,7 +1878,7 @@ fn resolve_dispute(
         Ok(guard) => guard,
         Err(response) => return response,
     };
-    if let Some(response) = require_founder(&economy, identity) {
+    if let Some(response) = require_founder_action(&economy, identity) {
         return response;
     }
     let ruling = match parsed.get("ruling").and_then(serde_json::Value::as_str) {
@@ -1567,7 +1977,7 @@ fn founder_refund(
         Ok(guard) => guard,
         Err(response) => return response,
     };
-    if let Some(response) = require_founder(&economy, identity) {
+    if let Some(response) = require_founder_action(&economy, identity) {
         return response;
     }
     if economy.store_escrow.order(order_id).is_none() {
