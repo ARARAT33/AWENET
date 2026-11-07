@@ -8,6 +8,7 @@ use awep2p_core::diagnostics::{NodeDiagnostics, NodeMetrics};
 use awep2p_core::federation::{
     self, AweNetConfig, AweNodeConfig, DataCentreConfig, DataGroupConfig,
 };
+use awep2p_core::founder_guard::FounderGuard;
 use awep2p_core::identity::{AweId, AweSecret, Identity, LocalVault, Username};
 use awep2p_core::lan_mesh::LanPeerBeacon;
 use awep2p_core::messenger::format_uid;
@@ -17,6 +18,7 @@ use awep2p_core::onecoin::{OnecoinLedger, OnecoinTransaction, ATOMS_PER_COIN};
 use awep2p_core::onecoin_consensus_runtime::{
     OnecoinConsensusMessage, OnecoinConsensusRuntime, ONECOIN_CONSENSUS_STREAM,
 };
+use awep2p_core::passkey_store;
 use awep2p_core::policy::{self, NetworkPolicy};
 use awep2p_core::reputation::NodeReputation;
 use awep2p_core::storage::{encode_shards, recover_shards, LocalNodeStore, StoragePolicy};
@@ -53,6 +55,7 @@ type CommunityState = Arc<Mutex<serde_json::Value>>;
 type ConsensusState = Arc<Mutex<Option<OnecoinConsensusRuntime>>>;
 type OnecoinLedgerState = Arc<Mutex<OnecoinLedger>>;
 type ContributionState = Arc<Mutex<ResourceContribution>>;
+type FounderGuardState = Arc<Mutex<FounderGuard>>;
 
 #[derive(Clone)]
 struct UiState {
@@ -70,6 +73,7 @@ struct UiState {
     onecoin_offers_path: PathBuf,
     contribution: ContributionState,
     contribution_path: PathBuf,
+    founder_guard: FounderGuardState,
     economy: economy_api::EconomyState,
     economy_path: PathBuf,
 }
@@ -299,6 +303,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         onecoin_offers_path,
         contribution,
         contribution_path,
+        founder_guard,
         economy,
         economy_path,
     } = state;
@@ -501,6 +506,19 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                 "node_id": format_uid(node.identity.public.awe_id.as_bytes()),
                 "node_address": node.listen_addr.to_string(),
                 "transport": "AWE encrypted TCP", "ui": "connected", "peers": peer_json, "discovered_peers": peer_json.len(), "active_connections": node.active_peer_count().await
+            }).to_string())
+        },
+        "/api/security/passkeys" if method == "GET" => {
+            let guard = founder_guard.lock().map(|value| value.clone()).unwrap_or_else(|_| {
+                FounderGuard::install(&node.identity, 0)
+            });
+            ("200 OK", "application/json; charset=utf-8", serde_json::json!({
+                "storage": "founder_signed_atomic",
+                "max_credentials": awep2p_core::founder_guard::MAX_PASSKEYS,
+                "enrolled": guard.passkeys().len(),
+                "labels": guard.passkeys().iter().map(|key| key.label.clone()).collect::<Vec<_>>(),
+                "recovery_codes_remaining": guard.recovery_codes_remaining(),
+                "step_up_active": guard.session_active(now_unix())
             }).to_string())
         },
         "/api/connect" if method == "POST" => {
@@ -1695,6 +1713,11 @@ async fn run_product() -> Result<()> {
         identity
     };
     let node_id = format_uid(identity.public.awe_id.as_bytes());
+    let founder_guard_path = data_dir.join("founder-passkeys.json");
+    let founder_guard = Arc::new(Mutex::new(
+        passkey_store::load_or_install(&founder_guard_path, &identity, now_unix())
+            .map_err(anyhow::Error::msg)?,
+    ));
     let listen: SocketAddr = env::var("AWE_LISTEN_ADDR")
         .unwrap_or_else(|_| "0.0.0.0:41000".into())
         .parse()
@@ -2430,6 +2453,7 @@ async fn run_product() -> Result<()> {
             let api_onecoin_offers_path = onecoin_offers_path.clone();
             let api_contribution = contribution.clone();
             let api_contribution_path = contribution_path.clone();
+            let api_founder_guard = founder_guard.clone();
             let api_economy = economy_state.clone();
             let api_economy_path = economy_path.clone();
             tokio::spawn(async move {
@@ -2450,6 +2474,7 @@ async fn run_product() -> Result<()> {
                         onecoin_offers_path: api_onecoin_offers_path,
                         contribution: api_contribution,
                         contribution_path: api_contribution_path,
+                        founder_guard: api_founder_guard,
                         economy: api_economy,
                         economy_path: api_economy_path,
                     },

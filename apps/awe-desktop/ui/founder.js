@@ -18,16 +18,19 @@ return false;
 
 function render(){
 view.innerHTML="<div class=\"eco-hero\"><div><div class=\"eyebrow\">FOUNDER CONTROL CENTER</div><h1>Economy command</h1><p>Publish official AWENETwork tasks, review submissions personally, set the official ONECOIN price and settle store disputes. Every action is audit-logged.</p></div><div class=\"eco-orb\">★</div></div>"+
-"<div class=\"eco-tabs\"><button class=\"eco-tab active\" data-tab=\"overview\">Overview</button><button class=\"eco-tab\" data-tab=\"publish\">Publish task</button><button class=\"eco-tab\" data-tab=\"review\">Review work</button><button class=\"eco-tab\" data-tab=\"price\">ONECOIN price</button><button class=\"eco-tab\" data-tab=\"suggestions\">Suggestions</button><button class=\"eco-tab\" data-tab=\"store\">Store orders</button></div>"+
+"<div class=\"eco-tabs\"><button class=\"eco-tab active\" data-tab=\"overview\">Overview</button><button class=\"eco-tab\" data-tab=\"publish\">Publish task</button><button class=\"eco-tab\" data-tab=\"review\">Review work</button><button class=\"eco-tab\" data-tab=\"price\">ONECOIN price</button><button class=\"eco-tab\" data-tab=\"suggestions\">Suggestions</button><button class=\"eco-tab\" data-tab=\"store\">Store orders</button><button class=\"eco-tab\" data-tab=\"passkey\">Security</button></div>"+
 "<section id=\"fnd-overview\" class=\"eco-panel\"><div id=\"fndOverview\"><div class=\"empty\">Loading economy overview…</div></div></section>"+
 "<section id=\"fnd-publish\" class=\"eco-panel\" hidden><div class=\"section panel\"><div class=\"section-head\"><h2>Publish official task</h2></div><div class=\"notice\">Only tasks published here are official. Set the reward and acceptance criteria before publishing; phase rewards must sum to the task reward when phases are used.</div><div class=\"eco-form-grid\"><input id=\"fndTitle\" placeholder=\"Title (required)\"><select id=\"fndCat\">"+categories.map(c=>"<option value=\""+c+"\">"+c+"</option>").join("")+"</select><select id=\"fndComplexity\">"+complexities.map(c=>"<option value=\""+c+"\">"+c+"</option>").join("")+"</select><input id=\"fndReward\" type=\"text\" placeholder=\"Reward (ONECOIN, decimal)\"><input id=\"fndDeadline\" type=\"number\" min=\"0\" placeholder=\"Deadline (unix seconds, optional)\"><label class=\"eco-check\"><input type=\"checkbox\" id=\"fndTeam\"> Allow team submissions</label></div><textarea id=\"fndDescription\" rows=\"4\" placeholder=\"Detailed description (required)\"></textarea><textarea id=\"fndOutcome\" rows=\"2\" placeholder=\"Expected outcome (required)\"></textarea><textarea id=\"fndCriteria\" rows=\"3\" placeholder=\"Acceptance criteria, one per line (at least one required)\"></textarea><textarea id=\"fndSkills\" rows=\"2\" placeholder=\"Required skills, comma separated (optional)\"></textarea><textarea id=\"fndPhases\" rows=\"3\" placeholder=\"Phases, one per line: name | acceptance criteria | reward ONECOIN (optional)\"></textarea><button class=\"primary\" id=\"fndPublish\">Publish task</button><div id=\"fndPublishState\" class=\"notice\"></div></div></section>"+
 "<section id=\"fnd-review\" class=\"eco-panel\" hidden><div class=\"section panel\"><div class=\"section-head\"><h2>Submitted work</h2></div><div class=\"notice\">Approve to mint the reward (idempotent, audited). Reject or request revision with a reason; the contributor can resubmit after a revision request.</div><div id=\"fndReview\"><div class=\"empty\">Loading submissions…</div></div></div></section>"+
 "<section id=\"fnd-price\" class=\"eco-panel\" hidden><div class=\"section panel\"><div class=\"section-head\"><h2>Official ONECOIN price</h2></div><div class=\"notice\">The official price is an internal policy reference only; it does not guarantee external exchange or redemption. Sellers price their own products in ONECOIN separately.</div><div class=\"eco-form-grid\"><input id=\"fndPrice\" type=\"number\" min=\"0.01\" step=\"0.01\" placeholder=\"New official price (USD cents)\"><input id=\"fndEffective\" type=\"number\" min=\"0\" placeholder=\"Effective at (unix seconds, optional = now)\"></div><textarea id=\"fndPriceReason\" rows=\"2\" placeholder=\"Public reason (required)\"></textarea><button class=\"primary\" id=\"fndSetPrice\">Set official price</button><div id=\"fndPriceState\" class=\"notice\"></div><div id=\"fndPriceHistory\"></div></div></section>"+
 "<section id=\"fnd-suggestions\" class=\"eco-panel\" hidden><div class=\"section panel\"><div class=\"section-head\"><h2>Community suggestions</h2></div><div class=\"notice\">Suggestions become official only when you approve and publish them.</div><div id=\"fndSuggestions\"><div class=\"empty\">Loading suggestions…</div></div></div></section>"+
-"<section id=\"fnd-store\" class=\"eco-panel\" hidden><div class=\"section panel\"><div class=\"section-head\"><h2>Store orders and disputes</h2></div><div class=\"notice\">Escrowed orders are released to the seller only after the buyer confirms delivery. Disputes are settled by the founder; refunds return the escrow to the buyer.</div><div id=\"fndStore\"><div class=\"empty\">Loading store orders…</div></div></div></section>";
-bindTabs();loadOverview();loadReview();loadSuggestions();loadStore();loadPrice();
+"<section id=\"fnd-store\" class=\"eco-panel\" hidden><div class=\"section panel\"><div class=\"section-head\"><h2>Store orders and disputes</h2></div><div class=\"notice\">Escrowed orders are released to the seller only after the buyer confirms delivery. Disputes are settled by the founder; refunds return the escrow to the buyer.</div><div id=\"fndStore\"><div class=\"empty\">Loading store orders…</div></div></div></section>"+
+'<section id="fnd-passkey" class="eco-panel" hidden><div class="section panel"><div class="section-head"><h2>Founder security (WebAuthn passkeys)</h2></div><div class="notice">Enroll a browser passkey (Ed25519) from this UI origin (localhost:41800). Once a passkey is enrolled, every founder mutation requires a fresh MFA step-up session in addition to the founder key.</div><div id="fndPasskeys"><div class="empty">Loading security state…</div></div><div class="eco-form-grid"><input id="fndPasskeyLabel" placeholder="Label (optional, e.g. laptop key)"></div><div class="eco-actions"><button class="primary" id="fndPasskeyEnroll">Enroll passkey</button><button id="fndPasskeyStepUp">Start MFA step-up</button></div><div id="fndPasskeyState" class="notice"></div></div></section>';
+bindTabs();loadOverview();loadReview();loadSuggestions();loadStore();loadPrice();loadPasskeys();
 document.getElementById("fndPublish").onclick=publishTask;
 document.getElementById("fndSetPrice").onclick=async()=>{const s=document.getElementById("fndPriceState");const cents=Number(document.getElementById("fndPrice").value);const reason=document.getElementById("fndPriceReason").value.trim();if(!(cents>0)||!reason){s.textContent="A positive price and a public reason are required.";return}const body={new_price_usd_cents:Math.round(cents),reason};const eff=Number(document.getElementById("fndEffective").value);if(eff>0)body.effective_at_unix=eff;try{const r=await post("/api/founder/price",body);s.textContent="Official price set: sequence #"+r.sequence+". Recorded and audit-logged.";loadPrice()}catch(e){s.textContent="Price change failed: "+e.message}};
+document.getElementById("fndPasskeyEnroll").onclick=enrollPasskey;
+document.getElementById("fndPasskeyStepUp").onclick=stepUp;
 }
 
 function bindTabs(){
@@ -35,6 +38,48 @@ document.querySelectorAll(".eco-tab").forEach(b=>b.onclick=()=>{document.querySe
 }
 
 function money(n){return n&&typeof n==="object"?coins(n.coins):coins(n);}
+
+const hexToBytes=h=>{const o=new Uint8Array(h.length/2);for(let i=0;i<o.length;i++)o[i]=parseInt(h.substr(i*2,2),16);return o};
+const b64uBytes=t=>{const s=String(t).replace(/-/g,'+').replace(/_/g,'/');const b=atob(s+'='.repeat((4-s.length%4)%4));const o=new Uint8Array(b.length);for(let i=0;i<b.length;i++)o[i]=b.charCodeAt(i);return o};
+const b64u=b=>{const B=b instanceof Uint8Array?b:new Uint8Array(b);let s='';for(let i=0;i<B.length;i++)s+=String.fromCharCode(B[i]);return btoa(s).split('+').join('-').split('/').join('_').replace(/=+$/,'')};
+
+async function loadPasskeys(){
+const box=document.getElementById('fndPasskeys');if(!box)return;
+const state=document.getElementById('fndPasskeyState');
+try{
+const d=await get('/api/founder/passkey/status');
+const list=d.passkeys||[];
+box.innerHTML=list.length?list.map(p=>'<div class="order-row"><b>'+esc(p.label)+'</b><span>enrolled '+new Date(Number(p.enrolled_at_unix)*1000).toLocaleString()+'</span><small>'+esc(String(p.credential_id_hex||'').slice(0,16))+'…</small></div>').join(''):'<div class="empty">No passkey enrolled yet. The founder key alone currently authorizes founder mutations.</div>';
+if(state)state.textContent=d.session_active?'MFA step-up session active until '+new Date(Number((d.session||{}).expires_at_unix||0)*1000).toLocaleString()+'.':'No active MFA session.'+(d.enrolled?' Founder mutations require a step-up first.':'');
+}catch(e){box.innerHTML='<div class="empty">Security state unavailable: '+esc(e.message)+'</div>';}
+}
+
+async function enrollPasskey(){
+const s=document.getElementById('fndPasskeyState');if(!s)return;
+if(!(navigator.credentials&&navigator.credentials.create&&window.PublicKeyCredential)){s.textContent='This browser does not expose WebAuthn; enroll from a WebAuthn-capable browser on the node UI origin.';return}
+try{
+const options=await post('/api/founder/passkey/register/options',{});
+const label=(document.getElementById('fndPasskeyLabel').value||'').trim();
+const att=await navigator.credentials.create({publicKey:{challenge:b64uBytes(options.challenge),rp:{id:options.rp.id,name:options.rp.name},user:{id:hexToBytes(options.user.id),name:options.user.name,displayName:options.user.display_name},pubKeyCredParams:options.pub_key_cred_params,attestation:'none',timeout:60000}});
+const cdj=new Uint8Array(att.response.clientDataJSON);let cd='';for(let i=0;i<cdj.length;i++)cd+=String.fromCharCode(cdj[i]);
+const r=await post('/api/founder/passkey/register',{label:label||undefined,client_data_json:cd,attestation_object:b64u(att.response.attestationObject)});
+s.textContent='Passkey enrolled: '+(r.label||'founder passkey')+'. Founder mutations now require a fresh MFA step-up.';
+loadPasskeys();
+}catch(e){s.textContent='Enrollment failed: '+e.message;}
+}
+
+async function stepUp(){
+const s=document.getElementById('fndPasskeyState');if(!s)return;
+if(!(navigator.credentials&&navigator.credentials.get&&window.PublicKeyCredential)){s.textContent='This browser does not expose WebAuthn.';return}
+try{
+const options=await post('/api/founder/passkey/step-up/options',{});
+const assertion=await navigator.credentials.get({publicKey:{challenge:b64uBytes(options.challenge),rpId:options.rp_id,userVerification:'preferred',timeout:60000}});
+const cdj=new Uint8Array(assertion.response.clientDataJSON);let cd='';for(let i=0;i<cdj.length;i++)cd+=String.fromCharCode(cdj[i]);
+const r=await post('/api/founder/passkey/step-up',{client_data_json:cd,authenticator_data:b64u(assertion.response.authenticatorData),signature:b64u(assertion.response.signature)});
+s.textContent='MFA step-up complete. Session active until '+new Date(Number(r.expires_at_unix||0)*1000).toLocaleString()+'.';
+loadPasskeys();
+}catch(e){s.textContent='Step-up failed: '+e.message;}
+}
 
 async function loadOverview(){
 const box=document.getElementById("fndOverview");
