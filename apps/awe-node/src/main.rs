@@ -697,64 +697,136 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
             }
         },
         "/api/federation/import" if method == "POST" => {
-            let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
-            let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
-            let kind = parsed.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-            let content = parsed.get("content").and_then(|v| v.as_str()).unwrap_or("");
-            let result: Result<(), anyhow::Error> = match kind {
-                "awenode" => {
-                    let cfg: AweNodeConfig = serde_json::from_str(content)?;
-                    federation::validate_awenode(&cfg).map_err(anyhow::Error::msg)?;
-                    let mut s = federation_state.lock().map_err(|_| anyhow::anyhow!("state lock poisoned"))?;
-                    s.local_node_id = format_uid(node.identity.public.awe_id.as_bytes());
-                    s.local_data_centre_id = Some(cfg.data_centre_id.clone());
-                    s.bootstrap_endpoints = cfg.bootstrap_endpoints.clone();
-                    if !s.bootstrap_endpoints.contains(&cfg.endpoint) {
-                        s.bootstrap_endpoints.push(cfg.endpoint.clone());
+            let body = request.split("\\r\\n\\r\\n").nth(1).unwrap_or("");
+            let result: Result<Vec<String>, (u16, String)> = (|| {
+                let parsed: serde_json::Value = serde_json::from_str(body)
+                    .map_err(|error| (400, format!("invalid federation import JSON: {error}")))?;
+                let kind = parsed.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+                let content = parsed.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                if content.is_empty() {
+                    return Err((400, "federation invitation content is required".into()));
+                }
+
+                // Keep the state lock until the candidate is durably published. This
+                // prevents concurrent imports from overwriting one another and ensures
+                // the in-memory state is never ahead of the persisted state.
+                let mut current = federation_state
+                    .lock()
+                    .map_err(|_| (500, "federation state lock poisoned".to_string()))?;
+                let mut candidate = current.clone();
+
+                match kind {
+                    "awenode" => {
+                        let cfg: AweNodeConfig = serde_json::from_str(content)
+                            .map_err(|error| (400, error.to_string()))?;
+                        federation::validate_awenode(&cfg).map_err(|error| (400, error))?;
+                        candidate.local_node_id =
+                            format_uid(node.identity.public.awe_id.as_bytes());
+                        candidate.local_data_centre_id = Some(cfg.data_centre_id.clone());
+                        candidate.bootstrap_endpoints = cfg.bootstrap_endpoints.clone();
+                        if !candidate.bootstrap_endpoints.contains(&cfg.endpoint) {
+                            candidate.bootstrap_endpoints.push(cfg.endpoint);
+                        }
+                        if !candidate.joined_data_centres.contains(&cfg.data_centre_id) {
+                            candidate.joined_data_centres.push(cfg.data_centre_id);
+                        }
                     }
-                    if !s.joined_data_centres.contains(&cfg.data_centre_id) { s.joined_data_centres.push(cfg.data_centre_id); }
-                    s.format = "awenet".into(); s.version = federation::FORMAT_VERSION;
-                    Ok(())
-                },
-                "awedc" => {
-                    let cfg: DataCentreConfig = serde_json::from_str(content).map_err(anyhow::Error::msg)?;
-                    federation::validate_awedc(&cfg).map_err(anyhow::Error::msg)?;
-                    let mut s = federation_state.lock().map_err(|_| anyhow::anyhow!("state lock poisoned"))?;
-                    s.local_node_id = format_uid(node.identity.public.awe_id.as_bytes());
-                    // .awedc is a data-centre federation invitation: it adds the
-                    // remote DC as a peer, rather than silently changing this node's
-                    // own DC identity.
-                    if s.local_data_centre_id.is_none() {
-                        s.local_data_centre_id = Some(format!("dc-{}", &hex::encode(blake3::hash(format!("AWE/DC/{}", s.local_node_id).as_bytes()).as_bytes())[..24]));
+                    "awedc" => {
+                        let cfg: DataCentreConfig = serde_json::from_str(content)
+                            .map_err(|error| (400, error.to_string()))?;
+                        federation::validate_awedc(&cfg).map_err(|error| (400, error))?;
+                        candidate.local_node_id =
+                            format_uid(node.identity.public.awe_id.as_bytes());
+                        // A DC invitation adds the remote DC as a peer; it must not
+                        // silently replace this node's own data-centre identity.
+                        if candidate.local_data_centre_id.is_none() {
+                            candidate.local_data_centre_id = Some(format!(
+                                "dc-{}",
+                                &hex::encode(
+                                    blake3::hash(
+                                        format!("AWE/DC/{}", candidate.local_node_id).as_bytes()
+                                    )
+                                    .as_bytes()
+                                )[..24]
+                            ));
+                        }
+                        candidate.bootstrap_endpoints.extend(cfg.endpoints);
+                        candidate.bootstrap_endpoints.sort();
+                        candidate.bootstrap_endpoints.dedup();
+                        if !candidate.joined_data_centres.contains(&cfg.data_centre_id) {
+                            candidate.joined_data_centres.push(cfg.data_centre_id);
+                        }
                     }
-                    s.bootstrap_endpoints.extend(cfg.endpoints.clone());
-                    s.bootstrap_endpoints.sort(); s.bootstrap_endpoints.dedup();
-                    if !s.joined_data_centres.contains(&cfg.data_centre_id) { s.joined_data_centres.push(cfg.data_centre_id.clone()); }
-                    s.format = "awenet".into(); s.version = federation::FORMAT_VERSION;
-                    Ok(())
-                },
-                "dgc" => {
-                    let cfg: DataGroupConfig = serde_json::from_str(content).map_err(anyhow::Error::msg)?;
-                    federation::validate_dgc(&cfg).map_err(anyhow::Error::msg)?;
-                    let mut s = federation_state.lock().map_err(|_| anyhow::anyhow!("state lock poisoned"))?;
-                    s.local_node_id = format_uid(node.identity.public.awe_id.as_bytes());
-                    s.local_data_group_id = Some(cfg.data_group_id.clone());
-                    for dc in cfg.data_centre_ids.clone() { if !s.joined_data_centres.contains(&dc) { s.joined_data_centres.push(dc); } }
-                    if !s.joined_data_groups.contains(&cfg.data_group_id) { s.joined_data_groups.push(cfg.data_group_id); }
-                    s.format = "awenet".into(); s.version = federation::FORMAT_VERSION;
-                    Ok(())
-                },
-                _ => Err(anyhow::anyhow!("kind must be awenode, awedc or dgc"))
-            };
+                    "dgc" => {
+                        let cfg: DataGroupConfig = serde_json::from_str(content)
+                            .map_err(|error| (400, error.to_string()))?;
+                        federation::validate_dgc(&cfg).map_err(|error| (400, error))?;
+                        candidate.local_node_id =
+                            format_uid(node.identity.public.awe_id.as_bytes());
+                        candidate.local_data_group_id = Some(cfg.data_group_id.clone());
+                        for dc in cfg.data_centre_ids {
+                            if !candidate.joined_data_centres.contains(&dc) {
+                                candidate.joined_data_centres.push(dc);
+                            }
+                        }
+                        if !candidate.joined_data_groups.contains(&cfg.data_group_id) {
+                            candidate.joined_data_groups.push(cfg.data_group_id);
+                        }
+                    }
+                    _ => {
+                        return Err((
+                            400,
+                            "kind must be awenode, awedc or dgc".to_string(),
+                        ));
+                    }
+                }
+
+                candidate.format = "awenet".into();
+                candidate.version = federation::FORMAT_VERSION;
+                let endpoints = candidate.bootstrap_endpoints.clone();
+                federation::save_json(&candidate, &federation_path).map_err(|error| {
+                    (
+                        500,
+                        format!("failed to persist federation state: {error}"),
+                    )
+                })?;
+                *current = candidate;
+                Ok(endpoints)
+            })();
+
             match result {
-                Ok(()) => {
-                    let endpoints = federation_state.lock().map(|s| s.bootstrap_endpoints.clone()).unwrap_or_default();
-                    let addresses = endpoints.iter().filter_map(|x| x.parse::<SocketAddr>().ok()).collect::<Vec<_>>();
-                    let discovered = if addresses.is_empty() { 0 } else { node.bootstrap(&addresses).await.unwrap_or(0) };
-                    if let Ok(state) = federation_state.lock() { let _ = federation::save_json(&*state, &federation_path); }
-                    ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"imported","connected_bootstrap_peers":discovered}).to_string())
-                },
-                Err(error) => ("400 Bad Request", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":error.to_string()}).to_string())
+                Ok(endpoints) => {
+                    let addresses = endpoints
+                        .iter()
+                        .filter_map(|endpoint| endpoint.parse::<SocketAddr>().ok())
+                        .collect::<Vec<_>>();
+                    let discovered = if addresses.is_empty() {
+                        0
+                    } else {
+                        node.bootstrap(&addresses).await.unwrap_or(0)
+                    };
+                    (
+                        "200 OK",
+                        "application/json; charset=utf-8",
+                        serde_json::json!({
+                            "status": "imported",
+                            "connected_bootstrap_peers": discovered
+                        })
+                        .to_string(),
+                    )
+                }
+                Err((status, error)) => {
+                    let status_text = if status == 500 {
+                        "500 Internal Server Error"
+                    } else {
+                        "400 Bad Request"
+                    };
+                    (
+                        status_text,
+                        "application/json; charset=utf-8",
+                        serde_json::json!({"status":"error","error":error}).to_string(),
+                    )
+                }
             }
         },
         "/api/health" => ("200 OK", "application/json; charset=utf-8", serde_json::json!({
