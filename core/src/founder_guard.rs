@@ -118,6 +118,13 @@ impl FounderGuard {
         self.session.as_ref()
     }
 
+    /// Clears authentication material that must never survive a process
+    /// restart or durable snapshot.
+    pub fn clear_transient_auth_state(&mut self) {
+        self.pending_challenge = None;
+        self.session = None;
+    }
+
     pub fn set_step_up_ttl_secs(&mut self, ttl_secs: u64) {
         self.step_up_ttl_secs = ttl_secs.max(1);
     }

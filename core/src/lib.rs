@@ -78,6 +78,7 @@ pub mod onecoin_governance;
 pub mod onecoin_payment;
 pub mod onecoin_store;
 pub mod onecoin_wallet;
+pub mod passkey_store;
 pub mod permissions;
 pub mod policy;
 pub mod price_control;
