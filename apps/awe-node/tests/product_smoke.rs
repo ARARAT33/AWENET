@@ -70,6 +70,36 @@ fn post(addr: &str, path: &str, body: &str) -> String {
     )
 }
 
+fn generated_join_token(response: &str, prefix: &str) -> String {
+    let envelope: serde_json::Value =
+        serde_json::from_str(response).expect("federation generation response JSON");
+    assert_eq!(
+        envelope.get("status").and_then(|value| value.as_str()),
+        Some("generated"),
+        "federation generation failed: {response}"
+    );
+    let encoded_config = envelope
+        .get("content")
+        .and_then(|value| value.as_str())
+        .expect("generated federation config");
+    let config: serde_json::Value =
+        serde_json::from_str(encoded_config).expect("generated federation config JSON");
+    let token = config
+        .get("join_token")
+        .and_then(|value| value.as_str())
+        .expect("federation join token");
+    assert!(
+        token.starts_with(prefix),
+        "unexpected token prefix: {token}"
+    );
+    assert_eq!(
+        token.len(),
+        prefix.len() + 64,
+        "token must contain 256 random bits"
+    );
+    token.to_owned()
+}
+
 fn wait_for_health(addr: &str) {
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
@@ -157,6 +187,37 @@ fn three_node_product_smoke() {
             rebinding.starts_with("HTTP/1.1 403 Forbidden"),
             "DNS-rebinding host must be rejected: {rebinding}"
         );
+
+        let node_invite = post(
+            "127.0.0.1:46201",
+            "/api/federation/generate",
+            r#"{"kind":"awenode","name":"E2E DC"}"#,
+        );
+        let node_token = generated_join_token(&node_invite, "node-");
+        let repeated_node_invite = post(
+            "127.0.0.1:46201",
+            "/api/federation/generate",
+            r#"{"kind":"awenode","name":"E2E DC"}"#,
+        );
+        let repeated_node_token = generated_join_token(&repeated_node_invite, "node-");
+        assert_ne!(
+            node_token, repeated_node_token,
+            "identical inputs must not reproduce a join token"
+        );
+
+        let dc_invite = post(
+            "127.0.0.1:46201",
+            "/api/federation/generate",
+            r#"{"kind":"awedc","name":"E2E DC","data_centre_id":"dc-e2e"}"#,
+        );
+        let _dc_token = generated_join_token(&dc_invite, "dc-");
+
+        let dg_invite = post(
+            "127.0.0.1:46201",
+            "/api/federation/generate",
+            r#"{"kind":"dgc","name":"E2E Group","owner_data_centre_id":"dc-e2e","data_centre_ids":["dc-e2e","dc-remote"]}"#,
+        );
+        let _dg_token = generated_join_token(&dg_invite, "dg-");
 
         for (port, ui) in [
             (46101u16, 46201u16),
@@ -481,3 +542,4 @@ fn three_node_product_smoke() {
     let _ = fs::remove_dir_all(&root);
     result.expect("product smoke test failed");
 }
+
