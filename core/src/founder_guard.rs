@@ -627,22 +627,22 @@ mod tests {
             .authorize(&mut authority, FounderAction::SetOfficialPrice, 20, "price")
             .is_ok());
         // a forged possession message is rejected and consumes the challenge
-        let nonce = guard.begin_step_up();
+        let _nonce = guard.begin_step_up();
         let forged = credential.sign(b"not the possession message");
         assert_eq!(
             guard
-                .complete_step_up_assertion(
-                    &credential.public.public_key,
-                    b"other",
-                    &forged,
-                    30
-                )
+                .complete_step_up_assertion(&credential.public.public_key, b"other", &forged, 30)
                 .unwrap_err(),
             FounderGuardError::InvalidStepUp
         );
         assert_eq!(
             guard
-                .complete_step_up_assertion(&credential.public.public_key, &possession, &assertion, 30)
+                .complete_step_up_assertion(
+                    &credential.public.public_key,
+                    &possession,
+                    &assertion,
+                    30
+                )
                 .unwrap_err(),
             FounderGuardError::NoChallenge
         );

@@ -74,9 +74,7 @@ impl CborValue {
         match self {
             CborValue::Map(entries) => entries
                 .iter()
-                .find(|(candidate, _)| {
-                    matches!(candidate, CborValue::Text(value) if value == key)
-                })
+                .find(|(candidate, _)| matches!(candidate, CborValue::Text(value) if value == key))
                 .and_then(|(_, value)| match value {
                     CborValue::Text(text) => Some(text.as_str()),
                     _ => None,
@@ -96,9 +94,7 @@ impl CborValue {
         match self {
             CborValue::Map(entries) => entries
                 .iter()
-                .find(|(candidate, _)| {
-                    matches!(candidate, CborValue::Text(value) if value == key)
-                })
+                .find(|(candidate, _)| matches!(candidate, CborValue::Text(value) if value == key))
                 .and_then(|(_, value)| match value {
                     CborValue::Bytes(bytes) => Some(bytes.as_slice()),
                     _ => None,
@@ -198,23 +194,13 @@ impl CborParser<'_> {
             26 => {
                 let bytes = self.read_slice(4)?;
                 Ok(i128::from(u32::from_be_bytes([
-                    bytes[0],
-                    bytes[1],
-                    bytes[2],
-                    bytes[3],
+                    bytes[0], bytes[1], bytes[2], bytes[3],
                 ])))
             }
             27 => {
                 let bytes = self.read_slice(8)?;
                 Ok(i128::from(u64::from_be_bytes([
-                    bytes[0],
-                    bytes[1],
-                    bytes[2],
-                    bytes[3],
-                    bytes[4],
-                    bytes[5],
-                    bytes[6],
-                    bytes[7],
+                    bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
                 ])))
             }
             31 => Err(WebauthnError::InvalidCbor(
@@ -298,9 +284,7 @@ pub fn parse_authenticator_data(data: &[u8]) -> Result<AuthenticatorData, Webaut
         let kty = cose.int_get(1).ok_or(WebauthnError::NotEd25519CoseKey)?;
         let alg = cose.int_get(3).ok_or(WebauthnError::NotEd25519CoseKey)?;
         let crv = cose.int_get(-1).ok_or(WebauthnError::NotEd25519CoseKey)?;
-        let public_key_bytes = cose
-            .bytes_get(-2)
-            .ok_or(WebauthnError::NotEd25519CoseKey)?;
+        let public_key_bytes = cose.bytes_get(-2).ok_or(WebauthnError::NotEd25519CoseKey)?;
         if kty != COSE_KTY_OKP || alg != COSE_ALG_EDDSA || crv != COSE_CRV_ED25519 {
             return Err(WebauthnError::NotEd25519CoseKey);
         }
@@ -337,7 +321,9 @@ pub fn parse_attestation_object(
     }
     let auth_data_bytes = value
         .bytes_get_by_text("authData")
-        .ok_or(WebauthnError::InvalidCbor("attestation object has no authData"))?;
+        .ok_or(WebauthnError::InvalidCbor(
+            "attestation object has no authData",
+        ))?;
     let format = value
         .text_get("fmt")
         .ok_or(WebauthnError::InvalidCbor("attestation object has no fmt"))?
@@ -386,8 +372,8 @@ pub fn base64url_encode(bytes: &[u8]) -> String {
     let mut out = String::new();
     for chunk in bytes.chunks(3) {
         let b0 = u32::from(chunk[0]);
-        let b1 = chunk.get(1).map_or(0, u32::from);
-        let b2 = chunk.get(2).map_or(0, u32::from);
+        let b1 = chunk.get(1).copied().map_or(0, u32::from);
+        let b2 = chunk.get(2).copied().map_or(0, u32::from);
         let triple = (b0 << 16) | (b1 << 8) | b2;
         out.push(TABLE[(triple >> 18) as usize & 63] as char);
         out.push(TABLE[(triple >> 12) as usize & 63] as char);
@@ -419,15 +405,15 @@ pub fn base64url_decode(text: &str) -> Result<Vec<u8>, WebauthnError> {
     let mut out = Vec::new();
     for chunk in sextets.chunks(4) {
         let b0 = u32::from(chunk[0]);
-        let b1 = chunk.get(1).copied().unwrap_or(0);
-        let b2 = chunk.get(2).copied().unwrap_or(0);
-        let b3 = chunk.get(3).copied().unwrap_or(0);
+        let b1 = u32::from(chunk.get(1).copied().unwrap_or(0));
+        let b2 = u32::from(chunk.get(2).copied().unwrap_or(0));
+        let b3 = u32::from(chunk.get(3).copied().unwrap_or(0));
         let triple = (b0 << 18) | (b1 << 12) | (b2 << 6) | b3;
         out.push((triple >> 16) as u8);
-        if chunk.len() > 1 {
+        if chunk.len() > 2 {
             out.push((triple >> 8) as u8);
         }
-        if chunk.len() > 2 {
+        if chunk.len() > 3 {
             out.push(triple as u8);
         }
     }
@@ -493,9 +479,9 @@ mod tests {
 
     fn cose_ed25519_key(public_key: &[u8; 32]) -> Vec<u8> {
         encode_map(vec![
-            (encode_int(1), encode_int(8)), // kty: OKP
-            (encode_int(3), encode_int(-8)), // alg: EdDSA
-            (encode_int(-1), encode_int(6)), // crv: Ed25519
+            (encode_int(1), encode_int(8)),             // kty: OKP
+            (encode_int(3), encode_int(-8)),            // alg: EdDSA
+            (encode_int(-1), encode_int(6)),            // crv: Ed25519
             (encode_int(-2), encode_bytes(public_key)), // x
         ])
     }
@@ -535,8 +521,7 @@ mod tests {
             (encode_text("attStmt"), encode_map(vec![])),
             (encode_text("authData"), encode_bytes(&auth_data)),
         ]);
-        let (parsed, format) =
-            parse_attestation_object(&attestation).expect("valid attestation");
+        let (parsed, format) = parse_attestation_object(&attestation).expect("valid attestation");
         assert_eq!(format, "none");
         assert_eq!(parsed.rp_id_hash, rp_id_hash());
         assert_eq!(parsed.sign_count, 7);
@@ -594,9 +579,7 @@ mod tests {
         let credential = identity("webauthn-assert");
         let auth_data = plain_authenticator_data(FLAG_UP);
         let challenge = base64url_encode(&[1, 2, 3, 4]);
-        let client_data = format!(
-            "{{\"type\":\"webauthn.get\",\"challenge\":\"{challenge}\"}}"
-        );
+        let client_data = format!("{{\"type\":\"webauthn.get\",\"challenge\":\"{challenge}\"}}");
         let message = assertion_message(&auth_data, client_data.as_bytes());
         let signature = credential.sign(&message);
         assert!(verify_assertion(
@@ -649,12 +632,16 @@ mod tests {
 
     #[test]
     fn client_data_fields_are_read_from_json() {
-        let data = r#"{"type":"webauthn.create","challenge":"AbCd","origin":"http://localhost:41800"}"#;
+        let data =
+            r#"{"type":"webauthn.create","challenge":"AbCd","origin":"http://localhost:41800"}"#;
         assert_eq!(
             client_data_field(data, "type").as_deref(),
             Some("webauthn.create")
         );
-        assert_eq!(client_data_field(data, "challenge").as_deref(), Some("AbCd"));
+        assert_eq!(
+            client_data_field(data, "challenge").as_deref(),
+            Some("AbCd")
+        );
         assert_eq!(client_data_field(data, "missing"), None);
         assert_eq!(client_data_field("not json", "type"), None);
     }

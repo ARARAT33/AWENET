@@ -176,7 +176,7 @@ fn statvfs_kb(path: &std::path::Path) -> Option<(u64, u64)> {
     if unsafe { libc::statvfs(c_path.as_ptr(), &mut stats) } != 0 {
         return None;
     }
-    let block_size = u64::try_from(stats.f_bsize).unwrap_or(0);
+    let block_size = stats.f_bsize;
     let total_kb = u128::from(block_size) * u128::from(stats.f_blocks) / 1_024;
     let available_kb = u128::from(block_size) * u128::from(stats.f_bavail) / 1_024;
     Some((
@@ -265,15 +265,14 @@ impl<M: SystemMeter> UsagePeriodMeter<M> {
         let uptime_hours = (delta_secs as u128) / 3_600;
         let storage_available_gb_before = (previous.disk_available_kb as u128) / 1_000_000;
         let storage_available_gb_now = (current.disk_available_kb as u128) / 1_000_000;
-        let average_storage_gb = storage_available_gb_before
-            .saturating_add(storage_available_gb_now)
-            / 2;
+        let average_storage_gb =
+            storage_available_gb_before.saturating_add(storage_available_gb_now) / 2;
         let storage_gb_hours = average_storage_gb.saturating_mul(delta_secs as u128) / 3_600;
         Ok(Some(MeasuredUsage {
             cpu_core_ticks: u64::try_from(delta_ticks).unwrap_or(u64::MAX),
             gpu_unit_ticks: 0,
             ram_mb_hours,
-            storage_gb_hours: u64::try_from(storage_gb_hours).unwrap_or(u64::MAX),
+            storage_gb_hours,
             bandwidth_gb: u64::try_from(bandwidth_gb).unwrap_or(u64::MAX),
             uptime_hours: u64::try_from(uptime_hours).unwrap_or(u64::MAX),
         }))
