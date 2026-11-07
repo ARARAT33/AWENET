@@ -318,6 +318,8 @@ mod tests {
             .publish_manifest("example.awe", 1, vec![1], vec![f])
             .unwrap();
         h.save_manifest(&m).unwrap();
+        let loaded = h.load_manifest("example.awe").unwrap();
+        assert_eq!(loaded, m);
         assert!(m.open());
         assert_eq!(h.get_authorized(&m, "/", None).unwrap(), b"<h1>AWE</h1>");
         let _ = fs::remove_dir_all(r);
