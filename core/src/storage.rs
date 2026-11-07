@@ -7,7 +7,7 @@ use reed_solomon_erasure::galois_8::ReedSolomon;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
-    fs,
+    fs::{self, OpenOptions},
     io::{self, Read, Write},
     path::{Path, PathBuf},
 };
@@ -416,12 +416,55 @@ impl LocalNodeStore {
 
 pub fn save_manifest(path: impl AsRef<Path>, manifest: &[u8]) -> io::Result<()> {
     let path = path.as_ref();
-    let tmp = path.with_extension("part");
-    let mut f = fs::File::create(&tmp)?;
-    f.write_all(manifest)?;
-    f.sync_all()?;
-    drop(f);
-    fs::rename(tmp, path)
+    let parent = path
+        .parent()
+        .filter(|value| !value.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)?;
+
+    let filename = path
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "manifest path has no filename"))?
+        .to_string_lossy();
+    let mut nonce = [0u8; 16];
+    OsRng
+        .try_fill_bytes(&mut nonce)
+        .map_err(|_| io::Error::new(io::ErrorKind::Other, "secure randomness unavailable"))?;
+    let temporary = parent.join(format!(
+        ".{filename}.{}.{}.tmp",
+        std::process::id(),
+        hex::encode(nonce)
+    ));
+
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
+    if let Err(error) = file.write_all(manifest).and_then(|_| file.sync_all()) {
+        drop(file);
+        let _ = fs::remove_file(&temporary);
+        return Err(error);
+    }
+    drop(file);
+
+    if let Err(error) = fs::rename(&temporary, path) {
+        let _ = fs::remove_file(&temporary);
+        return Err(error);
+    }
+
+    #[cfg(unix)]
+    {
+        // The file itself is synced before rename. Parent-directory fsync is
+        // best-effort because a failure after rename cannot roll back the
+        // already-visible replacement.
+        let _ = fs::File::open(parent).and_then(|directory| directory.sync_all());
+    }
+    Ok(())
 }
 pub fn load_manifest(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
     let mut f = fs::File::open(path)?;
@@ -466,6 +509,48 @@ impl SecretFilePackage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn manifest_save_replaces_existing_file() {
+        let root = std::env::temp_dir().join(format!(
+            "awe-manifest-replace-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("site.manifest.json");
+
+        save_manifest(&path, br#"{"version":1}"#).unwrap();
+        save_manifest(&path, br#"{"version":2}"#).unwrap();
+
+        assert_eq!(fs::read(&path).unwrap(), br#"{"version":2}"#);
+        let leftovers = fs::read_dir(&root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .any(|name| name.ends_with(".tmp"));
+        assert!(!leftovers, "successful replacement left a temporary file");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn manifest_save_failure_cleans_temporary_file() {
+        let root = std::env::temp_dir().join(format!(
+            "awe-manifest-failure-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let blocked_path = root.join("blocked.manifest.json");
+        fs::create_dir(&blocked_path).unwrap();
+
+        assert!(save_manifest(&blocked_path, b"manifest").is_err());
+        let leftovers = fs::read_dir(&root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .any(|name| name.ends_with(".tmp"));
+        assert!(!leftovers, "failed replacement leaked a temporary file");
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[test]
     fn empty_erasure_input_is_safe() {
         let p = StoragePolicy::default();
