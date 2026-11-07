@@ -219,6 +219,26 @@ fn three_node_product_smoke() {
         );
         let _dg_token = generated_join_token(&dg_invite, "dg-");
 
+        // Malformed invitation JSON must be rejected without changing node state.
+        let before_malformed_import: serde_json::Value =
+            serde_json::from_str(&get("127.0.0.1:46202", "/api/federation"))
+                .expect("pre-malformed federation state");
+        let malformed_response = request_raw(
+            "127.0.0.1:46202",
+            "POST /api/federation/import HTTP/1.1\r\nHost: 127.0.0.1:46202\r\nContent-Type: application/json\r\nContent-Length: 1\r\nConnection: close\r\n\r\n{",
+        );
+        assert!(
+            malformed_response.starts_with("HTTP/1.1 400 Bad Request"),
+            "malformed federation JSON must return 400: {malformed_response}"
+        );
+        let after_malformed_import: serde_json::Value =
+            serde_json::from_str(&get("127.0.0.1:46202", "/api/federation"))
+                .expect("post-malformed federation state");
+        assert_eq!(
+            before_malformed_import, after_malformed_import,
+            "malformed federation JSON must not mutate state"
+        );
+
         // Import a valid invitation on node 2 and verify that the committed
         // federation state is visible both through HTTP and on disk.
         let invitation_envelope: serde_json::Value =
