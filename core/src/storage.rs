@@ -424,7 +424,9 @@ pub fn save_manifest(path: impl AsRef<Path>, manifest: &[u8]) -> io::Result<()> 
 
     let filename = path
         .file_name()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "manifest path has no filename"))?
+        .ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "manifest path has no filename")
+        })?
         .to_string_lossy();
     let mut nonce = [0u8; 16];
     OsRng
@@ -515,10 +517,8 @@ mod tests {
     use super::*;
     #[test]
     fn manifest_save_replaces_existing_file() {
-        let root = std::env::temp_dir().join(format!(
-            "awe-manifest-replace-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("awe-manifest-replace-{}", std::process::id()));
         fs::create_dir_all(&root).unwrap();
         let path = root.join("site.manifest.json");
 
@@ -537,10 +537,8 @@ mod tests {
 
     #[test]
     fn manifest_save_failure_cleans_temporary_file() {
-        let root = std::env::temp_dir().join(format!(
-            "awe-manifest-failure-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("awe-manifest-failure-{}", std::process::id()));
         fs::create_dir_all(&root).unwrap();
         let blocked_path = root.join("blocked.manifest.json");
         fs::create_dir(&blocked_path).unwrap();

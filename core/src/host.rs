@@ -275,7 +275,9 @@ mod tests {
         let root = std::env::temp_dir().join(format!("awe-host-path-{}", std::process::id()));
         let host = AweHost::open(&root, 10_000_000, HostPolicy::default()).unwrap();
 
-        assert!(host.publish_manifest("../outside", 1, vec![1], Vec::new()).is_err());
+        assert!(host
+            .publish_manifest("../outside", 1, vec![1], Vec::new())
+            .is_err());
         assert!(host.load_manifest("../outside").is_err());
         assert!(host.load_manifest("..\\\\outside").is_err());
         assert!(host.manifest_path("../outside").starts_with(&root));
