@@ -170,8 +170,8 @@ bounded archive budget and deterministic compaction plans). See
 
 Four deterministic core modules give the node a developer and automation
 plane: `tasks.rs` (bounded priority task queue with explicit-tick deadlines
-and a retry budget), `keys.rs` (scoped API keys with issue/verify/rotate and
-revoke plus typed expiry errors), `webhooks.rs` (event subscriptions with
+and a retry budget), `keys.rs` (OS-CSPRNG 256-bit bearer keys with fingerprint-only storage,
+one-time secret return, issue/verify/rotate/revoke and typed expiry errors), `webhooks.rs` (event subscriptions with
 per-hook cooldowns, retry hints and dead-lettering) and `runbooks.rs` (gated
 runbooks with health and alert gates, dry-run plans and abort-with-reason
 execution). See [docs/DEVELOPER-UPGRADE-2026-11-03.md](docs/DEVELOPER-UPGRADE-2026-11-03.md).
