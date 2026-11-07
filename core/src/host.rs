@@ -287,6 +287,29 @@ mod tests {
     }
 
     #[test]
+    fn load_manifest_rejects_a_different_embedded_domain() {
+        let root = std::env::temp_dir().join(format!(
+            "awe-host-domain-mismatch-{}",
+            std::process::id()
+        ));
+        let host = AweHost::open(&root, 10_000_000, HostPolicy::default()).unwrap();
+        let manifest = host
+            .publish_manifest("example.awe", 1, vec![1], Vec::new())
+            .unwrap();
+        let mut tampered = manifest;
+        tampered.domain = "other.awe".into();
+        fs::write(
+            host.manifest_path("example.awe"),
+            serde_json::to_vec(&tampered).unwrap(),
+        )
+        .unwrap();
+
+        let error = host.load_manifest("example.awe").unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn host_roundtrip() {
         let r = std::env::temp_dir().join(format!("awe-host-{}", std::process::id()));
         let mut h = AweHost::open(&r, 10_000_000, HostPolicy::default()).unwrap();
