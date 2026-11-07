@@ -238,7 +238,7 @@ fn ensure_founder_guard(economy: &mut NodeEconomy, identity: &Identity) {
 /// bootstrap rule for the very first ceremony.
 fn require_founder_action(economy: &NodeEconomy, identity: &Identity) -> Option<ApiResponse> {
     if let Some(response) = require_founder(economy, identity) {
-        return response;
+        return Some(response);
     }
     let Some(guard) = economy.founder_guard.as_ref() else {
         return None;

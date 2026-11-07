@@ -43,6 +43,7 @@ pub trait SystemMeter {
 /// being paid for numbers the meter never observed.
 #[derive(Clone, Debug)]
 pub struct HostMeter {
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     storage_dir: std::path::PathBuf,
 }
 
@@ -717,7 +718,7 @@ mod tests {
     #[cfg(not(target_os = "linux"))]
     #[test]
     fn host_meter_is_honest_off_linux() {
-        let mut meter = HostMeter;
+        let mut meter = HostMeter::default();
         assert!(meter.read().is_err());
     }
 }
