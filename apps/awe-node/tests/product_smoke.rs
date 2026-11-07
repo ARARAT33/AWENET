@@ -259,7 +259,9 @@ fn three_node_product_smoke() {
             imported_state
                 .get("joined_data_centres")
                 .and_then(|value| value.as_array())
-                .map(|items| items.iter().any(|value| value.as_str() == Some(&invited_dc_id)))
+                .map(|items| items
+                    .iter()
+                    .any(|value| value.as_str() == Some(&invited_dc_id)))
                 .unwrap_or(false),
             "successful import should publish the joined data centre: {imported_state}"
         );
@@ -271,7 +273,9 @@ fn three_node_product_smoke() {
             persisted_state
                 .get("joined_data_centres")
                 .and_then(|value| value.as_array())
-                .map(|items| items.iter().any(|value| value.as_str() == Some(&invited_dc_id)))
+                .map(|items| items
+                    .iter()
+                    .any(|value| value.as_str() == Some(&invited_dc_id)))
                 .unwrap_or(false),
             "successful import should persist the joined data centre: {persisted_state}"
         );
@@ -308,7 +312,10 @@ fn three_node_product_smoke() {
             .filter_map(Result::ok)
             .filter_map(|entry| entry.file_name().into_string().ok())
             .any(|name| name.starts_with(".awenet.json.") && name.ends_with(".tmp"));
-        assert!(!leaked_temp, "failed federation publication leaked a temp file");
+        assert!(
+            !leaked_temp,
+            "failed federation publication leaked a temp file"
+        );
 
         for (port, ui) in [
             (46101u16, 46201u16),
