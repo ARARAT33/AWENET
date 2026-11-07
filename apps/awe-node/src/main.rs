@@ -697,7 +697,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
             }
         },
         "/api/federation/import" if method == "POST" => {
-            let body = request.split("\\r\\n\\r\\n").nth(1).unwrap_or("");
+            let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
             let result: Result<Vec<String>, (u16, String)> = (|| {
                 let parsed: serde_json::Value = serde_json::from_str(body)
                     .map_err(|error| (400, format!("invalid federation import JSON: {error}")))?;
