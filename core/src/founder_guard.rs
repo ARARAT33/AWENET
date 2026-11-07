@@ -139,10 +139,30 @@ impl FounderGuard {
         label: &str,
         at_unix: u64,
     ) -> Result<(), FounderGuardError> {
+        self.enroll_passkey_bytes(
+            founder_signature,
+            &credential.public.public_key,
+            label,
+            at_unix,
+        )
+    }
+
+    /// Enrolls a passkey given only the credential public key bytes, as the
+    /// browser WebAuthn ceremony parses them from the attestation object.
+    /// The enrollment is authorized by the same founder signature over the
+    /// credential public key, so no session or profile edit can add
+    /// credentials.
+    pub fn enroll_passkey_bytes(
+        &mut self,
+        founder_signature: &[u8; 64],
+        credential_public_key: &[u8; 32],
+        label: &str,
+        at_unix: u64,
+    ) -> Result<(), FounderGuardError> {
         if label.len() > MAX_CREDENTIAL_LABEL_CHARS {
             return Err(FounderGuardError::LabelTooLong);
         }
-        let message = Self::enrollment_message(&credential.public.public_key);
+        let message = Self::enrollment_message(credential_public_key);
         if !Identity::verify(&self.founder_public_key, &message, founder_signature) {
             return Err(FounderGuardError::InvalidFounderSignature);
         }
@@ -152,13 +172,13 @@ impl FounderGuard {
         if self
             .passkeys
             .iter()
-            .any(|enrolled| enrolled.public_key == credential.public.public_key)
+            .any(|enrolled| enrolled.public_key == *credential_public_key)
         {
             return Err(FounderGuardError::AlreadyEnrolled);
         }
         self.passkeys.push(PasskeyCredential {
-            credential_id: *blake3::hash(&credential.public.public_key).as_bytes(),
-            public_key: credential.public.public_key,
+            credential_id: *blake3::hash(credential_public_key).as_bytes(),
+            public_key: *credential_public_key,
             label: label.to_string(),
             enrolled_at_unix: at_unix,
         });
@@ -209,6 +229,41 @@ impl FounderGuard {
             &Self::step_up_message(&nonce),
             signature,
         ) {
+            self.pending_challenge = None;
+            return Err(FounderGuardError::InvalidStepUp);
+        }
+        self.pending_challenge = None;
+        self.session = Some(StepUpSession {
+            nonce,
+            granted_at_unix: at_unix,
+            expires_at_unix: at_unix.saturating_add(self.step_up_ttl_secs),
+        });
+        Ok(())
+    }
+
+    /// Completes the step-up with a WebAuthn assertion: the possession
+    /// message is authenticatorData || SHA-256(clientDataJSON), signed by an
+    /// enrolled credential. The caller has already bound the assertion to
+    /// the challenge embedded in clientDataJSON. An unknown credential
+    /// leaves the challenge standing; a failed assertion consumes it.
+    pub fn complete_step_up_assertion(
+        &mut self,
+        credential_public_key: &[u8; 32],
+        possession_message: &[u8],
+        signature: &[u8; 64],
+        at_unix: u64,
+    ) -> Result<(), FounderGuardError> {
+        let nonce = self
+            .pending_challenge
+            .ok_or(FounderGuardError::NoChallenge)?;
+        if !self
+            .passkeys
+            .iter()
+            .any(|credential| credential.public_key == *credential_public_key)
+        {
+            return Err(FounderGuardError::UnknownCredential);
+        }
+        if !Identity::verify(credential_public_key, possession_message, signature) {
             self.pending_challenge = None;
             return Err(FounderGuardError::InvalidStepUp);
         }
@@ -536,6 +591,53 @@ mod tests {
                 .complete_step_up(&passkey.public.public_key, &old_signature, 7)
                 .unwrap_err(),
             FounderGuardError::UnknownCredential
+        );
+    }
+
+    #[test]
+    fn passkey_bytes_enrollment_and_webauthn_step_up() {
+        let founder = identity("bytes-founder");
+        let credential = identity("bytes-passkey");
+        let mut authority = FounderAuthority::install(&founder, 0);
+        let mut guard = FounderGuard::install(&founder, 0);
+        // enroll from raw key bytes, as the browser ceremony parses them
+        let message = FounderGuard::enrollment_message(&credential.public.public_key);
+        let signature = founder.sign(&message);
+        guard
+            .enroll_passkey_bytes(&signature, &credential.public.public_key, "browser key", 1)
+            .unwrap();
+        assert_eq!(guard.passkeys().len(), 1);
+        assert_eq!(guard.passkeys()[0].label, "browser key");
+        // a WebAuthn-style possession message opens the step-up session
+        let nonce = guard.begin_step_up();
+        let possession = [nonce, [7u8; 32]].concat();
+        let assertion = credential.sign(&possession);
+        guard
+            .complete_step_up_assertion(&credential.public.public_key, &possession, &assertion, 10)
+            .unwrap();
+        assert!(guard.session_active(10));
+        assert!(guard
+            .authorize(&mut authority, FounderAction::SetOfficialPrice, 20, "price")
+            .is_ok());
+        // a forged possession message is rejected and consumes the challenge
+        let nonce = guard.begin_step_up();
+        let forged = credential.sign(b"not the possession message");
+        assert_eq!(
+            guard
+                .complete_step_up_assertion(
+                    &credential.public.public_key,
+                    b"other",
+                    &forged,
+                    30
+                )
+                .unwrap_err(),
+            FounderGuardError::InvalidStepUp
+        );
+        assert_eq!(
+            guard
+                .complete_step_up_assertion(&credential.public.public_key, &possession, &assertion, 30)
+                .unwrap_err(),
+            FounderGuardError::NoChallenge
         );
     }
 }
