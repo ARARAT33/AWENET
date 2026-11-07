@@ -173,8 +173,74 @@ fn load_identity(path: &PathBuf, password: &str, username: &str) -> Result<Ident
     .map_err(anyhow::Error::msg)
 }
 
-async fn http_response(status: &str, content_type: &str, body: &str) -> Vec<u8> {
-    format!("HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: content-type\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}", body.len()).into_bytes()
+fn http_response(status: &str, content_type: &str, body: &str) -> Vec<u8> {
+    format!("HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nX-Content-Type-Options: nosniff\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}", body.len()).into_bytes()
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    let host = host.trim();
+    let hostname = if host.starts_with('[') {
+        let Some(close) = host.find(']') else {
+            return false;
+        };
+        let suffix = &host[close + 1..];
+        if !suffix.is_empty() {
+            let Some(port) = suffix.strip_prefix(':') else {
+                return false;
+            };
+            if port.parse::<u16>().is_err() {
+                return false;
+            }
+        }
+        &host[..=close]
+    } else if let Some((hostname, port)) = host.rsplit_once(':') {
+        if hostname.contains(':') || port.parse::<u16>().is_err() {
+            return false;
+        }
+        hostname
+    } else {
+        host
+    };
+
+    hostname.eq_ignore_ascii_case("localhost") || hostname == "127.0.0.1" || hostname == "[::1]"
+}
+
+/// The local product API is same-origin only. Native eframe requests use the
+/// fixed `awenet` Host alias and do not send a browser Origin header.
+fn local_request_allowed(request: &str) -> bool {
+    let mut host = None;
+    let mut origin = None;
+
+    for line in request.lines().skip(1) {
+        if line.is_empty() {
+            break;
+        }
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        let name = name.trim();
+        let value = value.trim();
+        if name.eq_ignore_ascii_case("host") {
+            if host.replace(value).is_some() {
+                return false;
+            }
+        } else if name.eq_ignore_ascii_case("origin") && origin.replace(value).is_some() {
+            return false;
+        }
+    }
+
+    let Some(host) = host else {
+        return false;
+    };
+    match origin {
+        None => host.eq_ignore_ascii_case("awenet") || is_loopback_host(host),
+        Some(origin) => {
+            if !is_loopback_host(host) {
+                return false;
+            }
+            origin.eq_ignore_ascii_case(&format!("http://{host}"))
+        }
+    }
 }
 
 async fn read_http_request(stream: &mut tokio::net::TcpStream) -> Result<String> {
@@ -308,6 +374,17 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         economy_path,
     } = state;
     let request = read_http_request(&mut stream).await?;
+    if !local_request_allowed(&request) {
+        stream
+            .write_all(&http_response(
+                "403 Forbidden",
+                "application/json; charset=utf-8",
+                r#"{"status":"error","error":"local_origin_not_allowed"}"#,
+            ))
+            .await?;
+        stream.shutdown().await?;
+        return Ok(());
+    }
     let request_line = request.lines().next().unwrap_or("");
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or("GET");
@@ -1441,7 +1518,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         _ => ("404 Not Found", "text/plain; charset=utf-8", "Not Found".to_string()),
     };
     stream
-        .write_all(&http_response(status, mime, &body).await)
+        .write_all(&http_response(status, mime, &body))
         .await?;
     stream.shutdown().await?;
     Ok(())
@@ -2678,8 +2755,78 @@ async fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_json_u16, parse_json_u32};
+    use super::{
+        http_response, is_loopback_host, local_request_allowed, parse_json_u16, parse_json_u32,
+    };
     use serde_json::json;
+
+    #[test]
+    fn local_api_accepts_only_matching_loopback_origins() {
+        assert!(local_request_allowed(
+            "GET /api/status HTTP/1.1\r\nHost: 127.0.0.1:41800\r\nOrigin: http://127.0.0.1:41800\r\n\r\n"
+        ));
+        assert!(local_request_allowed(
+            "GET /api/status HTTP/1.1\r\nHost: localhost:41800\r\nOrigin: http://localhost:41800\r\n\r\n"
+        ));
+        assert!(local_request_allowed(
+            "GET /api/status HTTP/1.1\r\nHost: [::1]:41800\r\nOrigin: http://[::1]:41800\r\n\r\n"
+        ));
+    }
+
+    #[test]
+    fn local_api_rejects_cross_origin_and_dns_rebinding_hosts() {
+        assert!(!local_request_allowed(
+            "GET /api/status HTTP/1.1\r\nHost: 127.0.0.1:41800\r\nOrigin: https://evil.example\r\n\r\n"
+        ));
+        assert!(!local_request_allowed(
+            "GET /api/status HTTP/1.1\r\nHost: attacker.example\r\nOrigin: http://attacker.example\r\n\r\n"
+        ));
+        assert!(!local_request_allowed(
+            "GET /api/status HTTP/1.1\r\nHost: 127.0.0.1:41800\r\nOrigin: https://127.0.0.1:41800\r\n\r\n"
+        ));
+    }
+
+    #[test]
+    fn local_api_rejects_duplicate_or_missing_host_headers() {
+        assert!(!local_request_allowed(
+            "GET /api/status HTTP/1.1\r\nHost: 127.0.0.1:41800\r\nHost: localhost:41800\r\n\r\n"
+        ));
+        assert!(!local_request_allowed(
+            "GET /api/status HTTP/1.1\r\nOrigin: http://127.0.0.1:41800\r\n\r\n"
+        ));
+        assert!(!local_request_allowed(
+            "GET /api/status HTTP/1.1\r\nHost: 127.0.0.1:41800\r\nOrigin: http://127.0.0.1:41800\r\nOrigin: http://evil.example\r\n\r\n"
+        ));
+    }
+
+    #[test]
+    fn native_desktop_alias_is_allowed_without_browser_origin() {
+        assert!(local_request_allowed(
+            "GET /api/status HTTP/1.1\r\nHost: awenet\r\n\r\n"
+        ));
+        assert!(!local_request_allowed(
+            "GET /api/status HTTP/1.1\r\nHost: awenet\r\nOrigin: http://localhost:41800\r\n\r\n"
+        ));
+        assert!(is_loopback_host("localhost:41800"));
+        assert!(is_loopback_host("127.0.0.1"));
+        assert!(is_loopback_host("[::1]:41800"));
+        assert!(!is_loopback_host("127.0.0.2:41800"));
+        assert!(!is_loopback_host("localhost:bad"));
+    }
+
+    #[test]
+    fn local_api_responses_do_not_enable_cross_origin_access() {
+        let response = String::from_utf8(http_response(
+            "200 OK",
+            "application/json; charset=utf-8",
+            "{}",
+        ))
+        .unwrap();
+        assert!(!response
+            .to_ascii_lowercase()
+            .contains("access-control-allow-origin"));
+        assert!(response.contains("X-Content-Type-Options: nosniff"));
+    }
 
     #[test]
     fn contribution_integer_parsers_reject_overflow_and_missing_values() {
@@ -2697,3 +2844,4 @@ mod tests {
         assert!(parse_json_u16(&json!({}), "online_hours").is_err());
     }
 }
+
