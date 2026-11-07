@@ -33,12 +33,12 @@ use awep2p_core::awenetwork::{
 use awep2p_core::founder::FounderAuthority;
 use awep2p_core::founder_guard::FounderGuard;
 use awep2p_core::identity::{secure_random, AweId, Identity, Username};
-use awep2p_core::webauthn;
 use awep2p_core::onecoin::{OnecoinLedger, ATOMS_PER_COIN};
 use awep2p_core::price_control::{OfficialPriceControl, PRICE_DISCLAIMER};
 use awep2p_core::store_escrow::{DisputeRuling, StoreEscrow, StoreOrder};
 use awep2p_core::storefront::{Product, ProductFilter, ProductKind, Storefront};
 use awep2p_core::treasury::{Treasury, TreasuryFlow};
+use awep2p_core::webauthn;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -236,10 +236,7 @@ fn ensure_founder_guard(economy: &mut NodeEconomy, identity: &Identity) {
 /// once any passkey is enrolled, a live MFA step-up session. Before the
 /// first enrollment the founder key alone stands, which is the honest
 /// bootstrap rule for the very first ceremony.
-fn require_founder_action(
-    economy: &NodeEconomy,
-    identity: &Identity,
-) -> Option<ApiResponse> {
+fn require_founder_action(economy: &NodeEconomy, identity: &Identity) -> Option<ApiResponse> {
     if let Some(response) = require_founder(economy, identity) {
         return response;
     }
@@ -604,9 +601,7 @@ pub fn handle(
         }
         ("GET", ["api", "founder", "identity"]) => founder_identity(identity, economy_state),
         ("GET", ["api", "founder", "overview"]) => founder_overview(identity, economy_state),
-        ("GET", ["api", "founder", "passkey", "status"]) => {
-            passkey_status(identity, economy_state)
-        }
+        ("GET", ["api", "founder", "passkey", "status"]) => passkey_status(identity, economy_state),
         ("POST", ["api", "founder", "passkey", "register", "options"]) => {
             passkey_register_options(identity, economy_state, economy_path)
         }
@@ -1207,7 +1202,10 @@ fn passkey_register(
             }
         };
     if authenticator_data.rp_id_hash != webauthn::rp_id_hash() {
-        return err(400, "the credential is bound to a different relying party".to_string());
+        return err(
+            400,
+            "the credential is bound to a different relying party".to_string(),
+        );
     }
     let attested = match authenticator_data.attested_credential {
         Some(attested) => attested,
@@ -1262,7 +1260,10 @@ fn passkey_step_up_options(
         .passkeys()
         .is_empty()
     {
-        return err(400, "enroll a passkey before requesting a step-up".to_string());
+        return err(
+            400,
+            "enroll a passkey before requesting a step-up".to_string(),
+        );
     }
     let challenge: [u8; 32] = *secure_random::<32>();
     economy
