@@ -243,7 +243,7 @@ fn three_node_product_smoke() {
         let import_response = request_raw(
             "127.0.0.1:46202",
             &format!(
-                "POST /api/federation/import HTTP/1.1\\r\\nHost: 127.0.0.1:46202\\r\\nContent-Type: application/json\\r\\nContent-Length: {}\\r\\nConnection: close\\r\\n\\r\\n{}",
+                "POST /api/federation/import HTTP/1.1\r\nHost: 127.0.0.1:46202\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                 import_body.len(),
                 import_body
             ),
@@ -287,7 +287,7 @@ fn three_node_product_smoke() {
         let failed_import_response = request_raw(
             "127.0.0.1:46203",
             &format!(
-                "POST /api/federation/import HTTP/1.1\\r\\nHost: 127.0.0.1:46203\\r\\nContent-Type: application/json\\r\\nContent-Length: {}\\r\\nConnection: close\\r\\n\\r\\n{}",
+                "POST /api/federation/import HTTP/1.1\r\nHost: 127.0.0.1:46203\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                 import_body.len(),
                 import_body
             ),
