@@ -2,13 +2,14 @@
 //!
 //! The resource economy pays for measured, multi-signal usage. This module
 //! wires two pieces of that contract: a meter that reads real host
-//! counters (CPU time, memory pressure, network counters and uptime from
-//! /proc on Linux) and converts them into per-period MeasuredUsage, and
+//! counters (CPU time, memory pressure, network counters, uptime and the
+//! free capacity of the contributed storage directory from /proc and
+//! statvfs on Linux) and converts them into per-period MeasuredUsage, and
 //! signed usage reports from independent verifiers whose conservative
 //! consensus becomes the network-side measurement of the settlement
-//! evidence. GPU and contributed storage cannot be read from generic OS
-//! counters, so those signals still come from the work runner's delivered
-//! results; nothing here invents numbers the host did not report.
+//! evidence. GPU usage cannot be read from generic OS counters, so that
+//! signal still comes from the work runner's delivered results; nothing
+//! here invents numbers the host did not report.
 
 use crate::identity::{AweId, Identity};
 use crate::resource_economy::{MeasuredUsage, UsageEvidence};
@@ -27,17 +28,46 @@ pub struct SystemCounters {
     pub net_rx_bytes: u64,
     pub net_tx_bytes: u64,
     pub uptime_secs: u64,
+    pub disk_total_kb: u64,
+    pub disk_available_kb: u64,
 }
 
 pub trait SystemMeter {
     fn read(&mut self) -> io::Result<SystemCounters>;
 }
 
-/// Reads the real counters of the host. On Linux the source is /proc; on
+/// Reads the real counters of the host. On Linux the source is /proc and
+/// the filesystem statistics of the contributed storage directory; on
 /// every other platform reading reports that host metering is not wired
 /// yet, so the caller falls back to its own measurements instead of
 /// being paid for numbers the meter never observed.
-pub struct HostMeter;
+#[derive(Clone, Debug)]
+pub struct HostMeter {
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    storage_dir: std::path::PathBuf,
+}
+
+impl HostMeter {
+    pub fn new() -> Self {
+        Self {
+            storage_dir: std::path::PathBuf::from("."),
+        }
+    }
+
+    /// Meters the free capacity of this directory as the contributed
+    /// storage space.
+    pub fn with_storage_dir(storage_dir: impl Into<std::path::PathBuf>) -> Self {
+        Self {
+            storage_dir: storage_dir.into(),
+        }
+    }
+}
+
+impl Default for HostMeter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[cfg(target_os = "linux")]
 impl SystemMeter for HostMeter {
@@ -52,6 +82,8 @@ impl SystemMeter for HostMeter {
                 .ok_or_else(|| invalid_data("cannot parse /proc/net/dev"))?;
         let uptime_secs = parse_proc_uptime_secs(&std::fs::read_to_string("/proc/uptime")?)
             .ok_or_else(|| invalid_data("cannot parse /proc/uptime"))?;
+        let (disk_total_kb, disk_available_kb) = statvfs_kb(&self.storage_dir)
+            .ok_or_else(|| invalid_data("cannot read filesystem capacity"))?;
         Ok(SystemCounters {
             cpu_core_ticks,
             ram_total_kb,
@@ -59,6 +91,8 @@ impl SystemMeter for HostMeter {
             net_rx_bytes,
             net_tx_bytes,
             uptime_secs,
+            disk_total_kb,
+            disk_available_kb,
         })
     }
 }
@@ -126,6 +160,30 @@ pub(crate) fn parse_proc_uptime_secs(uptime: &str) -> Option<u64> {
     let first = uptime.lines().next()?.split_whitespace().next()?;
     let whole = first.split('.').next()?;
     whole.parse::<u64>().ok()
+}
+
+/// Reads the total and available capacity of the contributed storage
+/// directory from the filesystem statistics, in kilobytes. This is a real
+/// measurement of the space the node could contribute; the resource
+/// economy's grant limits cap what is paid for.
+#[cfg(target_os = "linux")]
+fn statvfs_kb(path: &std::path::Path) -> Option<(u64, u64)> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    let c_path = CString::new(path.as_os_str().as_bytes()).ok()?;
+    // SAFETY: statvfs writes into a zeroed, correctly sized C struct and
+    // only reads the borrowed C path string.
+    let mut stats: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(c_path.as_ptr(), &mut stats) } != 0 {
+        return None;
+    }
+    let block_size = stats.f_bsize;
+    let total_kb = u128::from(block_size) * u128::from(stats.f_blocks) / 1_024;
+    let available_kb = u128::from(block_size) * u128::from(stats.f_bavail) / 1_024;
+    Some((
+        u64::try_from(total_kb).unwrap_or(u64::MAX),
+        u64::try_from(available_kb).unwrap_or(u64::MAX),
+    ))
 }
 
 /// A meter that replays programmed counter snapshots in order, for
@@ -206,11 +264,16 @@ impl<M: SystemMeter> UsagePeriodMeter<M> {
             .saturating_add(current.net_tx_bytes.saturating_sub(previous.net_tx_bytes));
         let bandwidth_gb = (transferred_bytes as u128) / 1_000_000_000;
         let uptime_hours = (delta_secs as u128) / 3_600;
+        let storage_available_gb_before = (previous.disk_available_kb as u128) / 1_000_000;
+        let storage_available_gb_now = (current.disk_available_kb as u128) / 1_000_000;
+        let average_storage_gb =
+            storage_available_gb_before.saturating_add(storage_available_gb_now) / 2;
+        let storage_gb_hours = average_storage_gb.saturating_mul(delta_secs as u128) / 3_600;
         Ok(Some(MeasuredUsage {
             cpu_core_ticks: u64::try_from(delta_ticks).unwrap_or(u64::MAX),
             gpu_unit_ticks: 0,
             ram_mb_hours,
-            storage_gb_hours: 0,
+            storage_gb_hours,
             bandwidth_gb: u64::try_from(bandwidth_gb).unwrap_or(u64::MAX),
             uptime_hours: u64::try_from(uptime_hours).unwrap_or(u64::MAX),
         }))
@@ -396,6 +459,8 @@ mod tests {
             net_rx_bytes: 0,
             net_tx_bytes: 0,
             uptime_secs: uptime,
+            disk_total_kb: 0,
+            disk_available_kb: 0,
         }
     }
 
@@ -426,6 +491,21 @@ mod tests {
         let usage = meter.sample_period().unwrap().unwrap();
         assert_eq!(usage.bandwidth_gb, 5);
         assert_eq!(usage.uptime_hours, 1);
+    }
+
+    #[test]
+    fn period_meter_measures_contributed_storage_capacity_hours() {
+        let mut before = counters(0, 0);
+        before.disk_total_kb = 500_000_000;
+        before.disk_available_kb = 200_000_000;
+        let mut after = counters(10, 3_600);
+        after.disk_total_kb = 500_000_000;
+        after.disk_available_kb = 100_000_000;
+        let mut meter = UsagePeriodMeter::new(SequenceMeter::new(vec![before, after]));
+        meter.sample_period().unwrap();
+        let usage = meter.sample_period().unwrap().unwrap();
+        // average available capacity 150 GB over one hour
+        assert_eq!(usage.storage_gb_hours, 150);
     }
 
     #[test]
@@ -626,18 +706,19 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn host_meter_reads_real_counters() {
-        let mut meter = HostMeter;
+        let mut meter = HostMeter::default();
         let first = meter.read().expect("host counters");
         let second = meter.read().expect("host counters");
         assert!(second.cpu_core_ticks >= first.cpu_core_ticks);
         assert!(second.uptime_secs >= first.uptime_secs);
         assert!(first.ram_total_kb >= first.ram_available_kb);
+        assert!(first.disk_total_kb >= first.disk_available_kb);
     }
 
     #[cfg(not(target_os = "linux"))]
     #[test]
     fn host_meter_is_honest_off_linux() {
-        let mut meter = HostMeter;
+        let mut meter = HostMeter::default();
         assert!(meter.read().is_err());
     }
 }

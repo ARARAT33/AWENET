@@ -1,6 +1,6 @@
 const view=document.getElementById("view"),title=document.getElementById("pageTitle"),navs=[...document.querySelectorAll(".nav")];
 const pages={dashboard:["Home","Everything important in one place"],browser:["Browser","Open AWE sites and the web in a separate browser view"],node:["My Node","Your identity, runtime and listening endpoint"],network:["Peers & Connections","Discover and connect to AWEp2P nodes"],federation:["AWENET","Build Nodes, Data Centres and Data Groups"],storage:["Storage","Local and distributed data plane"],messenger:["Messenger","Peer-to-peer messaging"],communities:["Groups & Channels","Real peer communities over AWE transport"],store:["AWEStore","AWE modules and services"],security:["Security","Identity, transport and trust"],diagnostics:["Diagnostics","Health checks and runtime inspection"],settings:["Settings","Application configuration"]};
-let live={status:"starting",node_id:"loading",node_address:"loading",transport:"loading",ui:"connecting",peers:[],node:{},storage:{},security:{},federation:{},lastUpdated:null};
+let live={status:"starting",node_id:"loading",node_address:"loading",transport:"loading",ui:"connecting",peers:[],node:{},storage:{},security:{},passkeys:{},federation:{},lastUpdated:null};
 
 function apiBase(){
  if(location.protocol==="http:"||location.protocol==="https:")return location.origin;
@@ -86,9 +86,9 @@ async function loadMessenger(){
 }
 async function refresh(){
  const results=await Promise.allSettled([
-  api("/api/status"),api("/api/node"),api("/api/storage"),api("/api/security"),api("/api/federation")
+  api("/api/status"),api("/api/node"),api("/api/storage"),api("/api/security"),api("/api/federation"),api("/api/security/passkeys")
  ]);
- const [status,node,storage,security,federation]=results.map(x=>x.status==="fulfilled"?x.value:null);
+ const [status,node,storage,security,federation,passkeys]=results.map(x=>x.status==="fulfilled"?x.value:null);
  if(status||node){
   live={
    ...live,
@@ -96,7 +96,8 @@ async function refresh(){
    node:node||live.node,
    storage:storage||live.storage,
    security:security||live.security,
-   federation:federation||live.federation
+   federation:federation||live.federation,
+   passkeys:passkeys||live.passkeys
   };
   if(!status)live.status=live.status||"online";
   live.lastUpdated=new Date();
@@ -165,7 +166,8 @@ function render(k){
 
  } else if(k==="security"){
   body='<div class="grid">'+card("Identity",live.node_id,"Public node identity")+card("Transport",live.transport,"Network layer")+card("Peer count",live.peers.length,"Known peers")+card("Trust","Core-managed","No UI-only security state")+'</div>'+
-  panel("Security model",'<div class="list"><div class="list-row"><span>Node identity</span><b>Rust core</b></div><div class="list-row"><span>Authentication</span><b>Core protocol</b></div><div class="list-row"><span>Transport</span><b>'+esc(live.transport)+'</b></div><div class="list-row"><span>Secrets</span><b>Local identity vault</b></div></div>');
+  panel("Security model",'<div class="list"><div class="list-row"><span>Node identity</span><b>Rust core</b></div><div class="list-row"><span>Authentication</span><b>Core protocol</b></div><div class="list-row"><span>Transport</span><b>'+esc(live.transport)+'</b></div><div class="list-row"><span>Secrets</span><b>Local identity vault</b></div></div>')+
+  panel("Founder passkeys",'<div class="list"><div class="list-row"><span>Enrolled credentials</span><b>'+esc(live.passkeys?.enrolled||0)+' / '+esc(live.passkeys?.max_credentials||8)+'</b></div><div class="list-row"><span>Recovery codes remaining</span><b>'+esc(live.passkeys?.recovery_codes_remaining||0)+'</b></div><div class="list-row"><span>Step-up session</span><b>'+((live.passkeys?.step_up_active)?"Active":"Not active")+'</b></div><div class="list-row"><span>Persistence</span><b>Founder-signed · atomic</b></div></div><div class="notice" style="margin-top:10px">Passkey private material stays in the platform authenticator. AWENET persists only founder-authorized public credentials; MFA sessions and challenges are cleared on restart.</div>');
  } else if(k==="diagnostics"){
   body='<div class="grid">'+card("Node",live.status.toUpperCase(),"Live API status")+card("API",live.ui,"Dashboard connection")+card("Peers",live.peers.length,"Known peers")+card("Endpoint",live.node_address,"Listen endpoint")+'</div>'+
   panel("Runtime diagnostics",'<div class="terminal"><div>$ GET /api/status</div><div class="green">200 · '+esc(live.status)+'</div><div>$ node</div><div class="green">'+esc(live.node_id)+'</div><div>$ peers</div><div class="green">'+live.peers.length+' known peer(s)</div></div>','<button class="primary" id="healthBtn">Run health check</button>')+
