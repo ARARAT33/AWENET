@@ -1,7 +1,7 @@
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, OpenOptions},
     io::Write,
     path::Path,
     sync::atomic::{AtomicU64, Ordering},
@@ -234,10 +234,20 @@ pub fn save_json<T: Serialize>(value: &T, path: &Path) -> Result<(), String> {
         let _ = fs::remove_file(&temporary);
         return Err(error.to_string());
     }
-    if let Some(parent) = path.parent() {
-        File::open(parent)
-            .and_then(|directory| directory.sync_all())
-            .map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        if let Some(parent) = path.parent() {
+            fs::File::open(parent)
+                .and_then(|directory| directory.sync_all())
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        // Windows cannot open a directory handle for fsync; the completed
+        // atomic rename above is the durability boundary on that platform,
+        // so the parent directory sync stays a Unix-only step.
+        let _ = path.parent();
     }
     Ok(())
 }
