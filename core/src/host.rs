@@ -123,7 +123,7 @@ impl AweHost {
         owner_key: Vec<u8>,
         files: Vec<HostedFile>,
     ) -> io::Result<SiteManifest> {
-        if domain.is_empty() || version == 0 {
+        if !crate::registry::valid_name(domain) || version == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "invalid site manifest",
@@ -200,6 +200,12 @@ impl AweHost {
         Ok(data)
     }
     pub fn save_manifest(&self, manifest: &SiteManifest) -> io::Result<()> {
+        if !crate::registry::valid_name(&manifest.domain) || manifest.version == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid site manifest identity",
+            ));
+        }
         let path = self.manifest_path(&manifest.domain);
         let bytes = serde_json::to_vec_pretty(manifest).map_err(|_| {
             io::Error::new(io::ErrorKind::InvalidData, "manifest serialization failed")
@@ -207,13 +213,35 @@ impl AweHost {
         crate::storage::save_manifest(path, &bytes)
     }
     pub fn load_manifest(&self, domain: &str) -> io::Result<SiteManifest> {
-        let b = fs::read(self.manifest_path(domain))?;
-        serde_json::from_slice(&b)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid host manifest"))
+        if !crate::registry::valid_name(domain) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid site domain",
+            ));
+        }
+        let bytes = fs::read(self.manifest_path(domain))?;
+        let manifest: SiteManifest = serde_json::from_slice(&bytes)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid host manifest"))?;
+        if !crate::registry::valid_name(&manifest.domain)
+            || manifest.version == 0
+            || !manifest.domain.eq_ignore_ascii_case(domain)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "host manifest identity mismatch",
+            ));
+        }
+        Ok(manifest)
     }
     pub fn manifest_path(&self, domain: &str) -> PathBuf {
-        self.root
-            .join(format!("{}.manifest.json", domain.replace('/', "_")))
+        // Valid site names are already constrained to DNS-safe ASCII labels.
+        // Hash invalid input so even direct callers cannot escape the host root.
+        let filename = if crate::registry::valid_name(domain) {
+            domain.to_ascii_lowercase()
+        } else {
+            format!("invalid-{}", hex::encode(Sha256::digest(domain.as_bytes())))
+        };
+        self.root.join(format!("{filename}.manifest.json"))
     }
 }
 pub fn normalize_path(path: &str) -> io::Result<String> {
@@ -242,6 +270,20 @@ mod tests {
         assert!(normalize_path("/index.html").is_ok());
         assert!(normalize_path("/../secret").is_err())
     }
+    #[test]
+    fn site_domains_cannot_escape_the_host_root() {
+        let root = std::env::temp_dir().join(format!("awe-host-path-{}", std::process::id()));
+        let host = AweHost::open(&root, 10_000_000, HostPolicy::default()).unwrap();
+
+        assert!(host.publish_manifest("../outside", 1, vec![1], Vec::new()).is_err());
+        assert!(host.load_manifest("../outside").is_err());
+        assert!(host.load_manifest("..\\\\outside").is_err());
+        assert!(host.manifest_path("../outside").starts_with(&root));
+        assert!(host.manifest_path("..\\\\outside").starts_with(&root));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[test]
     fn host_roundtrip() {
         let r = std::env::temp_dir().join(format!("awe-host-{}", std::process::id()));
