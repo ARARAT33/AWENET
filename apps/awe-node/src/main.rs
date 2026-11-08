@@ -633,6 +633,8 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                         "status": "ok",
                         "founder_awe_id": registry.founder_awe_id(),
                         "sequence": registry.sequence(),
+                        "next_sequence": registry.sequence().checked_add(1),
+                        "server_time_unix": now_unix(),
                         "users": users
                     }).to_string())
                 }
