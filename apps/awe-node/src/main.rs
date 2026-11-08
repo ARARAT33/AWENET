@@ -182,6 +182,19 @@ fn http_response(status: &str, content_type: &str, body: &str) -> Vec<u8> {
     format!("HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nX-Content-Type-Options: nosniff\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}", body.len()).into_bytes()
 }
 
+async fn write_json_error(
+    stream: &mut tokio::net::TcpStream,
+    status: &str,
+    message: &str,
+) -> Result<()> {
+    let body = serde_json::json!({"status":"error","error":message}).to_string();
+    stream
+        .write_all(&http_response(status, "application/json; charset=utf-8", &body))
+        .await?;
+    stream.shutdown().await?;
+    Ok(())
+}
+
 fn is_loopback_host(host: &str) -> bool {
     let host = host.trim();
     let hostname = if host.starts_with('[') {
