@@ -72,6 +72,11 @@ English and Armenian, from a single bilingual catalog.
 
 ## Tests
 
+- CI runs the same gates as `main`: `cargo fmt --check`, workspace
+  build, unit and integration tests, the product smoke test and
+  `cargo clippy --workspace --all-targets -- -D warnings`, on both Linux
+  and Windows runners. The diagnostics bot publishes a PR comment only
+  when a gate fails.
 - `core` unit tests: `parses_locale_codes`,
   `economy_keys_exist_in_both_locales` (catalog size and spot keys),
   `every_catalog_entry_has_english_and_armenian_text` (all 400 entries have
