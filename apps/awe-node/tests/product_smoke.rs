@@ -74,6 +74,16 @@ fn post(addr: &str, path: &str, body: &str) -> String {
     )
 }
 
+fn post_raw(addr: &str, path: &str, body: &str) -> String {
+    request_raw(
+        addr,
+        &format!(
+            "POST {path} HTTP/1.1\\r\\nHost: {addr}\\r\\nContent-Type: application/json\\r\\nContent-Length: {}\\r\\nConnection: close\\r\\n\\r\\n{body}",
+            body.len()
+        ),
+    )
+}
+
 fn generated_join_token(response: &str, prefix: &str) -> String {
     let envelope: serde_json::Value =
         serde_json::from_str(response).expect("federation generation response JSON");
@@ -404,6 +414,45 @@ fn three_node_product_smoke() {
             durable_users.get(&new_user_id).map(|account| account.status),
             Some(UserStatus::Suspended)
         );
+
+        // A failed disk publish must not make a newly registered account
+        // visible in memory. Replace the target file with a directory so the
+        // atomic rename fails, then restore the original signed snapshot.
+        let unpersisted_user = Identity::generate(Username::new("disk-failure-user".to_string()).unwrap());
+        let unpersisted_message =
+            UserRegistry::registration_message("disk-failure-user", &unpersisted_user.public.public_key);
+        let unpersisted_signature = unpersisted_user.sign(&unpersisted_message);
+        let users_path = dirs[0].join("users.json");
+        let backup_path = dirs[0].join("users.json.backup");
+        fs::rename(&users_path, &backup_path).expect("move signed user registry for failure test");
+        fs::create_dir(&users_path).expect("create blocking registry directory");
+        let failed_registration = post_raw(
+            "127.0.0.1:46201",
+            "/api/users/register",
+            &serde_json::json!({
+                "username": "disk-failure-user",
+                "public_key": hex::encode(unpersisted_user.public.public_key),
+                "signature": hex::encode(unpersisted_signature)
+            }).to_string(),
+        );
+        assert!(
+            failed_registration.starts_with("HTTP/1.1 500 Internal Server Error"),
+            "registry persistence failure must return HTTP 500: {failed_registration}"
+        );
+        let in_memory_users = get("127.0.0.1:46201", "/api/users");
+        assert!(
+            !in_memory_users.contains(&unpersisted_user.public.awe_id.to_hex()),
+            "failed persistence must not publish the candidate registry: {in_memory_users}"
+        );
+        let leftover_temps = fs::read_dir(&dirs[0])
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with(".awenet-users-"))
+            .count();
+        assert_eq!(leftover_temps, 0, "failed registry save must clean its temporary file");
+        fs::remove_dir(&users_path).expect("remove blocking registry directory");
+        fs::rename(&backup_path, &users_path).expect("restore signed user registry");
+        user_registry::load(&users_path, &founder).expect("restored signed user registry");
 
         let node2_wallet_before: serde_json::Value =
             serde_json::from_str(&get("127.0.0.1:46202", "/api/onebank/wallet"))
