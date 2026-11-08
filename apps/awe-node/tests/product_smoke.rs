@@ -508,13 +508,13 @@ fn three_node_product_smoke() {
         );
         let i18n_en = get("127.0.0.1:46201", "/api/i18n/messages?locale=en");
         assert!(
-            i18n_en.contains(r#""status":"ok""#)
-                && i18n_en.contains("Founder-published tasks"),
+            i18n_en.contains(r#""status":"ok""#) && i18n_en.contains("Founder-published tasks"),
             "English economy catalog must be served: {i18n_en}"
         );
         let i18n_bad = get("127.0.0.1:46201", "/api/i18n/messages?locale=fr");
         assert!(
-            i18n_bad.contains(r#""status":"error""#) && i18n_bad.contains("locale must be en or hy"),
+            i18n_bad.contains(r#""status":"error""#)
+                && i18n_bad.contains("locale must be en or hy"),
             "unknown locale must be rejected: {i18n_bad}"
         );
         let i18n_js = get("127.0.0.1:46201", "/i18n.js");

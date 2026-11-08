@@ -176,12 +176,20 @@ pub fn product_catalog() -> Catalog {
     c.add("kind_physical", "Physical", "Ֆիզիկական");
     c.add("level_beginner", "Beginner", "Սկսնակ");
     c.add("level_contributor", "Contributor", "Մասնակից");
-    c.add("level_advanced", "Advanced Contributor", "Փորձառյալ մասնակից");
+    c.add(
+        "level_advanced",
+        "Advanced Contributor",
+        "Փորձառյալ մասնակից",
+    );
     c.add("level_expert", "Expert", "Փորձագետ");
     c.add("level_master", "Master Contributor", "Ավագ մասնակից");
 
     // --- AWENETwork participant board -------------------------------------
-    c.add("awk_hero_title", "Official work platform", "Պաշտոնական աշխատանքային հարթակ");
+    c.add(
+        "awk_hero_title",
+        "Official work platform",
+        "Պաշտոնական աշխատանքային հարթակ",
+    );
     c.add(
         "awk_hero_sub",
         "Founder-published tasks for the AWENET network. Accept a task, deliver real work, and the founder reviews every submission before ONECOIN is minted.",
@@ -205,9 +213,21 @@ pub fn product_catalog() -> Catalog {
         "Նվազագույն պարգև (ONECOIN)",
     );
     c.add("awk_apply", "Apply filters", "Կիրառել զտիչները");
-    c.add("awk_loading_tasks", "Loading tasks…", "Առաջադրանքները բեռնվում են…");
-    c.add("awk_mywork_title", "My work profile", "Իմ աշխատանքային պրոֆիլը");
-    c.add("awk_loading_profile", "Loading profile…", "Պրոֆիլը բեռնվում է…");
+    c.add(
+        "awk_loading_tasks",
+        "Loading tasks…",
+        "Առաջադրանքները բեռնվում են…",
+    );
+    c.add(
+        "awk_mywork_title",
+        "My work profile",
+        "Իմ աշխատանքային պրոֆիլը",
+    );
+    c.add(
+        "awk_loading_profile",
+        "Loading profile…",
+        "Պրոֆիլը բեռնվում է…",
+    );
     c.add(
         "awk_suggest_notice",
         "Suggestions are community proposals. They never become official tasks until the founder reviews and publishes them. No reward is promised before publication.",
@@ -264,13 +284,13 @@ pub fn product_catalog() -> Catalog {
         "{count} contributor(s)",
         "{count} մասնակից",
     );
-    c.add("awk_deadline_short", "deadline {date}", "վերջնաժամկետ {date}");
-    c.add("awk_open_task", "Open task", "Բացել առաջադրանքը");
     c.add(
-        "awk_phase",
-        "Phase {n}: {name}",
-        "Փուլ {n}՝ {name}",
+        "awk_deadline_short",
+        "deadline {date}",
+        "վերջնաժամկետ {date}",
     );
+    c.add("awk_open_task", "Open task", "Բացել առաջադրանքը");
+    c.add("awk_phase", "Phase {n}: {name}", "Փուլ {n}՝ {name}");
     c.add(
         "awk_task_eyebrow",
         "AWENETwork / Task #{id}",
@@ -287,7 +307,11 @@ pub fn product_catalog() -> Catalog {
     c.add("awk_team_solo", "solo", "անհատական");
     c.add("awk_contributors_label", "Contributors", "Մասնակիցներ");
     c.add("awk_outcome", "Expected outcome", "Սպասվող արդյունք");
-    c.add("awk_criteria", "Acceptance criteria", "Ընդունման չափանիշներ");
+    c.add(
+        "awk_criteria",
+        "Acceptance criteria",
+        "Ընդունման չափանիշներ",
+    );
     c.add("awk_phases", "Phases", "Փուլեր");
     c.add("awk_participate", "Participate", "Մասնակցել");
     c.add(
@@ -459,16 +483,8 @@ pub fn product_catalog() -> Catalog {
         "Կատալոգն անհասանելի է՝ {message}",
     );
     c.add("mkt_general", "general", "ընդհանուր");
-    c.add(
-        "mkt_unlimited",
-        "unlimited stock",
-        "անսահմանափակ պահեստ",
-    );
-    c.add(
-        "mkt_unlimited_short",
-        "unlimited",
-        "անսահմանափակ",
-    );
+    c.add("mkt_unlimited", "unlimited stock", "անսահմանափակ պահեստ");
+    c.add("mkt_unlimited_short", "unlimited", "անսահմանափակ");
     c.add("mkt_left", "{count} left", "մնացել է {count}");
     c.add("mkt_sold_out", "sold out", "սպառված է");
     c.add("mkt_sold", "{count} sold", "վաճառված {count}");
@@ -508,7 +524,11 @@ pub fn product_catalog() -> Catalog {
     );
     c.add("mkt_active", "active", "ակտիվ");
     c.add("mkt_inactive", "inactive", "ոչ ակտիվ");
-    c.add("mkt_new_price_ph", "New price (ONECOIN)", "Նոր գին (ONECOIN)");
+    c.add(
+        "mkt_new_price_ph",
+        "New price (ONECOIN)",
+        "Նոր գին (ONECOIN)",
+    );
     c.add(
         "mkt_new_stock_ph",
         "New stock (empty = unlimited)",
@@ -591,7 +611,11 @@ pub fn product_catalog() -> Catalog {
     );
 
     // --- Founder Control Center -------------------------------------------
-    c.add("fnd_hero_title", "Economy command", "Տնտեսության կառավարում");
+    c.add(
+        "fnd_hero_title",
+        "Economy command",
+        "Տնտեսության կառավարում",
+    );
     c.add(
         "fnd_hero_sub",
         "Publish official AWENETwork tasks, review submissions personally, set the official ONECOIN price and settle store disputes. Every action is audit-logged.",
@@ -765,7 +789,11 @@ pub fn product_catalog() -> Catalog {
         "MFA step-up session active until {date}.",
         "MFA ստուգման նիստն ակտիվ է մինչև {date}:",
     );
-    c.add("fnd_mfa_none", "No active MFA session.", "Ակտիվ MFA նիստ չկա:");
+    c.add(
+        "fnd_mfa_none",
+        "No active MFA session.",
+        "Ակտիվ MFA նիստ չկա:",
+    );
     c.add(
         "fnd_mfa_required_note",
         "Founder mutations require a step-up first.",
@@ -807,7 +835,11 @@ pub fn product_catalog() -> Catalog {
         "Ստուգումը ձախողվեց՝ {message}",
     );
     c.add("fnd_overview_price", "Official price", "Պաշտոնական գին");
-    c.add("fnd_overview_internal", "Internal reference", "Ներքին հղում");
+    c.add(
+        "fnd_overview_internal",
+        "Internal reference",
+        "Ներքին հղում",
+    );
     c.add("fnd_overview_issued", "Issued", "Թողարկված");
     c.add(
         "fnd_overview_matches",
@@ -829,7 +861,11 @@ pub fn product_catalog() -> Catalog {
         "Task rewards",
         "Առաջադրանքների պարգևներ",
     );
-    c.add("fnd_overview_resource", "Resource: {amount}", "Ռեսուրս՝ {amount}");
+    c.add(
+        "fnd_overview_resource",
+        "Resource: {amount}",
+        "Ռեսուրս՝ {amount}",
+    );
     c.add("fnd_overview_store_volume", "Store volume", "Խանութի ծավալ");
     c.add(
         "fnd_overview_seller_income",
@@ -858,7 +894,11 @@ pub fn product_catalog() -> Catalog {
         "Առաջարկներ՝ {count}",
     );
     c.add("fnd_overview_store", "Store", "Խանութ");
-    c.add("fnd_overview_orders", "Orders: {count}", "Պատվերներ՝ {count}");
+    c.add(
+        "fnd_overview_orders",
+        "Orders: {count}",
+        "Պատվերներ՝ {count}",
+    );
     c.add(
         "fnd_overview_fee",
         "Fee: {bps} bps",
@@ -905,7 +945,11 @@ pub fn product_catalog() -> Catalog {
         "Approve failed: {message}",
         "Հաստատումը ձախողվեց՝ {message}",
     );
-    c.add("fnd_reason_required", "A reason is required.", "Պատճառը պարտադիր է:");
+    c.add(
+        "fnd_reason_required",
+        "A reason is required.",
+        "Պատճառը պարտադիր է:",
+    );
     c.add(
         "fnd_reject_fail",
         "Reject failed: {message}",
@@ -963,7 +1007,11 @@ pub fn product_catalog() -> Catalog {
         "Որոշում՝ փոխանցում վաճառողին",
     );
     c.add("fnd_refund_btn", "Founder refund", "Հիմնադրի վերադարձ");
-    c.add("fnd_no_orders", "No store orders yet.", "Դեռ խանութի պատվերներ չկան:");
+    c.add(
+        "fnd_no_orders",
+        "No store orders yet.",
+        "Դեռ խանութի պատվերներ չկան:",
+    );
     c.add(
         "fnd_settled",
         "Dispute settled: {amount}",
@@ -974,7 +1022,11 @@ pub fn product_catalog() -> Catalog {
         "Resolve failed: {message}",
         "Կարգավորումը ձախողվեց՝ {message}",
     );
-    c.add("fnd_refunded", "Refunded: {amount}", "Վերադարձված է՝ {amount}");
+    c.add(
+        "fnd_refunded",
+        "Refunded: {amount}",
+        "Վերադարձված է՝ {amount}",
+    );
     c.add(
         "fnd_refund_fail",
         "Refund failed: {message}",
@@ -1066,11 +1118,7 @@ pub fn product_catalog() -> Catalog {
         "Transfer rejected/backend unavailable: {message}",
         "Փոխանցումը մերժվեց/հանգույցն անհասանելի է՝ {message}",
     );
-    c.add(
-        "oc_create_offer",
-        "Create P2P offer",
-        "Ստեղծել P2P առաջարկ",
-    );
+    c.add("oc_create_offer", "Create P2P offer", "Ստեղծել P2P առաջարկ");
     c.add("oc_sell_onecoin", "Sell ONECOIN", "Վաճառել ONECOIN");
     c.add("oc_buy_onecoin", "Buy ONECOIN", "Գնել ONECOIN");
     c.add(
@@ -1110,17 +1158,9 @@ pub fn product_catalog() -> Catalog {
     c.add("oc_cpu_ph", "CPU cores", "CPU միջուկներ");
     c.add("oc_ram_ph", "RAM GB", "RAM GB");
     c.add("oc_gpu_ph", "GPU units", "GPU միավորներ");
-    c.add(
-        "oc_bw_ph",
-        "Bandwidth TB/day",
-        "Թողունակություն TB/օր",
-    );
+    c.add("oc_bw_ph", "Bandwidth TB/day", "Թողունակություն TB/օր");
     c.add("oc_usage_ph", "Utilization %", "Օգտագործում %");
-    c.add(
-        "oc_calculate",
-        "Calculate estimate",
-        "Հաշվել գնահատականը",
-    );
+    c.add("oc_calculate", "Calculate estimate", "Հաշվել գնահատականը");
     c.add(
         "oc_calc_state",
         "Informational estimate until a signed contribution receipt is accepted.",
@@ -1136,11 +1176,7 @@ pub fn product_catalog() -> Catalog {
         "Contribution hierarchy",
         "Ներդրման հիերարխիա",
     );
-    c.add(
-        "tier_free_brief",
-        "0 contribution",
-        "0 ներդրում",
-    );
+    c.add("tier_free_brief", "0 contribution", "0 ներդրում");
     c.add(
         "tier_free_res",
         "20 GB · 1 CPU · 1 GB RAM VPS",
@@ -1211,11 +1247,7 @@ pub fn product_catalog() -> Catalog {
         "Usage + contribution",
         "Օգտագործում + ներդրում",
     );
-    c.add(
-        "tier_pro_brief",
-        "100+ servers",
-        "100+ սերվեր",
-    );
+    c.add("tier_pro_brief", "100+ servers", "100+ սերվեր");
     c.add(
         "tier_pro_res",
         "Large infrastructure governance",
@@ -1432,10 +1464,7 @@ mod tests {
         assert!(en.values().all(|text| !text.is_empty()));
         assert!(hy.values().all(|text| !text.is_empty()));
         assert_eq!(en.get("nav_home").map(String::as_str), Some("Home"));
-        assert_eq!(
-            hy.get("nav_home").map(String::as_str),
-            Some("Գլխավոր")
-        );
+        assert_eq!(hy.get("nav_home").map(String::as_str), Some("Գլխավոր"));
     }
 
     #[test]

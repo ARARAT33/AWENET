@@ -32,8 +32,8 @@ use awep2p_core::awenetwork::{
 };
 use awep2p_core::founder::FounderAuthority;
 use awep2p_core::founder_guard::FounderGuard;
+use awep2p_core::i18n::{product_catalog, Locale, FALLBACK_LOCALE};
 use awep2p_core::identity::{secure_random, AweId, Identity, Username};
-use awep2p_core::i18n::{FALLBACK_LOCALE, Locale, product_catalog};
 use awep2p_core::onecoin::{OnecoinLedger, ATOMS_PER_COIN};
 use awep2p_core::price_control::{OfficialPriceControl, PRICE_DISCLAIMER};
 use awep2p_core::store_escrow::{DisputeRuling, StoreEscrow, StoreOrder};
@@ -2508,4 +2508,3 @@ pub fn sweep_expired_orders(
         Err(_) => {}
     }
 }
-
