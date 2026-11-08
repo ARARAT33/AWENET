@@ -32,6 +32,7 @@ use awep2p_core::awenetwork::{
 };
 use awep2p_core::founder::FounderAuthority;
 use awep2p_core::founder_guard::FounderGuard;
+use awep2p_core::i18n::{product_catalog, Locale, FALLBACK_LOCALE};
 use awep2p_core::identity::{secure_random, AweId, Identity, Username};
 use awep2p_core::onecoin::{OnecoinLedger, ATOMS_PER_COIN};
 use awep2p_core::price_control::{OfficialPriceControl, PRICE_DISCLAIMER};
@@ -568,6 +569,7 @@ pub fn handle(
     let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
     match (method, segments.as_slice()) {
         ("GET", ["api", "onecoin", "price"]) => price_public(economy_state),
+        ("GET", ["api", "i18n", "messages"]) => i18n_messages(&params),
         ("GET", ["api", "awenetwork", "tasks"]) => tasks_public(&params, economy_state),
         ("GET", ["api", "awenetwork", "task", id]) => match parse_u64(id) {
             Some(id) => task_public(id, economy_state),
@@ -791,6 +793,29 @@ fn price_public(economy_state: &EconomyState) -> ApiResponse {
             "reason": change.reason,
             "changed_by": change.changed_by.to_hex(),
         })).collect::<Vec<_>>(),
+    }))
+}
+
+/// Serves the bilingual economy message catalog for the desktop UI screens.
+/// The catalog itself lives in `core/src/i18n.rs`; the UI loads it once per
+/// locale through `GET /api/i18n/messages` and renders every economy screen
+/// through `window.AWEI18N.t`.
+fn i18n_messages(params: &BTreeMap<String, String>) -> ApiResponse {
+    let requested = params
+        .get("locale")
+        .map(String::as_str)
+        .unwrap_or(FALLBACK_LOCALE);
+    let locale = match Locale::from_code(requested) {
+        Some(locale) => locale,
+        None => return err(400, "locale must be en or hy".to_string()),
+    };
+    let messages = product_catalog().messages(locale);
+    ok(serde_json::json!({
+        "status": "ok",
+        "locale": locale.code(),
+        "fallback_locale": FALLBACK_LOCALE,
+        "message_count": messages.len(),
+        "messages": messages,
     }))
 }
 
