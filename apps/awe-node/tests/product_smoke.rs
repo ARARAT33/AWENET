@@ -1,3 +1,7 @@
+use awep2p_core::{
+    identity::{AweSecret, Identity, Username},
+    user_registry::{self, UserRegistry, UserRole, UserStatus},
+};
 use std::{
     env, fs,
     io::{Read, Write},
@@ -5,7 +9,7 @@ use std::{
     path::PathBuf,
     process::{Child, Command},
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 fn request_raw(addr: &str, request: &str) -> String {
@@ -271,6 +275,134 @@ fn three_node_product_smoke() {
         assert!(
             status.contains(r#""active_connections":2"#),
             "connections: {status}"
+        );
+
+        // AWEID account lifecycle: self-registration proves key possession;
+        // role/status mutations require a founder signature and durable snapshot.
+        let founder: Identity = AweSecret::from_bytes(&fs::read(dirs[0].join("node.awesecret")).unwrap())
+            .expect("founder node secret")
+            .authenticate()
+            .expect("founder identity");
+        let initial_users: serde_json::Value =
+            serde_json::from_str(&get("127.0.0.1:46201", "/api/users"))
+                .expect("initial user registry JSON");
+        let founder_id = founder.public.awe_id.to_hex();
+        assert_eq!(
+            initial_users.get("founder_awe_id").and_then(|value| value.as_str()),
+            Some(founder_id.as_str()),
+            "the node identity must be the seeded founder account"
+        );
+        assert_eq!(
+            initial_users.get("users").and_then(|value| value.as_array()).map(Vec::len),
+            Some(1),
+            "fresh node should start with only its founder account"
+        );
+
+        let new_user = Identity::generate(Username::new("phase2-user".to_string()).unwrap());
+        let registration_message =
+            UserRegistry::registration_message("phase2-user", &new_user.public.public_key);
+        let registration_signature = new_user.sign(&registration_message);
+        let registration = post(
+            "127.0.0.1:46201",
+            "/api/users/register",
+            &serde_json::json!({
+                "username": "phase2-user",
+                "public_key": hex::encode(new_user.public.public_key),
+                "signature": hex::encode(registration_signature)
+            }).to_string(),
+        );
+        assert!(
+            registration.contains(r#""status":"created""#),
+            "signed AWEID registration failed: {registration}"
+        );
+        let new_user_id = new_user.public.awe_id.to_hex();
+        let mut expected_registry = UserRegistry::new(&founder, 1);
+        expected_registry
+            .register("phase2-user", &new_user.public.public_key, &registration_signature, 2)
+            .expect("build expected user registry sequence");
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock")
+            .as_secs();
+        let role_at = now + 60;
+        let role_message = expected_registry
+            .role_change_message(&new_user_id, UserRole::Admin, role_at)
+            .expect("founder role-change message");
+        let impostor = Identity::generate(Username::new("not-founder".to_string()).unwrap());
+        let rejected_role = post(
+            "127.0.0.1:46201",
+            "/api/admin/users/role",
+            &serde_json::json!({
+                "awe_id": new_user_id,
+                "role": "admin",
+                "at_unix": role_at,
+                "signature": hex::encode(impostor.sign(&role_message))
+            }).to_string(),
+        );
+        assert!(
+            rejected_role.contains("identity proof signature is invalid"),
+            "non-founder role change must be rejected: {rejected_role}"
+        );
+
+        let role_signature = founder.sign(&role_message);
+        let promoted = post(
+            "127.0.0.1:46201",
+            "/api/admin/users/role",
+            &serde_json::json!({
+                "awe_id": new_user_id,
+                "role": "admin",
+                "at_unix": role_at,
+                "signature": hex::encode(role_signature)
+            }).to_string(),
+        );
+        assert!(
+            promoted.contains(r#""status":"updated""#) && promoted.contains(r#""role":"admin""#),
+            "founder-signed promotion failed: {promoted}"
+        );
+        expected_registry
+            .set_role(&new_user_id, UserRole::Admin, role_at, &role_signature)
+            .expect("advance expected registry after promotion");
+
+        let status_at = role_at + 1;
+        let status_message = expected_registry
+            .status_change_message(&new_user_id, UserStatus::Suspended, status_at)
+            .expect("founder status-change message");
+        let status_signature = founder.sign(&status_message);
+        let suspended = post(
+            "127.0.0.1:46201",
+            "/api/admin/users/status",
+            &serde_json::json!({
+                "awe_id": new_user_id,
+                "status": "suspended",
+                "at_unix": status_at,
+                "signature": hex::encode(status_signature)
+            }).to_string(),
+        );
+        assert!(
+            suspended.contains(r#""status":"updated""#) && suspended.contains(r#""status":"suspended""#),
+            "founder-signed suspension failed: {suspended}"
+        );
+        let user_detail: serde_json::Value =
+            serde_json::from_str(&get("127.0.0.1:46201", &format!("/api/users/{new_user_id}")))
+                .expect("user detail JSON");
+        assert_eq!(
+            user_detail.pointer("/user/role").and_then(|value| value.as_str()),
+            Some("admin")
+        );
+        assert_eq!(
+            user_detail.pointer("/user/status").and_then(|value| value.as_str()),
+            Some("suspended")
+        );
+        let durable_users = user_registry::load(&dirs[0].join("users.json"), &founder)
+            .expect("founder-signed durable user registry");
+        assert_eq!(
+            durable_users.get(&new_user_id).map(|account| account.role),
+            Some(UserRole::Admin)
+        );
+        assert_eq!(
+            durable_users.get(&new_user_id).map(|account| account.status),
+            Some(UserStatus::Suspended)
         );
 
         let node2_wallet_before: serde_json::Value =
