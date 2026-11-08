@@ -116,6 +116,7 @@ pub mod sync;
 pub mod tasks;
 pub mod treasury;
 pub mod trust;
+pub mod user_registry;
 pub mod update;
 pub mod webauthn;
 pub mod webhooks;
