@@ -78,7 +78,7 @@ fn post_raw(addr: &str, path: &str, body: &str) -> String {
     request_raw(
         addr,
         &format!(
-            "POST {path} HTTP/1.1\\r\\nHost: {addr}\\r\\nContent-Type: application/json\\r\\nContent-Length: {}\\r\\nConnection: close\\r\\n\\r\\n{body}",
+            "POST {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         ),
     )
