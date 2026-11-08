@@ -17,7 +17,7 @@ local Host/Origin checks.
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/users` | List public account records and current registry sequence |
+| GET | `/api/users` | List public account records, current/next sequence, and server time |
 | GET | `/api/users/{awe_id}` | Read one account by 64-character AWE ID |
 | POST | `/api/users/register` | Register a new identity with proof of possession |
 | POST | `/api/admin/users/role` | Founder-signed role change |
@@ -55,8 +55,9 @@ The mutation signature covers:
 3. The next registry sequence as unsigned 64-bit big-endian
 4. `at_unix` as unsigned 64-bit big-endian
 
-The client reads the current `sequence` from `GET /api/users` and signs the next
-sequence. A stale or replayed mutation fails after the registry sequence advances.
+The client reads `sequence`, `next_sequence`, and `server_time_unix` from
+`GET /api/users`, then signs the next sequence using a timestamp based on the
+node clock. A stale or replayed mutation fails after the registry sequence advances.
 Timestamps may not move backwards for the target account.
 
 ## Persistence and integrity
