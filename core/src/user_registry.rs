@@ -100,6 +100,8 @@ pub enum UserRegistryError {
     RegistryFull,
     #[error("user registry sequence is exhausted")]
     SequenceExhausted,
+    #[error("user mutation timestamp cannot move backwards")]
+    InvalidTimestamp,
     #[error("unsupported user registry version")]
     InvalidStoreVersion,
     #[error("user registry belongs to another founder")]
@@ -274,6 +276,9 @@ impl UserRegistry {
             return Err(UserRegistryError::FounderProtected);
         }
 
+        if at_unix < current.updated_at_unix {
+            return Err(UserRegistryError::InvalidTimestamp);
+        }
         let message = self.role_change_message(target_awe_id, role, at_unix)?;
         if !Identity::verify(&self.founder_public_key, &message, founder_signature) {
             return Err(UserRegistryError::InvalidSignature);
@@ -307,6 +312,9 @@ impl UserRegistry {
             return Err(UserRegistryError::FounderProtected);
         }
 
+        if at_unix < current.updated_at_unix {
+            return Err(UserRegistryError::InvalidTimestamp);
+        }
         let message = self.status_change_message(target_awe_id, status, at_unix)?;
         if !Identity::verify(&self.founder_public_key, &message, founder_signature) {
             return Err(UserRegistryError::InvalidSignature);
@@ -706,20 +714,14 @@ mod tests {
     #[test]
     fn atomic_save_leaves_no_temporary_files() {
         let founder = identity("founder");
+        let founder = identity("founder");
         let registry = UserRegistry::new(&founder, 1);
-        let path = test_path("atomic");
+        let dir = test_path("atomic-dir");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("users.json");
         save(&path, &registry, &founder).unwrap();
-        let entries = fs::read_dir(path.parent().unwrap()).unwrap();
-        let matching = entries
-            .flatten()
-            .filter(|entry| {
-                entry
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with(".awenet-users-")
-            })
-            .count();
-        assert_eq!(matching, 0);
-        fs::remove_file(path).unwrap();
+        let entries = fs::read_dir(&dir).unwrap();
+        assert_eq!(entries.count(), 1);
+        fs::remove_dir_all(dir).unwrap();
     }
 }
