@@ -372,6 +372,9 @@ fn parse_json_u16(value: &serde_json::Value, field: &str) -> Result<u16, String>
 }
 
 fn parse_hex_array<const N: usize>(value: &str, field: &str) -> Result<[u8; N], String> {
+    if value.len() != N * 2 {
+        return Err(format!("{field} must contain exactly {} hexadecimal characters", N * 2));
+    }
     let bytes = hex::decode(value).map_err(|_| format!("{field} must be hexadecimal"))?;
     bytes
         .try_into()
