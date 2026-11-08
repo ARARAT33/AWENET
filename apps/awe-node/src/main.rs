@@ -19,12 +19,14 @@ use awep2p_core::onecoin_consensus_runtime::{
     OnecoinConsensusMessage, OnecoinConsensusRuntime, ONECOIN_CONSENSUS_STREAM,
 };
 use awep2p_core::passkey_store;
-use awep2p_core::user_registry::{self, UserAccount, UserRegistry, UserRegistryError, UserRole, UserStatus};
 use awep2p_core::policy::{self, NetworkPolicy};
 use awep2p_core::reputation::NodeReputation;
 use awep2p_core::storage::{encode_shards, recover_shards, LocalNodeStore, StoragePolicy};
 use awep2p_core::store::{AppCapability, Store};
 use awep2p_core::supervisor::{PeerSupervisor, SupervisorConfig};
+use awep2p_core::user_registry::{
+    self, UserAccount, UserRegistry, UserRegistryError, UserRole, UserStatus,
+};
 use std::{
     collections::BTreeMap,
     env, fs,
@@ -189,7 +191,11 @@ async fn write_json_error(
 ) -> Result<()> {
     let body = serde_json::json!({"status":"error","error":message}).to_string();
     stream
-        .write_all(&http_response(status, "application/json; charset=utf-8", &body))
+        .write_all(&http_response(
+            status,
+            "application/json; charset=utf-8",
+            &body,
+        ))
         .await?;
     stream.shutdown().await?;
     Ok(())
@@ -373,7 +379,10 @@ fn parse_json_u16(value: &serde_json::Value, field: &str) -> Result<u16, String>
 
 fn parse_hex_array<const N: usize>(value: &str, field: &str) -> Result<[u8; N], String> {
     if value.len() != N * 2 {
-        return Err(format!("{field} must contain exactly {} hexadecimal characters", N * 2));
+        return Err(format!(
+            "{field} must contain exactly {} hexadecimal characters",
+            N * 2
+        ));
     }
     let bytes = hex::decode(value).map_err(|_| format!("{field} must be hexadecimal"))?;
     bytes
@@ -396,8 +405,10 @@ fn user_account_json(account: &UserAccount) -> serde_json::Value {
 
 fn user_registry_error_status(error: &UserRegistryError) -> &'static str {
     match error {
-        UserRegistryError::InvalidSignature | UserRegistryError::FounderProtected
-        | UserRegistryError::WrongFounder | UserRegistryError::InvalidStoreSignature => "403 Forbidden",
+        UserRegistryError::InvalidSignature
+        | UserRegistryError::FounderProtected
+        | UserRegistryError::WrongFounder
+        | UserRegistryError::InvalidStoreSignature => "403 Forbidden",
         UserRegistryError::UnknownUser => "404 Not Found",
         UserRegistryError::UsernameTaken | UserRegistryError::AlreadyRegistered => "409 Conflict",
         _ => "400 Bad Request",

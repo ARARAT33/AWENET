@@ -289,21 +289,27 @@ fn three_node_product_smoke() {
 
         // AWEID account lifecycle: self-registration proves key possession;
         // role/status mutations require a founder signature and durable snapshot.
-        let founder: Identity = AweSecret::from_bytes(&fs::read(dirs[0].join("node.awesecret")).unwrap())
-            .expect("founder node secret")
-            .authenticate()
-            .expect("founder identity");
+        let founder: Identity =
+            AweSecret::from_bytes(&fs::read(dirs[0].join("node.awesecret")).unwrap())
+                .expect("founder node secret")
+                .authenticate()
+                .expect("founder identity");
         let initial_users: serde_json::Value =
             serde_json::from_str(&get("127.0.0.1:46201", "/api/users"))
                 .expect("initial user registry JSON");
         let founder_id = founder.public.awe_id.to_hex();
         assert_eq!(
-            initial_users.get("founder_awe_id").and_then(|value| value.as_str()),
+            initial_users
+                .get("founder_awe_id")
+                .and_then(|value| value.as_str()),
             Some(founder_id.as_str()),
             "the node identity must be the seeded founder account"
         );
         assert_eq!(
-            initial_users.get("users").and_then(|value| value.as_array()).map(Vec::len),
+            initial_users
+                .get("users")
+                .and_then(|value| value.as_array())
+                .map(Vec::len),
             Some(1),
             "fresh node should start with only its founder account"
         );
@@ -319,7 +325,8 @@ fn three_node_product_smoke() {
                 "username": "phase2-user",
                 "public_key": hex::encode(new_user.public.public_key),
                 "signature": hex::encode(registration_signature)
-            }).to_string(),
+            })
+            .to_string(),
         );
         assert!(
             registration.contains(r#""status":"created""#),
@@ -328,7 +335,12 @@ fn three_node_product_smoke() {
         let new_user_id = new_user.public.awe_id.to_hex();
         let mut expected_registry = UserRegistry::new(&founder, 1);
         expected_registry
-            .register("phase2-user", &new_user.public.public_key, &registration_signature, 2)
+            .register(
+                "phase2-user",
+                &new_user.public.public_key,
+                &registration_signature,
+                2,
+            )
             .expect("build expected user registry sequence");
 
         let now = SystemTime::now()
@@ -348,7 +360,8 @@ fn three_node_product_smoke() {
                 "role": "admin",
                 "at_unix": role_at,
                 "signature": hex::encode(impostor.sign(&role_message))
-            }).to_string(),
+            })
+            .to_string(),
         );
         assert!(
             rejected_role.contains("identity proof signature is invalid"),
@@ -364,7 +377,8 @@ fn three_node_product_smoke() {
                 "role": "admin",
                 "at_unix": role_at,
                 "signature": hex::encode(role_signature)
-            }).to_string(),
+            })
+            .to_string(),
         );
         assert!(
             promoted.contains(r#""status":"updated""#) && promoted.contains(r#""role":"admin""#),
@@ -387,21 +401,29 @@ fn three_node_product_smoke() {
                 "status": "suspended",
                 "at_unix": status_at,
                 "signature": hex::encode(status_signature)
-            }).to_string(),
+            })
+            .to_string(),
         );
         assert!(
-            suspended.contains(r#""status":"updated""#) && suspended.contains(r#""status":"suspended""#),
+            suspended.contains(r#""status":"updated""#)
+                && suspended.contains(r#""status":"suspended""#),
             "founder-signed suspension failed: {suspended}"
         );
-        let user_detail: serde_json::Value =
-            serde_json::from_str(&get("127.0.0.1:46201", &format!("/api/users/{new_user_id}")))
-                .expect("user detail JSON");
+        let user_detail: serde_json::Value = serde_json::from_str(&get(
+            "127.0.0.1:46201",
+            &format!("/api/users/{new_user_id}"),
+        ))
+        .expect("user detail JSON");
         assert_eq!(
-            user_detail.pointer("/user/role").and_then(|value| value.as_str()),
+            user_detail
+                .pointer("/user/role")
+                .and_then(|value| value.as_str()),
             Some("admin")
         );
         assert_eq!(
-            user_detail.pointer("/user/status").and_then(|value| value.as_str()),
+            user_detail
+                .pointer("/user/status")
+                .and_then(|value| value.as_str()),
             Some("suspended")
         );
         let durable_users = user_registry::load(&dirs[0].join("users.json"), &founder)
@@ -411,16 +433,21 @@ fn three_node_product_smoke() {
             Some(UserRole::Admin)
         );
         assert_eq!(
-            durable_users.get(&new_user_id).map(|account| account.status),
+            durable_users
+                .get(&new_user_id)
+                .map(|account| account.status),
             Some(UserStatus::Suspended)
         );
 
         // A failed disk publish must not make a newly registered account
         // visible in memory. Replace the target file with a directory so the
         // atomic rename fails, then restore the original signed snapshot.
-        let unpersisted_user = Identity::generate(Username::new("disk-failure-user".to_string()).unwrap());
-        let unpersisted_message =
-            UserRegistry::registration_message("disk-failure-user", &unpersisted_user.public.public_key);
+        let unpersisted_user =
+            Identity::generate(Username::new("disk-failure-user".to_string()).unwrap());
+        let unpersisted_message = UserRegistry::registration_message(
+            "disk-failure-user",
+            &unpersisted_user.public.public_key,
+        );
         let unpersisted_signature = unpersisted_user.sign(&unpersisted_message);
         let users_path = dirs[0].join("users.json");
         let backup_path = dirs[0].join("users.json.backup");
@@ -433,7 +460,8 @@ fn three_node_product_smoke() {
                 "username": "disk-failure-user",
                 "public_key": hex::encode(unpersisted_user.public.public_key),
                 "signature": hex::encode(unpersisted_signature)
-            }).to_string(),
+            })
+            .to_string(),
         );
         assert!(
             failed_registration.starts_with("HTTP/1.1 500 Internal Server Error"),
@@ -447,9 +475,17 @@ fn three_node_product_smoke() {
         let leftover_temps = fs::read_dir(&dirs[0])
             .unwrap()
             .flatten()
-            .filter(|entry| entry.file_name().to_string_lossy().starts_with(".awenet-users-"))
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".awenet-users-")
+            })
             .count();
-        assert_eq!(leftover_temps, 0, "failed registry save must clean its temporary file");
+        assert_eq!(
+            leftover_temps, 0,
+            "failed registry save must clean its temporary file"
+        );
         fs::remove_dir(&users_path).expect("remove blocking registry directory");
         fs::rename(&backup_path, &users_path).expect("restore signed user registry");
         user_registry::load(&users_path, &founder).expect("restored signed user registry");

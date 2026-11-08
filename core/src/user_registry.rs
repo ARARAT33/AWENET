@@ -210,9 +210,11 @@ impl UserRegistry {
             }
             return Err(UserRegistryError::IdentityMismatch);
         }
-        if self.accounts.values().any(|account| {
-            account.username.eq_ignore_ascii_case(&username)
-        }) {
+        if self
+            .accounts
+            .values()
+            .any(|account| account.username.eq_ignore_ascii_case(&username))
+        {
             return Err(UserRegistryError::UsernameTaken);
         }
         if self.accounts.len() >= MAX_USERS {
@@ -288,7 +290,10 @@ impl UserRegistry {
         }
 
         let sequence = self.next_sequence()?;
-        let account = self.accounts.get_mut(target_awe_id).ok_or(UserRegistryError::UnknownUser)?;
+        let account = self
+            .accounts
+            .get_mut(target_awe_id)
+            .ok_or(UserRegistryError::UnknownUser)?;
         account.role = role;
         account.updated_at_unix = at_unix;
         account.sequence = sequence;
@@ -324,7 +329,10 @@ impl UserRegistry {
         }
 
         let sequence = self.next_sequence()?;
-        let account = self.accounts.get_mut(target_awe_id).ok_or(UserRegistryError::UnknownUser)?;
+        let account = self
+            .accounts
+            .get_mut(target_awe_id)
+            .ok_or(UserRegistryError::UnknownUser)?;
         account.status = status;
         account.updated_at_unix = at_unix;
         account.sequence = sequence;
@@ -344,8 +352,8 @@ impl UserRegistry {
         let mut message = Vec::new();
         message.extend_from_slice(MUTATION_CONTEXT);
         for field in [action, target_awe_id, value] {
-            let length = u16::try_from(field.len())
-                .map_err(|_| UserRegistryError::InconsistentRegistry)?;
+            let length =
+                u16::try_from(field.len()).map_err(|_| UserRegistryError::InconsistentRegistry)?;
             message.extend_from_slice(&length.to_be_bytes());
             message.extend_from_slice(field.as_bytes());
         }
@@ -426,7 +434,10 @@ pub fn save(
     };
     let encoded = serde_json::to_vec_pretty(&file)
         .map_err(|error| UserRegistryError::Serialization(error.to_string()))?;
-    if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
         fs::create_dir_all(parent).map_err(|error| UserRegistryError::Io(error.to_string()))?;
     }
 
@@ -440,7 +451,9 @@ pub fn save(
         let mut rng = OsRng;
         if rng.try_fill_bytes(&mut nonce).is_err() {
             nonce.zeroize();
-            return Err(UserRegistryError::Io("secure random generation failed".into()));
+            return Err(UserRegistryError::Io(
+                "secure random generation failed".into(),
+            ));
         }
         let temporary = parent.join(format!(
             ".awenet-users-{}-{}.tmp",
@@ -548,7 +561,12 @@ mod tests {
         ))
     }
 
-    fn register(registry: &mut UserRegistry, user: &Identity, username: &str, at: u64) -> UserAccount {
+    fn register(
+        registry: &mut UserRegistry,
+        user: &Identity,
+        username: &str,
+        at: u64,
+    ) -> UserAccount {
         let message = UserRegistry::registration_message(username, &user.public.public_key);
         let signature = user.sign(&message);
         registry
@@ -570,7 +588,12 @@ mod tests {
             .unwrap();
         assert_eq!(
             registry
-                .set_role(&founder_id, UserRole::User, 11, &founder.sign(&role_message))
+                .set_role(
+                    &founder_id,
+                    UserRole::User,
+                    11,
+                    &founder.sign(&role_message)
+                )
                 .unwrap_err(),
             UserRegistryError::FounderProtected
         );
@@ -672,12 +695,7 @@ mod tests {
         );
         let status_signature = founder.sign(&status_message);
         let suspended = registry
-            .set_status(
-                &account.awe_id,
-                UserStatus::Suspended,
-                4,
-                &status_signature
-            )
+            .set_status(&account.awe_id, UserStatus::Suspended, 4, &status_signature)
             .unwrap();
         assert_eq!(suspended.status, UserStatus::Suspended);
         assert_eq!(registry.sequence(), 4);
@@ -695,7 +713,10 @@ mod tests {
         save(&path, &registry, &founder).unwrap();
         let loaded = load(&path, &founder).unwrap();
         assert_eq!(loaded, registry);
-        assert_eq!(load(&path, &wrong).unwrap_err(), UserRegistryError::WrongFounder);
+        assert_eq!(
+            load(&path, &wrong).unwrap_err(),
+            UserRegistryError::WrongFounder
+        );
 
         let mut bytes = fs::read(&path).unwrap();
         let index = bytes.len() / 2;
