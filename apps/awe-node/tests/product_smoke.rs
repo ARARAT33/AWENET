@@ -9,7 +9,7 @@ use std::{
     path::PathBuf,
     process::{Child, Command},
     thread,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 
 fn request_raw(addr: &str, request: &str) -> String {
@@ -343,11 +343,11 @@ fn three_node_product_smoke() {
             )
             .expect("build expected user registry sequence");
 
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock")
-            .as_secs();
-        let role_at = now + 60;
+        let server_time = initial_users
+            .get("server_time_unix")
+            .and_then(|value| value.as_u64())
+            .expect("user registry server time");
+        let role_at = server_time + 60;
         let role_message = expected_registry
             .role_change_message(&new_user_id, UserRole::Admin, role_at)
             .expect("founder role-change message");
