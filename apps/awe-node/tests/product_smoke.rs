@@ -501,6 +501,27 @@ fn three_node_product_smoke() {
             ui.contains("<title>AWENET"),
             "desktop UI title must identify AWENET: {ui}"
         );
+        let i18n_hy = get("127.0.0.1:46201", "/api/i18n/messages?locale=hy");
+        assert!(
+            i18n_hy.contains(r#""status":"ok""#) && i18n_hy.contains("Հիմնադրի"),
+            "Armenian economy catalog must be served: {i18n_hy}"
+        );
+        let i18n_en = get("127.0.0.1:46201", "/api/i18n/messages?locale=en");
+        assert!(
+            i18n_en.contains(r#""status":"ok""#)
+                && i18n_en.contains("Founder-published tasks"),
+            "English economy catalog must be served: {i18n_en}"
+        );
+        let i18n_bad = get("127.0.0.1:46201", "/api/i18n/messages?locale=fr");
+        assert!(
+            i18n_bad.contains(r#""status":"error""#) && i18n_bad.contains("locale must be en or hy"),
+            "unknown locale must be rejected: {i18n_bad}"
+        );
+        let i18n_js = get("127.0.0.1:46201", "/i18n.js");
+        assert!(
+            i18n_js.contains("AWEI18N"),
+            "i18n.js loader must be served by the node: {i18n_js}"
+        );
         let store = get("127.0.0.1:46201", "/api/store/catalog");
         assert!(store.contains(r#""status":"ok""#), "store API: {store}");
 

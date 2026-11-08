@@ -43,6 +43,7 @@ const AWENETWORK_JS: &str = include_str!("../../awe-desktop/ui/awenetwork.js");
 const STOREFRONT_JS: &str = include_str!("../../awe-desktop/ui/storefront.js");
 const FOUNDER_JS: &str = include_str!("../../awe-desktop/ui/founder.js");
 const QR_JS: &str = include_str!("../../awe-desktop/ui/vendor/qrcode.js");
+const I18N_JS: &str = include_str!("../../awe-desktop/ui/i18n.js");
 const DEFAULT_UI_ADDR: &str = "127.0.0.1:41800";
 
 type MessengerLog = Arc<Mutex<Vec<serde_json::Value>>>;
@@ -401,6 +402,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         "/storefront.js" => ("200 OK", "application/javascript; charset=utf-8", STOREFRONT_JS.to_string()),
         "/founder.js" => ("200 OK", "application/javascript; charset=utf-8", FOUNDER_JS.to_string()),
         "/vendor/qrcode.js" => ("200 OK", "application/javascript; charset=utf-8", QR_JS.to_string()),
+        "/i18n.js" => ("200 OK", "application/javascript; charset=utf-8", I18N_JS.to_string()),
         "/api/onebank/wallet" if method == "GET" => {
             let ledger = onecoin_ledger.lock().map(|l| l.clone()).unwrap_or_default();
             let id = node.identity.public.awe_id.clone();
@@ -1501,6 +1503,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         _ if path.starts_with("/api/awenetwork")
             || path.starts_with("/api/founder")
             || path.starts_with("/api/storefront")
+            || path.starts_with("/api/i18n")
             || path == "/api/onecoin/price" =>
         {
             let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
@@ -2844,3 +2847,4 @@ mod tests {
         assert!(parse_json_u16(&json!({}), "online_hours").is_err());
     }
 }
+
