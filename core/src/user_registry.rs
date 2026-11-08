@@ -714,7 +714,6 @@ mod tests {
     #[test]
     fn atomic_save_leaves_no_temporary_files() {
         let founder = identity("founder");
-        let founder = identity("founder");
         let registry = UserRegistry::new(&founder, 1);
         let dir = test_path("atomic-dir");
         fs::create_dir_all(&dir).unwrap();
