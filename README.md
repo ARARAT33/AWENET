@@ -41,6 +41,7 @@ while exposing a small, stable product orchestration model on top.
 | Founder protection & economy completion | `founder_guard`, `resource_meter`, `store_escrow`, `fraud`, `rankings` | Passkey-protected founder step-up authorization, host resource metering with multi-verifier usage reports, store escrow orders over ONECOIN, advisory fraud detection with bounded evidence, contributor rankings and achievements that never mint |
 | Economy product layer | `storefront`, `economy_api` (node), `awenetwork.js`, `storefront.js`, `founder.js` | Storefront catalog & search, economy HTTP API in the node, AWENETwork board, ONECOIN Market with escrowed orders, Founder Control Center, persistent economy state |
 | Founder security & storage metering | `webauthn` (core), `founder_guard`, `resource_meter`, `economy_api` passkey routes, `founder.js` Security tab, `onecoin.js` scan-to-pay | Browser WebAuthn passkey enrollment + MFA step-up for founder mutations, contributed-storage capacity metering (statvfs), camera QR scan-to-pay where supported |
+| Economy UI localization | `i18n` (extended catalog + `Locale`/`Catalog::messages`), `economy_api` `/api/i18n/messages`, `i18n.js`, `awenetwork.js`, `storefront.js`, `founder.js`, `onecoin.js` | Bilingual Armenian/English economy screens from one core catalog, served by the node, with a persisted choice and a topbar language toggle |
 | Identity & security | `identity`, `security`, `crypto`, `defense`, `sandbox` | Ed25519 identity, authenticated encrypted transport, hostile-traffic limits |
 | Discovery & routing | `discovery`, `routing`, `network_topology`, `lan_mesh` | DHT-style lookup, Data Centre topology, relay failover, LAN mesh |
 | Data plane | `data_plane`, `storage`, `replication`, `repair`, `recovery` | Chunked content-addressed storage, replica placement, repair planning |
@@ -111,6 +112,9 @@ desktop-style UI served from `127.0.0.1:41800`.
   pay in ONECOIN, delivery confirmation releases the escrow
 - **Founder Control Center** — task publishing with phases, submission
   review with team splits, official price control, store dispute rulings
+- **Armenian & English economy UI** — all four economy screens render
+  from one bilingual catalog; the topbar ՀԱ/EN toggle switches instantly
+  and the choice is remembered
 - **Light & dark themes** — auto-detected from your OS, manually switchable
 - **Command palette** — press `Ctrl+K` to jump to any screen or action
 - Keyboard shortcuts: `Alt+1…9` switch screens, `Alt+/` shows the shortcut hint
@@ -245,13 +249,17 @@ inside the local node and its UI, without changing any protocol guarantee:
   (`storefront.js`) and the Founder Control Center (`founder.js`), plus a
   wallet receive-QR fix and shared `economy.css` styles.
 - Everything not yet implemented (multi-node verifiers, GPU metering,
-  multi-node marketplace sync, economy screen localization) is listed
-  honestly in the doc. See
+  multi-node marketplace sync) is listed honestly in the doc. See
   [docs/PRODUCT-UI-UPGRADE-2026-11-06.md](docs/PRODUCT-UI-UPGRADE-2026-11-06.md).
 - The 2026-11-07 upgrade adds the browser WebAuthn passkey ceremony
   (enrollment + MFA step-up gating every founder mutation), contributed
   storage capacity metering and camera QR scan-to-pay. See
   [docs/PASSKEY-RESOURCE-UPGRADE-2026-11-07.md](docs/PASSKEY-RESOURCE-UPGRADE-2026-11-07.md).
+- The 2026-11-08 upgrade localizes every economy screen into Armenian and
+  English through one bilingual catalog served by the node at
+  `GET /api/i18n/messages`, loaded by `ui/i18n.js` with a topbar language
+  toggle. See
+  [docs/ECONOMY-LOCALIZATION-2026-11-08.md](docs/ECONOMY-LOCALIZATION-2026-11-08.md).
 
 ## Important status rule
 
@@ -284,6 +292,7 @@ model is in [docs/PRODUCT-ARCHITECTURE.md](docs/PRODUCT-ARCHITECTURE.md) and
 - [Founder protection & economy completion](docs/ECONOMY-COMPLETION-2026-11-05.md)
 - [Economy product layer](docs/PRODUCT-UI-UPGRADE-2026-11-06.md)
 - [Founder passkey & storage metering upgrade](docs/PASSKEY-RESOURCE-UPGRADE-2026-11-07.md)
+- [Economy UI localization](docs/ECONOMY-LOCALIZATION-2026-11-08.md)
 
 ## Security
 
