@@ -176,9 +176,9 @@ impl UserRegistry {
 
     /// Canonical proof-of-possession message for a new account.
     pub fn registration_message(username: &str, public_key: &[u8; 32]) -> Vec<u8> {
-        let mut message = Vec::with_capacity(REGISTER_CONTEXT.len() + 2 + username.len() + 32);
+        let mut message = Vec::with_capacity(REGISTER_CONTEXT.len() + 8 + username.len() + 32);
         message.extend_from_slice(REGISTER_CONTEXT);
-        message.extend_from_slice(&(username.len() as u16).to_be_bytes());
+        message.extend_from_slice(&(username.len() as u64).to_be_bytes());
         message.extend_from_slice(username.as_bytes());
         message.extend_from_slice(public_key);
         message
@@ -640,6 +640,20 @@ mod tests {
             .unwrap();
         assert_eq!(promoted.role, UserRole::Admin);
         assert_eq!(registry.sequence(), 3);
+        let stale_message = registry
+            .status_change_message(&account.awe_id, UserStatus::Suspended, 2)
+            .unwrap();
+        assert_eq!(
+            registry
+                .set_status(
+                    &account.awe_id,
+                    UserStatus::Suspended,
+                    2,
+                    &founder.sign(&stale_message)
+                )
+                .unwrap_err(),
+            UserRegistryError::InvalidTimestamp
+        );
 
         let status_message = registry
             .status_change_message(&account.awe_id, UserStatus::Suspended, 4)
