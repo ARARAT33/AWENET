@@ -42,7 +42,7 @@ while exposing a small, stable product orchestration model on top.
 | Economy product layer | `storefront`, `economy_api` (node), `awenetwork.js`, `storefront.js`, `founder.js` | Storefront catalog & search, economy HTTP API in the node, AWENETwork board, ONECOIN Market with escrowed orders, Founder Control Center, persistent economy state |
 | Founder security & storage metering | `webauthn` (core), `founder_guard`, `resource_meter`, `economy_api` passkey routes, `founder.js` Security tab, `onecoin.js` scan-to-pay | Browser WebAuthn passkey enrollment + MFA step-up for founder mutations, contributed-storage capacity metering (statvfs), camera QR scan-to-pay where supported |
 | Economy UI localization | `i18n` (extended catalog + `Locale`/`Catalog::messages`), `economy_api` `/api/i18n/messages`, `i18n.js`, `awenetwork.js`, `storefront.js`, `founder.js`, `onecoin.js` | Bilingual Armenian/English economy screens from one core catalog, served by the node, with a persisted choice and a topbar language toggle |
-| Identity & security | `identity`, `security`, `crypto`, `defense`, `sandbox` | Ed25519 identity, authenticated encrypted transport, hostile-traffic limits |
+| Identity & security | `identity`, `user_registry`, `sessions`, `keys`, `security`, `crypto`, `defense`, `sandbox` | Self-certifying AWE IDs, founder-signed local user directory, authenticated encrypted transport, hostile-traffic limits |
 | Discovery & routing | `discovery`, `routing`, `network_topology`, `lan_mesh` | DHT-style lookup, Data Centre topology, relay failover, LAN mesh |
 | Data plane | `data_plane`, `storage`, `replication`, `repair`, `recovery` | Chunked content-addressed storage, replica placement, repair planning |
 | Names, Store, Messenger | `namespace`, `host`, `store`, `messenger` | AWEwww/AWETLD names, hosted sites, Store, Messenger |
@@ -293,6 +293,7 @@ model is in [docs/PRODUCT-ARCHITECTURE.md](docs/PRODUCT-ARCHITECTURE.md) and
 - [Economy product layer](docs/PRODUCT-UI-UPGRADE-2026-11-06.md)
 - [Founder passkey & storage metering upgrade](docs/PASSKEY-RESOURCE-UPGRADE-2026-11-07.md)
 - [Economy UI localization](docs/ECONOMY-LOCALIZATION-2026-11-08.md)
+- [AWEID user registry and founder-managed accounts](docs/USER-REGISTRY-2026-11-08.md)
 
 ## Security
 
