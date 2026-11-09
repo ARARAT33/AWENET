@@ -144,20 +144,20 @@ impl DataCentre {
     }
 
     pub fn full_mesh(&mut self) {
+        // Map keys are canonical IDs. Node values are public and can be mutated
+        // after insertion, so never use node.id for graph lookups.
         let ids: Vec<_> = self
             .nodes
-            .values()
-            .filter(|n| n.alive)
-            .map(|n| n.id.clone())
+            .iter()
+            .filter(|(_, node)| node.alive)
+            .map(|(id, _)| id.clone())
             .collect();
         for a in &ids {
             for b in &ids {
                 if a != b {
-                    self.nodes
-                        .get_mut(a)
-                        .expect("node exists")
-                        .peers
-                        .insert(b.clone());
+                    if let Some(node) = self.nodes.get_mut(a) {
+                        node.peers.insert(b.clone());
+                    }
                 }
             }
         }
@@ -165,10 +165,12 @@ impl DataCentre {
 
     pub fn nearest(&self, from: &NodeId) -> Option<NodeId> {
         self.nodes
-            .values()
-            .filter(|n| n.alive && &n.id != from)
-            .min_by_key(|n| (n.metrics.score(), n.peers.len() as u64, n.id.clone()))
-            .map(|n| n.id.clone())
+            .iter()
+            .filter(|(id, node)| node.alive && *id != from)
+            .min_by_key(|(id, node)| {
+                (node.metrics.score(), node.peers.len() as u64, (*id).clone())
+            })
+            .map(|(id, _)| id.clone())
     }
 
     pub fn mark_node(&mut self, id: &NodeId, alive: bool) -> Result<(), String> {
@@ -747,61 +749,67 @@ impl AweNet {
     }
 
     pub fn route(&self, src: &NodeId, dst: &NodeId) -> Option<Vec<NodeId>> {
-        let node_exists = |id: &str| {
-            self.centres
-                .values()
-                .any(|centre| centre.nodes.contains_key(id))
-        };
-        if !node_exists(src) || !node_exists(dst) {
+        let live_nodes: HashSet<NodeId> = self
+            .centres
+            .values()
+            .flat_map(|centre| {
+                centre
+                    .nodes
+                    .iter()
+                    .filter(|(_, node)| node.alive)
+                    .map(|(id, _)| id.clone())
+            })
+            .collect();
+        if !live_nodes.contains(src) || !live_nodes.contains(dst) {
             return None;
         }
         if src == dst {
             return Some(vec![src.clone()]);
         }
+
         let mut adjacency: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
-        for dc in self.centres.values() {
-            for n in dc.nodes.values().filter(|n| n.alive) {
-                adjacency.entry(n.id.clone()).or_default().extend(
-                    n.peers
-                        .iter()
-                        .filter(|p| {
-                            self.centres
-                                .values()
-                                .any(|other| other.nodes.get(*p).map(|x| x.alive).unwrap_or(false))
-                        })
-                        .cloned(),
-                );
+        for centre in self.centres.values() {
+            for (node_id, node) in centre.nodes.iter().filter(|(_, node)| node.alive) {
+                let neighbours = node
+                    .peers
+                    .iter()
+                    .filter(|peer| live_nodes.contains(*peer))
+                    .cloned()
+                    .collect();
+                adjacency.insert(node_id.clone(), neighbours);
             }
         }
-        let mut q = VecDeque::from([src.clone()]);
-        let mut prev: HashMap<NodeId, Option<NodeId>> = HashMap::from([(src.clone(), None)]);
-        while let Some(x) = q.pop_front() {
-            if &x == dst {
+        let mut queue = VecDeque::from([src.clone()]);
+        let mut previous: HashMap<NodeId, Option<NodeId>> = HashMap::from([(src.clone(), None)]);
+        while let Some(current) = queue.pop_front() {
+            if &current == dst {
                 break;
             }
-            for p in adjacency.get(&x).into_iter().flatten() {
-                if !prev.contains_key(p) {
-                    prev.insert(p.clone(), Some(x.clone()));
-                    q.push_back(p.clone());
+            for peer in adjacency.get(&current).into_iter().flatten() {
+                if !previous.contains_key(peer) {
+                    previous.insert(peer.clone(), Some(current.clone()));
+                    queue.push_back(peer.clone());
                 }
             }
         }
-        if !prev.contains_key(dst) {
+        if !previous.contains_key(dst) {
             return None;
         }
-        let mut out = Vec::new();
-        let mut x = dst.clone();
+        let mut route = Vec::new();
+        let mut current = dst.clone();
         loop {
-            out.push(x.clone());
-            match prev[&x].clone() {
-                Some(p) => x = p,
+            route.push(current.clone());
+            match previous.get(&current).cloned().flatten() {
+                Some(parent) => current = parent,
                 None => break,
             }
         }
-        out.reverse();
-        Some(out)
+        route.reverse();
+        Some(route)
     }
 }
+
+#[cfg(test)]}
 
 #[cfg(test)]
 mod tests {
@@ -1017,6 +1025,26 @@ mod tests {
             network.route(&"b".into(), &"a".into()),
             Some(vec!["b".into(), "a".into()])
         );
+    }
+
+    #[test]
+    fn topology_uses_map_keys_and_rejects_routes_to_offline_nodes() {
+        let mut centre = DataCentre::new("dc");
+        centre.add_node(Node::new("a")).unwrap();
+        centre.add_node(Node::new("b")).unwrap();
+        let mut dead = Node::new("dead");
+        dead.alive = false;
+        centre.add_node(dead).unwrap();
+
+        centre.nodes.get_mut("a").unwrap().id = "tampered".into();
+        centre.full_mesh();
+        assert!(centre.nodes["a"].peers.contains("b"));
+        assert_eq!(centre.nearest(&"b".into()), Some("a".into()));
+
+        let mut network = AweNet::default();
+        network.centres.insert("dc".into(), centre);
+        assert!(network.route(&"a".into(), &"b".into()).is_some());
+        assert!(network.route(&"dead".into(), &"dead".into()).is_none());
     }
 
     #[test]
