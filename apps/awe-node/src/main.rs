@@ -24,6 +24,9 @@ use awep2p_core::reputation::NodeReputation;
 use awep2p_core::storage::{encode_shards, recover_shards, LocalNodeStore, StoragePolicy};
 use awep2p_core::store::{AppCapability, Store};
 use awep2p_core::supervisor::{PeerSupervisor, SupervisorConfig};
+use awep2p_core::user_registry::{
+    self, UserAccount, UserRegistry, UserRegistryError, UserRole, UserStatus,
+};
 use std::{
     collections::BTreeMap,
     env, fs,
@@ -57,6 +60,7 @@ type ConsensusState = Arc<Mutex<Option<OnecoinConsensusRuntime>>>;
 type OnecoinLedgerState = Arc<Mutex<OnecoinLedger>>;
 type ContributionState = Arc<Mutex<ResourceContribution>>;
 type FounderGuardState = Arc<Mutex<FounderGuard>>;
+type UserRegistryState = Arc<Mutex<UserRegistry>>;
 
 #[derive(Clone)]
 struct UiState {
@@ -75,6 +79,8 @@ struct UiState {
     contribution: ContributionState,
     contribution_path: PathBuf,
     founder_guard: FounderGuardState,
+    user_registry: UserRegistryState,
+    user_registry_path: PathBuf,
     economy: economy_api::EconomyState,
     economy_path: PathBuf,
 }
@@ -176,6 +182,23 @@ fn load_identity(path: &PathBuf, password: &str, username: &str) -> Result<Ident
 
 fn http_response(status: &str, content_type: &str, body: &str) -> Vec<u8> {
     format!("HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nX-Content-Type-Options: nosniff\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}", body.len()).into_bytes()
+}
+
+async fn write_json_error(
+    stream: &mut tokio::net::TcpStream,
+    status: &str,
+    message: &str,
+) -> Result<()> {
+    let body = serde_json::json!({"status":"error","error":message}).to_string();
+    stream
+        .write_all(&http_response(
+            status,
+            "application/json; charset=utf-8",
+            &body,
+        ))
+        .await?;
+    stream.shutdown().await?;
+    Ok(())
 }
 
 fn is_loopback_host(host: &str) -> bool {
@@ -354,6 +377,44 @@ fn parse_json_u16(value: &serde_json::Value, field: &str) -> Result<u16, String>
     u16::try_from(parse_json_u64(value, field)?).map_err(|_| format!("{field} is too large"))
 }
 
+fn parse_hex_array<const N: usize>(value: &str, field: &str) -> Result<[u8; N], String> {
+    if value.len() != N * 2 {
+        return Err(format!(
+            "{field} must contain exactly {} hexadecimal characters",
+            N * 2
+        ));
+    }
+    let bytes = hex::decode(value).map_err(|_| format!("{field} must be hexadecimal"))?;
+    bytes
+        .try_into()
+        .map_err(|_| format!("{field} must contain exactly {N} bytes"))
+}
+
+fn user_account_json(account: &UserAccount) -> serde_json::Value {
+    serde_json::json!({
+        "awe_id": account.awe_id,
+        "username": account.username,
+        "public_key": hex::encode(account.public_key),
+        "role": account.role.as_str(),
+        "status": account.status.as_str(),
+        "created_at_unix": account.created_at_unix,
+        "updated_at_unix": account.updated_at_unix,
+        "sequence": account.sequence
+    })
+}
+
+fn user_registry_error_status(error: &UserRegistryError) -> &'static str {
+    match error {
+        UserRegistryError::InvalidSignature
+        | UserRegistryError::FounderProtected
+        | UserRegistryError::WrongFounder
+        | UserRegistryError::InvalidStoreSignature => "403 Forbidden",
+        UserRegistryError::UnknownUser => "404 Not Found",
+        UserRegistryError::UsernameTaken | UserRegistryError::AlreadyRegistered => "409 Conflict",
+        _ => "400 Bad Request",
+    }
+}
+
 async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<()> {
     let UiState {
         node,
@@ -371,6 +432,8 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         contribution,
         contribution_path,
         founder_guard,
+        user_registry,
+        user_registry_path,
         economy,
         economy_path,
     } = state;
@@ -560,6 +623,180 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
             match response {
                 Ok(()) => ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"published","offer":offer,"notice":"ONECOIN transfer is handled by AWENET wallet. Fiat is exchanged directly between people outside AWENET."}).to_string()),
                 Err(error) => ("500 Internal Server Error", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":error.to_string()}).to_string())
+            }
+        },
+        "/api/users" if method == "GET" => {
+            match user_registry.lock() {
+                Ok(registry) => {
+                    let users = registry.accounts().iter().map(user_account_json).collect::<Vec<_>>();
+                    ("200 OK", "application/json; charset=utf-8", serde_json::json!({
+                        "status": "ok",
+                        "founder_awe_id": registry.founder_awe_id(),
+                        "sequence": registry.sequence(),
+                        "next_sequence": registry.sequence().checked_add(1),
+                        "server_time_unix": now_unix(),
+                        "users": users
+                    }).to_string())
+                }
+                Err(_) => ("500 Internal Server Error", "application/json; charset=utf-8",
+                    serde_json::json!({"status":"error","error":"user_registry_lock_failed"}).to_string())
+            }
+        },
+        "/api/users/register" if method == "POST" => {
+            let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+            let parsed = match serde_json::from_str::<serde_json::Value>(body) {
+                Ok(value) => value,
+                Err(error) => return write_json_error(&mut stream, "400 Bad Request", &format!("invalid_json: {error}")).await,
+            };
+            let username = parsed.get("username").and_then(|value| value.as_str()).unwrap_or("");
+            let public_key = parsed.get("public_key").and_then(|value| value.as_str()).unwrap_or("");
+            let signature = parsed.get("signature").and_then(|value| value.as_str()).unwrap_or("");
+            let public_key = match parse_hex_array::<32>(public_key, "public_key") {
+                Ok(value) => value,
+                Err(error) => return write_json_error(&mut stream, "400 Bad Request", &error).await,
+            };
+            let signature = match parse_hex_array::<64>(signature, "signature") {
+                Ok(value) => value,
+                Err(error) => return write_json_error(&mut stream, "400 Bad Request", &error).await,
+            };
+            match user_registry.lock() {
+                Ok(mut current) => {
+                    let mut candidate = current.clone();
+                    match candidate.register(username, &public_key, &signature, now_unix()) {
+                        Ok(account) => {
+                            let created = candidate.sequence() != current.sequence();
+                            if created {
+                                if let Err(error) = user_registry::save(&user_registry_path, &candidate, &node.identity) {
+                                    ("500 Internal Server Error", "application/json; charset=utf-8",
+                                        serde_json::json!({"status":"error","error":error.to_string()}).to_string())
+                                } else {
+                                    *current = candidate;
+                                    ("201 Created", "application/json; charset=utf-8",
+                                        serde_json::json!({"status":"created","user":user_account_json(&account),"sequence":current.sequence()}).to_string())
+                                }
+                            } else {
+                                ("200 OK", "application/json; charset=utf-8",
+                                    serde_json::json!({"status":"already_registered","user":user_account_json(&account),"sequence":current.sequence()}).to_string())
+                            }
+                        }
+                        Err(error) => (user_registry_error_status(&error), "application/json; charset=utf-8",
+                            serde_json::json!({"status":"error","error":error.to_string()}).to_string())
+                    }
+                }
+                Err(_) => ("500 Internal Server Error", "application/json; charset=utf-8",
+                    serde_json::json!({"status":"error","error":"user_registry_lock_failed"}).to_string())
+            }
+        },
+        "/api/admin/users/role" if method == "POST" => {
+            let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+            let parsed: serde_json::Value = match serde_json::from_str(body) {
+                Ok(value) => value,
+                Err(error) => return write_json_error(&mut stream, "400 Bad Request", &format!("invalid_json: {error}")).await,
+            };
+            let target = parsed.get("awe_id").and_then(|value| value.as_str()).unwrap_or("");
+            let at_unix = match parse_json_u64(&parsed, "at_unix") {
+                Ok(value) => value,
+                Err(error) => return write_json_error(&mut stream, "400 Bad Request", &error).await,
+            };
+            let role = match parsed.get("role").and_then(|value| value.as_str()) {
+                Some("founder") => UserRole::Founder,
+                Some("admin") => UserRole::Admin,
+                Some("user") => UserRole::User,
+                _ => return write_json_error(&mut stream, "400 Bad Request", "role must be founder, admin or user").await,
+            };
+            let signature = match parse_hex_array::<64>(parsed.get("signature").and_then(|value| value.as_str()).unwrap_or(""), "signature") {
+                Ok(value) => value,
+                Err(error) => return write_json_error(&mut stream, "400 Bad Request", &error).await,
+            };
+            match user_registry.lock() {
+                Ok(mut current) => {
+                    let mut candidate = current.clone();
+                    match candidate.set_role(target, role, at_unix, &signature) {
+                        Ok(account) => {
+                            if candidate.sequence() != current.sequence() {
+                                if let Err(error) = user_registry::save(&user_registry_path, &candidate, &node.identity) {
+                                    ("500 Internal Server Error", "application/json; charset=utf-8",
+                                        serde_json::json!({"status":"error","error":error.to_string()}).to_string())
+                                } else {
+                                    *current = candidate;
+                                    ("200 OK", "application/json; charset=utf-8",
+                                        serde_json::json!({"status":"updated","user":user_account_json(&account),"sequence":current.sequence()}).to_string())
+                                }
+                            } else {
+                                ("200 OK", "application/json; charset=utf-8",
+                                    serde_json::json!({"status":"unchanged","user":user_account_json(&account),"sequence":current.sequence()}).to_string())
+                            }
+                        }
+                        Err(error) => (user_registry_error_status(&error), "application/json; charset=utf-8",
+                            serde_json::json!({"status":"error","error":error.to_string()}).to_string())
+                    }
+                }
+                Err(_) => ("500 Internal Server Error", "application/json; charset=utf-8",
+                    serde_json::json!({"status":"error","error":"user_registry_lock_failed"}).to_string())
+            }
+        },
+        "/api/admin/users/status" if method == "POST" => {
+            let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+            let parsed: serde_json::Value = match serde_json::from_str(body) {
+                Ok(value) => value,
+                Err(error) => return write_json_error(&mut stream, "400 Bad Request", &format!("invalid_json: {error}")).await,
+            };
+            let target = parsed.get("awe_id").and_then(|value| value.as_str()).unwrap_or("");
+            let at_unix = match parse_json_u64(&parsed, "at_unix") {
+                Ok(value) => value,
+                Err(error) => return write_json_error(&mut stream, "400 Bad Request", &error).await,
+            };
+            let status = match parsed.get("status").and_then(|value| value.as_str()) {
+                Some("active") => UserStatus::Active,
+                Some("suspended") => UserStatus::Suspended,
+                _ => return write_json_error(&mut stream, "400 Bad Request", "status must be active or suspended").await,
+            };
+            let signature = match parse_hex_array::<64>(parsed.get("signature").and_then(|value| value.as_str()).unwrap_or(""), "signature") {
+                Ok(value) => value,
+                Err(error) => return write_json_error(&mut stream, "400 Bad Request", &error).await,
+            };
+            match user_registry.lock() {
+                Ok(mut current) => {
+                    let mut candidate = current.clone();
+                    match candidate.set_status(target, status, at_unix, &signature) {
+                        Ok(account) => {
+                            if candidate.sequence() != current.sequence() {
+                                if let Err(error) = user_registry::save(&user_registry_path, &candidate, &node.identity) {
+                                    ("500 Internal Server Error", "application/json; charset=utf-8",
+                                        serde_json::json!({"status":"error","error":error.to_string()}).to_string())
+                                } else {
+                                    *current = candidate;
+                                    ("200 OK", "application/json; charset=utf-8",
+                                        serde_json::json!({"status":"updated","user":user_account_json(&account),"sequence":current.sequence()}).to_string())
+                                }
+                            } else {
+                                ("200 OK", "application/json; charset=utf-8",
+                                    serde_json::json!({"status":"unchanged","user":user_account_json(&account),"sequence":current.sequence()}).to_string())
+                            }
+                        }
+                        Err(error) => (user_registry_error_status(&error), "application/json; charset=utf-8",
+                            serde_json::json!({"status":"error","error":error.to_string()}).to_string())
+                    }
+                }
+                Err(_) => ("500 Internal Server Error", "application/json; charset=utf-8",
+                    serde_json::json!({"status":"error","error":"user_registry_lock_failed"}).to_string())
+            }
+        },
+        _ if path.starts_with("/api/users/") && method == "GET" => {
+            let requested = path.strip_prefix("/api/users/").unwrap_or("");
+            match AweId::from_hex(requested) {
+                Ok(id) => match user_registry.lock() {
+                    Ok(registry) => match registry.get(&id.to_hex()) {
+                        Some(account) => ("200 OK", "application/json; charset=utf-8",
+                            serde_json::json!({"status":"ok","user":user_account_json(account),"sequence":registry.sequence()}).to_string()),
+                        None => ("404 Not Found", "application/json; charset=utf-8",
+                            serde_json::json!({"status":"error","error":"user_not_found"}).to_string())
+                    },
+                    Err(_) => ("500 Internal Server Error", "application/json; charset=utf-8",
+                        serde_json::json!({"status":"error","error":"user_registry_lock_failed"}).to_string())
+                },
+                Err(_) => ("400 Bad Request", "application/json; charset=utf-8",
+                    serde_json::json!({"status":"error","error":"invalid_awe_id"}).to_string())
             }
         },
         "/api/node" => ("200 OK", "application/json; charset=utf-8", serde_json::json!({
@@ -1901,6 +2138,11 @@ async fn run_product() -> Result<()> {
         identity
     };
     let node_id = format_uid(identity.public.awe_id.as_bytes());
+    let user_registry_path = data_dir.join("users.json");
+    let user_registry_state: UserRegistryState = Arc::new(Mutex::new(
+        user_registry::load_or_create(&user_registry_path, &identity, now_unix())
+            .map_err(anyhow::Error::msg)?,
+    ));
     let founder_guard_path = data_dir.join("founder-passkeys.json");
     let founder_guard = Arc::new(Mutex::new(
         passkey_store::load_or_install(&founder_guard_path, &identity, now_unix())
@@ -2642,6 +2884,8 @@ async fn run_product() -> Result<()> {
             let api_contribution = contribution.clone();
             let api_contribution_path = contribution_path.clone();
             let api_founder_guard = founder_guard.clone();
+            let api_user_registry = user_registry_state.clone();
+            let api_user_registry_path = user_registry_path.clone();
             let api_economy = economy_state.clone();
             let api_economy_path = economy_path.clone();
             tokio::spawn(async move {
@@ -2663,6 +2907,8 @@ async fn run_product() -> Result<()> {
                         contribution: api_contribution,
                         contribution_path: api_contribution_path,
                         founder_guard: api_founder_guard,
+                        user_registry: api_user_registry,
+                        user_registry_path: api_user_registry_path,
                         economy: api_economy,
                         economy_path: api_economy_path,
                     },
