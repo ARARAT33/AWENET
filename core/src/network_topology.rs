@@ -235,10 +235,18 @@ impl AweNet {
             if node_id.trim().is_empty() || node_id != &node.id {
                 return Err("node map key must match a non-empty node ID".into());
             }
-            if node.peers.iter().any(|peer| !centre.nodes.contains_key(peer)) {
+            if node
+                .peers
+                .iter()
+                .any(|peer| !centre.nodes.contains_key(peer))
+            {
                 return Err("new data centre contains a peer outside its own membership".into());
             }
-            if self.centres.values().any(|existing| existing.nodes.contains_key(node_id)) {
+            if self
+                .centres
+                .values()
+                .any(|existing| existing.nodes.contains_key(node_id))
+            {
                 return Err("node IDs must be globally unique across data centres".into());
             }
         }
@@ -273,7 +281,11 @@ impl AweNet {
         if group.groups.len() < 2 {
             return Err("centre group requires at least 2 distinct data groups".into());
         }
-        if !group.groups.iter().all(|id| self.data_groups.contains_key(id)) {
+        if !group
+            .groups
+            .iter()
+            .all(|id| self.data_groups.contains_key(id))
+        {
             return Err("centre group references an unknown data group".into());
         }
         self.centre_groups.insert(group.id.clone(), group);
@@ -399,7 +411,9 @@ impl AweNet {
             .ok_or("reverse link state not found")?;
         let old_left = match &left_state.mode {
             CentreLinkMode::Relay { relay_node } => relay_node.clone(),
-            CentreLinkMode::FullMesh => return Err("full-mesh links do not use relay failover".into()),
+            CentreLinkMode::FullMesh => {
+                return Err("full-mesh links do not use relay failover".into())
+            }
         };
         let old_right = match &right_state.mode {
             CentreLinkMode::Relay { relay_node } => relay_node.clone(),
@@ -421,10 +435,18 @@ impl AweNet {
             .map(|node| node.id.clone())
             .ok_or("target centre has no live nodes")?;
 
-        if let Some(node) = self.centres.get_mut(a).and_then(|centre| centre.nodes.get_mut(&old_left)) {
+        if let Some(node) = self
+            .centres
+            .get_mut(a)
+            .and_then(|centre| centre.nodes.get_mut(&old_left))
+        {
             node.peers.remove(&old_right);
         }
-        if let Some(node) = self.centres.get_mut(b).and_then(|centre| centre.nodes.get_mut(&old_right)) {
+        if let Some(node) = self
+            .centres
+            .get_mut(b)
+            .and_then(|centre| centre.nodes.get_mut(&old_right))
+        {
             node.peers.remove(&old_left);
         }
         self.centres
@@ -440,14 +462,24 @@ impl AweNet {
             .peers
             .insert(candidate.clone());
 
-        let left_link = self.centres.get_mut(a).and_then(|centre| centre.link_state.get_mut(b))
+        let left_link = self
+            .centres
+            .get_mut(a)
+            .and_then(|centre| centre.link_state.get_mut(b))
             .ok_or("left link state disappeared")?;
-        left_link.mode = CentreLinkMode::Relay { relay_node: candidate.clone() };
+        left_link.mode = CentreLinkMode::Relay {
+            relay_node: candidate.clone(),
+        };
         left_link.relays = vec![candidate.clone()];
         left_link.healthy = true;
-        let right_link = self.centres.get_mut(b).and_then(|centre| centre.link_state.get_mut(a))
+        let right_link = self
+            .centres
+            .get_mut(b)
+            .and_then(|centre| centre.link_state.get_mut(a))
             .ok_or("right link state disappeared")?;
-        right_link.mode = CentreLinkMode::Relay { relay_node: target.clone() };
+        right_link.mode = CentreLinkMode::Relay {
+            relay_node: target.clone(),
+        };
         right_link.relays = vec![target];
         right_link.healthy = true;
         Ok(candidate)
@@ -463,13 +495,25 @@ impl AweNet {
         let left_ids = self.centres[a].nodes.keys().cloned().collect::<Vec<_>>();
         let right_ids = self.centres[b].nodes.keys().cloned().collect::<Vec<_>>();
         for id in &left_ids {
-            if let Some(node) = self.centres.get_mut(a).and_then(|centre| centre.nodes.get_mut(id)) {
-                for peer in &right_ids { node.peers.remove(peer); }
+            if let Some(node) = self
+                .centres
+                .get_mut(a)
+                .and_then(|centre| centre.nodes.get_mut(id))
+            {
+                for peer in &right_ids {
+                    node.peers.remove(peer);
+                }
             }
         }
         for id in &right_ids {
-            if let Some(node) = self.centres.get_mut(b).and_then(|centre| centre.nodes.get_mut(id)) {
-                for peer in &left_ids { node.peers.remove(peer); }
+            if let Some(node) = self
+                .centres
+                .get_mut(b)
+                .and_then(|centre| centre.nodes.get_mut(id))
+            {
+                for peer in &left_ids {
+                    node.peers.remove(peer);
+                }
             }
         }
         let left = self.centres.get_mut(a).unwrap();
@@ -482,18 +526,28 @@ impl AweNet {
     }
 
     pub fn remove_node(&mut self, node_id: &str) -> Result<Node, String> {
-        let centre_id = self.centres.iter()
+        let centre_id = self
+            .centres
+            .iter()
             .find(|(_, centre)| centre.nodes.contains_key(node_id))
             .map(|(id, _)| id.clone())
             .ok_or_else(|| "node not found".to_string())?;
         for centre in self.centres.values() {
             for link in centre.link_state.values() {
-                if matches!(&link.mode, CentreLinkMode::Relay { relay_node } if relay_node == node_id) {
-                    return Err("cannot remove an active relay; fail over or disconnect its link first".into());
+                if matches!(&link.mode, CentreLinkMode::Relay { relay_node } if relay_node == node_id)
+                {
+                    return Err(
+                        "cannot remove an active relay; fail over or disconnect its link first"
+                            .into(),
+                    );
                 }
             }
         }
-        let removed = self.centres.get_mut(&centre_id).unwrap().remove_node(node_id)?;
+        let removed = self
+            .centres
+            .get_mut(&centre_id)
+            .unwrap()
+            .remove_node(node_id)?;
         for centre in self.centres.values_mut() {
             for node in centre.nodes.values_mut() {
                 node.peers.remove(node_id);
@@ -506,33 +560,54 @@ impl AweNet {
     }
 
     pub fn remove_centre(&mut self, id: &str) -> Result<DataCentre, String> {
-        if self.data_groups.values().any(|group| group.centres.contains(id)) {
+        if self
+            .data_groups
+            .values()
+            .any(|group| group.centres.contains(id))
+        {
             return Err("cannot remove a data centre referenced by a data group".into());
         }
-        let links = self.centres.get(id)
+        let links = self
+            .centres
+            .get(id)
             .ok_or_else(|| "data centre not found".to_string())?
-            .links.iter().cloned().collect::<Vec<_>>();
+            .links
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
         for peer in links {
             self.disconnect_centres(id, &peer)?;
         }
         let node_ids = self.centres[id].nodes.keys().cloned().collect::<Vec<_>>();
         for centre in self.centres.values_mut() {
             for node in centre.nodes.values_mut() {
-                for removed in &node_ids { node.peers.remove(removed); }
+                for removed in &node_ids {
+                    node.peers.remove(removed);
+                }
             }
         }
-        self.centres.remove(id).ok_or_else(|| "data centre not found".into())
+        self.centres
+            .remove(id)
+            .ok_or_else(|| "data centre not found".into())
     }
 
     pub fn remove_data_group(&mut self, id: &str) -> Result<DataGroup, String> {
-        if self.centre_groups.values().any(|group| group.groups.contains(id)) {
+        if self
+            .centre_groups
+            .values()
+            .any(|group| group.groups.contains(id))
+        {
             return Err("cannot remove a data group referenced by a centre group".into());
         }
-        self.data_groups.remove(id).ok_or_else(|| "data group not found".into())
+        self.data_groups
+            .remove(id)
+            .ok_or_else(|| "data group not found".into())
     }
 
     pub fn remove_centre_group(&mut self, id: &str) -> Result<CentreGroup, String> {
-        self.centre_groups.remove(id).ok_or_else(|| "centre group not found".into())
+        self.centre_groups
+            .remove(id)
+            .ok_or_else(|| "centre group not found".into())
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -546,56 +621,95 @@ impl AweNet {
                     return Err("node map key does not match its ID".into());
                 }
                 if !global_node_ids.insert(node_id.clone()) {
-                    return Err(format!("node ID {node_id} is duplicated across data centres"));
+                    return Err(format!(
+                        "node ID {node_id} is duplicated across data centres"
+                    ));
                 }
                 for peer_id in &node.peers {
-                    let peer = self.centres.iter()
+                    let peer = self
+                        .centres
+                        .iter()
                         .find_map(|(peer_centre_id, peer_centre)| {
-                            peer_centre.nodes.get(peer_id).map(|peer| (peer_centre_id, peer))
+                            peer_centre
+                                .nodes
+                                .get(peer_id)
+                                .map(|peer| (peer_centre_id, peer))
                         })
-                        .ok_or_else(|| format!("node {node_id} references unknown peer {peer_id}"))?;
+                        .ok_or_else(|| {
+                            format!("node {node_id} references unknown peer {peer_id}")
+                        })?;
                     if !peer.1.peers.contains(node_id) {
-                        return Err(format!("peer link {node_id} <-> {peer_id} is not symmetric"));
+                        return Err(format!(
+                            "peer link {node_id} <-> {peer_id} is not symmetric"
+                        ));
                     }
                     if peer.0 != centre_id && !centre.links.contains(peer.0) {
-                        return Err(format!("cross-centre peer link {node_id} -> {peer_id} has no centre link"));
+                        return Err(format!(
+                            "cross-centre peer link {node_id} -> {peer_id} has no centre link"
+                        ));
                     }
                 }
             }
             for peer_centre_id in &centre.links {
-                let peer_centre = self.centres.get(peer_centre_id)
-                    .ok_or_else(|| format!("centre {centre_id} references unknown centre {peer_centre_id}"))?;
+                let peer_centre = self.centres.get(peer_centre_id).ok_or_else(|| {
+                    format!("centre {centre_id} references unknown centre {peer_centre_id}")
+                })?;
                 if !peer_centre.links.contains(centre_id) {
-                    return Err(format!("centre link {centre_id} <-> {peer_centre_id} is not symmetric"));
+                    return Err(format!(
+                        "centre link {centre_id} <-> {peer_centre_id} is not symmetric"
+                    ));
                 }
-                let state = centre.link_state.get(peer_centre_id)
-                    .ok_or_else(|| format!("centre link {centre_id} -> {peer_centre_id} has no state"))?;
+                let state = centre.link_state.get(peer_centre_id).ok_or_else(|| {
+                    format!("centre link {centre_id} -> {peer_centre_id} has no state")
+                })?;
                 if !peer_centre.link_state.contains_key(centre_id) {
-                    return Err(format!("reverse centre link {peer_centre_id} -> {centre_id} has no state"));
+                    return Err(format!(
+                        "reverse centre link {peer_centre_id} -> {centre_id} has no state"
+                    ));
                 }
                 if let CentreLinkMode::Relay { relay_node } = &state.mode {
-                    if !centre.nodes.contains_key(relay_node) || !state.relays.contains(relay_node) {
-                        return Err(format!("centre link {centre_id} -> {peer_centre_id} has an invalid relay"));
+                    if !centre.nodes.contains_key(relay_node) || !state.relays.contains(relay_node)
+                    {
+                        return Err(format!(
+                            "centre link {centre_id} -> {peer_centre_id} has an invalid relay"
+                        ));
                     }
                 }
-                if state.relays.iter().any(|relay| !centre.nodes.contains_key(relay)) {
-                    return Err(format!("centre link {centre_id} -> {peer_centre_id} references an unknown relay"));
+                if state
+                    .relays
+                    .iter()
+                    .any(|relay| !centre.nodes.contains_key(relay))
+                {
+                    return Err(format!(
+                        "centre link {centre_id} -> {peer_centre_id} references an unknown relay"
+                    ));
                 }
             }
-            if centre.link_state.keys().any(|peer| !centre.links.contains(peer)) {
+            if centre
+                .link_state
+                .keys()
+                .any(|peer| !centre.links.contains(peer))
+            {
                 return Err(format!("centre {centre_id} has link state without a link"));
             }
         }
         for (group_id, group) in &self.data_groups {
-            if group_id.is_empty() || group.id != *group_id || group.centres.len() < 3
+            if group_id.is_empty()
+                || group.id != *group_id
+                || group.centres.len() < 3
                 || !group.centres.iter().all(|id| self.centres.contains_key(id))
             {
                 return Err("invalid data group".into());
             }
         }
         for (group_id, group) in &self.centre_groups {
-            if group_id.is_empty() || group.id != *group_id || group.groups.len() < 2
-                || !group.groups.iter().all(|id| self.data_groups.contains_key(id))
+            if group_id.is_empty()
+                || group.id != *group_id
+                || group.groups.len() < 2
+                || !group
+                    .groups
+                    .iter()
+                    .all(|id| self.data_groups.contains_key(id))
             {
                 return Err("invalid centre group".into());
             }
@@ -604,7 +718,11 @@ impl AweNet {
     }
 
     pub fn route(&self, src: &NodeId, dst: &NodeId) -> Option<Vec<NodeId>> {
-        let node_exists = |id: &str| self.centres.values().any(|centre| centre.nodes.contains_key(id));
+        let node_exists = |id: &str| {
+            self.centres
+                .values()
+                .any(|centre| centre.nodes.contains_key(id))
+        };
         if !node_exists(src) || !node_exists(dst) {
             return None;
         }
@@ -742,25 +860,35 @@ mod tests {
         right.add_node(Node::new("right-2")).unwrap();
         network.add_centre(left).unwrap();
         network.add_centre(right).unwrap();
-        network.connect_centres(
-            "left",
-            "right",
-            CentreLinkMode::Relay { relay_node: "left-1".into() },
-        ).unwrap();
+        network
+            .connect_centres(
+                "left",
+                "right",
+                CentreLinkMode::Relay {
+                    relay_node: "left-1".into(),
+                },
+            )
+            .unwrap();
         assert!(network.validate().is_ok());
         assert_eq!(
             network.centres["right"].link_state["left"].mode,
-            CentreLinkMode::Relay { relay_node: "right-1".into() }
+            CentreLinkMode::Relay {
+                relay_node: "right-1".into()
+            }
         );
         let new_relay = network.failover_relay("left", "right").unwrap();
         assert_eq!(new_relay, "left-2");
         assert_eq!(
             network.centres["left"].link_state["right"].mode,
-            CentreLinkMode::Relay { relay_node: "left-2".into() }
+            CentreLinkMode::Relay {
+                relay_node: "left-2".into()
+            }
         );
         assert_eq!(
             network.centres["right"].link_state["left"].mode,
-            CentreLinkMode::Relay { relay_node: "right-1".into() }
+            CentreLinkMode::Relay {
+                relay_node: "right-1".into()
+            }
         );
         assert!(network.validate().is_ok());
     }
@@ -774,7 +902,9 @@ mod tests {
         right.add_node(Node::new("right-1")).unwrap();
         network.add_centre(left).unwrap();
         network.add_centre(right).unwrap();
-        network.connect_centres("left", "right", CentreLinkMode::FullMesh).unwrap();
+        network
+            .connect_centres("left", "right", CentreLinkMode::FullMesh)
+            .unwrap();
         assert!(network.validate().is_ok());
         network.disconnect_centres("left", "right").unwrap();
         assert!(network.validate().is_ok());
@@ -790,9 +920,15 @@ mod tests {
         for id in ["dc-1", "dc-2", "dc-3", "dc-4", "dc-5", "dc-6"] {
             network.add_centre(DataCentre::new(id)).unwrap();
         }
-        network.add_data_group(DataGroup::new("dg-1", ["dc-1", "dc-2", "dc-3"]).unwrap()).unwrap();
-        network.add_data_group(DataGroup::new("dg-2", ["dc-4", "dc-5", "dc-6"]).unwrap()).unwrap();
-        network.add_centre_group(CentreGroup::new("cg", ["dg-1", "dg-2"]).unwrap()).unwrap();
+        network
+            .add_data_group(DataGroup::new("dg-1", ["dc-1", "dc-2", "dc-3"]).unwrap())
+            .unwrap();
+        network
+            .add_data_group(DataGroup::new("dg-2", ["dc-4", "dc-5", "dc-6"]).unwrap())
+            .unwrap();
+        network
+            .add_centre_group(CentreGroup::new("cg", ["dg-1", "dg-2"]).unwrap())
+            .unwrap();
         assert!(network.remove_data_group("dg-1").is_err());
         network.remove_centre_group("cg").unwrap();
         network.remove_data_group("dg-1").unwrap();
@@ -821,10 +957,16 @@ mod tests {
         right.add_node(Node::new("right-1")).unwrap();
         network.add_centre(left).unwrap();
         network.add_centre(right).unwrap();
-        network.connect_centres("left", "right", CentreLinkMode::FullMesh).unwrap();
+        network
+            .connect_centres("left", "right", CentreLinkMode::FullMesh)
+            .unwrap();
         network.remove_node("left-1").unwrap();
-        assert!(!network.centres["right"].nodes["right-1"].peers.contains("left-1"));
-        assert!(!network.centres["left"].link_state["right"].relays.contains(&"left-1".to_string()));
+        assert!(!network.centres["right"].nodes["right-1"]
+            .peers
+            .contains("left-1"));
+        assert!(!network.centres["left"].link_state["right"]
+            .relays
+            .contains(&"left-1".to_string()));
         assert!(network.validate().is_ok());
     }
 
@@ -835,9 +977,17 @@ mod tests {
         centre.add_node(Node::new("b")).unwrap();
         let mut network = AweNet::default();
         network.add_centre(centre).unwrap();
-        assert!(network.route(&"missing".into(), &"missing".into()).is_none());
-        assert_eq!(network.route(&"a".into(), &"b".into()), Some(vec!["a".into(), "b".into()]));
-        assert_eq!(network.route(&"b".into(), &"a".into()), Some(vec!["b".into(), "a".into()]));
+        assert!(network
+            .route(&"missing".into(), &"missing".into())
+            .is_none());
+        assert_eq!(
+            network.route(&"a".into(), &"b".into()),
+            Some(vec!["a".into(), "b".into()])
+        );
+        assert_eq!(
+            network.route(&"b".into(), &"a".into()),
+            Some(vec!["b".into(), "a".into()])
+        );
     }
 
     #[test]
@@ -850,5 +1000,4 @@ mod tests {
         network.centres.insert("dc".into(), centre);
         assert!(network.validate().is_err());
     }
-
 }
