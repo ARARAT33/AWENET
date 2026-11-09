@@ -219,6 +219,124 @@ fn three_node_product_smoke() {
         );
         let _dg_token = generated_join_token(&dg_invite, "dg-");
 
+        // Malformed invitation JSON must be rejected without changing node state.
+        let before_malformed_import: serde_json::Value =
+            serde_json::from_str(&get("127.0.0.1:46202", "/api/federation"))
+                .expect("pre-malformed federation state");
+        let malformed_response = request_raw(
+            "127.0.0.1:46202",
+            "POST /api/federation/import HTTP/1.1\r\nHost: 127.0.0.1:46202\r\nContent-Type: application/json\r\nContent-Length: 1\r\nConnection: close\r\n\r\n{",
+        );
+        assert!(
+            malformed_response.starts_with("HTTP/1.1 400 Bad Request"),
+            "malformed federation JSON must return 400: {malformed_response}"
+        );
+        let after_malformed_import: serde_json::Value =
+            serde_json::from_str(&get("127.0.0.1:46202", "/api/federation"))
+                .expect("post-malformed federation state");
+        assert_eq!(
+            before_malformed_import, after_malformed_import,
+            "malformed federation JSON must not mutate state"
+        );
+
+        // Import a valid invitation on node 2 and verify that the committed
+        // federation state is visible both through HTTP and on disk.
+        let invitation_envelope: serde_json::Value =
+            serde_json::from_str(&node_invite).expect("node invitation envelope");
+        let invitation_content = invitation_envelope
+            .get("content")
+            .and_then(|value| value.as_str())
+            .expect("node invitation content")
+            .to_owned();
+        let invitation_config: serde_json::Value =
+            serde_json::from_str(&invitation_content).expect("node invitation config");
+        let invited_dc_id = invitation_config
+            .get("data_centre_id")
+            .and_then(|value| value.as_str())
+            .expect("invited data-centre ID")
+            .to_owned();
+        let import_body = serde_json::json!({
+            "kind": "awenode",
+            "content": invitation_content
+        })
+        .to_string();
+        let import_response = request_raw(
+            "127.0.0.1:46202",
+            &format!(
+                "POST /api/federation/import HTTP/1.1\r\nHost: 127.0.0.1:46202\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                import_body.len(),
+                import_body
+            ),
+        );
+        assert!(
+            import_response.starts_with("HTTP/1.1 200 OK"),
+            "valid federation invitation should import: {import_response}"
+        );
+        let imported_state: serde_json::Value =
+            serde_json::from_str(&get("127.0.0.1:46202", "/api/federation"))
+                .expect("imported federation state");
+        assert!(
+            imported_state
+                .get("joined_data_centres")
+                .and_then(|value| value.as_array())
+                .map(|items| items
+                    .iter()
+                    .any(|value| value.as_str() == Some(&invited_dc_id)))
+                .unwrap_or(false),
+            "successful import should publish the joined data centre: {imported_state}"
+        );
+        let persisted_state: serde_json::Value = serde_json::from_slice(
+            &fs::read(dirs[1].join("awenet.json")).expect("read persisted federation state"),
+        )
+        .expect("persisted federation JSON");
+        assert!(
+            persisted_state
+                .get("joined_data_centres")
+                .and_then(|value| value.as_array())
+                .map(|items| items
+                    .iter()
+                    .any(|value| value.as_str() == Some(&invited_dc_id)))
+                .unwrap_or(false),
+            "successful import should persist the joined data centre: {persisted_state}"
+        );
+
+        // Force the next node's federation-state publication to fail. The API
+        // must report 500, keep the old in-memory state, and clean its temp file.
+        let before_failed_import: serde_json::Value =
+            serde_json::from_str(&get("127.0.0.1:46203", "/api/federation"))
+                .expect("pre-failure federation state");
+        let blocked_path = dirs[2].join("awenet.json");
+        fs::remove_file(&blocked_path).expect("remove federation state file");
+        fs::create_dir(&blocked_path).expect("block federation state destination");
+        let failed_import_response = request_raw(
+            "127.0.0.1:46203",
+            &format!(
+                "POST /api/federation/import HTTP/1.1\r\nHost: 127.0.0.1:46203\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                import_body.len(),
+                import_body
+            ),
+        );
+        assert!(
+            failed_import_response.starts_with("HTTP/1.1 500 Internal Server Error"),
+            "failed federation persistence must return 500: {failed_import_response}"
+        );
+        let after_failed_import: serde_json::Value =
+            serde_json::from_str(&get("127.0.0.1:46203", "/api/federation"))
+                .expect("post-failure federation state");
+        assert_eq!(
+            before_failed_import, after_failed_import,
+            "failed persistence must not mutate in-memory federation state"
+        );
+        let leaked_temp = fs::read_dir(&dirs[2])
+            .expect("read node data directory")
+            .filter_map(Result::ok)
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .any(|name| name.starts_with(".awenet.json.") && name.ends_with(".tmp"));
+        assert!(
+            !leaked_temp,
+            "failed federation publication leaked a temp file"
+        );
+
         for (port, ui) in [
             (46101u16, 46201u16),
             (46102u16, 46202u16),

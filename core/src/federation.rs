@@ -237,9 +237,10 @@ pub fn save_json<T: Serialize>(value: &T, path: &Path) -> Result<(), String> {
     #[cfg(unix)]
     {
         if let Some(parent) = path.parent() {
-            fs::File::open(parent)
-                .and_then(|directory| directory.sync_all())
-                .map_err(|e| e.to_string())?;
+            // The file contents are synced before rename. Directory fsync is
+            // best-effort: after rename succeeds it cannot be rolled back, so
+            // reporting a failed save here would leave disk ahead of memory.
+            let _ = fs::File::open(parent).and_then(|directory| directory.sync_all());
         }
     }
     #[cfg(not(unix))]
