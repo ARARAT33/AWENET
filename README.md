@@ -36,11 +36,11 @@ while exposing a small, stable product orchestration model on top.
 | Trust & lifecycle services | `sessions`, `consent`, `features`, `sync` | Authenticated sessions with tick TTL and revocation, consent ledger with expiry and audit log, deterministic feature flags, coordinator-free LWW state sync |
 | Intelligence & resilience services | `insights`, `capacity`, `circuit`, `journal`, `archiver` | Rolling-window insights with anomaly detection, capacity forecasts with urgency bands, circuit breaker with cooldown, write-ahead journal with checkpoints, retention & compaction planning |
 | Developer & API services | `tasks`, `keys`, `webhooks`, `runbooks` | Priority task queue with deadlines and retry budgets, scoped API keys with rotation and expiry, event webhooks with cooldowns and dead-lettering, gated runbooks with dry-run plans |
-| Commerce & economy services | `accounting`, `billing`, `subscriptions`, `escrow` | Double-entry ledger with balanced entries, invoice lifecycle with payments and overdue sweeps, subscription lifecycle with trial and grace periods, escrow with fees, release and refund |
+| Commerce & economy services | `accounting`, `billing`, `subscriptions`, `escrow` | Double-entry ledger with balanced entries, invoice lifecycle with payments and overdue sweeps, subscription lifecycle with trials and grace periods, escrow with fees, release and refund |
 | AWENETwork & founder economy | `founder`, `awenetwork`, `resource_economy`, `price_control`, `treasury` | Founder-exclusive authority with an immutable audit log, founder-published work tasks with approve-then-pay rewards, consented resource contributions with reliability-weighted payouts, official price control with history, treasury issuance vs circulation accounting |
 | Founder protection & economy completion | `founder_guard`, `resource_meter`, `store_escrow`, `fraud`, `rankings` | Passkey-protected founder step-up authorization, host resource metering with multi-verifier usage reports, store escrow orders over ONECOIN, advisory fraud detection with bounded evidence, contributor rankings and achievements that never mint |
 | Economy product layer | `storefront`, `economy_api` (node), `awenetwork.js`, `storefront.js`, `founder.js` | Storefront catalog & search, economy HTTP API in the node, AWENETwork board, ONECOIN Market with escrowed orders, Founder Control Center, persistent economy state |
-| Founder security & storage metering | `webauthn` (core), `founder_guard`, `resource_meter`, `economy_api` passkey routes, `founder.js` Security tab, `onecoin.js` scan-to-pay | Browser WebAuthn passkey enrollment + MFA step-up for founder mutations, contributed-storage capacity metering (statvfs), camera QR scan-to-pay where supported |
+| Founder security & resource metering | `webauthn` (core), `founder_guard`, `resource_meter`, `economy_api` passkey routes, `founder.js` Security tab, `onecoin.js` scan-to-pay | Browser WebAuthn passkey enrollment + MFA step-up for founder mutations, contributed-storage capacity metering (statvfs), GPU busy-percentage metering (amdgpu sysfs / nvidia-smi), camera QR scan-to-pay where supported |
 | Economy UI localization | `i18n` (extended catalog + `Locale`/`Catalog::messages`), `economy_api` `/api/i18n/messages`, `i18n.js`, `awenetwork.js`, `storefront.js`, `founder.js`, `onecoin.js` | Bilingual Armenian/English economy screens from one core catalog, served by the node, with a persisted choice and a topbar language toggle |
 | Identity & security | `identity`, `user_registry`, `sessions`, `keys`, `security`, `crypto`, `defense`, `sandbox` | Self-certifying AWE IDs, founder-signed local user directory, authenticated encrypted transport, hostile-traffic limits |
 | Discovery & routing | `discovery`, `routing`, `network_topology`, `lan_mesh` | DHT-style lookup, Data Centre topology, relay failover, LAN mesh |
@@ -166,8 +166,8 @@ and z-score anomaly verdicts), `capacity.rs` (headroom, ticks-to-limit and
 urgency forecasts from a growth-per-tick estimate), `circuit.rs` (circuit
 breaker with Closed/Open/HalfOpen states and tick cooldown),
 `journal.rs` (bounded write-ahead operation journal with sequence numbers,
-replay and checkpoint truncation) and `archiver.rs` (retention tiering with a
-bounded archive budget and deterministic compaction plans). See
+replay and checkpoint truncation) and `archiver.rs` (retention tiering with
+a bounded archive budget and deterministic compaction plans). See
 [docs/RESILIENCE-UPGRADE-2026-11-02.md](docs/RESILIENCE-UPGRADE-2026-11-02.md).
 
 ## Developer & API services
@@ -215,9 +215,10 @@ Five deterministic core modules complete the founder-governed ONECOIN
 economy: `founder_guard.rs` (passkey credential enrollment signed by the
 founder, MFA step-up challenges with a bounded TTL and single-use recovery
 codes, all wrapping the immutable founder authority),
-`resource_meter.rs` (host system counters read from /proc and the free
-capacity of the contributed storage directory via statvfs on Linux with
-honest unsupported-platform errors, per-period usage deltas and signed
+`resource_meter.rs` (host system counters read from /proc, the free
+capacity of the contributed storage directory via statvfs, and real GPU
+busy percentages from the amdgpu sysfs counters or nvidia-smi on Linux,
+with honest unsupported-platform errors, per-period usage deltas and signed
 usage reports that settle only with at least two distinct verifier
 signatures), `store_escrow.rs` (store orders over the ONECOIN ledger with
 escrowed funding, buyer-confirmed delivery net of a bounded fee, refunds,
@@ -248,8 +249,8 @@ inside the local node and its UI, without changing any protocol guarantee:
   (`awenetwork.js`), the ONECOIN Market with escrowed orders
   (`storefront.js`) and the Founder Control Center (`founder.js`), plus a
   wallet receive-QR fix and shared `economy.css` styles.
-- Everything not yet implemented (multi-node verifiers, GPU metering,
-  multi-node marketplace sync) is listed honestly in the doc. See
+- Everything that remained open (multi-node verifiers, multi-node
+  marketplace sync) is listed honestly in the doc. See
   [docs/PRODUCT-UI-UPGRADE-2026-11-06.md](docs/PRODUCT-UI-UPGRADE-2026-11-06.md).
 - The 2026-11-07 upgrade adds the browser WebAuthn passkey ceremony
   (enrollment + MFA step-up gating every founder mutation), contributed
@@ -260,6 +261,11 @@ inside the local node and its UI, without changing any protocol guarantee:
   `GET /api/i18n/messages`, loaded by `ui/i18n.js` with a topbar language
   toggle. See
   [docs/ECONOMY-LOCALIZATION-2026-11-08.md](docs/ECONOMY-LOCALIZATION-2026-11-08.md).
+- The 2026-11-09 upgrade meters real GPU utilization into
+  `gpu_unit_ticks` from amdgpu sysfs counters or nvidia-smi on Linux,
+  integrated over sampled busy percentages; hosts without a readable GPU
+  counter report zero GPU ticks. See
+  [docs/GPU-METERING-2026-11-09.md](docs/GPU-METERING-2026-11-09.md).
 
 ## Important status rule
 
@@ -294,6 +300,7 @@ model is in [docs/PRODUCT-ARCHITECTURE.md](docs/PRODUCT-ARCHITECTURE.md) and
 - [Founder passkey & storage metering upgrade](docs/PASSKEY-RESOURCE-UPGRADE-2026-11-07.md)
 - [Economy UI localization](docs/ECONOMY-LOCALIZATION-2026-11-08.md)
 - [AWEID user registry and founder-managed accounts](docs/USER-REGISTRY-2026-11-08.md)
+- [GPU utilization metering](docs/GPU-METERING-2026-11-09.md)
 
 ## Security
 

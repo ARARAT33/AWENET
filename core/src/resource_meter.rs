@@ -2,14 +2,15 @@
 //!
 //! The resource economy pays for measured, multi-signal usage. This module
 //! wires two pieces of that contract: a meter that reads real host
-//! counters (CPU time, memory pressure, network counters, uptime and the
+//! counters (CPU time, memory pressure, network counters, uptime, the
 //! free capacity of the contributed storage directory from /proc and
-//! statvfs on Linux) and converts them into per-period MeasuredUsage, and
-//! signed usage reports from independent verifiers whose conservative
-//! consensus becomes the network-side measurement of the settlement
-//! evidence. GPU usage cannot be read from generic OS counters, so that
-//! signal still comes from the work runner's delivered results; nothing
-//! here invents numbers the host did not report.
+//! statvfs on Linux, and GPU busy percentages from the amdgpu sysfs
+//! counters or nvidia-smi where the host reports them) and converts them
+//! into per-period MeasuredUsage, and signed usage reports from
+//! independent verifiers whose conservative consensus becomes the
+//! network-side measurement of the settlement evidence. A host that
+//! exposes no readable GPU counter reports zero GPU ticks; nothing here
+//! invents numbers the host did not report.
 
 use crate::identity::{AweId, Identity};
 use crate::resource_economy::{MeasuredUsage, UsageEvidence};
@@ -23,6 +24,7 @@ pub const MAX_VERIFIER_REPORTS: usize = 16;
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SystemCounters {
     pub cpu_core_ticks: u128,
+    pub gpu_unit_ticks: u128,
     pub ram_total_kb: u64,
     pub ram_available_kb: u64,
     pub net_rx_bytes: u64,
@@ -36,21 +38,31 @@ pub trait SystemMeter {
     fn read(&mut self) -> io::Result<SystemCounters>;
 }
 
-/// Reads the real counters of the host. On Linux the source is /proc and
-/// the filesystem statistics of the contributed storage directory; on
-/// every other platform reading reports that host metering is not wired
-/// yet, so the caller falls back to its own measurements instead of
-/// being paid for numbers the meter never observed.
+/// Reads the real counters of the host. On Linux the source is /proc, the
+/// filesystem statistics of the contributed storage directory and the GPU
+/// busy percentages the drivers expose; on every other platform reading
+/// reports that host metering is not wired yet, so the caller falls back
+/// to its own measurements instead of being paid for numbers the meter
+/// never observed.
 #[derive(Clone, Debug)]
 pub struct HostMeter {
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     storage_dir: std::path::PathBuf,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    gpu_unit_ticks: u128,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    gpu_last_busy_percent: Option<u64>,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    gpu_last_uptime_secs: Option<u64>,
 }
 
 impl HostMeter {
     pub fn new() -> Self {
         Self {
             storage_dir: std::path::PathBuf::from("."),
+            gpu_unit_ticks: 0,
+            gpu_last_busy_percent: None,
+            gpu_last_uptime_secs: None,
         }
     }
 
@@ -59,6 +71,9 @@ impl HostMeter {
     pub fn with_storage_dir(storage_dir: impl Into<std::path::PathBuf>) -> Self {
         Self {
             storage_dir: storage_dir.into(),
+            gpu_unit_ticks: 0,
+            gpu_last_busy_percent: None,
+            gpu_last_uptime_secs: None,
         }
     }
 }
@@ -84,8 +99,19 @@ impl SystemMeter for HostMeter {
             .ok_or_else(|| invalid_data("cannot parse /proc/uptime"))?;
         let (disk_total_kb, disk_available_kb) = statvfs_kb(&self.storage_dir)
             .ok_or_else(|| invalid_data("cannot read filesystem capacity"))?;
+        let (gpu_unit_ticks, gpu_last_busy_percent, gpu_last_uptime_secs) = advance_gpu_ticks(
+            self.gpu_unit_ticks,
+            self.gpu_last_busy_percent,
+            self.gpu_last_uptime_secs,
+            uptime_secs,
+            read_gpu_busy_percent(),
+        );
+        self.gpu_unit_ticks = gpu_unit_ticks;
+        self.gpu_last_busy_percent = gpu_last_busy_percent;
+        self.gpu_last_uptime_secs = gpu_last_uptime_secs;
         Ok(SystemCounters {
             cpu_core_ticks,
+            gpu_unit_ticks,
             ram_total_kb,
             ram_available_kb,
             net_rx_bytes,
@@ -186,6 +212,130 @@ fn statvfs_kb(path: &std::path::Path) -> Option<(u64, u64)> {
     ))
 }
 
+/// Credits the previously sampled GPU busy percentage over the uptime
+/// elapsed since the previous read and returns the updated accumulator
+/// state. One tick is one GPU-second at 1% duty, so a fully busy GPU
+/// accumulates 100 ticks per second, the same scale as one fully busy
+/// CPU core at HZ=100. The first read only establishes the baseline; an
+/// interval that lost its GPU sample credits nothing, and uptime going
+/// backwards never credits anything. Pure, so the sampling behaviour is
+/// testable without a GPU.
+#[cfg(target_os = "linux")]
+fn advance_gpu_ticks(
+    accumulated: u128,
+    last_busy_percent: Option<u64>,
+    last_uptime_secs: Option<u64>,
+    uptime_secs: u64,
+    current_busy_percent: Option<u64>,
+) -> (u128, Option<u64>, Option<u64>) {
+    let mut next = accumulated;
+    if let Some(last_uptime) = last_uptime_secs {
+        if uptime_secs > last_uptime {
+            let elapsed = u128::from(uptime_secs - last_uptime);
+            let credited = u128::from(last_busy_percent.unwrap_or(0));
+            next = next.saturating_add(credited.saturating_mul(elapsed));
+        }
+    }
+    (next, current_busy_percent, Some(uptime_secs))
+}
+
+/// Reads the summed busy percentage of all GPUs the host reports. AMD GPUs
+/// are read from the amdgpu sysfs counters; NVIDIA GPUs through nvidia-smi
+/// when the tool is installed. A host that reports no GPU counter yields
+/// None, and the meter reports zero GPU ticks instead of inventing any.
+#[cfg(target_os = "linux")]
+fn read_gpu_busy_percent() -> Option<u64> {
+    amdgpu_busy_percent().or_else(nvidia_smi_busy_percent)
+}
+
+/// Sums `device/gpu_busy_percent` over the amdgpu cards exposed under
+/// /sys/class/drm. Connector entries (card0-HDMI-A-1 and friends) are
+/// skipped; only the card devices themselves are metered.
+#[cfg(target_os = "linux")]
+fn amdgpu_busy_percent() -> Option<u64> {
+    let entries = std::fs::read_dir("/sys/class/drm").ok()?;
+    let mut total = 0u64;
+    let mut cards = 0u64;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if !name.starts_with("card") || name.contains('-') {
+            continue;
+        }
+        if let Ok(content) = std::fs::read_to_string(entry.path().join("device/gpu_busy_percent")) {
+            if let Some(percent) = parse_gpu_busy_percent(&content) {
+                total = total.saturating_add(percent);
+                cards = cards.saturating_add(1);
+            }
+        }
+    }
+    if cards == 0 {
+        None
+    } else {
+        Some(total)
+    }
+}
+
+/// Sums the per-GPU utilization percentages reported by nvidia-smi. The
+/// query is read-only with fixed arguments and no shell; a missing tool,
+/// a failing exit status or an unreadable answer yields None, never an
+/// invented number.
+#[cfg(target_os = "linux")]
+fn nvidia_smi_busy_percent() -> Option<u64> {
+    let output = std::process::Command::new("nvidia-smi")
+        .args([
+            "--query-gpu=utilization.gpu",
+            "--format=csv,noheader,nounits",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    parse_nvidia_smi_utilization(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Parses one amdgpu `gpu_busy_percent` sample: a whole number 0..=100.
+#[cfg(target_os = "linux")]
+pub(crate) fn parse_gpu_busy_percent(content: &str) -> Option<u64> {
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let percent: u64 = trimmed.parse().ok()?;
+    if percent > 100 {
+        None
+    } else {
+        Some(percent)
+    }
+}
+
+/// Parses the noheader/nounits nvidia-smi utilization output: one whole
+/// percentage per line, 0..=100 each, summed across GPUs. Any unreadable
+/// line invalidates the whole reading.
+#[cfg(target_os = "linux")]
+pub(crate) fn parse_nvidia_smi_utilization(output: &str) -> Option<u64> {
+    let mut total = 0u64;
+    let mut gpus = 0u64;
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let percent: u64 = trimmed.parse().ok()?;
+        if percent > 100 {
+            return None;
+        }
+        total = total.saturating_add(percent);
+        gpus = gpus.saturating_add(1);
+    }
+    if gpus == 0 {
+        None
+    } else {
+        Some(total)
+    }
+}
+
 /// A meter that replays programmed counter snapshots in order, for
 /// deterministic tests and offline replays. Reading past the last sample
 /// is an error, never an invented value.
@@ -248,6 +398,9 @@ impl<M: SystemMeter> UsagePeriodMeter<M> {
         let delta_ticks = current
             .cpu_core_ticks
             .saturating_sub(previous.cpu_core_ticks);
+        let delta_gpu_ticks = current
+            .gpu_unit_ticks
+            .saturating_sub(previous.gpu_unit_ticks);
         let delta_secs = current.uptime_secs.saturating_sub(previous.uptime_secs);
         let used_kb_before = previous
             .ram_total_kb
@@ -271,7 +424,7 @@ impl<M: SystemMeter> UsagePeriodMeter<M> {
         let storage_gb_hours = average_storage_gb.saturating_mul(delta_secs as u128) / 3_600;
         Ok(Some(MeasuredUsage {
             cpu_core_ticks: u64::try_from(delta_ticks).unwrap_or(u64::MAX),
-            gpu_unit_ticks: 0,
+            gpu_unit_ticks: u64::try_from(delta_gpu_ticks).unwrap_or(u64::MAX),
             ram_mb_hours,
             storage_gb_hours,
             bandwidth_gb: u64::try_from(bandwidth_gb).unwrap_or(u64::MAX),
@@ -454,6 +607,7 @@ mod tests {
     fn counters(cpu: u128, uptime: u64) -> SystemCounters {
         SystemCounters {
             cpu_core_ticks: cpu,
+            gpu_unit_ticks: 0,
             ram_total_kb: 1_000_000,
             ram_available_kb: 500_000,
             net_rx_bytes: 0,
@@ -506,6 +660,31 @@ mod tests {
         let usage = meter.sample_period().unwrap().unwrap();
         // average available capacity 150 GB over one hour
         assert_eq!(usage.storage_gb_hours, 150);
+    }
+
+    #[test]
+    fn period_meter_converts_gpu_ticks_into_usage() {
+        let mut before = counters(0, 0);
+        before.gpu_unit_ticks = 500;
+        let mut after = counters(10, 3_600);
+        // one GPU fully busy for one hour = 100 ticks/s * 3600 s
+        after.gpu_unit_ticks = 360_500;
+        let mut meter = UsagePeriodMeter::new(SequenceMeter::new(vec![before, after]));
+        meter.sample_period().unwrap();
+        let usage = meter.sample_period().unwrap().unwrap();
+        assert_eq!(usage.gpu_unit_ticks, 360_000);
+    }
+
+    #[test]
+    fn gpu_ticks_never_go_backwards_between_reads() {
+        let mut before = counters(0, 0);
+        before.gpu_unit_ticks = 1_000;
+        let mut after = counters(10, 3_600);
+        after.gpu_unit_ticks = 400; // a wrapped or lying counter is clamped to zero
+        let mut meter = UsagePeriodMeter::new(SequenceMeter::new(vec![before, after]));
+        meter.sample_period().unwrap();
+        let usage = meter.sample_period().unwrap().unwrap();
+        assert_eq!(usage.gpu_unit_ticks, 0);
     }
 
     #[test]
@@ -713,6 +892,51 @@ mod tests {
         assert!(second.uptime_secs >= first.uptime_secs);
         assert!(first.ram_total_kb >= first.ram_available_kb);
         assert!(first.disk_total_kb >= first.disk_available_kb);
+        // GPU ticks are an accumulator: they never go backwards, and a
+        // host without a readable GPU counter simply reports zero.
+        assert!(second.gpu_unit_ticks >= first.gpu_unit_ticks);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn gpu_ticks_integrate_sampled_busy_percent() {
+        // the first read only establishes the baseline
+        let (acc, pct, up) = advance_gpu_ticks(0, None, None, 1_000, Some(40));
+        assert_eq!((acc, pct, up), (0, Some(40), Some(1_000)));
+        // 40% busy held for 100 seconds credits 4_000 ticks
+        let (acc, pct, up) = advance_gpu_ticks(acc, pct, up, 1_100, Some(60));
+        assert_eq!(acc, 4_000);
+        assert_eq!(pct, Some(60));
+        // 60% busy held for 200 seconds credits 12_000 more ticks
+        let (acc, pct, up) = advance_gpu_ticks(acc, pct, up, 1_300, None);
+        assert_eq!(acc, 16_000);
+        assert_eq!(pct, None);
+        // an interval without a GPU sample credits nothing
+        let (acc, _, _) = advance_gpu_ticks(acc, pct, up, 1_400, Some(100));
+        assert_eq!(acc, 16_000);
+        // uptime going backwards never credits anything
+        let (acc, _, _) = advance_gpu_ticks(acc, Some(100), Some(1_400), 1_000, Some(100));
+        assert_eq!(acc, 16_000);
+        // the accumulator saturates instead of overflowing
+        let (acc, _, _) = advance_gpu_ticks(u128::MAX, Some(100), Some(0), 1, Some(100));
+        assert_eq!(acc, u128::MAX);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn gpu_parsers_read_real_formats() {
+        assert_eq!(parse_gpu_busy_percent("37\n"), Some(37));
+        assert_eq!(parse_gpu_busy_percent("0"), Some(0));
+        assert_eq!(parse_gpu_busy_percent("100\n"), Some(100));
+        assert_eq!(parse_gpu_busy_percent("101\n"), None);
+        assert_eq!(parse_gpu_busy_percent("busy\n"), None);
+        assert_eq!(parse_gpu_busy_percent(""), None);
+        assert_eq!(parse_nvidia_smi_utilization("25\n40\n"), Some(65));
+        assert_eq!(parse_nvidia_smi_utilization("0\n"), Some(0));
+        assert_eq!(parse_nvidia_smi_utilization(" 7 \n"), Some(7));
+        assert_eq!(parse_nvidia_smi_utilization("[N/A]\n"), None);
+        assert_eq!(parse_nvidia_smi_utilization("25\n101\n"), None);
+        assert_eq!(parse_nvidia_smi_utilization(""), None);
     }
 
     #[cfg(not(target_os = "linux"))]
