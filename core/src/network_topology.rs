@@ -179,7 +179,8 @@ impl DataCentre {
     }
 
     pub fn healthy_nodes(&self, now_unix: u64, max_age: u64) -> Vec<NodeId> {
-        self.nodes
+        let mut healthy = self
+            .nodes
             .iter()
             .filter(|(_, node)| {
                 node.alive
@@ -187,7 +188,9 @@ impl DataCentre {
                         || node.metrics.is_healthy(now_unix, max_age))
             })
             .map(|(id, _)| id.clone())
-            .collect()
+            .collect::<Vec<_>>();
+        healthy.sort();
+        healthy
     }
 }
 
@@ -1187,6 +1190,18 @@ mod tests {
         assert!(!metrics.is_healthy(100, 60));
         assert!(metrics.is_healthy(101, 60));
         assert!(!metrics.is_healthy(200, 60));
+    }
+
+    #[test]
+    fn healthy_node_listing_is_stable_by_canonical_id() {
+        let mut centre = DataCentre::new("dc");
+        centre.add_node(Node::new("node-z")).unwrap();
+        centre.add_node(Node::new("node-a")).unwrap();
+
+        assert_eq!(
+            centre.healthy_nodes(0, 60),
+            vec!["node-a".to_string(), "node-z".to_string()]
+        );
     }
 
     #[test]
