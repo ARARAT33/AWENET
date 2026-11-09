@@ -191,12 +191,13 @@ impl DataCentre {
 }
 
 impl DataGroup {
-    pub fn new(
-        id: impl Into<String>,
-        centres: impl IntoIterator<Item = DataCentreId>,
-    ) -> Result<Self, String> {
+    pub fn new<I, S>(id: impl Into<String>, centres: I) -> Result<Self, String>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
         let id = id.into();
-        let centres: HashSet<DataCentreId> = centres.into_iter().collect();
+        let centres: HashSet<DataCentreId> = centres.into_iter().map(Into::into).collect();
         if id.trim().is_empty() {
             return Err("data group ID must not be empty".into());
         }
@@ -208,12 +209,13 @@ impl DataGroup {
 }
 
 impl CentreGroup {
-    pub fn new(
-        id: impl Into<String>,
-        groups: impl IntoIterator<Item = DataGroupId>,
-    ) -> Result<Self, String> {
+    pub fn new<I, S>(id: impl Into<String>, groups: I) -> Result<Self, String>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
         let id = id.into();
-        let groups: HashSet<DataGroupId> = groups.into_iter().collect();
+        let groups: HashSet<DataGroupId> = groups.into_iter().map(Into::into).collect();
         if id.trim().is_empty() {
             return Err("centre group ID must not be empty".into());
         }
