@@ -30,7 +30,8 @@ impl PeerMetrics {
     }
     pub fn is_healthy(&self, now_unix: u64, max_age: u64) -> bool {
         self.last_seen_unix > 0
-            && now_unix.saturating_sub(self.last_seen_unix) <= max_age
+            && self.last_seen_unix <= now_unix
+            && now_unix - self.last_seen_unix <= max_age
             && self.reliability_percent >= 50
     }
 }
@@ -525,6 +526,32 @@ impl AweNet {
         Ok(())
     }
 
+    /// Updates the liveness flag for a node found anywhere in the topology.
+    pub fn set_node_health(&mut self, node_id: &str, alive: bool) -> Result<(), String> {
+        for centre in self.centres.values_mut() {
+            if let Some(node) = centre.nodes.get_mut(node_id) {
+                node.set_health(alive);
+                return Ok(());
+            }
+        }
+        Err("node not found".into())
+    }
+
+    /// Replaces the latest metrics for a known node.
+    pub fn update_node_metrics(
+        &mut self,
+        node_id: &str,
+        metrics: PeerMetrics,
+    ) -> Result<(), String> {
+        for centre in self.centres.values_mut() {
+            if let Some(node) = centre.nodes.get_mut(node_id) {
+                node.update_metrics(metrics);
+                return Ok(());
+            }
+        }
+        Err("node not found".into())
+    }
+
     pub fn remove_node(&mut self, node_id: &str) -> Result<Node, String> {
         let centre_id = self
             .centres
@@ -1000,4 +1027,36 @@ mod tests {
         network.centres.insert("dc".into(), centre);
         assert!(network.validate().is_err());
     }
+    #[test]
+    fn future_peer_timestamps_are_not_healthy() {
+        let metrics = PeerMetrics {
+            reliability_percent: 100,
+            last_seen_unix: 101,
+            ..PeerMetrics::default()
+        };
+        assert!(!metrics.is_healthy(100, 60));
+        assert!(metrics.is_healthy(101, 60));
+        assert!(!metrics.is_healthy(200, 60));
+    }
+
+    #[test]
+    fn network_management_updates_only_known_nodes() {
+        let mut network = AweNet::default();
+        let mut centre = DataCentre::new("dc");
+        centre.add_node(Node::new("node")).unwrap();
+        network.add_centre(centre).unwrap();
+
+        network.set_node_health("node", false).unwrap();
+        assert!(!network.centres["dc"].nodes["node"].alive);
+        network.update_node_metrics("node", PeerMetrics {
+            rtt_ms: 12,
+            reliability_percent: 90,
+            last_seen_unix: 100,
+            ..PeerMetrics::default()
+        }).unwrap();
+        assert_eq!(network.centres["dc"].nodes["node"].metrics.rtt_ms, 12);
+        assert!(network.set_node_health("missing", true).is_err());
+        assert!(network.update_node_metrics("missing", PeerMetrics::default()).is_err());
+    }
+
 }
