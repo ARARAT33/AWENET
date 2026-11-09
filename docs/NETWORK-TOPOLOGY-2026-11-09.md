@@ -34,6 +34,7 @@ work. It is not yet the node's persistent, signed network-control API.
 - Disconnecting data centres removes the cross-centre peer edges and both link
   records.
 - A route is returned only when both source and destination nodes exist and are live.
+- Graph operations use the data-centre/node map keys as canonical IDs rather than trusting mutable public `Node.id` fields.
 - Validation rejects unknown peers, asymmetric peer edges, duplicate node IDs,
   missing reverse links, missing link state, invalid relay references, and
   invalid group membership.
