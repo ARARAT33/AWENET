@@ -457,9 +457,7 @@ impl AweNet {
             .nodes
             .get(&old_right)
             .ok_or("configured right relay does not exist")?;
-        if !old_left_node.peers.contains(&old_right)
-            || !old_right_node.peers.contains(&old_left)
-        {
+        if !old_left_node.peers.contains(&old_right) || !old_right_node.peers.contains(&old_left) {
             return Err("configured relay peer edge is not reciprocal".into());
         }
 
@@ -771,10 +769,9 @@ impl AweNet {
                         let local_node = centre.nodes.get(local_relay).ok_or_else(|| {
                             format!("centre link {centre_id} has an unknown local relay")
                         })?;
-                        let remote_node =
-                            peer_centre.nodes.get(remote_relay).ok_or_else(|| {
-                                format!("centre link {peer_centre_id} has an unknown remote relay")
-                            })?;
+                        let remote_node = peer_centre.nodes.get(remote_relay).ok_or_else(|| {
+                            format!("centre link {peer_centre_id} has an unknown remote relay")
+                        })?;
                         if !local_node.peers.contains(remote_relay)
                             || !remote_node.peers.contains(local_relay)
                         {
@@ -1039,8 +1036,15 @@ mod tests {
             )
             .unwrap();
 
-        network.centres.get_mut("right").unwrap().nodes
-            .get_mut("right-1").unwrap().peers.clear();
+        network
+            .centres
+            .get_mut("right")
+            .unwrap()
+            .nodes
+            .get_mut("right-1")
+            .unwrap()
+            .peers
+            .clear();
         let before = network.clone();
         assert!(network.failover_relay("left", "right").is_err());
         assert_eq!(network, before);
