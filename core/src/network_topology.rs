@@ -488,7 +488,7 @@ impl AweNet {
             .ok_or_else(|| "node not found".to_string())?;
         for centre in self.centres.values() {
             for link in centre.link_state.values() {
-                if link.relays.iter().any(|relay| relay == node_id) {
+                if matches!(&link.mode, CentreLinkMode::Relay { relay_node } if relay_node == node_id) {
                     return Err("cannot remove an active relay; fail over or disconnect its link first".into());
                 }
             }
@@ -497,6 +497,9 @@ impl AweNet {
         for centre in self.centres.values_mut() {
             for node in centre.nodes.values_mut() {
                 node.peers.remove(node_id);
+            }
+            for link in centre.link_state.values_mut() {
+                link.relays.retain(|relay| relay != node_id);
             }
         }
         Ok(removed)
@@ -533,6 +536,7 @@ impl AweNet {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        let mut global_node_ids = HashSet::new();
         for (centre_id, centre) in &self.centres {
             if centre_id.is_empty() || centre.id != *centre_id {
                 return Err("data-centre map key does not match its ID".into());
@@ -540,6 +544,9 @@ impl AweNet {
             for (node_id, node) in &centre.nodes {
                 if node_id.is_empty() || node.id != *node_id {
                     return Err("node map key does not match its ID".into());
+                }
+                if !global_node_ids.insert(node_id.clone()) {
+                    return Err(format!("node ID {node_id} is duplicated across data centres"));
                 }
                 for peer_id in &node.peers {
                     let peer = self.centres.iter()
@@ -597,6 +604,10 @@ impl AweNet {
     }
 
     pub fn route(&self, src: &NodeId, dst: &NodeId) -> Option<Vec<NodeId>> {
+        let node_exists = |id: &str| self.centres.values().any(|centre| centre.nodes.contains_key(id));
+        if !node_exists(src) || !node_exists(dst) {
+            return None;
+        }
         if src == dst {
             return Some(vec![src.clone()]);
         }
@@ -798,6 +809,46 @@ mod tests {
         let restored: AweNet = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(restored, network);
         assert!(restored.validate().is_ok());
+    }
+
+    #[test]
+    fn removing_a_full_mesh_node_cleans_membership_without_breaking_link() {
+        let mut network = AweNet::default();
+        let mut left = DataCentre::new("left");
+        left.add_node(Node::new("left-1")).unwrap();
+        left.add_node(Node::new("left-2")).unwrap();
+        let mut right = DataCentre::new("right");
+        right.add_node(Node::new("right-1")).unwrap();
+        network.add_centre(left).unwrap();
+        network.add_centre(right).unwrap();
+        network.connect_centres("left", "right", CentreLinkMode::FullMesh).unwrap();
+        network.remove_node("left-1").unwrap();
+        assert!(!network.centres["right"].nodes["right-1"].peers.contains("left-1"));
+        assert!(!network.centres["left"].link_state["right"].relays.contains(&"left-1".to_string()));
+        assert!(network.validate().is_ok());
+    }
+
+    #[test]
+    fn route_rejects_unknown_nodes_and_works_in_both_directions() {
+        let mut centre = DataCentre::new("dc");
+        centre.add_node(Node::new("a")).unwrap();
+        centre.add_node(Node::new("b")).unwrap();
+        let mut network = AweNet::default();
+        network.add_centre(centre).unwrap();
+        assert!(network.route(&"missing".into(), &"missing".into()).is_none());
+        assert_eq!(network.route(&"a".into(), &"b".into()), Some(vec!["a".into(), "b".into()]));
+        assert_eq!(network.route(&"b".into(), &"a".into()), Some(vec!["b".into(), "a".into()]));
+    }
+
+    #[test]
+    fn validate_rejects_asymmetric_peer_edges() {
+        let mut centre = DataCentre::new("dc");
+        centre.add_node(Node::new("a")).unwrap();
+        centre.add_node(Node::new("b")).unwrap();
+        centre.nodes.get_mut("b").unwrap().peers.remove("a");
+        let mut network = AweNet::default();
+        network.centres.insert("dc".into(), centre);
+        assert!(network.validate().is_err());
     }
 
 }
