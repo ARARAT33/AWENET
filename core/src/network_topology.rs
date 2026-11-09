@@ -167,9 +167,7 @@ impl DataCentre {
         self.nodes
             .iter()
             .filter(|(id, node)| node.alive && *id != from)
-            .min_by_key(|(id, node)| {
-                (node.metrics.score(), node.peers.len() as u64, (*id).clone())
-            })
+            .min_by_key(|(id, node)| (node.metrics.score(), node.peers.len() as u64, (*id).clone()))
             .map(|(id, _)| id.clone())
     }
 
