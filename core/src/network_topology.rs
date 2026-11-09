@@ -1048,15 +1048,21 @@ mod tests {
 
         network.set_node_health("node", false).unwrap();
         assert!(!network.centres["dc"].nodes["node"].alive);
-        network.update_node_metrics("node", PeerMetrics {
-            rtt_ms: 12,
-            reliability_percent: 90,
-            last_seen_unix: 100,
-            ..PeerMetrics::default()
-        }).unwrap();
+        network
+            .update_node_metrics(
+                "node",
+                PeerMetrics {
+                    rtt_ms: 12,
+                    reliability_percent: 90,
+                    last_seen_unix: 100,
+                    ..PeerMetrics::default()
+                },
+            )
+            .unwrap();
         assert_eq!(network.centres["dc"].nodes["node"].metrics.rtt_ms, 12);
         assert!(network.set_node_health("missing", true).is_err());
-        assert!(network.update_node_metrics("missing", PeerMetrics::default()).is_err());
+        assert!(network
+            .update_node_metrics("missing", PeerMetrics::default())
+            .is_err());
     }
-
 }
