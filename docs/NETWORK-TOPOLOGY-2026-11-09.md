@@ -29,6 +29,11 @@ work. It is not yet the node's persistent, signed network-control API.
 - Relay links record the local relay from each endpoint's perspective.
 - Relay failover removes the old cross-link, installs the new reciprocal link,
   and updates both endpoint records.
+- Equal-scored relay candidates are tie-broken by canonical node ID so selection
+  is deterministic across processes with different hash-map iteration order.
+- Failover verifies the existing relay metadata and reciprocal peer edge before
+  mutation; inconsistent state is rejected without a partial topology update.
+- Healthy-node listings are sorted by canonical node ID for stable API output.
 - A node that is currently an active relay cannot be removed until the link is
   failed over or disconnected.
 - Disconnecting data centres removes the cross-centre peer edges and both link
