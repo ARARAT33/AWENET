@@ -33,7 +33,7 @@ work. It is not yet the node's persistent, signed network-control API.
   failed over or disconnected.
 - Disconnecting data centres removes the cross-centre peer edges and both link
   records.
-- A route is returned only when both source and destination nodes exist.
+- A route is returned only when both source and destination nodes exist and are live.
 - Validation rejects unknown peers, asymmetric peer edges, duplicate node IDs,
   missing reverse links, missing link state, invalid relay references, and
   invalid group membership.
@@ -52,5 +52,5 @@ network control plane.
 Unit tests cover bidirectional node insertion, duplicate identity rejection,
 distinct group membership, reciprocal relay metadata, relay failover, safe
 disconnect/removal, dependent-group removal, serialization round-trip, route
-symmetry, unknown-node rejection, future heartbeat timestamps, node health and
+symmetry, unknown-node rejection, future heartbeat timestamps, canonical map-key handling, offline-route rejection, node health and
 metric updates, and invalid asymmetric topology.
