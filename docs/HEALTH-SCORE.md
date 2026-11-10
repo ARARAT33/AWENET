@@ -16,9 +16,25 @@ The health score aggregates the *whole product view*.
 | `transfer_success` | Successful transfers as % of finished transfers | 20 |
 | `dht_responsiveness` | DHT responsiveness percentage | 15 |
 
-Weights are configurable (`HealthWeights`) and must sum to 100; invalid
-weights make `compute_report` return `None` instead of producing a nonsense
-score.
+Weights are configurable (`HealthWeights`) and must sum to 100. Every input
+percentage must also be in the inclusive `0..=100` range. Invalid weights or
+out-of-range inputs make `compute_report` return `None` instead of producing a
+nonsense score.
+
+## Runtime integration contract
+
+`product_health` is deliberately a pure scoring and history module. Runtime
+adapters must supply each factor from observed evidence; they must not replace
+unknown data with a healthy default. A node integration should therefore:
+
+1. calculate replica durability from verified durable replica acknowledgements;
+2. calculate peer coverage from authenticated peers and fresh liveness data;
+3. calculate transfer success from completed transfer outcomes; and
+4. calculate DHT responsiveness from bounded discovery/routing probes.
+
+Until all four evidence sources are available, the score must be presented as
+incomplete or clearly marked as partial rather than advertised as production
+readiness.
 
 ## Score and bands
 
