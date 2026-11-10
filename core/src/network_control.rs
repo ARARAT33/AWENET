@@ -158,7 +158,11 @@ impl NetworkControlPlane {
         self.sequence
     }
 
-    pub fn updated_at_unix(&self) -> u64 {
+    pub fn next_sequence(&self) -> Option<u64> {
+        self.sequence.checked_add(1)
+    }
+
+    pub fn updated_at_unix(&self) -> {
         self.updated_at_unix
     }
 
@@ -844,6 +848,201 @@ mod tests {
         assert!(load_or_create(&path, &founder, 100).is_err());
         assert_eq!(fs::read(&path).unwrap(), b"not-json");
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn signed_health_and_metrics_updates_are_bounded() {
+        let founder = identity("founder");
+        let mut control = NetworkControlPlane::new(&founder, 100);
+        apply(
+            &mut control,
+            &founder,
+            NetworkAction::CreateCentre {
+                centre_id: "dc-a".into(),
+            },
+            101,
+        )
+        .unwrap();
+        apply(
+            &mut control,
+            &founder,
+            NetworkAction::AddNode {
+                centre_id: "dc-a".into(),
+                node_id: "node-a".into(),
+            },
+            102,
+        )
+        .unwrap();
+        apply(
+            &mut control,
+            &founder,
+            NetworkAction::SetNodeHealth {
+                node_id: "node-a".into(),
+                alive: false,
+            },
+            103,
+        )
+        .unwrap();
+
+        let invalid_metrics = PeerMetrics {
+            load_percent: 101,
+            reliability_percent: 80,
+            last_seen_unix: 104,
+            ..PeerMetrics::default()
+        };
+        let invalid_action = NetworkAction::UpdateNodeMetrics {
+            node_id: "node-a".into(),
+            metrics: invalid_metrics,
+        };
+        let message = control.signing_message(&invalid_action, 104).unwrap();
+        let signature = founder.sign(&message);
+        assert_eq!(
+            control.apply_signed(&founder, &invalid_action, 104, 104, &signature),
+            Err(NetworkControlError::InvalidMetrics)
+        );
+        assert_eq!(control.sequence(), 3);
+
+        let metrics = PeerMetrics {
+            rtt_ms: 12,
+            throughput_kbps: 50_000,
+            load_percent: 75,
+            reliability_percent: 80,
+            last_seen_unix: 104,
+        };
+        apply(
+            &mut control,
+            &founder,
+            NetworkAction::UpdateNodeMetrics {
+                node_id: "node-a".into(),
+                metrics: metrics.clone(),
+            },
+            104,
+        )
+        .unwrap();
+        let node = &control.topology().centres["dc-a"].nodes["node-a"];
+        assert!(!node.alive);
+        assert_eq!(node.metrics, metrics);
+    }
+
+    #[test]
+    fn relay_failover_and_dependency_safe_removal_are_transactional() {
+        let founder = identity("founder");
+        let mut control = NetworkControlPlane::new(&founder, 100);
+        for (index, centre) in ["dc-a", "dc-b", "dc-c"].iter().enumerate() {
+            apply(
+                &mut control,
+                &founder,
+                NetworkAction::CreateCentre {
+                    centre_id: (*centre).into(),
+                },
+                101 + index as u64,
+            )
+            .unwrap();
+        }
+        for (index, (centre, node)) in [
+            ("dc-a", "a1"),
+            ("dc-a", "a2"),
+            ("dc-b", "b1"),
+            ("dc-b", "b2"),
+            ("dc-c", "c1"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            apply(
+                &mut control,
+                &founder,
+                NetworkAction::AddNode {
+                    centre_id: (*centre).into(),
+                    node_id: (*node).into(),
+                },
+                104 + index as u64,
+            )
+            .unwrap();
+        }
+        apply(
+            &mut control,
+            &founder,
+            NetworkAction::ConnectCentres {
+                left: "dc-a".into(),
+                right: "dc-b".into(),
+                mode: CentreLinkMode::Relay {
+                    relay_node: "a1".into(),
+                },
+            },
+            109,
+        )
+        .unwrap();
+        apply(
+            &mut control,
+            &founder,
+            NetworkAction::FailoverRelay {
+                left: "dc-a".into(),
+                right: "dc-b".into(),
+            },
+            110,
+        )
+        .unwrap();
+        apply(
+            &mut control,
+            &founder,
+            NetworkAction::RemoveNode {
+                node_id: "a1".into(),
+            },
+            111,
+        )
+        .unwrap();
+
+        apply(
+            &mut control,
+            &founder,
+            NetworkAction::CreateDataGroup {
+                group_id: "dg-a".into(),
+                centre_ids: vec!["dc-a".into(), "dc-b".into(), "dc-c".into()],
+            },
+            112,
+        )
+        .unwrap();
+        let remove_referenced = NetworkAction::RemoveCentre {
+            centre_id: "dc-a".into(),
+        };
+        let message = control
+            .signing_message(&remove_referenced, 113)
+            .unwrap();
+        let signature = founder.sign(&message);
+        assert!(matches!(
+            control.apply_signed(
+                &founder,
+                &remove_referenced,
+                113,
+                113,
+                &signature
+            ),
+            Err(NetworkControlError::Topology(_))
+        ));
+        assert_eq!(control.sequence(), 12);
+        assert!(control.topology().centres.contains_key("dc-a"));
+
+        apply(
+            &mut control,
+            &founder,
+            NetworkAction::RemoveDataGroup {
+                group_id: "dg-a".into(),
+            },
+            113,
+        )
+        .unwrap();
+        apply(
+            &mut control,
+            &founder,
+            NetworkAction::RemoveCentre {
+                centre_id: "dc-a".into(),
+            },
+            114,
+        )
+        .unwrap();
+        control.topology().validate().unwrap();
+        assert!(!control.topology().centres.contains_key("dc-a"));
     }
 
     #[test]
