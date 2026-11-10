@@ -50,6 +50,18 @@ The added tests cover:
 
 The existing Serde round-trip test now also runs full state validation.
 
+
+## Exact regression test names
+
+- `invalid_deserialized_certificates_cannot_enroll_or_verify`
+- `registry_sequence_exhaustion_never_reuses_a_sequence_or_mutates_state`
+- `verifier_reenrollment_cannot_move_time_backwards`
+- `window_deadline_overflow_is_rejected_without_mutation`
+- `signed_verifier_net_store_roundtrips_and_rejects_wrong_founder`
+- `signed_store_rejects_founder_signed_but_internally_forged_registry`
+- `failed_verifier_net_save_preserves_previous_snapshot`
+- Existing `verifier_net_round_trips_through_serde`, now with full validation.
+
 ## Verification boundary
 
 This is a core durability primitive, not yet a node-runtime integration.
