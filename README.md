@@ -42,6 +42,7 @@ while exposing a small, stable product orchestration model on top.
 | Economy product layer | `storefront`, `economy_api` (node), `awenetwork.js`, `storefront.js`, `founder.js` | Storefront catalog & search, economy HTTP API in the node, AWENETwork board, ONECOIN Market with escrowed orders, Founder Control Center, persistent economy state |
 | Founder security & resource metering | `webauthn` (core), `founder_guard`, `resource_meter`, `economy_api` passkey routes, `founder.js` Security tab, `onecoin.js` scan-to-pay | Browser WebAuthn passkey enrollment + MFA step-up for founder mutations, contributed-storage capacity metering (statvfs), GPU busy-percentage metering (amdgpu sysfs / nvidia-smi), camera QR scan-to-pay where supported |
 | Economy UI localization | `i18n` (extended catalog + `Locale`/`Catalog::messages`), `economy_api` `/api/i18n/messages`, `i18n.js`, `awenetwork.js`, `storefront.js`, `founder.js`, `onecoin.js` | Bilingual Armenian/English economy screens from one core catalog, served by the node, with a persisted choice and a topbar language toggle |
+| Multi-node usage verification | `verifier_net`, `resource_meter`, `resource_economy` | Founder-enrolled verifier registry with founder-signed certificates, per-period attestation windows with bounded report deadlines, honest peer-observation reports, min-consensus settlement evidence |
 | Identity & security | `identity`, `user_registry`, `sessions`, `keys`, `security`, `crypto`, `defense`, `sandbox` | Self-certifying AWE IDs, founder-signed local user directory, authenticated encrypted transport, hostile-traffic limits |
 | Discovery & routing | `discovery`, `routing`, `network_topology`, `lan_mesh` | DHT-style lookup, Data Centre topology, relay failover, LAN mesh |
 | Data plane | `data_plane`, `storage`, `replication`, `repair`, `recovery` | Chunked content-addressed storage, replica placement, repair planning |
@@ -267,6 +268,25 @@ inside the local node and its UI, without changing any protocol guarantee:
   counter report zero GPU ticks. See
   [docs/GPU-METERING-2026-11-09.md](docs/GPU-METERING-2026-11-09.md).
 
+## Multi-node usage verification
+
+The 2026-11-10 upgrade gives the resource economy's verifier consensus its
+network half in `core/src/verifier_net.rs`. Only the founder can enroll or
+retire verifier nodes, and every enrollment is a founder-signed certificate
+any peer can validate offline. A contributing node opens one bounded
+attestation window per settlement period with a report deadline; enrolled
+verifiers submit signed usage reports, which the net accepts only from
+enrolled verifiers, never from the contributing node itself and never twice
+from the same signer. A remote verifier reports only what it can honestly
+observe over the network (bytes exchanged with the node, availability under
+direct contact), so counters no peer can see are never invented. The
+collected reports build the same `UsageVerification` the resource meter
+produces: settlement still requires at least two distinct verifier
+signatures and pays the per-resource minimum across them. The node
+transport and HTTP wiring that carries reports between live nodes is the
+next increment and is not claimed here. See
+[docs/VERIFIER-NET-UPGRADE-2026-11-10.md](docs/VERIFIER-NET-UPGRADE-2026-11-10.md).
+
 ## Important status rule
 
 A source module or UI screen is not proof of end-to-end functionality.
@@ -301,6 +321,7 @@ model is in [docs/PRODUCT-ARCHITECTURE.md](docs/PRODUCT-ARCHITECTURE.md) and
 - [Economy UI localization](docs/ECONOMY-LOCALIZATION-2026-11-08.md)
 - [AWEID user registry and founder-managed accounts](docs/USER-REGISTRY-2026-11-08.md)
 - [GPU utilization metering](docs/GPU-METERING-2026-11-09.md)
+- [Multi-node usage verification](docs/VERIFIER-NET-UPGRADE-2026-11-10.md)
 
 ## Security
 
