@@ -187,9 +187,10 @@ impl VerifierRegistry {
     }
 
     pub fn is_active(&self, verifier_public_key: &[u8; 32]) -> bool {
-        self.certificate(verifier_public_key).is_some_and(|certificate| {
-            certificate.is_active() && certificate.is_valid(&self.founder_public_key)
-        })
+        self.certificate(verifier_public_key)
+            .is_some_and(|certificate| {
+                certificate.is_active() && certificate.is_valid(&self.founder_public_key)
+            })
     }
 
     pub fn active_verifiers(&self) -> usize {
@@ -683,7 +684,6 @@ impl VerifierNet {
     }
 }
 
-
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 struct SignedVerifierNetFile {
     version: u16,
@@ -782,11 +782,7 @@ fn atomic_write(path: &Path, encoded: &[u8]) -> Result<(), VerifierNetError> {
 /// Atomically saves a founder-signed verifier network snapshot. The founder
 /// private key is never written to disk; only the public registry, windows
 /// and signed reports are included in the snapshot.
-pub fn save(
-    path: &Path,
-    net: &VerifierNet,
-    founder: &Identity,
-) -> Result<(), VerifierNetError> {
+pub fn save(path: &Path, net: &VerifierNet, founder: &Identity) -> Result<(), VerifierNetError> {
     if net.registry.founder_public_key != founder.public.public_key {
         return Err(VerifierNetError::WrongFounder);
     }
@@ -821,11 +817,7 @@ pub fn load(path: &Path, founder: &Identity) -> Result<VerifierNet, VerifierNetE
         return Err(VerifierNetError::WrongFounder);
     }
     let message = store_signing_bytes(&signed.net)?;
-    if !Identity::verify(
-        &founder.public.public_key,
-        &message,
-        &signed.signature,
-    ) {
+    if !Identity::verify(&founder.public.public_key, &message, &signed.signature) {
         return Err(VerifierNetError::InvalidSignature);
     }
     signed.net.validate()?;
@@ -1430,7 +1422,10 @@ mod tests {
         forged.founder_signature = imposter.sign(&forged.signing_bytes());
         net.registry.verifiers.push(forged);
         assert!(!net.registry.is_active(&verifier.public.public_key));
-        assert!(matches!(net.validate(), Err(VerifierNetError::InvalidRegistry)));
+        assert!(matches!(
+            net.validate(),
+            Err(VerifierNetError::InvalidRegistry)
+        ));
         let report = SignedUsageReport::new(
             &verifier,
             node.public.awe_id.clone(),
@@ -1593,5 +1588,4 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), before);
         std::fs::remove_file(path).unwrap();
     }
-
 }
