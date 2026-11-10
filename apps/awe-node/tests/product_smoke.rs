@@ -971,8 +971,8 @@ fn three_node_product_smoke() {
         .to_string();
         let replay = post_raw("127.0.0.1:46201", "/api/network/control", &replay_body);
         assert!(
-            replay.starts_with("HTTP/1.1 403 Forbidden"),
-            "replay was not rejected: {replay}"
+            replay.starts_with("HTTP/1.1 409 Conflict"),
+            "stale replay was not rejected as a conflict: {replay}"
         );
 
         let forged_action = NetworkAction::CreateCentre {
