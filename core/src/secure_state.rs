@@ -113,7 +113,9 @@ mod tests {
         save_json(&path, &value, "correct horse battery staple").unwrap();
         let raw = fs::read(&path).unwrap();
         assert!(raw.starts_with(MAGIC));
-        assert!(!raw.windows(b"nid-test".len()).any(|window| window == b"nid-test"));
+        assert!(!raw
+            .windows(b"nid-test".len())
+            .any(|window| window == b"nid-test"));
         let decoded: Fixture = load_json(&path, "correct horse battery staple").unwrap();
         assert_eq!(decoded, value);
         assert!(load_json::<Fixture>(&path, "wrong").is_err());
