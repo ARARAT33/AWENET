@@ -1080,6 +1080,17 @@ fn three_node_product_smoke() {
             stored.contains(r#""status":"stored""#),
             "storage put: {stored}"
         );
+        // A tiny object must be stored with the scaled 12-shard policy, not the
+        // 1000-shard network ceiling. The API used to hardcode 1000 here, which
+        // disagreed with the policy actually used to encode the shards.
+        assert!(
+            stored.contains(r#""shards":12"#),
+            "small file must report 12 shards: {stored}"
+        );
+        assert!(
+            !stored.contains(r#""shards":1000"#),
+            "small file must not report the 1000-shard ceiling: {stored}"
+        );
         let file_id = stored
             .split(r#""file_id":""#)
             .nth(1)

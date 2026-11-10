@@ -283,4 +283,46 @@ mod tests {
         };
         assert!(s.validate().is_err());
     }
+
+    #[test]
+    fn small_file_transfer_verifies_with_scaled_policy() {
+        // Regression guard for the node API bug: a shard belonging to a small
+        // file must be sent with the 12-shard policy, not the 1000-shard
+        // ceiling, otherwise `verify()` rejects it as out of range.
+        let policy = crate::storage::StoragePolicy::for_file_size(1024);
+        assert_eq!(policy.total_shards(), 12);
+        let transfer = StorageShardTransfer::new(
+            [7; 16],
+            [1; 32],
+            [2; 32],
+            0,
+            policy.total_shards() as u16,
+            1024,
+            b"shard-payload".to_vec(),
+        );
+        assert!(transfer.verify().is_ok());
+
+        // The last valid index is accepted, the next one is rejected.
+        let last = StorageShardTransfer::new(
+            [7; 16],
+            [1; 32],
+            [2; 32],
+            (policy.total_shards() - 1) as u16,
+            policy.total_shards() as u16,
+            1024,
+            b"shard-payload".to_vec(),
+        );
+        assert!(last.verify().is_ok());
+
+        let out_of_range = StorageShardTransfer::new(
+            [7; 16],
+            [1; 32],
+            [2; 32],
+            policy.total_shards() as u16,
+            policy.total_shards() as u16,
+            1024,
+            b"shard-payload".to_vec(),
+        );
+        assert!(out_of_range.verify().is_err());
+    }
 }

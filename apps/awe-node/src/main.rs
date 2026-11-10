@@ -1677,8 +1677,10 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                                             "file_id": hex::encode(file_id),
                                             "filename": filename,
                                             "original_size": data.len(),
-                                            "shards": 1000,
-                                            "replicas": 3,
+                                            "shards": policy.total_shards(),
+                                            "data_shards": policy.data_shards,
+                                            "parity_shards": policy.parity_shards,
+                                            "replicas": policy.replica_count,
                                             "stored_local": stored_local,
                                             "sent_remote": sent_remote,
                                             "failures": failed
@@ -1709,8 +1711,17 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                 .and_then(|b| <[u8; 32]>::try_from(b).ok());
             let payload = hex::decode(payload_hex).ok();
 
+            // The shard count must match the policy the sender used for this object,
+            // which is derived from the original file size. Hardcoding the 1000-shard
+            // network ceiling here made every pushed shard fail `verify()` for small
+            // files, because their real policy is 12 shards.
+            let push_policy = StoragePolicy::for_file_size(original_size as usize);
+            let push_total_shards = push_policy.total_shards();
+
             match (recipient_id, file_id, payload, usize::try_from(shard_index)) {
-                (Some(peer_id), Some(file_id), Some(payload), Ok(index)) if index < 1000 => {
+                (Some(peer_id), Some(file_id), Some(payload), Ok(index))
+                    if index < push_total_shards =>
+                {
                     let transfer = StorageShardTransfer::new(
                         blake3::hash(format!("{}:{}:{}", file_id_hex, shard_index, now_unix()).as_bytes())
                             .as_bytes()[..16]
@@ -1719,14 +1730,14 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                         *node.identity.public.awe_id.as_bytes(),
                         file_id,
                         shard_index as u16,
-                        1000,
+                        push_total_shards as u16,
                         original_size,
                         payload,
                     );
                     match serde_json::to_vec(&transfer) {
                         Ok(bytes) => match node.send_to_peer(&peer_id, STORAGE_STREAM, bytes).await {
                             Ok(rtt) => ("200 OK", "application/json; charset=utf-8",
-                                serde_json::json!({"status":"sent","stream":STORAGE_STREAM,"shard_index":index,"rtt_ms":rtt.as_millis()}).to_string()),
+                                serde_json::json!({"status":"sent","stream":STORAGE_STREAM,"shard_index":index,"total_shards":push_total_shards,"rtt_ms":rtt.as_millis()}).to_string()),
                             Err(error) => ("502 Bad Gateway", "application/json; charset=utf-8",
                                 serde_json::json!({"status":"error","error":error.to_string()}).to_string())
                         },
@@ -1735,7 +1746,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                     }
                 }
                 _ => ("400 Bad Request", "application/json; charset=utf-8",
-                    serde_json::json!({"status":"error","error":"recipient, 32-byte file_id, shard_index 0..999 and payload_hex are required"}).to_string())
+                    serde_json::json!({"status":"error","error":format!("recipient, 32-byte file_id, shard_index 0..{} and payload_hex are required", push_total_shards.saturating_sub(1))}).to_string())
             }
         },
         "/api/storage/get" => {
@@ -1750,11 +1761,23 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
             match fs::read(&manifest_path) {
                 Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes) {
                     Ok(manifest) => {
+                        // Older manifests may not carry an explicit shard count.
+                        // Derive it from the recorded original size instead of
+                        // assuming the 1000-shard ceiling, which would allocate
+                        // (and then fail to recover) far more shards than the
+                        // object was actually encoded with.
                         let total_shards = manifest
                             .get("shards")
                             .and_then(|v| v.as_u64())
-                            .unwrap_or(1000)
-                            .clamp(12, 1000) as usize;
+                            .map(|v| v as usize)
+                            .unwrap_or_else(|| {
+                                let original_size = manifest
+                                    .get("original_size")
+                                    .and_then(|v| v.as_u64())
+                                    .unwrap_or(0) as usize;
+                                StoragePolicy::for_file_size(original_size).total_shards()
+                            })
+                            .clamp(12, 1000);
                         let policy = StoragePolicy::custom_scaled(total_shards);
                         let mut shards = vec![None; total_shards];
                         let mut present = 0usize;
@@ -1938,7 +1961,11 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                 "objects": stats.objects,
                 "healthy_replicas": stats.healthy_replicas,
                 "repaired_chunks": stats.repaired_chunks,
-                "replication_policy": {"shards": 1000, "replicas": 3}
+                "replication_policy": {
+                    "shards": StoragePolicy::default().total_shards(),
+                    "max_shards": 1000,
+                    "replicas": StoragePolicy::default().replica_count
+                }
             }).to_string())
         },
         _ if path.starts_with("/api/awenetwork")

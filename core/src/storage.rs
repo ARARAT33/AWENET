@@ -659,4 +659,73 @@ mod tests {
         // Wrong password fails
         assert!(sf_package.unlock_and_decrypt("WrongPassword").is_err());
     }
+
+    #[test]
+    fn for_file_size_scales_shards_with_file_size() {
+        // Empty and small files must stay at the 12-shard floor instead of
+        // paying for the 1000-shard network ceiling.
+        assert_eq!(StoragePolicy::for_file_size(0).total_shards(), 12);
+        assert_eq!(StoragePolicy::for_file_size(1).total_shards(), 12);
+        assert_eq!(StoragePolicy::for_file_size(1024).total_shards(), 12);
+        assert_eq!(
+            StoragePolicy::for_file_size(4 * 1024 * 1024).total_shards(),
+            12
+        );
+
+        // One extra byte past a 4 MiB chunk group adds another 12 shards.
+        assert_eq!(
+            StoragePolicy::for_file_size(4 * 1024 * 1024 + 1).total_shards(),
+            24
+        );
+        assert_eq!(
+            StoragePolicy::for_file_size(8 * 1024 * 1024).total_shards(),
+            24
+        );
+
+        // Large files saturate at the 1000-shard ceiling.
+        assert_eq!(
+            StoragePolicy::for_file_size(1024 * 1024 * 1024).total_shards(),
+            1000
+        );
+        assert_eq!(
+            StoragePolicy::for_file_size(usize::MAX).total_shards(),
+            1000
+        );
+    }
+
+    #[test]
+    fn for_file_size_keeps_data_and_parity_consistent() {
+        for bytes in [0usize, 1, 4 * 1024 * 1024, 4 * 1024 * 1024 + 1, 1 << 30] {
+            let policy = StoragePolicy::for_file_size(bytes);
+            assert_eq!(
+                policy.data_shards + policy.parity_shards,
+                policy.total_shards(),
+                "policy for {bytes} bytes is inconsistent"
+            );
+            assert!(
+                policy.data_shards >= 1,
+                "policy for {bytes} bytes has no data shards"
+            );
+            assert!(policy.total_shards() >= 12);
+            assert!(policy.total_shards() <= 1000);
+            assert_eq!(policy.replica_count, 3);
+        }
+    }
+
+    #[test]
+    fn small_file_policy_roundtrips_through_erasure_coding() {
+        // Regression guard: the node API used to report 1000 shards for every
+        // upload while the real policy for a small file is 12. Encoding with the
+        // real policy must still recover the payload.
+        let policy = StoragePolicy::for_file_size(2048);
+        assert_eq!(policy.total_shards(), 12);
+        let data = vec![9u8; 2048];
+        let encoded = encode_shards(&data, &policy).unwrap();
+        assert_eq!(encoded.len(), 12);
+        let mut shards = encoded.into_iter().map(Some).collect::<Vec<_>>();
+        shards[0] = None;
+        shards[5] = None;
+        let recovered = recover_shards(&mut shards, &policy).unwrap();
+        assert_eq!(&recovered[..data.len()], &data[..]);
+    }
 }
