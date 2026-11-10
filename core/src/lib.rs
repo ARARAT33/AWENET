@@ -68,6 +68,7 @@ pub mod metrics;
 pub mod namespace;
 pub mod network;
 pub mod network_topology;
+pub mod network_control;
 pub mod node;
 pub mod notifications;
 pub mod onebank;
