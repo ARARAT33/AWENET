@@ -190,9 +190,11 @@ impl VerifierRegistry {
 
     pub fn is_active(&self, verifier_public_key: &[u8; 32]) -> bool {
         self.validate().is_ok()
-            && self.certificate(verifier_public_key).is_some_and(|certificate| {
-                certificate.is_active() && certificate.is_valid(&self.founder_public_key)
-            })
+            && self
+                .certificate(verifier_public_key)
+                .is_some_and(|certificate| {
+                    certificate.is_active() && certificate.is_valid(&self.founder_public_key)
+                })
     }
 
     pub fn active_verifiers(&self) -> usize {
