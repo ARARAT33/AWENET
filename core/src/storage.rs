@@ -801,6 +801,4 @@ mod tests {
         assert_eq!(stats.used, b"shared durable object".len() as u64);
         fs::remove_dir_all(dir).unwrap();
     }
-
-
 }
