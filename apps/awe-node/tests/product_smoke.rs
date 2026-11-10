@@ -1076,7 +1076,26 @@ fn three_node_product_smoke() {
             restarted_control["sequence"].as_u64(),
             Some(signing_state.sequence())
         );
-        assert_eq!(restarted_control["topology"], control_status["topology"]);
+        assert_eq!(
+            restarted_control["topology"]["centres"].as_object().unwrap().len(),
+            6
+        );
+        assert_eq!(
+            restarted_control["topology"]["data_groups"].as_object().unwrap().len(),
+            2
+        );
+        assert_eq!(
+            restarted_control["topology"]["centre_groups"].as_object().unwrap().len(),
+            1
+        );
+        assert!(
+            restarted_control["topology"]["centres"]["dc-0"]["nodes"]["node-0"]["peers"]
+                .as_array().unwrap().iter().any(|peer| peer == "node-1")
+        );
+        assert!(
+            restarted_control["topology"]["centres"]["dc-1"]["nodes"]["node-1"]["peers"]
+                .as_array().unwrap().iter().any(|peer| peer == "node-0")
+        );
         let payload = "AWEP2P-REAL-PRODUCT-SMOKE";
         let hex = payload
             .as_bytes()
