@@ -255,6 +255,12 @@ impl VerifierRegistry {
             if existing.is_active() {
                 return Err(VerifierNetError::AlreadyEnrolled);
             }
+            if existing
+                .retired_at_unix
+                .is_some_and(|retired| at_unix < retired)
+            {
+                return Err(VerifierNetError::InvalidState);
+            }
         } else if self.verifiers.len() >= MAX_VERIFIERS {
             return Err(VerifierNetError::RegistryFull);
         }
@@ -1461,6 +1467,26 @@ mod tests {
             Err(VerifierNetError::SequenceExhausted)
         ));
         assert_eq!(net, before);
+    }
+
+    #[test]
+    fn verifier_reenrollment_cannot_move_time_backwards() {
+        let founder = identity("reenroll-founder");
+        let verifier = identity("reenroll-verifier");
+        let mut net = VerifierNet::new(&founder, 0);
+        net.enroll_verifier(&founder, &verifier, 10).unwrap();
+        net.retire_verifier(&founder, &verifier.public.public_key, 20)
+            .unwrap();
+        let before = net.clone();
+        assert!(matches!(
+            net.enroll_verifier(&founder, &verifier, 19),
+            Err(VerifierNetError::InvalidState)
+        ));
+        assert_eq!(net, before);
+        assert!(net
+            .enroll_verifier(&founder, &verifier, 20)
+            .unwrap()
+            .is_active());
     }
 
     #[test]
