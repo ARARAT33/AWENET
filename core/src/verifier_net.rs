@@ -1428,6 +1428,9 @@ mod tests {
         };
         forged.founder_signature = imposter.sign(&forged.signing_bytes());
         net.registry.verifiers.push(forged);
+        // Keep the sequence structurally plausible so this specifically
+        // exercises the invalid founder signature.
+        net.registry.next_sequence = 2;
         assert!(!net.registry.is_active(&verifier.public.public_key));
         assert!(matches!(
             net.validate(),
@@ -1560,6 +1563,8 @@ mod tests {
         };
         certificate.founder_signature = imposter.sign(&certificate.signing_bytes());
         net.registry.verifiers.push(certificate);
+        // The sequence is valid; only the inner certificate signature is forged.
+        net.registry.next_sequence = 2;
 
         let path = verifier_net_temp_path("forged");
         let mut signed = SignedVerifierNetFile {
