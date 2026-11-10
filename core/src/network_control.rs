@@ -637,6 +637,8 @@ mod tests {
                 101 + index as u64,
             )
             .unwrap();
+        }
+        for (index, centre) in ["dc-a", "dc-b", "dc-c"].iter().enumerate() {
             apply(
                 &mut control,
                 &founder,
