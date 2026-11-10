@@ -425,7 +425,9 @@ fn network_control_error_status(error: &NetworkControlError) -> &'static str {
         | NetworkControlError::InvalidSignature
         | NetworkControlError::WrongFounder => "403 Forbidden",
         NetworkControlError::SequenceExhausted | NetworkControlError::Topology(_) => "409 Conflict",
-        NetworkControlError::ActionTooLarge | NetworkControlError::StoreTooLarge => "413 Payload Too Large",
+        NetworkControlError::ActionTooLarge | NetworkControlError::StoreTooLarge => {
+            "413 Payload Too Large"
+        }
         NetworkControlError::TimestampWentBackwards
         | NetworkControlError::TimestampInFuture
         | NetworkControlError::InvalidIdentifier

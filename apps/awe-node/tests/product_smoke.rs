@@ -162,7 +162,9 @@ fn three_node_product_smoke() {
     let founder_secret = AweSecret::generate(&founder_identity);
     fs::write(
         dirs[0].join("node.awesecret"),
-        founder_secret.to_bytes().expect("serialize smoke founder secret"),
+        founder_secret
+            .to_bytes()
+            .expect("serialize smoke founder secret"),
     )
     .expect("write smoke founder secret");
 
@@ -874,10 +876,9 @@ fn three_node_product_smoke() {
         // Exercise the real HTTP network control plane with founder-signed
         // mutations. The test mirrors the signing sequence locally and checks
         // the persisted snapshot after all lifecycle operations.
-        let initial_control: serde_json::Value = serde_json::from_str(
-            &get("127.0.0.1:46201", "/api/network/control"),
-        )
-        .expect("initial network control JSON");
+        let initial_control: serde_json::Value =
+            serde_json::from_str(&get("127.0.0.1:46201", "/api/network/control"))
+                .expect("initial network control JSON");
         assert_eq!(initial_control["status"], "ok");
         assert_eq!(
             initial_control["founder_awe_id"].as_str(),
@@ -946,11 +947,13 @@ fn three_node_product_smoke() {
             })
             .to_string();
             let raw = post_raw("127.0.0.1:46201", "/api/network/control", &body);
-            assert!(raw.starts_with("HTTP/1.1 200 OK"), "network mutation failed: {raw}");
-            let applied: serde_json::Value = serde_json::from_str(
-                raw.split("\\r\\n\\r\\n").nth(1).unwrap_or(""),
-            )
-            .expect("network mutation response JSON");
+            assert!(
+                raw.starts_with("HTTP/1.1 200 OK"),
+                "network mutation failed: {raw}"
+            );
+            let applied: serde_json::Value =
+                serde_json::from_str(raw.split("\\r\\n\\r\\n").nth(1).unwrap_or(""))
+                    .expect("network mutation response JSON");
             assert_eq!(applied["status"], "applied", "network mutation: {applied}");
             signing_state
                 .apply_signed(&founder_identity, &action, at_unix, at_unix, &signature)
@@ -966,7 +969,10 @@ fn three_node_product_smoke() {
         })
         .to_string();
         let replay = post_raw("127.0.0.1:46201", "/api/network/control", &replay_body);
-        assert!(replay.starts_with("HTTP/1.1 403 Forbidden"), "replay was not rejected: {replay}");
+        assert!(
+            replay.starts_with("HTTP/1.1 403 Forbidden"),
+            "replay was not rejected: {replay}"
+        );
 
         let forged_action = NetworkAction::CreateCentre {
             centre_id: "dc-forged".into(),
@@ -984,7 +990,10 @@ fn three_node_product_smoke() {
         })
         .to_string();
         let forged = post_raw("127.0.0.1:46201", "/api/network/control", &forged_body);
-        assert!(forged.starts_with("HTTP/1.1 403 Forbidden"), "forged mutation was not rejected: {forged}");
+        assert!(
+            forged.starts_with("HTTP/1.1 403 Forbidden"),
+            "forged mutation was not rejected: {forged}"
+        );
 
         let remove_referenced_centre = NetworkAction::RemoveCentre {
             centre_id: "dc-0".into(),
@@ -1001,26 +1010,57 @@ fn three_node_product_smoke() {
         })
         .to_string();
         let blocked = post_raw("127.0.0.1:46201", "/api/network/control", &remove_body);
-        assert!(blocked.starts_with("HTTP/1.1 409 Conflict"), "referenced centre removal was not blocked: {blocked}");
+        assert!(
+            blocked.starts_with("HTTP/1.1 409 Conflict"),
+            "referenced centre removal was not blocked: {blocked}"
+        );
 
-        let control_status: serde_json::Value = serde_json::from_str(
-            &get("127.0.0.1:46201", "/api/network/topology"),
-        )
-        .expect("network topology JSON");
-        assert_eq!(control_status["sequence"].as_u64(), Some(signing_state.sequence()));
-        assert_eq!(control_status["topology"]["centres"].as_object().unwrap().len(), 6);
-        assert_eq!(control_status["topology"]["data_groups"].as_object().unwrap().len(), 2);
-        assert_eq!(control_status["topology"]["centre_groups"].as_object().unwrap().len(), 1);
-        assert!(control_status["topology"]["centres"]["dc-0"]["nodes"]["node-0"]["peers"]
-            .as_array().unwrap().iter().any(|peer| peer == "node-1"));
-        assert!(control_status["topology"]["centres"]["dc-1"]["nodes"]["node-1"]["peers"]
-            .as_array().unwrap().iter().any(|peer| peer == "node-0"));
+        let control_status: serde_json::Value =
+            serde_json::from_str(&get("127.0.0.1:46201", "/api/network/topology"))
+                .expect("network topology JSON");
+        assert_eq!(
+            control_status["sequence"].as_u64(),
+            Some(signing_state.sequence())
+        );
+        assert_eq!(
+            control_status["topology"]["centres"]
+                .as_object()
+                .unwrap()
+                .len(),
+            6
+        );
+        assert_eq!(
+            control_status["topology"]["data_groups"]
+                .as_object()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            control_status["topology"]["centre_groups"]
+                .as_object()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            control_status["topology"]["centres"]["dc-0"]["nodes"]["node-0"]["peers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|peer| peer == "node-1")
+        );
+        assert!(
+            control_status["topology"]["centres"]["dc-1"]["nodes"]["node-1"]["peers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|peer| peer == "node-0")
+        );
 
-        let persisted_control = network_control::load(
-            &dirs[0].join("network-control.json"),
-            &founder_identity,
-        )
-        .expect("load founder-signed network snapshot");
+        let persisted_control =
+            network_control::load(&dirs[0].join("network-control.json"), &founder_identity)
+                .expect("load founder-signed network snapshot");
         assert_eq!(persisted_control.sequence(), signing_state.sequence());
         assert_eq!(persisted_control, signing_state);
 
@@ -1028,11 +1068,13 @@ fn three_node_product_smoke() {
         let _ = children[0].wait();
         children[0] = spawn_node(&bin, &dirs[0], 46101, 46201);
         wait_for_health("127.0.0.1:46201");
-        let restarted_control: serde_json::Value = serde_json::from_str(
-            &get("127.0.0.1:46201", "/api/network/control"),
-        )
-        .expect("restarted network control JSON");
-        assert_eq!(restarted_control["sequence"].as_u64(), Some(signing_state.sequence()));
+        let restarted_control: serde_json::Value =
+            serde_json::from_str(&get("127.0.0.1:46201", "/api/network/control"))
+                .expect("restarted network control JSON");
+        assert_eq!(
+            restarted_control["sequence"].as_u64(),
+            Some(signing_state.sequence())
+        );
         assert_eq!(restarted_control["topology"], control_status["topology"]);
         let payload = "AWEP2P-REAL-PRODUCT-SMOKE";
         let hex = payload
