@@ -1006,18 +1006,10 @@ mod tests {
         let remove_referenced = NetworkAction::RemoveCentre {
             centre_id: "dc-a".into(),
         };
-        let message = control
-            .signing_message(&remove_referenced, 113)
-            .unwrap();
+        let message = control.signing_message(&remove_referenced, 113).unwrap();
         let signature = founder.sign(&message);
         assert!(matches!(
-            control.apply_signed(
-                &founder,
-                &remove_referenced,
-                113,
-                113,
-                &signature
-            ),
+            control.apply_signed(&founder, &remove_referenced, 113, 113, &signature),
             Err(NetworkControlError::Topology(_))
         ));
         assert_eq!(control.sequence(), 12);
