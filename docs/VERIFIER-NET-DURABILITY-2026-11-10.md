@@ -41,11 +41,12 @@ The added tests cover:
 
 1. forged certificates cannot become active or submit reports;
 2. sequence exhaustion on enroll/retire does not mutate state;
-3. deadline overflow is rejected without creating a window;
-4. founder-signed snapshot save/load round-trip and wrong-founder rejection;
-5. an outer founder signature cannot bless an internally forged verifier
+3. verifier re-enrollment cannot move the retirement timestamp backwards;
+4. deadline overflow is rejected without creating a window;
+5. founder-signed snapshot save/load round-trip and wrong-founder rejection;
+6. an outer founder signature cannot bless an internally forged verifier
    certificate;
-6. an invalid save leaves the previously committed snapshot unchanged.
+7. an invalid save leaves the previously committed snapshot unchanged.
 
 The existing Serde round-trip test now also runs full state validation.
 
