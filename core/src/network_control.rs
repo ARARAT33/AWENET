@@ -170,7 +170,6 @@ impl NetworkControlPlane {
     /// Validates the complete restored state before it is trusted or served.
     pub fn validate(&self) -> Result<(), NetworkControlError> {
         if self.version != NETWORK_CONTROL_VERSION
-            || self.sequence == u64::MAX && self.updated_at_unix == 0
             || self.founder_awe_id != AweId::from_public_key(&self.founder_public_key).to_hex()
         {
             return Err(NetworkControlError::InvalidState);
