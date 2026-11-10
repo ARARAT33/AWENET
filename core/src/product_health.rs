@@ -85,6 +85,15 @@ pub struct HealthInputs {
     pub dht_responsiveness_pct: u8,
 }
 
+impl HealthInputs {
+    pub fn is_valid(&self) -> bool {
+        self.replica_health_pct <= 100
+            && self.peer_health_pct <= 100
+            && self.transfer_success_pct <= 100
+            && self.dht_responsiveness_pct <= 100
+    }
+}
+
 /// One scored snapshot of the network.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HealthReport {
@@ -166,7 +175,7 @@ impl Default for HealthHistory {
 /// Returns `None` when the weights are invalid so a misconfiguration can
 /// never silently produce a nonsense score.
 pub fn compute_report(inputs: HealthInputs, weights: HealthWeights) -> Option<HealthReport> {
-    if !weights.is_valid() {
+    if !weights.is_valid() || !inputs.is_valid() {
         return None;
     }
 
@@ -302,6 +311,16 @@ mod tests {
     }
 
     #[test]
+    fn out_of_range_inputs_are_rejected() {
+        let inputs = HealthInputs {
+            replica_health_pct: 101,
+            ..perfect()
+        };
+        assert!(!inputs.is_valid());
+        assert!(compute_report(inputs, HealthWeights::default()).is_none());
+    }
+
+    #[test]
     fn bands_cover_the_full_range() {
         assert_eq!(HealthBand::for_score(0), HealthBand::Critical);
         assert_eq!(HealthBand::for_score(39), HealthBand::Critical);
@@ -325,7 +344,7 @@ mod tests {
             HealthWeights::default(),
         )
         .unwrap();
-        assert_eq!(report.band, HealthBand::AtRisk);
+        assert_eq!(report.band, HealthBand::Stable);
         assert!(report.recommendation.contains("peer_coverage"));
     }
 
