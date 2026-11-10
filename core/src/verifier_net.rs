@@ -54,7 +54,7 @@ pub const REPORT_GRACE_SECS: u64 = 24 * 3_600;
 pub const CLOSED_WINDOW_RETENTION_SECS: u64 = 30 * 24 * 3_600;
 pub const VERIFIER_NET_STORE_VERSION: u16 = 1;
 pub const MAX_VERIFIER_NET_FILE_BYTES: u64 = 64 * 1024 * 1024;
-const STORE_CONTEXT: &[u8] = b"AWENET-VERIFIER-NET-STORE/v1\\0";
+const STORE_CONTEXT: &[u8] = b"AWENET-VERIFIER-NET-STORE/v1\0";
 
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum VerifierNetError {
