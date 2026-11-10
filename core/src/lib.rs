@@ -104,6 +104,7 @@ pub mod sandbox;
 pub mod scenarios;
 pub mod scheduler;
 pub mod search;
+pub mod secure_state;
 pub mod security;
 pub mod sessions;
 pub mod simulator;
