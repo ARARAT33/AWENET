@@ -162,7 +162,7 @@ impl NetworkControlPlane {
         self.sequence.checked_add(1)
     }
 
-    pub fn updated_at_unix(&self) -> {
+    pub fn updated_at_unix(&self) -> u64 {
         self.updated_at_unix
     }
 
