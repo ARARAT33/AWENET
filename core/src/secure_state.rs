@@ -36,7 +36,9 @@ pub fn save_json<T: Serialize>(
 
     let plaintext = serde_json::to_vec(value)?;
     let mut salt = [0u8; SALT_LEN];
-    OsRng.fill_bytes(&mut salt);
+    OsRng
+        .try_fill_bytes(&mut salt)
+        .map_err(|_| SecureStateError::Crypto)?;
     let salt_string = SaltString::encode_b64(&salt).map_err(|_| SecureStateError::Crypto)?;
     let password_hash = Argon2::default()
         .hash_password(passphrase.as_bytes(), &salt_string)
@@ -46,7 +48,9 @@ pub fn save_json<T: Serialize>(
     let cipher = ChaCha20Poly1305::new(key);
 
     let mut nonce = [0u8; NONCE_LEN];
-    OsRng.fill_bytes(&mut nonce);
+    OsRng
+        .try_fill_bytes(&mut nonce)
+        .map_err(|_| SecureStateError::Crypto)?;
     let ciphertext = cipher
         .encrypt(Nonce::from_slice(&nonce), plaintext.as_ref())
         .map_err(|_| SecureStateError::Crypto)?;
