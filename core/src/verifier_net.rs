@@ -182,18 +182,23 @@ impl VerifierRegistry {
     /// its AWE ID is derived from the certified public key. This remains
     /// fail-closed even when a registry was deserialized from untrusted bytes.
     pub fn is_certified(&self, verifier_public_key: &[u8; 32]) -> bool {
-        self.certificate(verifier_public_key)
-            .is_some_and(|certificate| certificate.is_valid(&self.founder_public_key))
+        self.validate().is_ok()
+            && self
+                .certificate(verifier_public_key)
+                .is_some_and(|certificate| certificate.is_valid(&self.founder_public_key))
     }
 
     pub fn is_active(&self, verifier_public_key: &[u8; 32]) -> bool {
-        self.certificate(verifier_public_key)
-            .is_some_and(|certificate| {
+        self.validate().is_ok()
+            && self.certificate(verifier_public_key).is_some_and(|certificate| {
                 certificate.is_active() && certificate.is_valid(&self.founder_public_key)
             })
     }
 
     pub fn active_verifiers(&self) -> usize {
+        if self.validate().is_err() {
+            return 0;
+        }
         self.verifiers
             .iter()
             .filter(|certificate| {
