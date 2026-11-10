@@ -3,6 +3,7 @@ use chacha20poly1305::{
     aead::{Aead, KeyInit},
     ChaCha20Poly1305, Key, Nonce,
 };
+use rand_core::{OsRng, RngCore};
 use serde::{de::DeserializeOwned, Serialize};
 use std::{fs, io, path::Path};
 
@@ -35,7 +36,7 @@ pub fn save_json<T: Serialize>(
 
     let plaintext = serde_json::to_vec(value)?;
     let mut salt = [0u8; SALT_LEN];
-    getrandom::getrandom(&mut salt).map_err(|_| SecureStateError::Crypto)?;
+    OsRng.fill_bytes(&mut salt);
     let salt_string = SaltString::encode_b64(&salt).map_err(|_| SecureStateError::Crypto)?;
     let password_hash = Argon2::default()
         .hash_password(passphrase.as_bytes(), &salt_string)
@@ -45,7 +46,7 @@ pub fn save_json<T: Serialize>(
     let cipher = ChaCha20Poly1305::new(key);
 
     let mut nonce = [0u8; NONCE_LEN];
-    getrandom::getrandom(&mut nonce).map_err(|_| SecureStateError::Crypto)?;
+    OsRng.fill_bytes(&mut nonce);
     let ciphertext = cipher
         .encrypt(Nonce::from_slice(&nonce), plaintext.as_ref())
         .map_err(|_| SecureStateError::Crypto)?;
