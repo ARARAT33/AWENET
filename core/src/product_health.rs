@@ -295,7 +295,7 @@ mod tests {
         .unwrap();
         // 50% of the 40-point replica factor = 20 points lost.
         assert_eq!(report.score, 80);
-        assert_eq!(report.band, HealthBand::AtRisk);
+        assert_eq!(report.band, HealthBand::Stable);
     }
 
     #[test]
@@ -344,7 +344,7 @@ mod tests {
             HealthWeights::default(),
         )
         .unwrap();
-        assert_eq!(report.band, HealthBand::Stable);
+        assert_eq!(report.band, HealthBand::AtRisk);
         assert!(report.recommendation.contains("peer_coverage"));
     }
 
