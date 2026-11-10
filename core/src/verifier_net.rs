@@ -511,8 +511,9 @@ impl VerifierNet {
         }
         let mut expired = Vec::new();
         for (key, window) in &self.windows {
-            let forgotten_at =
-                window.report_deadline_unix.saturating_add(CLOSED_WINDOW_RETENTION_SECS);
+            let forgotten_at = window
+                .report_deadline_unix
+                .saturating_add(CLOSED_WINDOW_RETENTION_SECS);
             if window.closed && now_unix > forgotten_at {
                 expired.push(key.clone());
             }
@@ -530,7 +531,7 @@ impl VerifierNet {
 mod tests {
     use super::*;
     use crate::identity::Username;
-    use crate::onecoin::{ATOMS_PER_COIN, OnecoinLedger};
+    use crate::onecoin::{OnecoinLedger, ATOMS_PER_COIN};
     use crate::resource_economy::{ResourceEconomy, ResourceEconomyError, ResourceLimits};
 
     fn identity(name: &str) -> Identity {
@@ -632,7 +633,8 @@ mod tests {
             VerifierNetError::NotFounder
         ));
         // and the retired verifier's reports are rejected
-        net.open_window(&node.public.awe_id, 0, 3_600, 3_600).unwrap();
+        net.open_window(&node.public.awe_id, 0, 3_600, 3_600)
+            .unwrap();
         let report = SignedUsageReport::new(
             &verifier,
             node.public.awe_id.clone(),
@@ -657,13 +659,19 @@ mod tests {
             VerifierNetError::InvalidPeriod
         ));
         assert!(matches!(
-            net.open_window(&node.public.awe_id, 0, MAX_WINDOW_PERIOD_SECS + 2, 0).unwrap_err(),
+            net.open_window(&node.public.awe_id, 0, MAX_WINDOW_PERIOD_SECS + 2, 0)
+                .unwrap_err(),
             VerifierNetError::InvalidPeriod
         ));
         let deadline_passed = MAX_WINDOW_PERIOD_SECS + REPORT_GRACE_SECS + 1;
         assert!(matches!(
-            net.open_window(&node.public.awe_id, 0, MAX_WINDOW_PERIOD_SECS, deadline_passed)
-                .unwrap_err(),
+            net.open_window(
+                &node.public.awe_id,
+                0,
+                MAX_WINDOW_PERIOD_SECS,
+                deadline_passed
+            )
+            .unwrap_err(),
             VerifierNetError::WindowExpired
         ));
         let window = net
@@ -689,7 +697,8 @@ mod tests {
         let stranger = identity("reject-stranger");
         let mut net = VerifierNet::new(&founder, 0);
         net.enroll_verifier(&founder, &node, 1).unwrap();
-        net.open_window(&node.public.awe_id, 0, 3_600, 3_600).unwrap();
+        net.open_window(&node.public.awe_id, 0, 3_600, 3_600)
+            .unwrap();
         // a well-signed report from a node that is not enrolled
         let stranger_report = SignedUsageReport::new(
             &stranger,
@@ -704,13 +713,8 @@ mod tests {
         ));
         // the contributing node is enrolled as a verifier but cannot
         // verify its own contribution
-        let self_report = SignedUsageReport::new(
-            &node,
-            node.public.awe_id.clone(),
-            0,
-            3_600,
-            period_usage(),
-        );
+        let self_report =
+            SignedUsageReport::new(&node, node.public.awe_id.clone(), 0, 3_600, period_usage());
         assert!(matches!(
             net.submit_report(self_report, 3_600).unwrap_err(),
             VerifierNetError::SelfAttestation
@@ -739,7 +743,8 @@ mod tests {
         let verifier = identity("tamper-verifier");
         let mut net = VerifierNet::new(&founder, 0);
         net.enroll_verifier(&founder, &verifier, 1).unwrap();
-        net.open_window(&node.public.awe_id, 0, 3_600, 3_600).unwrap();
+        net.open_window(&node.public.awe_id, 0, 3_600, 3_600)
+            .unwrap();
         let mut tampered = SignedUsageReport::new(
             &verifier,
             node.public.awe_id.clone(),
@@ -762,7 +767,8 @@ mod tests {
         let verifier = identity("dup-verifier");
         let mut net = VerifierNet::new(&founder, 0);
         net.enroll_verifier(&founder, &verifier, 1).unwrap();
-        net.open_window(&node.public.awe_id, 0, 7_200, 7_200).unwrap();
+        net.open_window(&node.public.awe_id, 0, 7_200, 7_200)
+            .unwrap();
         let report = SignedUsageReport::new(
             &verifier,
             node.public.awe_id.clone(),
@@ -776,9 +782,7 @@ mod tests {
             VerifierNetError::DuplicateVerifier
         ));
         assert!(!net.has_consensus(&node.public.awe_id, 0, 7_200));
-        assert!(net
-            .consensus_usage(&node.public.awe_id, 0, 7_200)
-            .is_none());
+        assert!(net.consensus_usage(&node.public.awe_id, 0, 7_200).is_none());
     }
 
     #[test]
@@ -790,7 +794,8 @@ mod tests {
         let mut net = VerifierNet::new(&founder, 0);
         net.enroll_verifier(&founder, &verifier_a, 1).unwrap();
         net.enroll_verifier(&founder, &verifier_b, 2).unwrap();
-        net.open_window(&node.public.awe_id, 0, 3_600, 3_600).unwrap();
+        net.open_window(&node.public.awe_id, 0, 3_600, 3_600)
+            .unwrap();
         net.submit_report(
             SignedUsageReport::new(
                 &verifier_a,
@@ -828,9 +833,7 @@ mod tests {
         assert_eq!(net.close_expired(forgotten), 1);
         assert!(net.window(&node.public.awe_id, 0).is_none());
         assert!(net.reports_for(&node.public.awe_id, 0).is_empty());
-        assert!(net
-            .consensus_usage(&node.public.awe_id, 0, 3_600)
-            .is_none());
+        assert!(net.consensus_usage(&node.public.awe_id, 0, 3_600).is_none());
     }
 
     #[test]
@@ -855,7 +858,8 @@ mod tests {
             )
             .unwrap();
         // one verifier alone is not a settlement consensus
-        net.open_window(&node.public.awe_id, 0, 7_200, 7_200).unwrap();
+        net.open_window(&node.public.awe_id, 0, 7_200, 7_200)
+            .unwrap();
         net.submit_report(
             SignedUsageReport::new(
                 &verifier_a,
@@ -901,7 +905,14 @@ mod tests {
         let mut economy = ResourceEconomy::default();
         economy.grant(&node, limits(), 1).unwrap();
         let settlement = economy
-            .settle(&mut ledger, &founder, &node.public.awe_id, &evidence, 0, 7_200)
+            .settle(
+                &mut ledger,
+                &founder,
+                &node.public.awe_id,
+                &evidence,
+                0,
+                7_200,
+            )
             .unwrap();
         // cpu 100 * 1000 + bandwidth 5 * 5000 + uptime 2 * 100 = 125_200
         // usage atoms, plus 2 * 50 availability atoms
@@ -915,7 +926,14 @@ mod tests {
         // the same period cannot be settled twice
         assert!(matches!(
             economy
-                .settle(&mut ledger, &founder, &node.public.awe_id, &evidence, 0, 7_200)
+                .settle(
+                    &mut ledger,
+                    &founder,
+                    &node.public.awe_id,
+                    &evidence,
+                    0,
+                    7_200
+                )
                 .unwrap_err(),
             ResourceEconomyError::AlreadySettled
         ));
@@ -930,7 +948,8 @@ mod tests {
         let mut net = VerifierNet::new(&founder, 0);
         net.enroll_verifier(&founder, &verifier_a, 1).unwrap();
         net.enroll_verifier(&founder, &verifier_b, 2).unwrap();
-        net.open_window(&node.public.awe_id, 0, 7_200, 7_200).unwrap();
+        net.open_window(&node.public.awe_id, 0, 7_200, 7_200)
+            .unwrap();
         let observation = PeerObservation {
             bytes_exchanged: 3_000_000_000,
             observed_available_secs: 7_200,
@@ -945,9 +964,7 @@ mod tests {
             7_200,
         )
         .unwrap();
-        let consensus = net
-            .consensus_usage(&node.public.awe_id, 0, 7_200)
-            .unwrap();
+        let consensus = net.consensus_usage(&node.public.awe_id, 0, 7_200).unwrap();
         // a remote verifier only saw bytes and availability: the CPU
         // claim of the node's own report earns nothing through this
         // window, because the settlement consensus is the per-resource
@@ -965,7 +982,8 @@ mod tests {
         let founder = identity("bound-founder");
         let node = identity("bound-node");
         let mut net = VerifierNet::new(&founder, 0);
-        net.open_window(&node.public.awe_id, 0, 3_600, 3_600).unwrap();
+        net.open_window(&node.public.awe_id, 0, 3_600, 3_600)
+            .unwrap();
         for index in 0..MAX_VERIFIER_REPORTS {
             let verifier = identity(&format!("bound-verifier-{index}"));
             net.enroll_verifier(&founder, &verifier, 1).unwrap();
@@ -1044,7 +1062,8 @@ mod tests {
         let verifier = identity("serde-verifier");
         let mut net = VerifierNet::new(&founder, 0);
         let certificate = net.enroll_verifier(&founder, &verifier, 1).unwrap();
-        net.open_window(&node.public.awe_id, 0, 3_600, 3_600).unwrap();
+        net.open_window(&node.public.awe_id, 0, 3_600, 3_600)
+            .unwrap();
         net.submit_report(
             SignedUsageReport::new(
                 &verifier,

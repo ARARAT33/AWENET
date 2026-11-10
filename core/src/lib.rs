@@ -121,4 +121,3 @@ pub mod user_registry;
 pub mod verifier_net;
 pub mod webauthn;
 pub mod webhooks;
-
