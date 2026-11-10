@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 
 pub type NodeId = String;
@@ -5,13 +6,13 @@ pub type DataCentreId = String;
 pub type DataGroupId = String;
 pub type CentreGroupId = String;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CentreLinkMode {
     FullMesh,
     Relay { relay_node: NodeId },
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PeerMetrics {
     pub rtt_ms: u32,
     pub throughput_kbps: u64,
@@ -29,12 +30,13 @@ impl PeerMetrics {
     }
     pub fn is_healthy(&self, now_unix: u64, max_age: u64) -> bool {
         self.last_seen_unix > 0
-            && now_unix.saturating_sub(self.last_seen_unix) <= max_age
+            && self.last_seen_unix <= now_unix
+            && now_unix - self.last_seen_unix <= max_age
             && self.reliability_percent >= 50
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Node {
     pub id: NodeId,
     pub peers: HashSet<NodeId>,
@@ -59,14 +61,14 @@ impl Node {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CentreLink {
     pub mode: CentreLinkMode,
     pub relays: Vec<NodeId>,
     pub healthy: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DataCentre {
     pub id: DataCentreId,
     pub nodes: HashMap<NodeId, Node>,
@@ -74,18 +76,18 @@ pub struct DataCentre {
     pub link_state: HashMap<DataCentreId, CentreLink>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DataGroup {
     pub id: DataGroupId,
     pub centres: HashSet<DataCentreId>,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CentreGroup {
     pub id: CentreGroupId,
     pub groups: HashSet<DataGroupId>,
 }
 
-#[derive(Default, Debug)]
+#[derive(Clone, Default, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AweNet {
     pub centres: HashMap<DataCentreId, DataCentre>,
     pub data_groups: HashMap<DataGroupId, DataGroup>,
@@ -102,32 +104,60 @@ impl DataCentre {
         }
     }
 
-    pub fn add_node(&mut self, n: Node) {
-        if n.alive {
-            if let Some(peer) = self.nearest(&n.id) {
-                if let Some(existing) = self.nodes.get_mut(&peer) {
-                    existing.peers.insert(n.id.clone());
-                }
+    /// Adds a node without replacing an existing identity. When the node has
+    /// no explicit peers, it connects to the nearest live node in both
+    /// directions so routing works regardless of which endpoint is the source.
+    pub fn add_node(&mut self, mut node: Node) -> Result<(), String> {
+        let id = node.id.clone();
+        if id.trim().is_empty() {
+            return Err("node ID must not be empty".into());
+        }
+        if self.nodes.contains_key(&id) {
+            return Err("node already exists in data centre".into());
+        }
+        if node.peers.iter().any(|peer| !self.nodes.contains_key(peer)) {
+            return Err("node references an unknown peer in its data centre".into());
+        }
+        if node.alive && node.peers.is_empty() {
+            if let Some(peer) = self.nearest(&id) {
+                node.peers.insert(peer);
             }
         }
-        self.nodes.insert(n.id.clone(), n);
+        for peer in &node.peers {
+            if let Some(existing) = self.nodes.get_mut(peer) {
+                existing.peers.insert(id.clone());
+            }
+        }
+        self.nodes.insert(id, node);
+        Ok(())
+    }
+
+    pub fn remove_node(&mut self, id: &str) -> Result<Node, String> {
+        let removed = self
+            .nodes
+            .remove(id)
+            .ok_or_else(|| "node not found".to_string())?;
+        for node in self.nodes.values_mut() {
+            node.peers.remove(id);
+        }
+        Ok(removed)
     }
 
     pub fn full_mesh(&mut self) {
+        // Map keys are canonical IDs. Node values are public and can be mutated
+        // after insertion, so never use node.id for graph lookups.
         let ids: Vec<_> = self
             .nodes
-            .values()
-            .filter(|n| n.alive)
-            .map(|n| n.id.clone())
+            .iter()
+            .filter(|(_, node)| node.alive)
+            .map(|(id, _)| id.clone())
             .collect();
         for a in &ids {
             for b in &ids {
                 if a != b {
-                    self.nodes
-                        .get_mut(a)
-                        .expect("node exists")
-                        .peers
-                        .insert(b.clone());
+                    if let Some(node) = self.nodes.get_mut(a) {
+                        node.peers.insert(b.clone());
+                    }
                 }
             }
         }
@@ -135,10 +165,10 @@ impl DataCentre {
 
     pub fn nearest(&self, from: &NodeId) -> Option<NodeId> {
         self.nodes
-            .values()
-            .filter(|n| n.alive && &n.id != from)
-            .min_by_key(|n| (n.metrics.score(), n.peers.len() as u64, n.id.clone()))
-            .map(|n| n.id.clone())
+            .iter()
+            .filter(|(id, node)| node.alive && *id != from)
+            .min_by_key(|(id, node)| (node.metrics.score(), node.peers.len() as u64, (*id).clone()))
+            .map(|(id, _)| id.clone())
     }
 
     pub fn mark_node(&mut self, id: &NodeId, alive: bool) -> Result<(), String> {
@@ -149,61 +179,103 @@ impl DataCentre {
     }
 
     pub fn healthy_nodes(&self, now_unix: u64, max_age: u64) -> Vec<NodeId> {
-        self.nodes
-            .values()
-            .filter(|n| {
-                n.alive
-                    && (n.metrics.last_seen_unix == 0 || n.metrics.is_healthy(now_unix, max_age))
+        let mut healthy = self
+            .nodes
+            .iter()
+            .filter(|(_, node)| {
+                node.alive
+                    && (node.metrics.last_seen_unix == 0
+                        || node.metrics.is_healthy(now_unix, max_age))
             })
-            .map(|n| n.id.clone())
-            .collect()
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+        healthy.sort();
+        healthy
     }
 }
 
 impl DataGroup {
-    pub fn new(
-        id: impl Into<String>,
-        centres: impl IntoIterator<Item = DataCentreId>,
-    ) -> Result<Self, String> {
-        let centres: Vec<DataCentreId> = centres.into_iter().collect();
-        if centres.len() < 3 {
-            return Err("DataGroup requires at least 3 data centres".into());
+    pub fn new<I, S>(id: impl Into<String>, centres: I) -> Result<Self, String>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let id = id.into();
+        let centres: HashSet<DataCentreId> = centres.into_iter().map(Into::into).collect();
+        if id.trim().is_empty() {
+            return Err("data group ID must not be empty".into());
         }
-        Ok(Self {
-            id: id.into(),
-            centres: centres.into_iter().collect(),
-        })
+        if centres.len() < 3 {
+            return Err("DataGroup requires at least 3 distinct data centres".into());
+        }
+        Ok(Self { id, centres })
     }
 }
 
 impl CentreGroup {
-    pub fn new(
-        id: impl Into<String>,
-        groups: impl IntoIterator<Item = DataGroupId>,
-    ) -> Result<Self, String> {
-        let groups: Vec<DataGroupId> = groups.into_iter().collect();
-        if groups.len() < 2 {
-            return Err("CentreGroup requires at least 2 data groups".into());
+    pub fn new<I, S>(id: impl Into<String>, groups: I) -> Result<Self, String>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let id = id.into();
+        let groups: HashSet<DataGroupId> = groups.into_iter().map(Into::into).collect();
+        if id.trim().is_empty() {
+            return Err("centre group ID must not be empty".into());
         }
-        Ok(Self {
-            id: id.into(),
-            groups: groups.into_iter().collect(),
-        })
+        if groups.len() < 2 {
+            return Err("CentreGroup requires at least 2 distinct data groups".into());
+        }
+        Ok(Self { id, groups })
     }
 }
 
 impl AweNet {
-    pub fn add_centre(&mut self, d: DataCentre) -> Result<(), String> {
-        for existing in self.centres.values() {
-            if d.nodes.keys().any(|id| existing.nodes.contains_key(id)) {
+    pub fn add_centre(&mut self, centre: DataCentre) -> Result<(), String> {
+        if centre.id.trim().is_empty() {
+            return Err("data centre ID must not be empty".into());
+        }
+        if self.centres.contains_key(&centre.id) {
+            return Err("data centre already exists".into());
+        }
+        for (node_id, node) in &centre.nodes {
+            if node_id.trim().is_empty() || node_id != &node.id {
+                return Err("node map key must match a non-empty node ID".into());
+            }
+            if node.peers.contains(node_id) {
+                return Err("a node cannot be its own peer".into());
+            }
+            for peer_id in &node.peers {
+                let peer = centre
+                    .nodes
+                    .get(peer_id)
+                    .ok_or("new data centre contains a peer outside its own membership")?;
+                if !peer.peers.contains(node_id) {
+                    return Err("new data centre contains an asymmetric peer edge".into());
+                }
+            }
+            if self
+                .centres
+                .values()
+                .any(|existing| existing.nodes.contains_key(node_id))
+            {
                 return Err("node IDs must be globally unique across data centres".into());
             }
         }
-        self.centres.insert(d.id.clone(), d);
+        self.centres.insert(centre.id.clone(), centre);
         Ok(())
     }
 
     pub fn add_data_group(&mut self, group: DataGroup) -> Result<(), String> {
+        if group.id.trim().is_empty() {
+            return Err("data group ID must not be empty".into());
+        }
+        if self.data_groups.contains_key(&group.id) {
+            return Err("data group already exists".into());
+        }
+        if group.centres.len() < 3 {
+            return Err("data group requires at least 3 distinct data centres".into());
+        }
         if !group.centres.iter().all(|id| self.centres.contains_key(id)) {
             return Err("data group references an unknown centre".into());
         }
@@ -212,6 +284,15 @@ impl AweNet {
     }
 
     pub fn add_centre_group(&mut self, group: CentreGroup) -> Result<(), String> {
+        if group.id.trim().is_empty() {
+            return Err("centre group ID must not be empty".into());
+        }
+        if self.centre_groups.contains_key(&group.id) {
+            return Err("centre group already exists".into());
+        }
+        if group.groups.len() < 2 {
+            return Err("centre group requires at least 2 distinct data groups".into());
+        }
         if !group
             .groups
             .iter()
@@ -232,45 +313,53 @@ impl AweNet {
         if a == b || !self.centres.contains_key(a) || !self.centres.contains_key(b) {
             return Err("invalid data-centre pair".into());
         }
-        let left: Vec<_> = self.centres[a]
+        if self.centres[a].links.contains(b) || self.centres[b].links.contains(a) {
+            return Err("data centres are already connected".into());
+        }
+        // Hash-map keys are the canonical node IDs. Node values are public and
+        // may have been modified by a caller after insertion.
+        let mut left: Vec<_> = self.centres[a]
             .nodes
-            .values()
-            .filter(|n| n.alive)
-            .map(|n| n.id.clone())
+            .iter()
+            .filter(|(_, node)| node.alive)
+            .map(|(id, _)| id.clone())
             .collect();
-        let right: Vec<_> = self.centres[b]
+        let mut right: Vec<_> = self.centres[b]
             .nodes
-            .values()
-            .filter(|n| n.alive)
-            .map(|n| n.id.clone())
+            .iter()
+            .filter(|(_, node)| node.alive)
+            .map(|(id, _)| id.clone())
             .collect();
+        left.sort();
+        right.sort();
         if left.is_empty() || right.is_empty() {
             return Err("both centres must contain live nodes".into());
         }
 
-        let (relays, stored_mode) = match mode {
+        let (left_relays, right_relays, left_mode, right_mode) = match mode {
             CentreLinkMode::FullMesh => {
-                for x in &left {
-                    for y in &right {
+                for left_id in &left {
+                    for right_id in &right {
                         self.centres
                             .get_mut(a)
-                            .unwrap()
-                            .nodes
-                            .get_mut(x)
-                            .unwrap()
+                            .and_then(|centre| centre.nodes.get_mut(left_id))
+                            .ok_or("left node disappeared during link creation")?
                             .peers
-                            .insert(y.clone());
+                            .insert(right_id.clone());
                         self.centres
                             .get_mut(b)
-                            .unwrap()
-                            .nodes
-                            .get_mut(y)
-                            .unwrap()
+                            .and_then(|centre| centre.nodes.get_mut(right_id))
+                            .ok_or("right node disappeared during link creation")?
                             .peers
-                            .insert(x.clone());
+                            .insert(left_id.clone());
                     }
                 }
-                (left.clone(), CentreLinkMode::FullMesh)
+                (
+                    left.clone(),
+                    right.clone(),
+                    CentreLinkMode::FullMesh,
+                    CentreLinkMode::FullMesh,
+                )
             }
             CentreLinkMode::Relay { relay_node } => {
                 if !left.contains(&relay_node) {
@@ -278,46 +367,51 @@ impl AweNet {
                 }
                 let target = right
                     .iter()
-                    .min_by_key(|id| self.centres[b].nodes[*id].metrics.score())
-                    .unwrap()
+                    .min_by(|left_id, right_id| {
+                        self.centres[b].nodes[*left_id]
+                            .metrics
+                            .score()
+                            .cmp(&self.centres[b].nodes[*right_id].metrics.score())
+                            .then_with(|| left_id.cmp(right_id))
+                    })
+                    .ok_or("target centre has no live node")?
                     .clone();
                 self.centres
                     .get_mut(a)
-                    .unwrap()
-                    .nodes
-                    .get_mut(&relay_node)
-                    .unwrap()
+                    .and_then(|centre| centre.nodes.get_mut(&relay_node))
+                    .ok_or("relay node disappeared during link creation")?
                     .peers
                     .insert(target.clone());
                 self.centres
                     .get_mut(b)
-                    .unwrap()
-                    .nodes
-                    .get_mut(&target)
-                    .unwrap()
+                    .and_then(|centre| centre.nodes.get_mut(&target))
+                    .ok_or("target node disappeared during link creation")?
                     .peers
                     .insert(relay_node.clone());
                 (
                     vec![relay_node.clone()],
+                    vec![target.clone()],
                     CentreLinkMode::Relay { relay_node },
+                    CentreLinkMode::Relay { relay_node: target },
                 )
             }
         };
+
         self.centres.get_mut(a).unwrap().links.insert(b.into());
         self.centres.get_mut(b).unwrap().links.insert(a.into());
         self.centres.get_mut(a).unwrap().link_state.insert(
             b.into(),
             CentreLink {
-                mode: stored_mode.clone(),
-                relays: relays.clone(),
+                mode: left_mode,
+                relays: left_relays,
                 healthy: true,
             },
         );
         self.centres.get_mut(b).unwrap().link_state.insert(
             a.into(),
             CentreLink {
-                mode: stored_mode,
-                relays,
+                mode: right_mode,
+                relays: right_relays,
                 healthy: true,
             },
         );
@@ -325,78 +419,420 @@ impl AweNet {
     }
 
     pub fn failover_relay(&mut self, a: &str, b: &str) -> Result<NodeId, String> {
-        let state = self
+        let left_state = self
             .centres
             .get(a)
-            .and_then(|c| c.link_state.get(b))
+            .and_then(|centre| centre.link_state.get(b))
             .cloned()
             .ok_or("link not found")?;
-        let candidate = self.centres[a]
+        let right_state = self
+            .centres
+            .get(b)
+            .and_then(|centre| centre.link_state.get(a))
+            .cloned()
+            .ok_or("reverse link state not found")?;
+        let old_left = match &left_state.mode {
+            CentreLinkMode::Relay { relay_node } => relay_node.clone(),
+            CentreLinkMode::FullMesh => {
+                return Err("full-mesh links do not use relay failover".into())
+            }
+        };
+        let old_right = match &right_state.mode {
+            CentreLinkMode::Relay { relay_node } => relay_node.clone(),
+            CentreLinkMode::FullMesh => return Err("reverse link is not a relay link".into()),
+        };
+
+        let left_centre = self.centres.get(a).ok_or("left centre not found")?;
+        let right_centre = self.centres.get(b).ok_or("right centre not found")?;
+        if !left_centre.links.contains(b) || !right_centre.links.contains(a) {
+            return Err("centre link is not reciprocal".into());
+        }
+        if left_state.relays != vec![old_left.clone()]
+            || right_state.relays != vec![old_right.clone()]
+        {
+            return Err("relay metadata does not match the configured relay nodes".into());
+        }
+        let old_left_node = left_centre
             .nodes
-            .values()
-            .filter(|n| n.alive && !state.relays.contains(&n.id))
-            .min_by_key(|n| n.metrics.score())
-            .map(|n| n.id.clone())
+            .get(&old_left)
+            .ok_or("configured left relay does not exist")?;
+        let old_right_node = right_centre
+            .nodes
+            .get(&old_right)
+            .ok_or("configured right relay does not exist")?;
+        if !old_left_node.peers.contains(&old_right) || !old_right_node.peers.contains(&old_left) {
+            return Err("configured relay peer edge is not reciprocal".into());
+        }
+
+        // Break ties by canonical map key so failover is reproducible across
+        // processes whose HashMap iteration order differs.
+        let candidate = left_centre
+            .nodes
+            .iter()
+            .filter(|(id, node)| node.alive && id.as_str() != old_left.as_str())
+            .min_by(|(left_id, left_node), (right_id, right_node)| {
+                left_node
+                    .metrics
+                    .score()
+                    .cmp(&right_node.metrics.score())
+                    .then_with(|| left_id.cmp(right_id))
+            })
+            .map(|(id, _)| id.clone())
             .ok_or("no healthy relay available")?;
-        let target = self.centres[b]
+        let target = right_centre
             .nodes
-            .values()
-            .filter(|n| n.alive)
-            .min_by_key(|n| n.metrics.score())
-            .map(|n| n.id.clone())
+            .iter()
+            .filter(|(_, node)| node.alive)
+            .min_by(|(left_id, left_node), (right_id, right_node)| {
+                left_node
+                    .metrics
+                    .score()
+                    .cmp(&right_node.metrics.score())
+                    .then_with(|| left_id.cmp(right_id))
+            })
+            .map(|(id, _)| id.clone())
             .ok_or("target centre has no live nodes")?;
+
+        if let Some(node) = self
+            .centres
+            .get_mut(a)
+            .and_then(|centre| centre.nodes.get_mut(&old_left))
+        {
+            node.peers.remove(&old_right);
+        }
+        if let Some(node) = self
+            .centres
+            .get_mut(b)
+            .and_then(|centre| centre.nodes.get_mut(&old_right))
+        {
+            node.peers.remove(&old_left);
+        }
         self.centres
             .get_mut(a)
-            .unwrap()
-            .nodes
-            .get_mut(&candidate)
-            .unwrap()
+            .and_then(|centre| centre.nodes.get_mut(&candidate))
+            .ok_or("new relay disappeared")?
             .peers
             .insert(target.clone());
         self.centres
             .get_mut(b)
-            .unwrap()
-            .nodes
-            .get_mut(&target)
-            .unwrap()
+            .and_then(|centre| centre.nodes.get_mut(&target))
+            .ok_or("new target disappeared")?
             .peers
             .insert(candidate.clone());
-        self.centres
+
+        let left_link = self
+            .centres
             .get_mut(a)
-            .unwrap()
-            .link_state
+            .and_then(|centre| centre.link_state.get_mut(b))
+            .ok_or("left link state disappeared")?;
+        left_link.mode = CentreLinkMode::Relay {
+            relay_node: candidate.clone(),
+        };
+        left_link.relays = vec![candidate.clone()];
+        left_link.healthy = true;
+        let right_link = self
+            .centres
             .get_mut(b)
-            .unwrap()
-            .relays
-            .push(candidate.clone());
-        self.centres
-            .get_mut(b)
-            .unwrap()
-            .link_state
-            .get_mut(a)
-            .unwrap()
-            .relays
-            .push(candidate.clone());
+            .and_then(|centre| centre.link_state.get_mut(a))
+            .ok_or("right link state disappeared")?;
+        right_link.mode = CentreLinkMode::Relay {
+            relay_node: target.clone(),
+        };
+        right_link.relays = vec![target];
+        right_link.healthy = true;
         Ok(candidate)
     }
 
-    pub fn validate(&self) -> Result<(), String> {
-        for (id, c) in &self.centres {
-            for n in c.nodes.values() {
-                for peer in &n.peers {
-                    if !self.centres.values().any(|dc| dc.nodes.contains_key(peer)) {
-                        return Err(format!("node {id} references unknown peer {peer}"));
-                    }
+    pub fn disconnect_centres(&mut self, a: &str, b: &str) -> Result<(), String> {
+        if a == b || !self.centres.contains_key(a) || !self.centres.contains_key(b) {
+            return Err("invalid data-centre pair".into());
+        }
+        if !self.centres[a].links.contains(b) || !self.centres[b].links.contains(a) {
+            return Err("data-centre link not found".into());
+        }
+        let left_ids = self.centres[a].nodes.keys().cloned().collect::<Vec<_>>();
+        let right_ids = self.centres[b].nodes.keys().cloned().collect::<Vec<_>>();
+        for id in &left_ids {
+            if let Some(node) = self
+                .centres
+                .get_mut(a)
+                .and_then(|centre| centre.nodes.get_mut(id))
+            {
+                for peer in &right_ids {
+                    node.peers.remove(peer);
                 }
             }
         }
-        for g in self.data_groups.values() {
-            if g.centres.len() < 3 || !g.centres.iter().all(|id| self.centres.contains_key(id)) {
+        for id in &right_ids {
+            if let Some(node) = self
+                .centres
+                .get_mut(b)
+                .and_then(|centre| centre.nodes.get_mut(id))
+            {
+                for peer in &left_ids {
+                    node.peers.remove(peer);
+                }
+            }
+        }
+        let left = self.centres.get_mut(a).unwrap();
+        left.links.remove(b);
+        left.link_state.remove(b);
+        let right = self.centres.get_mut(b).unwrap();
+        right.links.remove(a);
+        right.link_state.remove(a);
+        Ok(())
+    }
+
+    /// Updates the liveness flag for a node found anywhere in the topology.
+    pub fn set_node_health(&mut self, node_id: &str, alive: bool) -> Result<(), String> {
+        for centre in self.centres.values_mut() {
+            if let Some(node) = centre.nodes.get_mut(node_id) {
+                node.set_health(alive);
+                return Ok(());
+            }
+        }
+        Err("node not found".into())
+    }
+
+    /// Replaces the latest metrics for a known node.
+    pub fn update_node_metrics(
+        &mut self,
+        node_id: &str,
+        metrics: PeerMetrics,
+    ) -> Result<(), String> {
+        for centre in self.centres.values_mut() {
+            if let Some(node) = centre.nodes.get_mut(node_id) {
+                node.update_metrics(metrics);
+                return Ok(());
+            }
+        }
+        Err("node not found".into())
+    }
+
+    pub fn remove_node(&mut self, node_id: &str) -> Result<Node, String> {
+        let centre_id = self
+            .centres
+            .iter()
+            .find(|(_, centre)| centre.nodes.contains_key(node_id))
+            .map(|(id, _)| id.clone())
+            .ok_or_else(|| "node not found".to_string())?;
+        for centre in self.centres.values() {
+            for link in centre.link_state.values() {
+                if matches!(&link.mode, CentreLinkMode::Relay { relay_node } if relay_node == node_id)
+                {
+                    return Err(
+                        "cannot remove an active relay; fail over or disconnect its link first"
+                            .into(),
+                    );
+                }
+            }
+        }
+        let removed = self
+            .centres
+            .get_mut(&centre_id)
+            .unwrap()
+            .remove_node(node_id)?;
+        for centre in self.centres.values_mut() {
+            for node in centre.nodes.values_mut() {
+                node.peers.remove(node_id);
+            }
+            for link in centre.link_state.values_mut() {
+                link.relays.retain(|relay| relay != node_id);
+            }
+        }
+        Ok(removed)
+    }
+
+    pub fn remove_centre(&mut self, id: &str) -> Result<DataCentre, String> {
+        if self
+            .data_groups
+            .values()
+            .any(|group| group.centres.contains(id))
+        {
+            return Err("cannot remove a data centre referenced by a data group".into());
+        }
+        let links = self
+            .centres
+            .get(id)
+            .ok_or_else(|| "data centre not found".to_string())?
+            .links
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        for peer in links {
+            self.disconnect_centres(id, &peer)?;
+        }
+        let node_ids = self.centres[id].nodes.keys().cloned().collect::<Vec<_>>();
+        for centre in self.centres.values_mut() {
+            for node in centre.nodes.values_mut() {
+                for removed in &node_ids {
+                    node.peers.remove(removed);
+                }
+            }
+        }
+        self.centres
+            .remove(id)
+            .ok_or_else(|| "data centre not found".into())
+    }
+
+    pub fn remove_data_group(&mut self, id: &str) -> Result<DataGroup, String> {
+        if self
+            .centre_groups
+            .values()
+            .any(|group| group.groups.contains(id))
+        {
+            return Err("cannot remove a data group referenced by a centre group".into());
+        }
+        self.data_groups
+            .remove(id)
+            .ok_or_else(|| "data group not found".into())
+    }
+
+    pub fn remove_centre_group(&mut self, id: &str) -> Result<CentreGroup, String> {
+        self.centre_groups
+            .remove(id)
+            .ok_or_else(|| "centre group not found".into())
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        let mut global_node_ids = HashSet::new();
+        for (centre_id, centre) in &self.centres {
+            if centre_id.trim().is_empty() || centre.id != *centre_id {
+                return Err("data-centre map key does not match its ID".into());
+            }
+            for (node_id, node) in &centre.nodes {
+                if node_id.trim().is_empty() || node.id != *node_id {
+                    return Err("node map key does not match its ID".into());
+                }
+                if !global_node_ids.insert(node_id.clone()) {
+                    return Err(format!(
+                        "node ID {node_id} is duplicated across data centres"
+                    ));
+                }
+                for peer_id in &node.peers {
+                    if peer_id == node_id {
+                        return Err(format!("node {node_id} cannot reference itself as a peer"));
+                    }
+                    let peer = self
+                        .centres
+                        .iter()
+                        .find_map(|(peer_centre_id, peer_centre)| {
+                            peer_centre
+                                .nodes
+                                .get(peer_id)
+                                .map(|peer| (peer_centre_id, peer))
+                        })
+                        .ok_or_else(|| {
+                            format!("node {node_id} references unknown peer {peer_id}")
+                        })?;
+                    if !peer.1.peers.contains(node_id) {
+                        return Err(format!(
+                            "peer link {node_id} <-> {peer_id} is not symmetric"
+                        ));
+                    }
+                    if peer.0 != centre_id && !centre.links.contains(peer.0) {
+                        return Err(format!(
+                            "cross-centre peer link {node_id} -> {peer_id} has no centre link"
+                        ));
+                    }
+                }
+            }
+            for peer_centre_id in &centre.links {
+                let peer_centre = self.centres.get(peer_centre_id).ok_or_else(|| {
+                    format!("centre {centre_id} references unknown centre {peer_centre_id}")
+                })?;
+                if !peer_centre.links.contains(centre_id) {
+                    return Err(format!(
+                        "centre link {centre_id} <-> {peer_centre_id} is not symmetric"
+                    ));
+                }
+                let state = centre.link_state.get(peer_centre_id).ok_or_else(|| {
+                    format!("centre link {centre_id} -> {peer_centre_id} has no state")
+                })?;
+                let reverse_state = peer_centre.link_state.get(centre_id).ok_or_else(|| {
+                    format!("reverse centre link {peer_centre_id} -> {centre_id} has no state")
+                })?;
+                match (&state.mode, &reverse_state.mode) {
+                    (CentreLinkMode::FullMesh, CentreLinkMode::FullMesh) => {}
+                    (
+                        CentreLinkMode::Relay {
+                            relay_node: local_relay,
+                        },
+                        CentreLinkMode::Relay {
+                            relay_node: remote_relay,
+                        },
+                    ) => {
+                        if state.relays != vec![local_relay.clone()]
+                            || reverse_state.relays != vec![remote_relay.clone()]
+                        {
+                            return Err(format!(
+                                "centre link {centre_id} <-> {peer_centre_id} has inconsistent relay metadata"
+                            ));
+                        }
+                        let local_node = centre.nodes.get(local_relay).ok_or_else(|| {
+                            format!("centre link {centre_id} has an unknown local relay")
+                        })?;
+                        let remote_node = peer_centre.nodes.get(remote_relay).ok_or_else(|| {
+                            format!("centre link {peer_centre_id} has an unknown remote relay")
+                        })?;
+                        if !local_node.peers.contains(remote_relay)
+                            || !remote_node.peers.contains(local_relay)
+                        {
+                            return Err(format!(
+                                "centre link {centre_id} <-> {peer_centre_id} has no reciprocal relay edge"
+                            ));
+                        }
+                    }
+                    _ => {
+                        return Err(format!(
+                            "centre link {centre_id} <-> {peer_centre_id} has mismatched link modes"
+                        ));
+                    }
+                }
+                if let CentreLinkMode::Relay { relay_node } = &state.mode {
+                    if !centre.nodes.contains_key(relay_node) || !state.relays.contains(relay_node)
+                    {
+                        return Err(format!(
+                            "centre link {centre_id} -> {peer_centre_id} has an invalid relay"
+                        ));
+                    }
+                }
+                if state
+                    .relays
+                    .iter()
+                    .any(|relay| !centre.nodes.contains_key(relay))
+                {
+                    return Err(format!(
+                        "centre link {centre_id} -> {peer_centre_id} references an unknown relay"
+                    ));
+                }
+            }
+            if centre
+                .link_state
+                .keys()
+                .any(|peer| !centre.links.contains(peer))
+            {
+                return Err(format!("centre {centre_id} has link state without a link"));
+            }
+        }
+        for (group_id, group) in &self.data_groups {
+            if group_id.trim().is_empty()
+                || group.id != *group_id
+                || group.centres.len() < 3
+                || !group.centres.iter().all(|id| self.centres.contains_key(id))
+            {
                 return Err("invalid data group".into());
             }
         }
-        for g in self.centre_groups.values() {
-            if g.groups.len() < 2 || !g.groups.iter().all(|id| self.data_groups.contains_key(id)) {
+        for (group_id, group) in &self.centre_groups {
+            if group_id.trim().is_empty()
+                || group.id != *group_id
+                || group.groups.len() < 2
+                || !group
+                    .groups
+                    .iter()
+                    .all(|id| self.data_groups.contains_key(id))
+            {
                 return Err("invalid centre group".into());
             }
         }
@@ -404,51 +840,63 @@ impl AweNet {
     }
 
     pub fn route(&self, src: &NodeId, dst: &NodeId) -> Option<Vec<NodeId>> {
+        let live_nodes: HashSet<NodeId> = self
+            .centres
+            .values()
+            .flat_map(|centre| {
+                centre
+                    .nodes
+                    .iter()
+                    .filter(|(_, node)| node.alive)
+                    .map(|(id, _)| id.clone())
+            })
+            .collect();
+        if !live_nodes.contains(src) || !live_nodes.contains(dst) {
+            return None;
+        }
         if src == dst {
             return Some(vec![src.clone()]);
         }
+
         let mut adjacency: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
-        for dc in self.centres.values() {
-            for n in dc.nodes.values().filter(|n| n.alive) {
-                adjacency.entry(n.id.clone()).or_default().extend(
-                    n.peers
-                        .iter()
-                        .filter(|p| {
-                            self.centres
-                                .values()
-                                .any(|other| other.nodes.get(*p).map(|x| x.alive).unwrap_or(false))
-                        })
-                        .cloned(),
-                );
+        for centre in self.centres.values() {
+            for (node_id, node) in centre.nodes.iter().filter(|(_, node)| node.alive) {
+                let neighbours = node
+                    .peers
+                    .iter()
+                    .filter(|peer| live_nodes.contains(*peer))
+                    .cloned()
+                    .collect();
+                adjacency.insert(node_id.clone(), neighbours);
             }
         }
-        let mut q = VecDeque::from([src.clone()]);
-        let mut prev: HashMap<NodeId, Option<NodeId>> = HashMap::from([(src.clone(), None)]);
-        while let Some(x) = q.pop_front() {
-            if &x == dst {
+        let mut queue = VecDeque::from([src.clone()]);
+        let mut previous: HashMap<NodeId, Option<NodeId>> = HashMap::from([(src.clone(), None)]);
+        while let Some(current) = queue.pop_front() {
+            if &current == dst {
                 break;
             }
-            for p in adjacency.get(&x).into_iter().flatten() {
-                if !prev.contains_key(p) {
-                    prev.insert(p.clone(), Some(x.clone()));
-                    q.push_back(p.clone());
+            for peer in adjacency.get(&current).into_iter().flatten() {
+                if !previous.contains_key(peer) {
+                    previous.insert(peer.clone(), Some(current.clone()));
+                    queue.push_back(peer.clone());
                 }
             }
         }
-        if !prev.contains_key(dst) {
+        if !previous.contains_key(dst) {
             return None;
         }
-        let mut out = Vec::new();
-        let mut x = dst.clone();
+        let mut route = Vec::new();
+        let mut current = dst.clone();
         loop {
-            out.push(x.clone());
-            match prev[&x].clone() {
-                Some(p) => x = p,
+            route.push(current.clone());
+            match previous.get(&current).cloned().flatten() {
+                Some(parent) => current = parent,
                 None => break,
             }
         }
-        out.reverse();
-        Some(out)
+        route.reverse();
+        Some(route)
     }
 }
 
@@ -458,10 +906,10 @@ mod tests {
     #[test]
     fn mesh_ignores_dead_nodes() {
         let mut c = DataCentre::new("dc");
-        c.add_node(Node::new("a"));
+        c.add_node(Node::new("a")).unwrap();
         let mut b = Node::new("b");
         b.alive = false;
-        c.add_node(b);
+        c.add_node(b).unwrap();
         c.full_mesh();
         assert!(c.nodes["a"].peers.is_empty());
     }
@@ -469,9 +917,9 @@ mod tests {
     fn duplicate_node_ids_are_rejected() {
         let mut n = AweNet::default();
         let mut a = DataCentre::new("a");
-        a.add_node(Node::new("same"));
+        a.add_node(Node::new("same")).unwrap();
         let mut b = DataCentre::new("b");
-        b.add_node(Node::new("same"));
+        b.add_node(Node::new("same")).unwrap();
         assert!(n.add_centre(a).is_ok());
         assert!(n.add_centre(b).is_err());
     }
@@ -479,10 +927,10 @@ mod tests {
     fn relay_failover_adds_backup() {
         let mut n = AweNet::default();
         let mut a = DataCentre::new("a");
-        a.add_node(Node::new("a1"));
-        a.add_node(Node::new("a2"));
+        a.add_node(Node::new("a1")).unwrap();
+        a.add_node(Node::new("a2")).unwrap();
         let mut b = DataCentre::new("b");
-        b.add_node(Node::new("b1"));
+        b.add_node(Node::new("b1")).unwrap();
         n.add_centre(a).unwrap();
         n.add_centre(b).unwrap();
         n.connect_centres(
@@ -494,5 +942,292 @@ mod tests {
         )
         .unwrap();
         assert!(n.failover_relay("a", "b").is_ok());
+    }
+    #[test]
+    fn adding_nodes_creates_bidirectional_edges_and_rejects_duplicates() {
+        let mut centre = DataCentre::new("dc");
+        centre.add_node(Node::new("a")).unwrap();
+        centre.add_node(Node::new("b")).unwrap();
+        assert!(centre.nodes["a"].peers.contains("b"));
+        assert!(centre.nodes["b"].peers.contains("a"));
+        assert!(centre.add_node(Node::new("b")).is_err());
+    }
+
+    #[test]
+    fn duplicate_centre_and_group_ids_never_replace_existing_records() {
+        let mut network = AweNet::default();
+        network.add_centre(DataCentre::new("dc")).unwrap();
+        assert!(network.add_centre(DataCentre::new("dc")).is_err());
+        assert_eq!(network.centres.len(), 1);
+
+        for id in ["dc-1", "dc-2", "dc-3"] {
+            network.add_centre(DataCentre::new(id)).unwrap();
+        }
+        let group = DataGroup::new("dg", ["dc-1", "dc-2", "dc-3"]).unwrap();
+        network.add_data_group(group.clone()).unwrap();
+        assert!(network.add_data_group(group).is_err());
+        assert_eq!(network.data_groups.len(), 1);
+    }
+
+    #[test]
+    fn data_group_and_centre_group_require_distinct_members() {
+        assert!(DataGroup::new("dg", ["a", "a", "a"]).is_err());
+        assert!(CentreGroup::new("cg", ["x", "x"]).is_err());
+    }
+
+    #[test]
+    fn relay_failover_updates_both_directions_and_remains_valid() {
+        let mut network = AweNet::default();
+        let mut left = DataCentre::new("left");
+        left.add_node(Node::new("left-1")).unwrap();
+        left.add_node(Node::new("left-2")).unwrap();
+        let mut right = DataCentre::new("right");
+        right.add_node(Node::new("right-1")).unwrap();
+        right.add_node(Node::new("right-2")).unwrap();
+        network.add_centre(left).unwrap();
+        network.add_centre(right).unwrap();
+        network
+            .connect_centres(
+                "left",
+                "right",
+                CentreLinkMode::Relay {
+                    relay_node: "left-1".into(),
+                },
+            )
+            .unwrap();
+        assert!(network.validate().is_ok());
+        assert_eq!(
+            network.centres["right"].link_state["left"].mode,
+            CentreLinkMode::Relay {
+                relay_node: "right-1".into()
+            }
+        );
+        let new_relay = network.failover_relay("left", "right").unwrap();
+        assert_eq!(new_relay, "left-2");
+        assert_eq!(
+            network.centres["left"].link_state["right"].mode,
+            CentreLinkMode::Relay {
+                relay_node: "left-2".into()
+            }
+        );
+        assert_eq!(
+            network.centres["right"].link_state["left"].mode,
+            CentreLinkMode::Relay {
+                relay_node: "right-1".into()
+            }
+        );
+        assert!(network.validate().is_ok());
+    }
+
+    #[test]
+    fn relay_failover_rejects_corrupt_peer_metadata_without_mutating_topology() {
+        let mut network = AweNet::default();
+        let mut left = DataCentre::new("left");
+        left.add_node(Node::new("left-1")).unwrap();
+        left.add_node(Node::new("left-2")).unwrap();
+        let mut right = DataCentre::new("right");
+        right.add_node(Node::new("right-1")).unwrap();
+        network.add_centre(left).unwrap();
+        network.add_centre(right).unwrap();
+        network
+            .connect_centres(
+                "left",
+                "right",
+                CentreLinkMode::Relay {
+                    relay_node: "left-1".into(),
+                },
+            )
+            .unwrap();
+
+        network
+            .centres
+            .get_mut("right")
+            .unwrap()
+            .nodes
+            .get_mut("right-1")
+            .unwrap()
+            .peers
+            .clear();
+        let before = network.clone();
+        assert!(network.failover_relay("left", "right").is_err());
+        assert_eq!(network, before);
+    }
+
+    #[test]
+    fn disconnect_and_remove_centre_clean_cross_centre_edges() {
+        let mut network = AweNet::default();
+        let mut left = DataCentre::new("left");
+        left.add_node(Node::new("left-1")).unwrap();
+        let mut right = DataCentre::new("right");
+        right.add_node(Node::new("right-1")).unwrap();
+        network.add_centre(left).unwrap();
+        network.add_centre(right).unwrap();
+        network
+            .connect_centres("left", "right", CentreLinkMode::FullMesh)
+            .unwrap();
+        assert!(network.validate().is_ok());
+        network.disconnect_centres("left", "right").unwrap();
+        assert!(network.validate().is_ok());
+        assert!(network.centres["left"].nodes["left-1"].peers.is_empty());
+        network.remove_centre("right").unwrap();
+        assert!(!network.centres.contains_key("right"));
+        assert!(network.validate().is_ok());
+    }
+
+    #[test]
+    fn data_group_removal_is_blocked_while_referenced_by_centre_group() {
+        let mut network = AweNet::default();
+        for id in ["dc-1", "dc-2", "dc-3", "dc-4", "dc-5", "dc-6"] {
+            network.add_centre(DataCentre::new(id)).unwrap();
+        }
+        network
+            .add_data_group(DataGroup::new("dg-1", ["dc-1", "dc-2", "dc-3"]).unwrap())
+            .unwrap();
+        network
+            .add_data_group(DataGroup::new("dg-2", ["dc-4", "dc-5", "dc-6"]).unwrap())
+            .unwrap();
+        network
+            .add_centre_group(CentreGroup::new("cg", ["dg-1", "dg-2"]).unwrap())
+            .unwrap();
+        assert!(network.remove_data_group("dg-1").is_err());
+        network.remove_centre_group("cg").unwrap();
+        network.remove_data_group("dg-1").unwrap();
+        assert!(network.validate().is_ok());
+    }
+
+    #[test]
+    fn topology_serializes_and_roundtrips() {
+        let mut network = AweNet::default();
+        let mut centre = DataCentre::new("dc");
+        centre.add_node(Node::new("node")).unwrap();
+        network.add_centre(centre).unwrap();
+        let bytes = serde_json::to_vec(&network).unwrap();
+        let restored: AweNet = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(restored, network);
+        assert!(restored.validate().is_ok());
+    }
+
+    #[test]
+    fn removing_a_full_mesh_node_cleans_membership_without_breaking_link() {
+        let mut network = AweNet::default();
+        let mut left = DataCentre::new("left");
+        left.add_node(Node::new("left-1")).unwrap();
+        left.add_node(Node::new("left-2")).unwrap();
+        let mut right = DataCentre::new("right");
+        right.add_node(Node::new("right-1")).unwrap();
+        network.add_centre(left).unwrap();
+        network.add_centre(right).unwrap();
+        network
+            .connect_centres("left", "right", CentreLinkMode::FullMesh)
+            .unwrap();
+        network.remove_node("left-1").unwrap();
+        assert!(!network.centres["right"].nodes["right-1"]
+            .peers
+            .contains("left-1"));
+        assert!(!network.centres["left"].link_state["right"]
+            .relays
+            .contains(&"left-1".to_string()));
+        assert!(network.validate().is_ok());
+    }
+
+    #[test]
+    fn route_rejects_unknown_nodes_and_works_in_both_directions() {
+        let mut centre = DataCentre::new("dc");
+        centre.add_node(Node::new("a")).unwrap();
+        centre.add_node(Node::new("b")).unwrap();
+        let mut network = AweNet::default();
+        network.add_centre(centre).unwrap();
+        assert!(network
+            .route(&"missing".into(), &"missing".into())
+            .is_none());
+        assert_eq!(
+            network.route(&"a".into(), &"b".into()),
+            Some(vec!["a".into(), "b".into()])
+        );
+        assert_eq!(
+            network.route(&"b".into(), &"a".into()),
+            Some(vec!["b".into(), "a".into()])
+        );
+    }
+
+    #[test]
+    fn topology_uses_map_keys_and_rejects_routes_to_offline_nodes() {
+        let mut centre = DataCentre::new("dc");
+        centre.add_node(Node::new("a")).unwrap();
+        centre.add_node(Node::new("b")).unwrap();
+        let mut dead = Node::new("dead");
+        dead.alive = false;
+        centre.add_node(dead).unwrap();
+
+        centre.nodes.get_mut("a").unwrap().id = "tampered".into();
+        centre.full_mesh();
+        assert!(centre.nodes["a"].peers.contains("b"));
+        assert_eq!(centre.nearest(&"b".into()), Some("a".into()));
+
+        let mut network = AweNet::default();
+        network.centres.insert("dc".into(), centre);
+        assert!(network.route(&"a".into(), &"b".into()).is_some());
+        assert!(network.route(&"dead".into(), &"dead".into()).is_none());
+    }
+
+    #[test]
+    fn validate_rejects_asymmetric_peer_edges() {
+        let mut centre = DataCentre::new("dc");
+        centre.add_node(Node::new("a")).unwrap();
+        centre.add_node(Node::new("b")).unwrap();
+        centre.nodes.get_mut("b").unwrap().peers.remove("a");
+        let mut network = AweNet::default();
+        network.centres.insert("dc".into(), centre);
+        assert!(network.validate().is_err());
+    }
+    #[test]
+    fn future_peer_timestamps_are_not_healthy() {
+        let metrics = PeerMetrics {
+            reliability_percent: 100,
+            last_seen_unix: 101,
+            ..PeerMetrics::default()
+        };
+        assert!(!metrics.is_healthy(100, 60));
+        assert!(metrics.is_healthy(101, 60));
+        assert!(!metrics.is_healthy(200, 60));
+    }
+
+    #[test]
+    fn healthy_node_listing_is_stable_by_canonical_id() {
+        let mut centre = DataCentre::new("dc");
+        centre.add_node(Node::new("node-z")).unwrap();
+        centre.add_node(Node::new("node-a")).unwrap();
+
+        assert_eq!(
+            centre.healthy_nodes(0, 60),
+            vec!["node-a".to_string(), "node-z".to_string()]
+        );
+    }
+
+    #[test]
+    fn network_management_updates_only_known_nodes() {
+        let mut network = AweNet::default();
+        let mut centre = DataCentre::new("dc");
+        centre.add_node(Node::new("node")).unwrap();
+        network.add_centre(centre).unwrap();
+
+        network.set_node_health("node", false).unwrap();
+        assert!(!network.centres["dc"].nodes["node"].alive);
+        network
+            .update_node_metrics(
+                "node",
+                PeerMetrics {
+                    rtt_ms: 12,
+                    reliability_percent: 90,
+                    last_seen_unix: 100,
+                    ..PeerMetrics::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(network.centres["dc"].nodes["node"].metrics.rtt_ms, 12);
+        assert!(network.set_node_health("missing", true).is_err());
+        assert!(network
+            .update_node_metrics("missing", PeerMetrics::default())
+            .is_err());
     }
 }
