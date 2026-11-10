@@ -67,6 +67,7 @@ pub mod messenger_runtime;
 pub mod metrics;
 pub mod namespace;
 pub mod network;
+pub mod network_control;
 pub mod network_topology;
 pub mod node;
 pub mod notifications;
