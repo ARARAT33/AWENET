@@ -1038,6 +1038,28 @@ mod tests {
     }
 
     #[test]
+    fn load_or_create_initializes_only_absent_state_and_reloads_commits() {
+        let founder = identity("founder");
+        let path = temporary_path("load-or-create");
+        let mut control = load_or_create(&path, &founder, 100).unwrap();
+        assert_eq!(control.sequence(), 0);
+
+        let action = NetworkAction::CreateCentre {
+            centre_id: "dc-a".into(),
+        };
+        let message = control.signing_message(&action, 101).unwrap();
+        let signature = founder.sign(&message);
+        control
+            .apply_and_save(&path, &founder, &action, 101, 101, &signature)
+            .unwrap();
+
+        let restored = load_or_create(&path, &founder, 102).unwrap();
+        assert_eq!(restored, control);
+        assert_eq!(restored.sequence(), 1);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
     fn sequence_exhaustion_is_rejected_before_signing_or_mutation() {
         let founder = identity("founder");
         let mut control = NetworkControlPlane::new(&founder, 100);
