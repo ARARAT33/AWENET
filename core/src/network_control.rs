@@ -10,7 +10,6 @@ use crate::identity::{AweId, Identity};
 use crate::network_topology::{
     AweNet, CentreGroup, CentreLinkMode, DataCentre, DataGroup, Node, PeerMetrics,
 };
-use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File},
@@ -171,6 +170,18 @@ impl NetworkControlPlane {
     pub fn validate(&self) -> Result<(), NetworkControlError> {
         if self.version != NETWORK_CONTROL_VERSION
             || self.founder_awe_id != AweId::from_public_key(&self.founder_public_key).to_hex()
+        {
+            return Err(NetworkControlError::InvalidState);
+        }
+        let node_count = self
+            .topology
+            .centres
+            .values()
+            .fold(0usize, |count, centre| count.saturating_add(centre.nodes.len()));
+        if self.topology.centres.len() > 4_096
+            || node_count > 65_536
+            || self.topology.data_groups.len() > 4_096
+            || self.topology.centre_groups.len() > 1_024
         {
             return Err(NetworkControlError::InvalidState);
         }
@@ -448,6 +459,9 @@ pub fn save(
     }
     let snapshot = serde_json::to_string(control)
         .map_err(|error| NetworkControlError::Serialization(error.to_string()))?;
+    if snapshot.len() as u64 > MAX_NETWORK_CONTROL_FILE_BYTES {
+        return Err(NetworkControlError::StoreTooLarge);
+    }
     let signing_bytes = store_signing_bytes(
         NETWORK_CONTROL_VERSION,
         &control.founder_awe_id,
