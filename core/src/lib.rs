@@ -101,6 +101,7 @@ pub mod resource_meter;
 pub mod routing;
 pub mod runbooks;
 pub mod sandbox;
+pub mod secure_state;
 pub mod scenarios;
 pub mod scheduler;
 pub mod search;
