@@ -199,8 +199,8 @@ impl NetworkControlPlane {
 
         let founder_len = u16::try_from(self.founder_awe_id.len())
             .map_err(|_| NetworkControlError::InvalidState)?;
-        let payload_len = u32::try_from(payload.len())
-            .map_err(|_| NetworkControlError::ActionTooLarge)?;
+        let payload_len =
+            u32::try_from(payload.len()).map_err(|_| NetworkControlError::ActionTooLarge)?;
         let mut message = Vec::with_capacity(
             MUTATION_CONTEXT.len() + 2 + 2 + self.founder_awe_id.len() + 8 + 8 + 4 + payload.len(),
         );
@@ -270,8 +270,7 @@ impl NetworkControlPlane {
         signature: &[u8; 64],
     ) -> Result<u64, NetworkControlError> {
         let mut candidate = self.clone();
-        let sequence =
-            candidate.apply_signed(founder, action, at_unix, now_unix, signature)?;
+        let sequence = candidate.apply_signed(founder, action, at_unix, now_unix, signature)?;
         save(path, &candidate, founder)?;
         *self = candidate;
         Ok(sequence)
@@ -281,7 +280,9 @@ impl NetworkControlPlane {
 fn validate_id(value: &str) -> Result<(), NetworkControlError> {
     if value.is_empty()
         || value.len() > MAX_NETWORK_ID_BYTES
-        || value.chars().any(|character| character.is_control() || character.is_whitespace())
+        || value
+            .chars()
+            .any(|character| character.is_control() || character.is_whitespace())
     {
         return Err(NetworkControlError::InvalidIdentifier);
     }
@@ -471,10 +472,7 @@ pub fn save(
 
 /// Loads only a founder-authenticated snapshot whose complete topology passes
 /// validation. A corrupt or differently-owned file is never replaced.
-pub fn load(
-    path: &Path,
-    founder: &Identity,
-) -> Result<NetworkControlPlane, NetworkControlError> {
+pub fn load(path: &Path, founder: &Identity) -> Result<NetworkControlPlane, NetworkControlError> {
     let file = File::open(path).map_err(|error| NetworkControlError::Io(error.to_string()))?;
     let size = file
         .metadata()
@@ -716,7 +714,11 @@ mod tests {
         let mut control = NetworkControlPlane::new(&founder, 10);
         let action = NetworkAction::CreateDataGroup {
             group_id: "dg-bad".into(),
-            centre_ids: vec!["dc-missing-a".into(), "dc-missing-b".into(), "dc-missing-c".into()],
+            centre_ids: vec![
+                "dc-missing-a".into(),
+                "dc-missing-b".into(),
+                "dc-missing-c".into(),
+            ],
         };
         let message = control.signing_message(&action, 11).unwrap();
         let signature = founder.sign(&message);
@@ -745,11 +747,16 @@ mod tests {
         .unwrap();
         save(&path, &control, &founder).unwrap();
         assert_eq!(load(&path, &founder).unwrap(), control);
-        assert_eq!(load(&path, &stranger), Err(NetworkControlError::WrongFounder));
+        assert_eq!(
+            load(&path, &stranger),
+            Err(NetworkControlError::WrongFounder)
+        );
 
         let mut envelope: SignedNetworkControlFile =
             serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        envelope.snapshot = envelope.snapshot.replace("\"sequence\":1", "\"sequence\":9");
+        envelope.snapshot = envelope
+            .snapshot
+            .replace("\"sequence\":1", "\"sequence\":9");
         fs::write(&path, serde_json::to_vec(&envelope).unwrap()).unwrap();
         assert_eq!(
             load(&path, &founder),
