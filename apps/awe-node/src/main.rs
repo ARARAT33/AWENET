@@ -682,7 +682,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
             }
         },
         "/api/network/control" if method == "POST" => {
-            let body = request.split("\\r\\n\\r\\n").nth(1).unwrap_or("");
+            let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
             if body.len() > network_control::MAX_NETWORK_ACTION_BYTES.saturating_add(4096) {
                 return write_json_error(&mut stream, "413 Payload Too Large", "network_action_request_too_large").await;
             }

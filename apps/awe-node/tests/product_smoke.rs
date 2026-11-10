@@ -880,9 +880,10 @@ fn three_node_product_smoke() {
             serde_json::from_str(&get("127.0.0.1:46201", "/api/network/control"))
                 .expect("initial network control JSON");
         assert_eq!(initial_control["status"], "ok");
+        let expected_founder_id = founder_identity.public.awe_id.to_hex();
         assert_eq!(
             initial_control["founder_awe_id"].as_str(),
-            Some(founder_identity.public.awe_id.to_hex().as_str()),
+            Some(expected_founder_id.as_str()),
             "the control plane must be pinned to the node's installed founder identity"
         );
         let initial_time = initial_control["updated_at_unix"]
@@ -952,7 +953,7 @@ fn three_node_product_smoke() {
                 "network mutation failed: {raw}"
             );
             let applied: serde_json::Value =
-                serde_json::from_str(raw.split("\\r\\n\\r\\n").nth(1).unwrap_or(""))
+                serde_json::from_str(raw.split("\r\n\r\n").nth(1).unwrap_or(""))
                     .expect("network mutation response JSON");
             assert_eq!(applied["status"], "applied", "network mutation: {applied}");
             signing_state
