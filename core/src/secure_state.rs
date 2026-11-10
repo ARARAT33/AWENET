@@ -50,8 +50,7 @@ pub fn save_json<T: Serialize>(
         .encrypt(Nonce::from_slice(&nonce), plaintext.as_ref())
         .map_err(|_| SecureStateError::Crypto)?;
 
-    let mut envelope =
-        Vec::with_capacity(MAGIC.len() + SALT_LEN + NONCE_LEN + ciphertext.len());
+    let mut envelope = Vec::with_capacity(MAGIC.len() + SALT_LEN + NONCE_LEN + ciphertext.len());
     envelope.extend_from_slice(MAGIC);
     envelope.extend_from_slice(&salt);
     envelope.extend_from_slice(&nonce);
@@ -69,9 +68,7 @@ pub fn load_json<T: DeserializeOwned>(
     }
 
     let envelope = fs::read(path)?;
-    if envelope.len() < MAGIC.len() + SALT_LEN + NONCE_LEN
-        || !envelope.starts_with(MAGIC)
-    {
+    if envelope.len() < MAGIC.len() + SALT_LEN + NONCE_LEN || !envelope.starts_with(MAGIC) {
         return Err(SecureStateError::InvalidEnvelope);
     }
 
@@ -107,8 +104,7 @@ mod tests {
 
     #[test]
     fn round_trip_is_encrypted_and_authenticated() {
-        let path =
-            std::env::temp_dir().join(format!("awe-state-{}.bin", std::process::id()));
+        let path = std::env::temp_dir().join(format!("awe-state-{}.bin", std::process::id()));
         let value = Fixture {
             node_id: "nid-test".into(),
             offered_bytes: 42,
@@ -116,9 +112,7 @@ mod tests {
         save_json(&path, &value, "correct horse battery staple").unwrap();
         let raw = fs::read(&path).unwrap();
         assert!(raw.starts_with(MAGIC));
-        assert!(!raw
-            .windows(b"nid-test".len())
-            .any(|window| window == b"nid-test"));
+        assert!(!raw.windows(b"nid-test".len()).any(|window| window == b"nid-test"));
         let decoded: Fixture = load_json(&path, "correct horse battery staple").unwrap();
         assert_eq!(decoded, value);
         assert!(load_json::<Fixture>(&path, "wrong").is_err());
