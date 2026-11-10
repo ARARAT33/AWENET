@@ -32,9 +32,16 @@
 use crate::identity::{AweId, Identity};
 use crate::resource_economy::{MeasuredUsage, UsageEvidence};
 use crate::resource_meter::{SignedUsageReport, UsageVerification, MAX_VERIFIER_REPORTS};
+use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs::{self, OpenOptions},
+    io::{Read, Write},
+    path::Path,
+};
 use thiserror::Error;
+use zeroize::Zeroize;
 
 pub const MAX_VERIFIERS: usize = 256;
 pub const MAX_OPEN_WINDOWS: usize = 4_096;
@@ -45,6 +52,9 @@ pub const REPORT_GRACE_SECS: u64 = 24 * 3_600;
 /// Closed windows and their reports are kept this long for audit, then
 /// pruned by `VerifierNet::close_expired`.
 pub const CLOSED_WINDOW_RETENTION_SECS: u64 = 30 * 24 * 3_600;
+pub const VERIFIER_NET_STORE_VERSION: u16 = 1;
+pub const MAX_VERIFIER_NET_FILE_BYTES: u64 = 64 * 1024 * 1024;
+const STORE_CONTEXT: &[u8] = b"AWENET-VERIFIER-NET-STORE/v1\\0";
 
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum VerifierNetError {
@@ -76,6 +86,22 @@ pub enum VerifierNetError {
     DuplicateVerifier,
     #[error("the usage report signature is invalid")]
     InvalidSignature,
+    #[error("the verifier registry sequence is exhausted")]
+    SequenceExhausted,
+    #[error("the verifier registry is inconsistent or contains an invalid certificate")]
+    InvalidRegistry,
+    #[error("the verifier network snapshot is inconsistent")]
+    InvalidState,
+    #[error("the verifier network belongs to another founder")]
+    WrongFounder,
+    #[error("the verifier network store version is unsupported")]
+    InvalidStoreVersion,
+    #[error("the verifier network store exceeds the maximum size")]
+    StoreTooLarge,
+    #[error("verifier network serialization failed: {0}")]
+    Serialization(String),
+    #[error("verifier network I/O failed: {0}")]
+    Io(String),
 }
 
 /// A founder-signed enrollment certificate for one verifier node. Every
@@ -152,16 +178,52 @@ impl VerifierRegistry {
             .find(|certificate| certificate.public_key == *verifier_public_key)
     }
 
-    pub fn is_active(&self, verifier_public_key: &[u8; 32]) -> bool {
+    /// Returns true only when the stored certificate is founder-signed and
+    /// its AWE ID is derived from the certified public key. This remains
+    /// fail-closed even when a registry was deserialized from untrusted bytes.
+    pub fn is_certified(&self, verifier_public_key: &[u8; 32]) -> bool {
         self.certificate(verifier_public_key)
-            .is_some_and(VerifierCertificate::is_active)
+            .is_some_and(|certificate| certificate.is_valid(&self.founder_public_key))
+    }
+
+    pub fn is_active(&self, verifier_public_key: &[u8; 32]) -> bool {
+        self.certificate(verifier_public_key).is_some_and(|certificate| {
+            certificate.is_active() && certificate.is_valid(&self.founder_public_key)
+        })
     }
 
     pub fn active_verifiers(&self) -> usize {
         self.verifiers
             .iter()
-            .filter(|certificate| certificate.is_active())
+            .filter(|certificate| {
+                certificate.is_active() && certificate.is_valid(&self.founder_public_key)
+            })
             .count()
+    }
+
+    /// Validates a deserialized or persisted registry before it is used.
+    /// Every certificate must be founder-signed, unique and below the next
+    /// sequence number; retirement cannot predate enrollment.
+    pub fn validate(&self) -> Result<(), VerifierNetError> {
+        if self.next_sequence == 0 || self.verifiers.len() > MAX_VERIFIERS {
+            return Err(VerifierNetError::InvalidRegistry);
+        }
+        let mut public_keys = BTreeSet::new();
+        let mut sequences = BTreeSet::new();
+        for certificate in &self.verifiers {
+            if certificate.sequence == 0
+                || certificate.sequence >= self.next_sequence
+                || !public_keys.insert(certificate.public_key)
+                || !sequences.insert(certificate.sequence)
+                || !certificate.is_valid(&self.founder_public_key)
+                || certificate
+                    .retired_at_unix
+                    .is_some_and(|retired| retired < certificate.enrolled_at_unix)
+            {
+                return Err(VerifierNetError::InvalidRegistry);
+            }
+        }
+        Ok(())
     }
 
     pub fn len(&self) -> usize {
@@ -185,6 +247,10 @@ impl VerifierRegistry {
         if founder.public.public_key != self.founder_public_key {
             return Err(VerifierNetError::NotFounder);
         }
+        self.validate()?;
+        if at_unix < self.installed_at_unix {
+            return Err(VerifierNetError::InvalidState);
+        }
         if let Some(existing) = self.certificate(&verifier.public.public_key) {
             if existing.is_active() {
                 return Err(VerifierNetError::AlreadyEnrolled);
@@ -192,6 +258,10 @@ impl VerifierRegistry {
         } else if self.verifiers.len() >= MAX_VERIFIERS {
             return Err(VerifierNetError::RegistryFull);
         }
+        let next_sequence = self
+            .next_sequence
+            .checked_add(1)
+            .ok_or(VerifierNetError::SequenceExhausted)?;
         let mut certificate = VerifierCertificate {
             verifier: verifier.public.awe_id.clone(),
             public_key: verifier.public.public_key,
@@ -201,7 +271,7 @@ impl VerifierRegistry {
             founder_signature: [0u8; 64],
         };
         certificate.founder_signature = founder.sign(&certificate.signing_bytes());
-        self.next_sequence = self.next_sequence.saturating_add(1);
+        self.next_sequence = next_sequence;
         self.verifiers
             .retain(|existing| existing.public_key != certificate.public_key);
         self.verifiers.push(certificate.clone());
@@ -220,6 +290,7 @@ impl VerifierRegistry {
         if founder.public.public_key != self.founder_public_key {
             return Err(VerifierNetError::NotFounder);
         }
+        self.validate()?;
         let existing = match self.certificate(verifier_public_key) {
             Some(certificate) => certificate.clone(),
             None => return Err(VerifierNetError::UnknownVerifier),
@@ -227,12 +298,19 @@ impl VerifierRegistry {
         if !existing.is_active() {
             return Ok(existing);
         }
+        if at_unix < existing.enrolled_at_unix {
+            return Err(VerifierNetError::InvalidState);
+        }
+        let next_sequence = self
+            .next_sequence
+            .checked_add(1)
+            .ok_or(VerifierNetError::SequenceExhausted)?;
         let mut certificate = existing;
         certificate.retired_at_unix = Some(at_unix);
         certificate.sequence = self.next_sequence;
         certificate.founder_signature = [0u8; 64];
         certificate.founder_signature = founder.sign(&certificate.signing_bytes());
-        self.next_sequence = self.next_sequence.saturating_add(1);
+        self.next_sequence = next_sequence;
         self.verifiers
             .retain(|kept| kept.public_key != *verifier_public_key);
         self.verifiers.push(certificate.clone());
@@ -356,12 +434,15 @@ impl VerifierNet {
         period_end_unix: u64,
         now_unix: u64,
     ) -> Result<AttestationWindow, VerifierNetError> {
-        if period_end_unix <= period_start_unix
-            || period_end_unix.saturating_sub(period_start_unix) > MAX_WINDOW_PERIOD_SECS
-        {
-            return Err(VerifierNetError::InvalidPeriod);
-        }
-        if now_unix > period_end_unix.saturating_add(REPORT_GRACE_SECS) {
+        self.validate()?;
+        let _duration = period_end_unix
+            .checked_sub(period_start_unix)
+            .filter(|duration| *duration > 0 && *duration <= MAX_WINDOW_PERIOD_SECS)
+            .ok_or(VerifierNetError::InvalidPeriod)?;
+        let report_deadline_unix = period_end_unix
+            .checked_add(REPORT_GRACE_SECS)
+            .ok_or(VerifierNetError::InvalidPeriod)?;
+        if now_unix > report_deadline_unix {
             return Err(VerifierNetError::WindowExpired);
         }
         let key = window_key(node, period_start_unix);
@@ -376,7 +457,7 @@ impl VerifierNet {
             period_start_unix,
             period_end_unix,
             opened_at_unix: now_unix,
-            report_deadline_unix: period_end_unix.saturating_add(REPORT_GRACE_SECS),
+            report_deadline_unix,
             closed: false,
         };
         self.windows.insert(key, window.clone());
@@ -404,6 +485,7 @@ impl VerifierNet {
         report: SignedUsageReport,
         now_unix: u64,
     ) -> Result<(), VerifierNetError> {
+        self.validate()?;
         if !report.verify() {
             return Err(VerifierNetError::InvalidSignature);
         }
@@ -449,8 +531,18 @@ impl VerifierNet {
         period_end_unix: u64,
     ) -> UsageVerification {
         let mut verification = UsageVerification::default();
+        if self.validate().is_err() {
+            return verification;
+        }
+        let mut seen = BTreeSet::new();
         for report in self.reports_for(node, period_start_unix) {
-            if report.node == *node && report.period_end_unix == period_end_unix {
+            if report.node == *node
+                && report.period_end_unix == period_end_unix
+                && report.verify()
+                && self.registry.is_certified(&report.verifier_public_key)
+                && AweId::from_public_key(&report.verifier_public_key) != *node
+                && seen.insert(report.verifier_public_key)
+            {
                 verification.add(report.clone());
             }
         }
@@ -500,6 +592,64 @@ impl VerifierNet {
             )
     }
 
+    /// Validates the complete state before it is persisted, restored or used
+    /// to accept a new report. Reports from a verifier that was later retired
+    /// remain auditable, but their certificate must still be founder-signed.
+    pub fn validate(&self) -> Result<(), VerifierNetError> {
+        self.registry.validate()?;
+        if self.windows.len() > MAX_OPEN_WINDOWS {
+            return Err(VerifierNetError::InvalidState);
+        }
+
+        for (key, window) in &self.windows {
+            let _duration = window
+                .period_end_unix
+                .checked_sub(window.period_start_unix)
+                .filter(|duration| *duration > 0 && *duration <= MAX_WINDOW_PERIOD_SECS)
+                .ok_or(VerifierNetError::InvalidState)?;
+            let expected_deadline = window
+                .period_end_unix
+                .checked_add(REPORT_GRACE_SECS)
+                .ok_or(VerifierNetError::InvalidState)?;
+            if key != &window_key(&window.node, window.period_start_unix)
+                || window.report_deadline_unix != expected_deadline
+                || window.opened_at_unix > window.report_deadline_unix
+            {
+                return Err(VerifierNetError::InvalidState);
+            }
+        }
+
+        for (key, reports) in &self.reports {
+            let window = self
+                .windows
+                .get(key)
+                .ok_or(VerifierNetError::InvalidState)?;
+            if reports.len() > MAX_VERIFIER_REPORTS {
+                return Err(VerifierNetError::InvalidState);
+            }
+            let mut seen = BTreeSet::new();
+            for report in reports {
+                let certificate_valid = self
+                    .registry
+                    .certificate(&report.verifier_public_key)
+                    .is_some_and(|certificate| {
+                        certificate.is_valid(self.registry.founder_public_key())
+                    });
+                if !report.verify()
+                    || !certificate_valid
+                    || report.node != window.node
+                    || report.period_start_unix != window.period_start_unix
+                    || report.period_end_unix != window.period_end_unix
+                    || AweId::from_public_key(&report.verifier_public_key) == report.node
+                    || !seen.insert(report.verifier_public_key)
+                {
+                    return Err(VerifierNetError::InvalidState);
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Closes windows past their report deadline and prunes closed
     /// windows (with their reports) past the retention horizon.
     /// Returns the number of windows removed.
@@ -525,6 +675,155 @@ impl VerifierNet {
         }
         removed
     }
+}
+
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct SignedVerifierNetFile {
+    version: u16,
+    net: VerifierNet,
+    #[serde(with = "crate::serde_bytes_64")]
+    signature: [u8; 64],
+}
+
+#[derive(Serialize)]
+struct VerifierNetPayload<'a> {
+    version: u16,
+    net: &'a VerifierNet,
+}
+
+fn store_signing_bytes(net: &VerifierNet) -> Result<Vec<u8>, VerifierNetError> {
+    let payload = VerifierNetPayload {
+        version: VERIFIER_NET_STORE_VERSION,
+        net,
+    };
+    let serialized = serde_json::to_vec(&payload)
+        .map_err(|error| VerifierNetError::Serialization(error.to_string()))?;
+    let mut bytes = Vec::with_capacity(STORE_CONTEXT.len() + serialized.len());
+    bytes.extend_from_slice(STORE_CONTEXT);
+    bytes.extend_from_slice(&serialized);
+    Ok(bytes)
+}
+
+fn atomic_write(path: &Path, encoded: &[u8]) -> Result<(), VerifierNetError> {
+    if encoded.len() as u64 > MAX_VERIFIER_NET_FILE_BYTES {
+        return Err(VerifierNetError::StoreTooLarge);
+    }
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent).map_err(|error| VerifierNetError::Io(error.to_string()))?;
+    }
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let mut opened = None;
+    for _ in 0..8 {
+        let mut nonce = [0u8; 16];
+        let mut rng = OsRng;
+        if rng.try_fill_bytes(&mut nonce).is_err() {
+            nonce.zeroize();
+            return Err(VerifierNetError::Io(
+                "secure random generation failed".into(),
+            ));
+        }
+        let temporary = parent.join(format!(
+            ".awenet-verifier-net-{}-{}.tmp",
+            std::process::id(),
+            hex::encode(nonce)
+        ));
+        nonce.zeroize();
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        match options.open(&temporary) {
+            Ok(file) => {
+                opened = Some((temporary, file));
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(VerifierNetError::Io(error.to_string())),
+        }
+    }
+    let Some((temporary, mut file)) = opened else {
+        return Err(VerifierNetError::Io(
+            "could not allocate a unique temporary verifier-net file".into(),
+        ));
+    };
+    if let Err(error) = file.write_all(encoded).and_then(|_| file.sync_all()) {
+        drop(file);
+        let _ = fs::remove_file(&temporary);
+        return Err(VerifierNetError::Io(error.to_string()));
+    }
+    drop(file);
+    if let Err(error) = fs::rename(&temporary, path) {
+        let _ = fs::remove_file(&temporary);
+        return Err(VerifierNetError::Io(error.to_string()));
+    }
+    #[cfg(unix)]
+    if let Ok(directory) = OpenOptions::new().read(true).open(parent) {
+        let _ = directory.sync_all();
+    }
+    Ok(())
+}
+
+/// Atomically saves a founder-signed verifier network snapshot. The founder
+/// private key is never written to disk; only the public registry, windows
+/// and signed reports are included in the snapshot.
+pub fn save(
+    path: &Path,
+    net: &VerifierNet,
+    founder: &Identity,
+) -> Result<(), VerifierNetError> {
+    if net.registry.founder_public_key != founder.public.public_key {
+        return Err(VerifierNetError::WrongFounder);
+    }
+    net.validate()?;
+    let file = SignedVerifierNetFile {
+        version: VERIFIER_NET_STORE_VERSION,
+        net: net.clone(),
+        signature: founder.sign(&store_signing_bytes(net)?),
+    };
+    let encoded = serde_json::to_vec_pretty(&file)
+        .map_err(|error| VerifierNetError::Serialization(error.to_string()))?;
+    atomic_write(path, &encoded)
+}
+
+/// Loads a snapshot only when its outer founder signature, registry
+/// certificates, attestation windows and stored reports all validate.
+pub fn load(path: &Path, founder: &Identity) -> Result<VerifierNet, VerifierNetError> {
+    let file = fs::File::open(path).map_err(|error| VerifierNetError::Io(error.to_string()))?;
+    let mut bytes = Vec::new();
+    file.take(MAX_VERIFIER_NET_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| VerifierNetError::Io(error.to_string()))?;
+    if bytes.len() as u64 > MAX_VERIFIER_NET_FILE_BYTES {
+        return Err(VerifierNetError::StoreTooLarge);
+    }
+    let signed: SignedVerifierNetFile = serde_json::from_slice(&bytes)
+        .map_err(|error| VerifierNetError::Serialization(error.to_string()))?;
+    if signed.version != VERIFIER_NET_STORE_VERSION {
+        return Err(VerifierNetError::InvalidStoreVersion);
+    }
+    if signed.net.registry.founder_public_key != founder.public.public_key {
+        return Err(VerifierNetError::WrongFounder);
+    }
+    let message = store_signing_bytes(&signed.net)?;
+    if !Identity::verify(
+        &founder.public.public_key,
+        &message,
+        &signed.signature,
+    ) {
+        return Err(VerifierNetError::InvalidSignature);
+    }
+    signed.net.validate()?;
+    Ok(signed.net)
 }
 
 #[cfg(test)]
@@ -1079,6 +1378,7 @@ mod tests {
         let restored: VerifierNet =
             serde_json::from_slice(&bytes).expect("verifier net deserialization");
         assert_eq!(restored, net);
+        assert!(restored.validate().is_ok());
         // the restored registry still validates its founder-signed
         // certificates and the restored reports still verify
         let restored_certificate = restored
@@ -1090,4 +1390,182 @@ mod tests {
         assert_eq!(restored.reports_for(&node.public.awe_id, 0).len(), 1);
         assert!(restored.reports_for(&node.public.awe_id, 0)[0].verify());
     }
+
+    fn verifier_net_temp_path(label: &str) -> std::path::PathBuf {
+        let mut nonce = [0u8; 16];
+        let mut rng = OsRng;
+        rng.try_fill_bytes(&mut nonce).unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "awenet-verifier-net-{label}-{}-{}.json",
+            std::process::id(),
+            hex::encode(nonce)
+        ));
+        nonce.zeroize();
+        path
+    }
+
+    #[test]
+    fn invalid_deserialized_certificates_cannot_enroll_or_verify() {
+        let founder = identity("invalid-registry-founder");
+        let verifier = identity("invalid-registry-verifier");
+        let imposter = identity("invalid-registry-imposter");
+        let node = identity("invalid-registry-node");
+        let mut net = VerifierNet::new(&founder, 0);
+        net.open_window(&node.public.awe_id, 0, 3_600, 3_600)
+            .unwrap();
+        let mut forged = VerifierCertificate {
+            verifier: verifier.public.awe_id.clone(),
+            public_key: verifier.public.public_key,
+            enrolled_at_unix: 1,
+            retired_at_unix: None,
+            sequence: 1,
+            founder_signature: [0u8; 64],
+        };
+        forged.founder_signature = imposter.sign(&forged.signing_bytes());
+        net.registry.verifiers.push(forged);
+        assert!(!net.registry.is_active(&verifier.public.public_key));
+        assert!(matches!(net.validate(), Err(VerifierNetError::InvalidRegistry)));
+        let report = SignedUsageReport::new(
+            &verifier,
+            node.public.awe_id.clone(),
+            0,
+            3_600,
+            period_usage(),
+        );
+        assert!(matches!(
+            net.submit_report(report, 3_600),
+            Err(VerifierNetError::InvalidRegistry)
+        ));
+        assert!(!net.has_consensus(&node.public.awe_id, 0, 3_600));
+    }
+
+    #[test]
+    fn registry_sequence_exhaustion_never_reuses_a_sequence_or_mutates_state() {
+        let founder = identity("sequence-founder");
+        let verifier = identity("sequence-verifier");
+        let mut net = VerifierNet::new(&founder, 0);
+        net.registry.next_sequence = u64::MAX;
+        let before = net.clone();
+        assert!(matches!(
+            net.enroll_verifier(&founder, &verifier, 1),
+            Err(VerifierNetError::SequenceExhausted)
+        ));
+        assert_eq!(net, before);
+
+        let mut net = VerifierNet::new(&founder, 0);
+        net.enroll_verifier(&founder, &verifier, 1).unwrap();
+        net.registry.next_sequence = u64::MAX;
+        let before = net.clone();
+        assert!(matches!(
+            net.retire_verifier(&founder, &verifier.public.public_key, 2),
+            Err(VerifierNetError::SequenceExhausted)
+        ));
+        assert_eq!(net, before);
+    }
+
+    #[test]
+    fn window_deadline_overflow_is_rejected_without_mutation() {
+        let founder = identity("window-overflow-founder");
+        let node = identity("window-overflow-node");
+        let mut net = VerifierNet::new(&founder, 0);
+        let before = net.clone();
+        assert!(matches!(
+            net.open_window(
+                &node.public.awe_id,
+                u64::MAX - 10,
+                u64::MAX - 1,
+                u64::MAX - 1
+            ),
+            Err(VerifierNetError::InvalidPeriod)
+        ));
+        assert_eq!(net, before);
+    }
+
+    #[test]
+    fn signed_verifier_net_store_roundtrips_and_rejects_wrong_founder() {
+        let founder = identity("store-founder");
+        let node = identity("store-node");
+        let verifier_a = identity("store-verifier-a");
+        let verifier_b = identity("store-verifier-b");
+        let mut net = VerifierNet::new(&founder, 0);
+        net.enroll_verifier(&founder, &verifier_a, 1).unwrap();
+        net.enroll_verifier(&founder, &verifier_b, 2).unwrap();
+        net.open_window(&node.public.awe_id, 0, 3_600, 3_600)
+            .unwrap();
+        net.submit_report(
+            SignedUsageReport::new(
+                &verifier_a,
+                node.public.awe_id.clone(),
+                0,
+                3_600,
+                period_usage(),
+            ),
+            3_600,
+        )
+        .unwrap();
+
+        let path = verifier_net_temp_path("roundtrip");
+        save(&path, &net, &founder).unwrap();
+        let restored = load(&path, &founder).unwrap();
+        assert_eq!(restored, net);
+        let wrong_founder = identity("store-wrong-founder");
+        assert!(matches!(
+            load(&path, &wrong_founder),
+            Err(VerifierNetError::WrongFounder)
+        ));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn signed_store_rejects_founder_signed_but_internally_forged_registry() {
+        let founder = identity("store-forged-founder");
+        let verifier = identity("store-forged-verifier");
+        let imposter = identity("store-forged-imposter");
+        let mut net = VerifierNet::new(&founder, 0);
+        let mut certificate = VerifierCertificate {
+            verifier: verifier.public.awe_id.clone(),
+            public_key: verifier.public.public_key,
+            enrolled_at_unix: 1,
+            retired_at_unix: None,
+            sequence: 1,
+            founder_signature: [0u8; 64],
+        };
+        certificate.founder_signature = imposter.sign(&certificate.signing_bytes());
+        net.registry.verifiers.push(certificate);
+
+        let path = verifier_net_temp_path("forged");
+        let mut signed = SignedVerifierNetFile {
+            version: VERIFIER_NET_STORE_VERSION,
+            net: net.clone(),
+            signature: [0u8; 64],
+        };
+        signed.signature = founder.sign(&store_signing_bytes(&signed.net).unwrap());
+        std::fs::write(&path, serde_json::to_vec(&signed).unwrap()).unwrap();
+        assert!(matches!(
+            load(&path, &founder),
+            Err(VerifierNetError::InvalidRegistry)
+        ));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn failed_verifier_net_save_preserves_previous_snapshot() {
+        let founder = identity("store-preserve-founder");
+        let verifier = identity("store-preserve-verifier");
+        let mut net = VerifierNet::new(&founder, 0);
+        net.enroll_verifier(&founder, &verifier, 1).unwrap();
+        let path = verifier_net_temp_path("preserve");
+        save(&path, &net, &founder).unwrap();
+        let before = std::fs::read(&path).unwrap();
+
+        let mut invalid = net.clone();
+        invalid.registry.verifiers[0].founder_signature[0] ^= 1;
+        assert!(matches!(
+            save(&path, &invalid, &founder),
+            Err(VerifierNetError::InvalidRegistry)
+        ));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        std::fs::remove_file(path).unwrap();
+    }
+
 }
