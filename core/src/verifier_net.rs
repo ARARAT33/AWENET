@@ -448,7 +448,11 @@ impl VerifierNet {
         period_end_unix: u64,
         now_unix: u64,
     ) -> Result<AttestationWindow, VerifierNetError> {
-        self.validate()?;
+        // Opening a window only changes the bounded window index. Validate
+        // the immutable verifier roster here; full snapshot validation runs
+        // before report acceptance, consensus and persistence. This avoids
+        // rescanning every existing window on each insertion.
+        self.registry.validate()?;
         let _duration = period_end_unix
             .checked_sub(period_start_unix)
             .filter(|duration| *duration > 0 && *duration <= MAX_WINDOW_PERIOD_SECS)
