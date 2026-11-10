@@ -49,17 +49,40 @@ Clients must obtain the current sequence and construct the message against the
 same snapshot. A concurrent mutation changes the next sequence and makes an
 older signature unusable.
 
+## HTTP integration
+
+The `awe-node` local product now loads `network-control.json` at startup through
+`load_or_create` and fails closed if an existing snapshot is corrupt or belongs
+to another installed identity. It exposes:
+
+- `GET /api/network/control` and `GET /api/network/topology` for the signed
+topology projection, founder AWEID, sequence and timestamp;
+- `POST /api/network/control` for a typed `NetworkAction`, `at_unix` and a
+64-byte Ed25519 signature encoded as hexadecimal.
+
+The POST route applies the action with `apply_and_save`, so it publishes a new
+sequence only after the signed snapshot is durably replaced. Invalid signatures
+and replayed requests are rejected; dependency-invalid removals return a
+conflict. Requests are size-bounded before action decoding.
+
+**Trust boundary:** the current runtime installs the local node identity as
+this node's control-plane founder. This is a per-node local control plane, not
+yet one network-wide founder authority. It is not a substitute for the separate
+Founder Identity/approved-device authority, shared session/capability
+authorization, or cross-node signed snapshot replication. The founder private
+key remains on the local node and is never returned by these routes.
+
 ## Current boundary
 
-This PR provides the core durable mutation engine and tests. It does not yet
-add HTTP endpoints, bind user sessions/capabilities to network mutations, or
-replicate snapshots between independent physical nodes. The runtime integration
-must call `apply_and_save` only after endpoint authorization and must not expose
-the founder private key to remote clients. These are explicit follow-up tasks,
-not claimed as complete here.
+The local HTTP routes now exercise the durable mutation engine, but user
+sessions/capabilities are not yet bound to network mutations and snapshots are
+not replicated between independent physical nodes. Multi-node consensus,
+conflict resolution, remote founder approval and recovery after independent
+node failure remain follow-up work and are not claimed as complete.
 
 ## Regression tests
 
+- HTTP runtime: create six centres and nodes, connect centres, create two Data Groups and a Centre Group, update node health, reject forged/replayed signatures, block removal of a referenced centre, verify reciprocal peers, reload the signed snapshot and restart the node with the same data directory;
 - founder signature required and sequence-based replay rejected;
 - signed creation of centres/nodes and Data Group membership;
 - Centre Group requires two existing Data Groups;

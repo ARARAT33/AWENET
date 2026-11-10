@@ -13,6 +13,7 @@ use awep2p_core::identity::{AweId, AweSecret, Identity, LocalVault, Username};
 use awep2p_core::lan_mesh::LanPeerBeacon;
 use awep2p_core::messenger::format_uid;
 use awep2p_core::network::{format_node_descriptor, Node};
+use awep2p_core::network_control::{self, NetworkAction, NetworkControlError, NetworkControlPlane};
 use awep2p_core::onebank::{classify_tier, ResourceContribution};
 use awep2p_core::onecoin::{OnecoinLedger, OnecoinTransaction, ATOMS_PER_COIN};
 use awep2p_core::onecoin_consensus_runtime::{
@@ -61,6 +62,7 @@ type OnecoinLedgerState = Arc<Mutex<OnecoinLedger>>;
 type ContributionState = Arc<Mutex<ResourceContribution>>;
 type FounderGuardState = Arc<Mutex<FounderGuard>>;
 type UserRegistryState = Arc<Mutex<UserRegistry>>;
+type NetworkControlState = Arc<Mutex<NetworkControlPlane>>;
 
 #[derive(Clone)]
 struct UiState {
@@ -81,6 +83,8 @@ struct UiState {
     founder_guard: FounderGuardState,
     user_registry: UserRegistryState,
     user_registry_path: PathBuf,
+    network_control: NetworkControlState,
+    network_control_path: PathBuf,
     economy: economy_api::EconomyState,
     economy_path: PathBuf,
 }
@@ -415,6 +419,24 @@ fn user_registry_error_status(error: &UserRegistryError) -> &'static str {
     }
 }
 
+fn network_control_error_status(error: &NetworkControlError) -> &'static str {
+    match error {
+        NetworkControlError::NotFounder
+        | NetworkControlError::InvalidSignature
+        | NetworkControlError::WrongFounder => "403 Forbidden",
+        NetworkControlError::SequenceExhausted | NetworkControlError::Topology(_) => "409 Conflict",
+        NetworkControlError::ActionTooLarge | NetworkControlError::StoreTooLarge => "413 Payload Too Large",
+        NetworkControlError::TimestampWentBackwards
+        | NetworkControlError::TimestampInFuture
+        | NetworkControlError::InvalidIdentifier
+        | NetworkControlError::InvalidMetrics => "400 Bad Request",
+        NetworkControlError::InvalidState
+        | NetworkControlError::InvalidStoreVersion
+        | NetworkControlError::Serialization(_)
+        | NetworkControlError::Io(_) => "500 Internal Server Error",
+    }
+}
+
 async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<()> {
     let UiState {
         node,
@@ -434,6 +456,8 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         founder_guard,
         user_registry,
         user_registry_path,
+        network_control,
+        network_control_path,
         economy,
         economy_path,
     } = state;
@@ -623,6 +647,98 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
             match response {
                 Ok(()) => ("200 OK", "application/json; charset=utf-8", serde_json::json!({"status":"published","offer":offer,"notice":"ONECOIN transfer is handled by AWENET wallet. Fiat is exchanged directly between people outside AWENET."}).to_string()),
                 Err(error) => ("500 Internal Server Error", "application/json; charset=utf-8", serde_json::json!({"status":"error","error":error.to_string()}).to_string())
+            }
+        },
+        "/api/network/control" | "/api/network/topology" if method == "GET" => {
+            match network_control.lock() {
+                Ok(control) => match serde_json::to_value(control.topology()) {
+                    Ok(topology) => (
+                        "200 OK",
+                        "application/json; charset=utf-8",
+                        serde_json::json!({
+                            "status": "ok",
+                            "version": network_control::NETWORK_CONTROL_VERSION,
+                            "founder_awe_id": control.founder_awe_id(),
+                            "sequence": control.sequence(),
+                            "next_sequence": control.next_sequence(),
+                            "updated_at_unix": control.updated_at_unix(),
+                            "server_time_unix": now_unix(),
+                            "topology": topology
+                        }).to_string(),
+                    ),
+                    Err(_) => (
+                        "500 Internal Server Error",
+                        "application/json; charset=utf-8",
+                        r#"{"status":"error","error":"network_topology_serialization_failed"}"# .into(),
+                    ),
+                },
+                Err(_) => (
+                    "500 Internal Server Error",
+                    "application/json; charset=utf-8",
+                    r#"{"status":"error","error":"network_control_lock_failed"}"# .into(),
+                ),
+            }
+        },
+        "/api/network/control" if method == "POST" => {
+            let body = request.split("\\r\\n\\r\\n").nth(1).unwrap_or("");
+            if body.len() > network_control::MAX_NETWORK_ACTION_BYTES.saturating_add(4096) {
+                return write_json_error(&mut stream, "413 Payload Too Large", "network_action_request_too_large").await;
+            }
+            let parsed: serde_json::Value = match serde_json::from_str(body) {
+                Ok(value) => value,
+                Err(error) => return write_json_error(&mut stream, "400 Bad Request", &format!("invalid_json: {error}")).await,
+            };
+            let action_value = match parsed.get("action").cloned() {
+                Some(value) => value,
+                None => return write_json_error(&mut stream, "400 Bad Request", "action is required").await,
+            };
+            let action: NetworkAction = match serde_json::from_value(action_value) {
+                Ok(value) => value,
+                Err(error) => return write_json_error(&mut stream, "400 Bad Request", &format!("invalid_network_action: {error}")).await,
+            };
+            let at_unix = match parse_json_u64(&parsed, "at_unix") {
+                Ok(value) => value,
+                Err(error) => return write_json_error(&mut stream, "400 Bad Request", &error).await,
+            };
+            let signature = match parse_hex_array::<64>(
+                parsed.get("signature").and_then(|value| value.as_str()).unwrap_or(""),
+                "signature",
+            ) {
+                Ok(value) => value,
+                Err(error) => return write_json_error(&mut stream, "400 Bad Request", &error).await,
+            };
+            match network_control.lock() {
+                Ok(mut current) => match current.apply_and_save(
+                    &network_control_path,
+                    &node.identity,
+                    &action,
+                    at_unix,
+                    now_unix(),
+                    &signature,
+                ) {
+                    Ok(sequence) => (
+                        "200 OK",
+                        "application/json; charset=utf-8",
+                        serde_json::json!({
+                            "status": "applied",
+                            "sequence": sequence,
+                            "updated_at_unix": current.updated_at_unix()
+                        }).to_string(),
+                    ),
+                    Err(error) => {
+                        let status = network_control_error_status(&error);
+                        (status, "application/json; charset=utf-8", serde_json::json!({
+                            "status": "error",
+                            "error": error.to_string(),
+                            "sequence": current.sequence()
+                        }).to_string())
+                    }
+                },
+                Err(_) => (
+                    "500 Internal Server Error",
+                    "application/json; charset=utf-8",
+                    r#"{"status":"error","error":"network_control_lock_failed"}"# .into(),
+                ),
             }
         },
         "/api/users" if method == "GET" => {
@@ -2143,6 +2259,11 @@ async fn run_product() -> Result<()> {
         user_registry::load_or_create(&user_registry_path, &identity, now_unix())
             .map_err(anyhow::Error::msg)?,
     ));
+    let network_control_path = data_dir.join("network-control.json");
+    let network_control_state: NetworkControlState = Arc::new(Mutex::new(
+        network_control::load_or_create(&network_control_path, &identity, now_unix())
+            .map_err(anyhow::Error::msg)?,
+    ));
     let founder_guard_path = data_dir.join("founder-passkeys.json");
     let founder_guard = Arc::new(Mutex::new(
         passkey_store::load_or_install(&founder_guard_path, &identity, now_unix())
@@ -2886,6 +3007,8 @@ async fn run_product() -> Result<()> {
             let api_founder_guard = founder_guard.clone();
             let api_user_registry = user_registry_state.clone();
             let api_user_registry_path = user_registry_path.clone();
+            let api_network_control = network_control_state.clone();
+            let api_network_control_path = network_control_path.clone();
             let api_economy = economy_state.clone();
             let api_economy_path = economy_path.clone();
             tokio::spawn(async move {
@@ -2909,6 +3032,8 @@ async fn run_product() -> Result<()> {
                         founder_guard: api_founder_guard,
                         user_registry: api_user_registry,
                         user_registry_path: api_user_registry_path,
+                        network_control: api_network_control,
+                        network_control_path: api_network_control_path,
                         economy: api_economy,
                         economy_path: api_economy_path,
                     },
