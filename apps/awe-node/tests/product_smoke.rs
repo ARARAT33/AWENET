@@ -1065,6 +1065,35 @@ fn three_node_product_smoke() {
         assert_eq!(persisted_control.sequence(), signing_state.sequence());
         assert_eq!(persisted_control, signing_state);
 
+        let payload = "AWEP2P-REAL-PRODUCT-SMOKE";
+        let hex = payload
+            .as_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        let stored = post(
+            "127.0.0.1:46201",
+            "/api/storage/put",
+            &format!(r#"{{"filename":"smoke.txt","data_hex":"{hex}"}}"#),
+        );
+        assert!(
+            stored.contains(r#""status":"stored""#),
+            "storage put: {stored}"
+        );
+        let file_id = stored
+            .split(r#""file_id":""#)
+            .nth(1)
+            .and_then(|x| x.split('"').next())
+            .expect("file id");
+        let downloaded = get(
+            "127.0.0.1:46201",
+            &format!("/api/storage/get?file_id={file_id}"),
+        );
+        assert!(
+            downloaded.contains(r#""status":"reconstructed""#)
+                && downloaded.contains(&format!(r#""data_hex":"{hex}""#)),
+            "storage get: {downloaded}"
+        );
         let _ = children[0].kill();
         let _ = children[0].wait();
         children[0] = spawn_node(&bin, &dirs[0], 46101, 46201);
@@ -1110,35 +1139,6 @@ fn three_node_product_smoke() {
                 .unwrap()
                 .iter()
                 .any(|peer| peer == "node-0")
-        );
-        let payload = "AWEP2P-REAL-PRODUCT-SMOKE";
-        let hex = payload
-            .as_bytes()
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>();
-        let stored = post(
-            "127.0.0.1:46201",
-            "/api/storage/put",
-            &format!(r#"{{"filename":"smoke.txt","data_hex":"{hex}"}}"#),
-        );
-        assert!(
-            stored.contains(r#""status":"stored""#),
-            "storage put: {stored}"
-        );
-        let file_id = stored
-            .split(r#""file_id":""#)
-            .nth(1)
-            .and_then(|x| x.split('"').next())
-            .expect("file id");
-        let downloaded = get(
-            "127.0.0.1:46201",
-            &format!("/api/storage/get?file_id={file_id}"),
-        );
-        assert!(
-            downloaded.contains(r#""status":"reconstructed""#)
-                && downloaded.contains(&format!(r#""data_hex":"{hex}""#)),
-            "storage get: {downloaded}"
         );
     }));
 
