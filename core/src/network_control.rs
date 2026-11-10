@@ -177,7 +177,9 @@ impl NetworkControlPlane {
             .topology
             .centres
             .values()
-            .fold(0usize, |count, centre| count.saturating_add(centre.nodes.len()));
+            .fold(0usize, |count, centre| {
+                count.saturating_add(centre.nodes.len())
+            });
         if self.topology.centres.len() > 4_096
             || node_count > 65_536
             || self.topology.data_groups.len() > 4_096
