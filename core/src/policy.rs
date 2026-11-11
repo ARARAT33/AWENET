@@ -131,9 +131,7 @@ mod tests {
         policy.validate().unwrap();
         assert!(policy.allows_stream(MESSENGER_STREAM));
         assert!(policy.allows_stream(crate::data_plane::STORAGE_STREAM));
-        assert!(policy.allows_stream(
-            crate::onecoin_consensus_runtime::ONECOIN_CONSENSUS_STREAM
-        ));
+        assert!(policy.allows_stream(crate::onecoin_consensus_runtime::ONECOIN_CONSENSUS_STREAM));
         assert!(policy.allows_stream(ONECOIN_TRANSFER_STREAM));
         assert!(policy.allows_stream(crate::verifier_transport::VERIFIER_TRANSPORT_STREAM));
         assert!(!policy.allows_stream(999_999));
