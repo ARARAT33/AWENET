@@ -2610,11 +2610,13 @@ fn parse_hex_32(value: &serde_json::Value, field: &str) -> Result<[u8; 32], ApiR
         .get(field)
         .and_then(|field| field.as_str())
         .ok_or_else(|| err(400, format!("{field} is required (hex)")))?;
-    let bytes = hex::decode(text)
-        .map_err(|_| err(400, format!("{field} must be valid hex")))?;
-    let key: [u8; 32] = bytes
-        .try_into()
-        .map_err(|_| err(400, format!("{field} must be exactly 32 bytes (64 hex chars)")))?;
+    let bytes = hex::decode(text).map_err(|_| err(400, format!("{field} must be valid hex")))?;
+    let key: [u8; 32] = bytes.try_into().map_err(|_| {
+        err(
+            400,
+            format!("{field} must be exactly 32 bytes (64 hex chars)"),
+        )
+    })?;
     Ok(key)
 }
 
@@ -2623,11 +2625,13 @@ fn parse_hex_64(value: &serde_json::Value, field: &str) -> Result<[u8; 64], ApiR
         .get(field)
         .and_then(|field| field.as_str())
         .ok_or_else(|| err(400, format!("{field} is required (hex)")))?;
-    let bytes = hex::decode(text)
-        .map_err(|_| err(400, format!("{field} must be valid hex")))?;
-    let signature: [u8; 64] = bytes
-        .try_into()
-        .map_err(|_| err(400, format!("{field} must be exactly 64 bytes (128 hex chars)")))?;
+    let bytes = hex::decode(text).map_err(|_| err(400, format!("{field} must be valid hex")))?;
+    let signature: [u8; 64] = bytes.try_into().map_err(|_| {
+        err(
+            400,
+            format!("{field} must be exactly 64 bytes (128 hex chars)"),
+        )
+    })?;
     Ok(signature)
 }
 
@@ -2665,7 +2669,10 @@ fn parse_signed_report(value: &serde_json::Value) -> Result<SignedUsageReport, A
         signature,
     };
     if !report.verify() {
-        return Err(err(400, "the usage report signature is invalid".to_string()));
+        return Err(err(
+            400,
+            "the usage report signature is invalid".to_string(),
+        ));
     }
     Ok(report)
 }
@@ -2695,7 +2702,10 @@ fn verifier_submit_report(
         Err(message) => return err(400, message.to_string()),
     }
     if let Err(message) = save_verifier_net(&verifier_net, verifier_path, identity) {
-        return err(500, format!("verifier snapshot persistence failed: {message}"));
+        return err(
+            500,
+            format!("verifier snapshot persistence failed: {message}"),
+        );
     }
     ok(serde_json::json!({ "status": "accepted" }))
 }
@@ -2729,14 +2739,16 @@ fn founder_enroll_verifier(
     let Ok(mut verifier_net) = verifier_state.lock() else {
         return err(500, "verifier state lock failed".to_string());
     };
-    let certificate = match verifier_net
-        .enroll_verifier_public(identity, &node, &verifier_public_key, now)
-    {
-        Ok(certificate) => certificate,
-        Err(message) => return err(400, message.to_string()),
-    };
+    let certificate =
+        match verifier_net.enroll_verifier_public(identity, &node, &verifier_public_key, now) {
+            Ok(certificate) => certificate,
+            Err(message) => return err(400, message.to_string()),
+        };
     if let Err(message) = save_verifier_net(&verifier_net, verifier_path, identity) {
-        return err(500, format!("verifier snapshot persistence failed: {message}"));
+        return err(
+            500,
+            format!("verifier snapshot persistence failed: {message}"),
+        );
     }
     ok(serde_json::json!({
         "status": "enrolled",
@@ -2775,7 +2787,10 @@ fn founder_retire_verifier(
         Err(message) => return err(400, message.to_string()),
     };
     if let Err(message) = save_verifier_net(&verifier_net, verifier_path, identity) {
-        return err(500, format!("verifier snapshot persistence failed: {message}"));
+        return err(
+            500,
+            format!("verifier snapshot persistence failed: {message}"),
+        );
     }
     ok(serde_json::json!({
         "status": "retired",
@@ -2830,7 +2845,10 @@ fn founder_open_window(
         Err(message) => return err(400, message.to_string()),
     };
     if let Err(message) = save_verifier_net(&verifier_net, verifier_path, identity) {
-        return err(500, format!("verifier snapshot persistence failed: {message}"));
+        return err(
+            500,
+            format!("verifier snapshot persistence failed: {message}"),
+        );
     }
     ok(serde_json::json!({
         "status": "open",
@@ -2900,7 +2918,10 @@ mod tests {
         );
         assert_eq!(status, "403 Forbidden");
         let parsed: serde_json::Value = serde_json::from_str(&response).unwrap();
-        let message = parsed.get("error").and_then(|error| error.as_str()).unwrap_or("");
+        let message = parsed
+            .get("error")
+            .and_then(|error| error.as_str())
+            .unwrap_or("");
         assert!(
             message.contains("only the AWENET founder"),
             "a stranger must not enroll verifiers: {response}"
@@ -3097,12 +3118,14 @@ mod tests {
         let window = windows
             .iter()
             .find(|window| {
-                window.get("period_start_unix").and_then(|v| v.as_u64())
-                    == Some(period_start)
+                window.get("period_start_unix").and_then(|v| v.as_u64()) == Some(period_start)
             })
             .unwrap();
         assert_eq!(window.get("reports").and_then(|v| v.as_u64()), Some(2));
-        assert_eq!(window.get("has_consensus").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(
+            window.get("has_consensus").and_then(|v| v.as_bool()),
+            Some(true)
+        );
 
         // the verifier net persists as a founder-signed snapshot that
         // survives a restart

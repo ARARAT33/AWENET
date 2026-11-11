@@ -278,7 +278,11 @@ impl VerifierSide {
                 observed_available_secs: window
                     .last_seen_unix
                     .saturating_sub(window.first_seen_unix)
-                    .min(window.period_end_unix.saturating_sub(window.first_seen_unix)),
+                    .min(
+                        window
+                            .period_end_unix
+                            .saturating_sub(window.first_seen_unix),
+                    ),
             };
             due.push((
                 window.node.clone(),
@@ -300,7 +304,10 @@ impl VerifierSide {
             .observed
             .iter()
             .filter(|(_, window)| {
-                now_unix > window.report_deadline_unix.saturating_add(OBSERVED_RETENTION_SECS)
+                now_unix
+                    > window
+                        .report_deadline_unix
+                        .saturating_add(OBSERVED_RETENTION_SECS)
             })
             .map(|(key, _)| *key)
             .collect();
@@ -408,8 +415,10 @@ mod tests {
             Err(VerifierTransportError::Expired)
         ));
         // the honest announcement is observed and idempotent
-        side.observe_announce(node.public.awe_id.as_bytes(), &window, 1).unwrap();
-        side.observe_announce(node.public.awe_id.as_bytes(), &window, 2).unwrap();
+        side.observe_announce(node.public.awe_id.as_bytes(), &window, 1)
+            .unwrap();
+        side.observe_announce(node.public.awe_id.as_bytes(), &window, 2)
+            .unwrap();
         assert_eq!(side.len(), 1);
         // a re-announced window must not change its immutable period
         let mut moved_period = window.clone();
@@ -487,9 +496,11 @@ mod tests {
         let node = identity("prune-node");
         let mut side = VerifierSide::new();
         let early = announce(&node.public.awe_id, 0, 3_600);
-        side.observe_announce(node.public.awe_id.as_bytes(), &early, 1).unwrap();
+        side.observe_announce(node.public.awe_id.as_bytes(), &early, 1)
+            .unwrap();
         let late = announce(&node.public.awe_id, 10 * 3_600, 11 * 3_600);
-        side.observe_announce(node.public.awe_id.as_bytes(), &late, 10 * 3_600).unwrap();
+        side.observe_announce(node.public.awe_id.as_bytes(), &late, 10 * 3_600)
+            .unwrap();
         assert_eq!(side.len(), 2);
         // nothing is pruned before the retention horizon
         let horizon = 11 * 3_600 + GRACE + CLOSED_WINDOW_RETENTION_SECS;
@@ -565,8 +576,8 @@ mod tests {
         .unwrap();
         let announces = open_window_announces(&net, period_start);
         assert_eq!(announces.len(), 1);
-        let announce_bytes = encode(&VerifierTransportMessage::Announce(announces[0].clone()))
-            .unwrap();
+        let announce_bytes =
+            encode(&VerifierTransportMessage::Announce(announces[0].clone())).unwrap();
 
         let mut side_a = VerifierSide::new();
         let mut side_b = VerifierSide::new();
@@ -575,8 +586,12 @@ mod tests {
             let VerifierTransportMessage::Announce(announce) = decoded else {
                 panic!("expected an announcement on the verifier transport");
             };
-            side.observe_announce(contributor.public.awe_id.as_bytes(), &announce, period_start + 1)
-                .unwrap();
+            side.observe_announce(
+                contributor.public.awe_id.as_bytes(),
+                &announce,
+                period_start + 1,
+            )
+            .unwrap();
             side.record_traffic(
                 contributor.public.awe_id.as_bytes(),
                 2_000_000_000,

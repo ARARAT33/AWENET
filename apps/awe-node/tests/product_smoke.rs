@@ -1124,7 +1124,9 @@ fn three_node_product_smoke() {
                 .expect("verifier net windows")
                 .iter()
                 .find(|window| {
-                    window.get("period_start_unix").and_then(|value| value.as_u64())
+                    window
+                        .get("period_start_unix")
+                        .and_then(|value| value.as_u64())
                         == Some(window_start)
                 })
                 .expect("the opened attestation window");
@@ -1132,7 +1134,10 @@ fn three_node_product_smoke() {
                 .get("reports")
                 .and_then(|value| value.as_u64())
                 .unwrap_or(0);
-            if observed.get("has_consensus").and_then(|value| value.as_bool()) == Some(true)
+            if observed
+                .get("has_consensus")
+                .and_then(|value| value.as_bool())
+                == Some(true)
                 && reported == 2
             {
                 break;
