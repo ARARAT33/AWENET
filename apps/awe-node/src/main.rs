@@ -2005,7 +2005,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                 && target == "/api/founder/verifier/window"
                 && response.0 == "200 OK"
             {
-                announce_open_windows(node, &verifier_net).await;
+                announce_open_windows(&node, &verifier_net).await;
             }
             response
         }
