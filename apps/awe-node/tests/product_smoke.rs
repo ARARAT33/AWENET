@@ -9,7 +9,8 @@ use std::{
     io::{Read, Write},
     net::TcpStream,
     path::PathBuf,
-    process::{Child, Command},
+    process::{Child, Command, Stdio},
+    sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant},
 };
@@ -137,15 +138,65 @@ fn wait_for_health(addr: &str) {
     }
 }
 
-fn spawn_node(bin: &PathBuf, data: &PathBuf, listen: u16, ui: u16) -> Child {
-    Command::new(bin)
+/// The combined stdout/stderr of one spawned node, kept bounded so a
+/// long-running smoke test cannot grow it without limit. The panic
+/// diagnostics of the consensus wait include these tails, because the
+/// live transport failures that matter (rejected announces, rejected
+/// reports, deferred deliveries) are printed by the nodes themselves.
+type NodeLog = Arc<Mutex<String>>;
+
+const NODE_LOG_LIMIT: usize = 64 * 1024;
+
+fn spawn_node(bin: &PathBuf, data: &PathBuf, listen: u16, ui: u16) -> (Child, NodeLog) {
+    let mut child = Command::new(bin)
         .env("AWE_DATA_DIR", data)
         .env("AWE_LISTEN_ADDR", format!("127.0.0.1:{listen}"))
         .env("AWE_UI_ADDR", format!("127.0.0.1:{ui}"))
         .env("AWE_NO_BROWSER", "1")
         .env("AWE_NO_NATIVE_UI", "1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
-        .expect("spawn node")
+        .expect("spawn node");
+    let log: NodeLog = Arc::new(Mutex::new(String::new()));
+    for stream in [child.stdout.take(), child.stderr.take()] {
+        if let Some(mut stream) = stream {
+            let log = Arc::clone(&log);
+            thread::spawn(move || {
+                let mut buf = [0u8; 4096];
+                loop {
+                    match stream.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            if let Ok(mut log) = log.lock() {
+                                log.push_str(&String::from_utf8_lossy(&buf[..n]));
+                                if log.len() > NODE_LOG_LIMIT {
+                                    let keep = log.len() - NODE_LOG_LIMIT / 2;
+                                    *log = log[keep..].to_string();
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    }
+    (child, log)
+}
+
+/// The last `chars` characters of one node's captured output.
+fn node_log_tail(log: &NodeLog, chars: usize) -> String {
+    log.lock()
+        .map(|log| {
+            log.chars()
+                .rev()
+                .take(chars)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<String>()
+        })
+        .unwrap_or_default()
 }
 
 #[test]
@@ -168,11 +219,16 @@ fn three_node_product_smoke() {
     )
     .expect("write smoke founder secret");
 
-    let mut children = vec![
-        spawn_node(&bin, &dirs[0], 46101, 46201),
-        spawn_node(&bin, &dirs[1], 46102, 46202),
-        spawn_node(&bin, &dirs[2], 46103, 46203),
-    ];
+    let mut children = Vec::new();
+    let mut node_logs = Vec::new();
+    for (index, (listen, ui)) in [(46101u16, 46201u16), (46102, 46202), (46103, 46203)]
+        .into_iter()
+        .enumerate()
+    {
+        let (child, log) = spawn_node(&bin, &dirs[index], listen, ui);
+        children.push(child);
+        node_logs.push(log);
+    }
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         wait_for_health("127.0.0.1:46201");
@@ -1143,7 +1199,15 @@ fn three_node_product_smoke() {
                 break;
             }
             if Instant::now() >= consensus_deadline {
-                panic!("peer verifiers did not reach consensus: {verifier_net}");
+                panic!(
+                    "peer verifiers did not reach consensus: {verifier_net}\n\
+                     --- node 1 output tail ---\n{}\n\
+                     --- node 2 output tail ---\n{}\n\
+                     --- node 3 output tail ---\n{}",
+                    node_log_tail(&node_logs[0], 2_500),
+                    node_log_tail(&node_logs[1], 2_500),
+                    node_log_tail(&node_logs[2], 2_500),
+                );
             }
             thread::sleep(Duration::from_millis(500));
         }
@@ -1190,7 +1254,9 @@ fn three_node_product_smoke() {
         );
         let _ = children[0].kill();
         let _ = children[0].wait();
-        children[0] = spawn_node(&bin, &dirs[0], 46101, 46201);
+        let (child, log) = spawn_node(&bin, &dirs[0], 46101, 46201);
+        children[0] = child;
+        node_logs[0] = log;
         wait_for_health("127.0.0.1:46201");
         let restarted_control: serde_json::Value =
             serde_json::from_str(&get("127.0.0.1:46201", "/api/network/control"))

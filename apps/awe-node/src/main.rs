@@ -2063,9 +2063,15 @@ async fn announce_open_windows(node: &Node, verifier_net_state: &economy_api::Ve
     }
     for peer in node.peers().await {
         for payload in &announce_payloads {
-            let _ = node
+            if let Err(error) = node
                 .send_to_peer(&peer.awe_id, VERIFIER_TRANSPORT_STREAM, payload.clone())
-                .await;
+                .await
+            {
+                eprintln!(
+                    "verifier window announce to peer {} failed: {error}",
+                    hex::encode(peer.awe_id).to_lowercase()
+                );
+            }
         }
     }
 }
@@ -2104,20 +2110,34 @@ async fn verifier_transport_cycle(
             else {
                 // the observed node is not connected right now: the
                 // report stays due and is retried on the next cycle
+                eprintln!(
+                    "verifier report deferred: observed node {} is not a connected peer",
+                    observed_node.to_hex().to_lowercase()
+                );
                 continue;
             };
             let period_start = report.period_start_unix;
             if let Ok(payload) = verifier_transport::encode(
                 &verifier_transport::VerifierTransportMessage::Report(report),
             ) {
-                if node
+                match node
                     .send_to_peer(&peer.awe_id, VERIFIER_TRANSPORT_STREAM, payload.clone())
                     .await
-                    .is_ok()
                 {
-                    if let Ok(mut side) = verifier_side_state.lock() {
-                        side.record_traffic(&peer.awe_id, payload.len() as u64, now);
-                        side.mark_reported(&observed_node, period_start);
+                    Ok(_) => {
+                        if let Ok(mut side) = verifier_side_state.lock() {
+                            side.record_traffic(&peer.awe_id, payload.len() as u64, now);
+                            side.mark_reported(&observed_node, period_start);
+                        }
+                    }
+                    Err(error) => {
+                        // the report stays due and is retried on the
+                        // next cycle; an over-delivery is rejected by
+                        // the contributing node's duplicate rule
+                        eprintln!(
+                            "verifier report to node {} failed: {error}",
+                            observed_node.to_hex().to_lowercase()
+                        );
                     }
                 }
             }

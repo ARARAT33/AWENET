@@ -123,6 +123,10 @@ across restarts.
   by their public keys, opens a 10-second window on node 1 and waits for
   live consensus (`has_consensus` with two reports arriving over stream
   202), then asserts the verifier roster survives a node-1 restart.
+  Each node's combined output is captured and bounded, and the tails are
+  included in the consensus-wait panic, so a rejected announce, a
+  deferred or failed report delivery or a rejected report is visible in
+  the CI diagnostics instead of silent.
 - CI runs fmt, the full workspace tests, the product smoke test and
   clippy -D warnings on Ubuntu and Windows.
 - The `security-audit.yml` workflow no longer depends on the broken
