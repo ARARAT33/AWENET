@@ -129,9 +129,12 @@ impl AweHost {
                 "invalid site manifest",
             ));
         }
-        let total = files.iter().try_fold(0u64, |total, file| total.checked_add(file.size)).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "site size overflow")
-        })?;
+        let total = files
+            .iter()
+            .try_fold(0u64, |total, file| total.checked_add(file.size))
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "site size overflow")
+            })?;
         if total > self.policy.max_site_bytes {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -178,6 +181,8 @@ impl AweHost {
 
     pub fn get(&mut self, manifest: &SiteManifest, path: &str) -> io::Result<Vec<u8>> {
         let clean = normalize_path(path)?;
+        // A path is unique only within a site; include the manifest identity
+        // so one site's cached bytes can never be served for another site.
         let cache_key = (manifest.root_hash, clean.clone());
         if let Some(v) = self.cache.get(&cache_key) {
             return Ok(v.clone());
