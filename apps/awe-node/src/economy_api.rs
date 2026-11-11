@@ -2643,7 +2643,7 @@ fn parse_signed_report(value: &serde_json::Value) -> Result<SignedUsageReport, A
         .get("node")
         .and_then(|node| node.as_str())
         .ok_or_else(|| err(400, "node is required (hex AWE id)".to_string()))?;
-    let node = AweId::from_hex(node_text.to_string())
+    let node = AweId::from_hex(node_text)
         .map_err(|message| err(400, format!("node is not a valid AWE id: {message}")))?;
     let period_start_unix = value
         .get("period_start_unix")
@@ -2818,7 +2818,7 @@ fn founder_open_window(
         return response;
     }
     let node = match parsed.get("node").and_then(|node| node.as_str()) {
-        Some(hex) => match AweId::from_hex(hex.to_string()) {
+        Some(hex) => match AweId::from_hex(hex) {
             Ok(node) => node,
             Err(message) => return err(400, format!("node is not a valid AWE id: {message}")),
         },
