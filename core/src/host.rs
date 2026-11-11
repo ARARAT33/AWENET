@@ -179,17 +179,17 @@ impl AweHost {
 
     pub fn get(&mut self, manifest: &SiteManifest, path: &str) -> io::Result<Vec<u8>> {
         let clean = normalize_path(path)?;
-        // A path is unique only within a site; include the manifest identity
-        // so one site's cached bytes can never be served for another site.
-        let cache_key = (manifest.root_hash, clean.clone());
-        if let Some(v) = self.cache.get(&cache_key) {
-            return Ok(v.clone());
-        }
         let f = manifest
             .files
             .iter()
             .find(|f| f.path == clean)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "AWE host path not found"))?;
+        // Cache by the content-addressed object, not URL path alone. A path
+        // is reused across sites, while an object ID can only name its bytes.
+        let cache_key = (f.object_id, clean.clone());
+        if let Some(v) = self.cache.get(&cache_key) {
+            return Ok(v.clone());
+        }
         let data = self.store.get(&f.object_id)?;
         if data.len() as u64 != f.size || content_id(&data) != f.object_id {
             return Err(io::Error::new(
