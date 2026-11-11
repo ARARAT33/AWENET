@@ -66,6 +66,16 @@ across restarts.
   `verifier_transport_cycle` re-announces every open window the same
   way, delivers the reports that became due, and closes expired
   windows through `close_expired`.
+- The default network policy (`core/src/policy.rs`) now allows the
+  verifier transport stream (202) and the ONECOIN consensus stream
+  (200). The dispatcher drops inbound messages on any stream missing
+  from `allowed_streams`, so without this the live verifier transport
+  could not exchange a single message between default-configured
+  nodes — and the previously merged ONECOIN consensus transport (200)
+  was silently dead the same way. Nodes with an already persisted
+  `policy.json` keep their own list and must add 200 and 202 to it to
+  receive these messages; the fail-closed default for unknown streams
+  is unchanged.
 - Startup loads `awenet-verifier-net.json` fail-closed: a snapshot that
   fails founder validation is a hard error, never a silent fresh start.
 - New HTTP endpoints in `economy_api`:
