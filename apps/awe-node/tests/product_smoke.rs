@@ -207,6 +207,27 @@ fn node_log_tail(log: &NodeLog, chars: usize) -> String {
         .unwrap_or_default()
 }
 
+/// The verifier transport diagnostics one node printed (failed, deferred
+/// or rejected announces and reports), capped so a noisy node cannot
+/// drown the consensus panic. These lines pinpoint which side of the
+/// live transport kept a verifier's report from being delivered.
+fn node_log_verifier_lines(log: &NodeLog, max_lines: usize) -> String {
+    log.lock()
+        .map(|log| {
+            let lines: Vec<&str> = log
+                .lines()
+                .filter(|line| line.contains("verifier"))
+                .take(max_lines)
+                .collect();
+            if lines.is_empty() {
+                "(no verifier transport diagnostics)".to_string()
+            } else {
+                lines.join("\n")
+            }
+        })
+        .unwrap_or_default()
+}
+
 #[test]
 fn three_node_product_smoke() {
     let bin = PathBuf::from(env::var_os("CARGO_BIN_EXE_awe-node").expect("binary path"));
@@ -1209,12 +1230,18 @@ fn three_node_product_smoke() {
             if Instant::now() >= consensus_deadline {
                 panic!(
                     "peer verifiers did not reach consensus: {verifier_net}\n\
+                     --- node 1 verifier transport diagnostics ---\n{}\n\
+                     --- node 2 verifier transport diagnostics ---\n{}\n\
+                     --- node 3 verifier transport diagnostics ---\n{}\n\
                      --- node 1 output tail ---\n{}\n\
                      --- node 2 output tail ---\n{}\n\
                      --- node 3 output tail ---\n{}",
-                    node_log_tail(&node_logs[0], 2_500),
-                    node_log_tail(&node_logs[1], 2_500),
-                    node_log_tail(&node_logs[2], 2_500),
+                    node_log_verifier_lines(&node_logs[0], 30),
+                    node_log_verifier_lines(&node_logs[1], 30),
+                    node_log_verifier_lines(&node_logs[2], 30),
+                    node_log_tail(&node_logs[0], 600),
+                    node_log_tail(&node_logs[1], 600),
+                    node_log_tail(&node_logs[2], 600),
                 );
             }
             thread::sleep(Duration::from_millis(500));
