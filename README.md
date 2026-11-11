@@ -8,9 +8,9 @@ Identity · Secure transport · Discovery · Routing · Distributed storage ·
 Names/Sites · Store · Messenger · Desktop clients · Product orchestration
 
 [![Core CI](https://github.com/ARARAT33/AWENET/actions/workflows/core.yml/badge.svg)](https://github.com/ARARAT33/AWENET/actions/workflows/core.yml)
-[![Cross-platform](https://github.com/ARARAT33/AWENET/actions/workflows/cross-platform.yml/badge.svg)](https://github.com/ARARAT33/AWENET/actions/workflows/cross-platform.yml)
-[![Format](https://github.com/ARARAT33/AWENET/actions/workflows/format.yml/badge.svg)](https://github.com/ARARAT33/AWENET/actions/workflows/format.yml)
-[![Security audit](https://github.com/ARARAT33/AWENET/actions/workflows/security-audit.yml/badge.svg)](https://github.com/ARARAT33/AWENET/actions/workflows/security-audit.yml)
+[![Cross-platform](https://github.com/ARARAT33/AWENET/actions/workflows/cross-platform.yml/badge.svg)](https://github.com/ARARAT33/AWENET/actions/workflows/cross-platform.yml/badge.svg)
+[![Format](https://github.com/ARARAT33/AWENET/actions/workflows/format.yml/badge.svg)](https://github.com/ARARAT33/AWENET/actions/workflows/format.yml/badge.svg)
+[![Security audit](https://github.com/ARARAT33/AWENET/actions/workflows/security-audit.yml/badge.svg)](https://github.com/ARARAT33/AWENET/actions/workflows/security-audit.yml/badge.svg)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Language: Rust](https://img.shields.io/badge/language-Rust%2098%25-orange)](https://www.rust-lang.org)
 
@@ -43,6 +43,7 @@ while exposing a small, stable product orchestration model on top.
 | Founder security & resource metering | `webauthn` (core), `founder_guard`, `resource_meter`, `economy_api` passkey routes, `founder.js` Security tab, `onecoin.js` scan-to-pay | Browser WebAuthn passkey enrollment + MFA step-up for founder mutations, contributed-storage capacity metering (statvfs), GPU busy-percentage metering (amdgpu sysfs / nvidia-smi), camera QR scan-to-pay where supported |
 | Economy UI localization | `i18n` (extended catalog + `Locale`/`Catalog::messages`), `economy_api` `/api/i18n/messages`, `i18n.js`, `awenetwork.js`, `storefront.js`, `founder.js`, `onecoin.js` | Bilingual Armenian/English economy screens from one core catalog, served by the node, with a persisted choice and a topbar language toggle |
 | Multi-node usage verification | `verifier_net`, `resource_meter`, `resource_economy` | Founder-enrolled verifier registry with founder-signed certificates, per-period attestation windows with bounded report deadlines, honest peer-observation reports, min-consensus settlement evidence |
+| Live verifier transport | `verifier_transport`, `verifier_net` (roster/window accessors), `economy_api` verifier routes, `awe-node` stream 202 | Peer-to-peer attestation-window announcements, verifier-side observation tracking with one-shot signed report delivery, founder-managed enrollment and HTTP report intake |
 | Identity & security | `identity`, `user_registry`, `sessions`, `keys`, `security`, `crypto`, `defense`, `sandbox` | Self-certifying AWE IDs, founder-signed local user directory, authenticated encrypted transport, hostile-traffic limits |
 | Discovery & routing | `discovery`, `routing`, `network_topology`, `lan_mesh` | DHT-style lookup, Data Centre topology, relay failover, LAN mesh |
 | Data plane | `data_plane`, `storage`, `replication`, `repair`, `recovery` | Chunked content-addressed storage, replica placement, repair planning |
@@ -287,6 +288,26 @@ transport and HTTP wiring that carries reports between live nodes is the
 next increment and is not claimed here. See
 [docs/VERIFIER-NET-UPGRADE-2026-11-10.md](docs/VERIFIER-NET-UPGRADE-2026-11-10.md).
 
+## Live verifier transport
+
+The 2026-11-11 upgrade gives the multi-node usage verification its live
+transport in `core/src/verifier_transport.rs`. A contributing node
+announces each open attestation window to its connected peers on the
+verifier transport stream (stream 202); peers that observe the announcement
+track the window together with the bytes they actually exchanged with the
+node and the contact time they genuinely observed, and once the settlement
+period ends each observing node delivers exactly one signed
+`SignedUsageReport` back to the contributing node. The contributing node's
+`VerifierNet` accepts the report only through its existing rules
+(founder-enrolled verifier, open window, no self-attestation, no
+duplicates), persists the founder-signed snapshot and exposes the reached
+consensus through `GET /api/verifier/net`. The founder manages enrollment,
+retirement and windows over the node API (`POST /api/founder/verifier/enroll`,
+`/retire`, `/window`); reports arrive either peer-to-peer or through
+`POST /api/verifier/reports`. Nothing in this layer mints ONECOIN or
+weakens the founder's exclusive rights. See
+[docs/VERIFIER-TRANSPORT-UPGRADE-2026-11-11.md](docs/VERIFIER-TRANSPORT-UPGRADE-2026-11-11.md).
+
 ## Important status rule
 
 A source module or UI screen is not proof of end-to-end functionality.
@@ -322,6 +343,7 @@ model is in [docs/PRODUCT-ARCHITECTURE.md](docs/PRODUCT-ARCHITECTURE.md) and
 - [AWEID user registry and founder-managed accounts](docs/USER-REGISTRY-2026-11-08.md)
 - [GPU utilization metering](docs/GPU-METERING-2026-11-09.md)
 - [Multi-node usage verification](docs/VERIFIER-NET-UPGRADE-2026-11-10.md)
+- [Live verifier transport](docs/VERIFIER-TRANSPORT-UPGRADE-2026-11-11.md)
 
 ## Security
 
