@@ -83,7 +83,7 @@ pub struct AweHost {
     root: PathBuf,
     store: LocalNodeStore,
     policy: HostPolicy,
-    cache: BTreeMap<String, Vec<u8>>,
+    cache: BTreeMap<([u8; 32], String), Vec<u8>>,
 }
 impl AweHost {
     pub fn open(root: impl AsRef<Path>, quota: u64, policy: HostPolicy) -> io::Result<Self> {
@@ -129,7 +129,9 @@ impl AweHost {
                 "invalid site manifest",
             ));
         }
-        let total: u64 = files.iter().map(|f| f.size).sum();
+        let total = files.iter().try_fold(0u64, |total, file| total.checked_add(file.size)).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "site size overflow")
+        })?;
         if total > self.policy.max_site_bytes {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -176,7 +178,8 @@ impl AweHost {
 
     pub fn get(&mut self, manifest: &SiteManifest, path: &str) -> io::Result<Vec<u8>> {
         let clean = normalize_path(path)?;
-        if let Some(v) = self.cache.get(&clean) {
+        let cache_key = (manifest.root_hash, clean.clone());
+        if let Some(v) = self.cache.get(&cache_key) {
             return Ok(v.clone());
         }
         let f = manifest
@@ -196,7 +199,7 @@ impl AweHost {
                 self.cache.remove(&k);
             }
         }
-        self.cache.insert(clean, data.clone());
+        self.cache.insert(cache_key, data.clone());
         Ok(data)
     }
     pub fn save_manifest(&self, manifest: &SiteManifest) -> io::Result<()> {
@@ -304,6 +307,65 @@ mod tests {
 
         let error = host.load_manifest("example.awe").unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn site_cache_is_isolated_by_manifest_identity() {
+        let root = std::env::temp_dir().join(format!(
+            "awe-host-cache-isolation-{}",
+            std::process::id()
+        ));
+        let mut host = AweHost::open(&root, 10_000_000, HostPolicy::default()).unwrap();
+
+        let first_file = host
+            .publish_file("/index.html", b"first site", "text/html")
+            .unwrap();
+        let first = host
+            .publish_manifest("first.awe", 1, vec![1], vec![first_file])
+            .unwrap();
+        let second_file = host
+            .publish_file("/index.html", b"second site", "text/html")
+            .unwrap();
+        let second = host
+            .publish_manifest("second.awe", 1, vec![2], vec![second_file])
+            .unwrap();
+
+        assert_eq!(host.get(&first, "/").unwrap(), b"first site");
+        assert_eq!(host.get(&second, "/").unwrap(), b"second site");
+        assert_eq!(host.get(&first, "/index.html").unwrap(), b"first site");
+        assert_eq!(host.get(&second, "/index.html").unwrap(), b"second site");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn site_size_overflow_is_rejected_without_panicking() {
+        let root = std::env::temp_dir().join(format!(
+            "awe-host-size-overflow-{}",
+            std::process::id()
+        ));
+        let host = AweHost::open(&root, 10_000_000, HostPolicy::default()).unwrap();
+        let files = vec![
+            HostedFile {
+                path: "/large.bin".into(),
+                object_id: [1; 32],
+                size: u64::MAX,
+                content_type: "application/octet-stream".into(),
+            },
+            HostedFile {
+                path: "/small.bin".into(),
+                object_id: [2; 32],
+                size: 1,
+                content_type: "application/octet-stream".into(),
+            },
+        ];
+
+        let error = host
+            .publish_manifest("overflow.awe", 1, vec![1], files)
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+
         let _ = fs::remove_dir_all(root);
     }
 
