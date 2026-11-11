@@ -242,6 +242,13 @@ impl VerifierRegistry {
         self.verifiers.is_empty()
     }
 
+    /// All certificates in sequence order: the complete, signed
+    /// verifier roster including retired verifiers. Read-only access
+    /// for the live node API and the transport layer.
+    pub fn verifiers(&self) -> impl Iterator<Item = &VerifierCertificate> {
+        self.verifiers.iter()
+    }
+
     /// Enrolls a verifier node. Only the founder key installed at
     /// genesis can do this; the certificate is founder-signed so every
     /// peer can validate it offline. A retired verifier can be
@@ -252,6 +259,34 @@ impl VerifierRegistry {
         verifier: &Identity,
         at_unix: u64,
     ) -> Result<VerifierCertificate, VerifierNetError> {
+        self.enroll_parts(
+            founder,
+            &verifier.public.awe_id,
+            &verifier.public.public_key,
+            at_unix,
+        )
+    }
+
+    /// Enrolls a verifier from its public node identity alone. Live
+    /// nodes announce each other by public key, so the founder can
+    /// enroll a running peer node without holding its full identity.
+    pub fn enroll_public(
+        &mut self,
+        founder: &Identity,
+        verifier_awe_id: &AweId,
+        verifier_public_key: &[u8; 32],
+        at_unix: u64,
+    ) -> Result<VerifierCertificate, VerifierNetError> {
+        self.enroll_parts(founder, verifier_awe_id, verifier_public_key, at_unix)
+    }
+
+    fn enroll_parts(
+        &mut self,
+        founder: &Identity,
+        verifier_awe_id: &AweId,
+        verifier_public_key: &[u8; 32],
+        at_unix: u64,
+    ) -> Result<VerifierCertificate, VerifierNetError> {
         if founder.public.public_key != self.founder_public_key {
             return Err(VerifierNetError::NotFounder);
         }
@@ -259,7 +294,7 @@ impl VerifierRegistry {
         if at_unix < self.installed_at_unix {
             return Err(VerifierNetError::InvalidState);
         }
-        if let Some(existing) = self.certificate(&verifier.public.public_key) {
+        if let Some(existing) = self.certificate(verifier_public_key) {
             if existing.is_active() {
                 return Err(VerifierNetError::AlreadyEnrolled);
             }
@@ -277,8 +312,8 @@ impl VerifierRegistry {
             .checked_add(1)
             .ok_or(VerifierNetError::SequenceExhausted)?;
         let mut certificate = VerifierCertificate {
-            verifier: verifier.public.awe_id.clone(),
-            public_key: verifier.public.public_key,
+            verifier: verifier_awe_id.clone(),
+            public_key: *verifier_public_key,
             enrolled_at_unix: at_unix,
             retired_at_unix: None,
             sequence: self.next_sequence,
@@ -426,6 +461,25 @@ impl VerifierNet {
         at_unix: u64,
     ) -> Result<VerifierCertificate, VerifierNetError> {
         self.registry.enroll(founder, verifier, at_unix)
+    }
+
+    /// Enrolls a live peer node as a verifier using only its announced
+    /// public node identity.
+    pub fn enroll_verifier_public(
+        &mut self,
+        founder: &Identity,
+        verifier_awe_id: &AweId,
+        verifier_public_key: &[u8; 32],
+        at_unix: u64,
+    ) -> Result<VerifierCertificate, VerifierNetError> {
+        self.registry
+            .enroll_public(founder, verifier_awe_id, verifier_public_key, at_unix)
+    }
+
+    /// All attestation windows known to this node, keyed by window key
+    /// order. Read-only access for the transport layer and the node API.
+    pub fn windows(&self) -> impl Iterator<Item = &AttestationWindow> {
+        self.windows.values()
     }
 
     pub fn retire_verifier(
@@ -1605,3 +1659,4 @@ mod tests {
         std::fs::remove_file(path).unwrap();
     }
 }
+
