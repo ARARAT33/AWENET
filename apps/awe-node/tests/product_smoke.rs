@@ -159,27 +159,35 @@ fn spawn_node(bin: &PathBuf, data: &PathBuf, listen: u16, ui: u16) -> (Child, No
         .spawn()
         .expect("spawn node");
     let log: NodeLog = Arc::new(Mutex::new(String::new()));
-    for stream in [child.stdout.take(), child.stderr.take()] {
-        if let Some(mut stream) = stream {
-            let log = Arc::clone(&log);
-            thread::spawn(move || {
-                let mut buf = [0u8; 4096];
-                loop {
-                    match stream.read(&mut buf) {
-                        Ok(0) | Err(_) => break,
-                        Ok(n) => {
-                            if let Ok(mut log) = log.lock() {
-                                log.push_str(&String::from_utf8_lossy(&buf[..n]));
-                                if log.len() > NODE_LOG_LIMIT {
-                                    let keep = log.len() - NODE_LOG_LIMIT / 2;
-                                    *log = log[keep..].to_string();
+    let mut pipes: Vec<Box<dyn Read + Send>> = Vec::new();
+    if let Some(stdout) = child.stdout.take() {
+        pipes.push(Box::new(stdout));
+    }
+    if let Some(stderr) = child.stderr.take() {
+        pipes.push(Box::new(stderr));
+    }
+    for mut stream in pipes {
+        let log = Arc::clone(&log);
+        thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            loop {
+                match stream.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if let Ok(mut log) = log.lock() {
+                            log.push_str(&String::from_utf8_lossy(&buf[..n]));
+                            if log.len() > NODE_LOG_LIMIT {
+                                let mut keep = log.len() - NODE_LOG_LIMIT / 2;
+                                while keep < log.len() && !log.is_char_boundary(keep) {
+                                    keep += 1;
                                 }
+                                *log = log[keep..].to_string();
                             }
                         }
                     }
                 }
-            });
-        }
+            }
+        });
     }
     (child, log)
 }
