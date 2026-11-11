@@ -101,11 +101,8 @@ impl WindowAnnounce {
             && self
                 .period_end_unix
                 .checked_sub(self.period_start_unix)
-                .is_some_and(|duration| {
-                    duration > 0 && duration <= MAX_WINDOW_PERIOD_SECS
-                })
-            && self.report_deadline_unix
-                == self.period_end_unix.saturating_add(REPORT_GRACE_SECS)
+                .is_some_and(|duration| duration > 0 && duration <= MAX_WINDOW_PERIOD_SECS)
+            && self.report_deadline_unix == self.period_end_unix.saturating_add(REPORT_GRACE_SECS)
     }
 }
 
@@ -151,7 +148,7 @@ pub fn open_window_announces(net: &VerifierNet, now_unix: u64) -> Vec<WindowAnno
         .collect()
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct ObservedWindow {
     node: AweId,
     period_start_unix: u64,
@@ -211,37 +208,37 @@ impl VerifierSide {
             return Err(VerifierTransportError::Expired);
         }
         let key = (*sender, announce.period_start_unix);
-        match self.observed.entry(key) {
-            std::collections::btree_map::Entry::Occupied(mut entry) => {
-                let window = entry.get_mut();
-                if window.period_end_unix != announce.period_end_unix
-                    || window.report_deadline_unix != announce.report_deadline_unix
-                {
-                    return Err(VerifierTransportError::InvalidAnnounce);
-                }
-                window.last_seen_unix = window.last_seen_unix.max(now_unix);
-                Ok(())
+        // a window already under observation is only refreshed when the
+        // period fields match exactly: an announced period is immutable.
+        if let Some(window) = self.observed.get_mut(&key) {
+            if window.period_end_unix != announce.period_end_unix
+                || window.report_deadline_unix != announce.report_deadline_unix
+            {
+                return Err(VerifierTransportError::InvalidAnnounce);
             }
-            std::collections::btree_map::Entry::Vacant(entry) => {
-                if self.observed.len() >= MAX_OBSERVED_WINDOWS {
-                    let _ = self.prune(now_unix);
-                }
-                if self.observed.len() >= MAX_OBSERVED_WINDOWS {
-                    return Err(VerifierTransportError::TooManyObservations);
-                }
-                entry.insert(ObservedWindow {
-                    node: announce.node.clone(),
-                    period_start_unix: announce.period_start_unix,
-                    period_end_unix: announce.period_end_unix,
-                    report_deadline_unix: announce.report_deadline_unix,
-                    first_seen_unix: now_unix,
-                    last_seen_unix: now_unix,
-                    bytes_exchanged: 0,
-                    reported: false,
-                });
-                Ok(())
-            }
+            window.last_seen_unix = window.last_seen_unix.max(now_unix);
+            return Ok(());
         }
+        // a new window is only observed while the bounded registry has
+        // room; expired observations are pruned first
+        if self.observed.len() >= MAX_OBSERVED_WINDOWS {
+            let _ = self.prune(now_unix);
+        }
+        if self.observed.len() >= MAX_OBSERVED_WINDOWS {
+            return Err(VerifierTransportError::TooManyObservations);
+        }
+        let observed = ObservedWindow {
+            node: announce.node.clone(),
+            period_start_unix: announce.period_start_unix,
+            period_end_unix: announce.period_end_unix,
+            report_deadline_unix: announce.report_deadline_unix,
+            first_seen_unix: now_unix,
+            last_seen_unix: now_unix,
+            bytes_exchanged: 0,
+            reported: false,
+        };
+        self.observed.insert(key, observed);
+        Ok(())
     }
 
     /// Accumulates bytes exchanged with a peer against every observed
@@ -281,11 +278,7 @@ impl VerifierSide {
                 observed_available_secs: window
                     .last_seen_unix
                     .saturating_sub(window.first_seen_unix)
-                    .min(
-                        window
-                            .period_end_unix
-                            .saturating_sub(window.first_seen_unix),
-                    ),
+                    .min(window.period_end_unix.saturating_sub(window.first_seen_unix)),
             };
             due.push((
                 window.node.clone(),
@@ -307,10 +300,7 @@ impl VerifierSide {
             .observed
             .iter()
             .filter(|(_, window)| {
-                now_unix
-                    > window
-                        .report_deadline_unix
-                        .saturating_add(OBSERVED_RETENTION_SECS)
+                now_unix > window.report_deadline_unix.saturating_add(OBSERVED_RETENTION_SECS)
             })
             .map(|(key, _)| *key)
             .collect();
@@ -327,9 +317,7 @@ mod tests {
     use super::*;
     use crate::identity::Username;
     use crate::resource_economy::MeasuredUsage;
-    use crate::verifier_net::{
-        CLOSED_WINDOW_RETENTION_SECS, REPORT_GRACE_SECS as GRACE,
-    };
+    use crate::verifier_net::{CLOSED_WINDOW_RETENTION_SECS, REPORT_GRACE_SECS as GRACE};
 
     fn identity(name: &str) -> Identity {
         Identity::generate(Username::new(name).unwrap())
@@ -348,11 +336,7 @@ mod tests {
     #[test]
     fn messages_roundtrip_and_reject_malformed_input() {
         let node = identity("encode-node");
-        let message = VerifierTransportMessage::Announce(announce(
-            &node.public.awe_id,
-            0,
-            3_600,
-        ));
+        let message = VerifierTransportMessage::Announce(announce(&node.public.awe_id, 0, 3_600));
         let bytes = encode(&message).unwrap();
         assert_eq!(decode(&bytes).unwrap(), message);
         assert!(matches!(
@@ -424,10 +408,8 @@ mod tests {
             Err(VerifierTransportError::Expired)
         ));
         // the honest announcement is observed and idempotent
-        side.observe_announce(node.public.awe_id.as_bytes(), &window, 1)
-            .unwrap();
-        side.observe_announce(node.public.awe_id.as_bytes(), &window, 2)
-            .unwrap();
+        side.observe_announce(node.public.awe_id.as_bytes(), &window, 1).unwrap();
+        side.observe_announce(node.public.awe_id.as_bytes(), &window, 2).unwrap();
         assert_eq!(side.len(), 1);
         // a re-announced window must not change its immutable period
         let mut moved_period = window.clone();
@@ -505,11 +487,9 @@ mod tests {
         let node = identity("prune-node");
         let mut side = VerifierSide::new();
         let early = announce(&node.public.awe_id, 0, 3_600);
-        side.observe_announce(node.public.awe_id.as_bytes(), &early, 1)
-            .unwrap();
+        side.observe_announce(node.public.awe_id.as_bytes(), &early, 1).unwrap();
         let late = announce(&node.public.awe_id, 10 * 3_600, 11 * 3_600);
-        side.observe_announce(node.public.awe_id.as_bytes(), &late, 10 * 3_600)
-            .unwrap();
+        side.observe_announce(node.public.awe_id.as_bytes(), &late, 10 * 3_600).unwrap();
         assert_eq!(side.len(), 2);
         // nothing is pruned before the retention horizon
         let horizon = 11 * 3_600 + GRACE + CLOSED_WINDOW_RETENTION_SECS;
@@ -609,8 +589,7 @@ mod tests {
         for (side, verifier) in [(&mut side_a, &verifier_a), (&mut side_b, &verifier_b)] {
             for (node, report) in side.due_reports(verifier, period_end) {
                 assert_eq!(node, contributor.public.awe_id);
-                let bytes =
-                    encode(&VerifierTransportMessage::Report(report)).unwrap();
+                let bytes = encode(&VerifierTransportMessage::Report(report)).unwrap();
                 let decoded = decode(&bytes).unwrap();
                 let VerifierTransportMessage::Report(report) = decoded else {
                     panic!("expected a report on the verifier transport");
@@ -618,11 +597,7 @@ mod tests {
                 net.submit_report(report, period_end).unwrap();
             }
         }
-        assert!(net.has_consensus(
-            &contributor.public.awe_id,
-            period_start,
-            period_end
-        ));
+        assert!(net.has_consensus(&contributor.public.awe_id, period_start, period_end));
         let consensus = net
             .consensus_usage(&contributor.public.awe_id, period_start, period_end)
             .unwrap();

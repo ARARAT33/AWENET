@@ -1108,8 +1108,7 @@ fn three_node_product_smoke() {
             window.contains(r#""status":"open""#),
             "attestation window open failed: {window}"
         );
-        let window_json: serde_json::Value =
-            serde_json::from_str(&window).expect("window JSON");
+        let window_json: serde_json::Value = serde_json::from_str(&window).expect("window JSON");
         let window_start = window_json
             .get("period_start_unix")
             .and_then(|value| value.as_u64())
@@ -1125,9 +1124,7 @@ fn three_node_product_smoke() {
                 .expect("verifier net windows")
                 .iter()
                 .find(|window| {
-                    window
-                        .get("period_start_unix")
-                        .and_then(|value| value.as_u64())
+                    window.get("period_start_unix").and_then(|value| value.as_u64())
                         == Some(window_start)
                 })
                 .expect("the opened attestation window");

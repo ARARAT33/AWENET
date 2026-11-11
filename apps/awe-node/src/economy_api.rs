@@ -2612,9 +2612,9 @@ fn parse_hex_32(value: &serde_json::Value, field: &str) -> Result<[u8; 32], ApiR
         .ok_or_else(|| err(400, format!("{field} is required (hex)")))?;
     let bytes = hex::decode(text)
         .map_err(|_| err(400, format!("{field} must be valid hex")))?;
-    let key: [u8; 32] = bytes.try_into().map_err(|_| {
-        err(400, format!("{field} must be exactly 32 bytes (64 hex chars)"))
-    })?;
+    let key: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| err(400, format!("{field} must be exactly 32 bytes (64 hex chars)")))?;
     Ok(key)
 }
 
@@ -2625,9 +2625,9 @@ fn parse_hex_64(value: &serde_json::Value, field: &str) -> Result<[u8; 64], ApiR
         .ok_or_else(|| err(400, format!("{field} is required (hex)")))?;
     let bytes = hex::decode(text)
         .map_err(|_| err(400, format!("{field} must be valid hex")))?;
-    let signature: [u8; 64] = bytes.try_into().map_err(|_| {
-        err(400, format!("{field} must be exactly 64 bytes (128 hex chars)"))
-    })?;
+    let signature: [u8; 64] = bytes
+        .try_into()
+        .map_err(|_| err(400, format!("{field} must be exactly 64 bytes (128 hex chars)")))?;
     Ok(signature)
 }
 
@@ -2841,8 +2841,6 @@ fn founder_open_window(
     }))
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2935,7 +2933,7 @@ mod tests {
         let (economy, _created) = load_or_create(&founder, &economy_path);
         let economy_state: EconomyState = Arc::new(Mutex::new(economy));
         let ledger: LedgerState = Arc::new(Mutex::new(OnecoinLedger::default()));
-        XX            Arc::new(Mutex::new(VerifierNet::new(&founder, 0)));
+        let verifier_state: VerifierNetState = Arc::new(Mutex::new(VerifierNet::new(&founder, 0)));
 
         // the founder enrolls two verifiers by their public node keys
         for verifier in [&verifier_a, &verifier_b] {
@@ -3110,7 +3108,6 @@ mod tests {
         // survives a restart
         let reloaded = verifier_net_store::load(&verifier_path, &founder).unwrap();
         assert_eq!(reloaded.registry().active_verifiers(), 2);
-        assert!(reloaded
-            .has_consensus(&node, period_start, period_end));
+        assert!(reloaded.has_consensus(&node, period_start, period_end));
     }
 }

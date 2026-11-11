@@ -1,0 +1,42 @@
+name: Temporary branch rustfmt fix
+# Formats this feature branch with the same stable rustfmt CI uses and
+# pushes the result, exactly like the main-branch formatter job. This
+# workflow is temporary and will be removed from the branch before merge.
+
+concurrency:
+  group: awe-fmt-fix-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  push:
+    branches: [feat/verifier-transport-20261111]
+
+permissions:
+  contents: write
+
+jobs:
+  rustfmt-fix:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: feat/verifier-transport-20261111
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Format Rust workspace
+        run: cargo fmt --all
+      - name: Commit formatting
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo "Rust workspace already formatted."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- '*.rs' Cargo.toml Cargo.lock
+          git commit -m "style: format Rust workspace"
+          git fetch origin feat/verifier-transport-20261111
+          git rebase origin/feat/verifier-transport-20261111
+          git push origin feat/verifier-transport-20261111

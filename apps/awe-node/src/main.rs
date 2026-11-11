@@ -2606,9 +2606,9 @@ async fn run_product() -> Result<()> {
         })?
     } else {
         let fresh = VerifierNet::new(&node.identity, now_unix());
-        verifier_net_store::save(&verifier_net_path, &fresh, &node.identity).map_err(
-            |error| anyhow::anyhow!("verifier network snapshot could not be written: {error}"),
-        )?;
+        verifier_net_store::save(&verifier_net_path, &fresh, &node.identity).map_err(|error| {
+            anyhow::anyhow!("verifier network snapshot could not be written: {error}")
+        })?;
         fresh
     };
     let verifier_net_state: economy_api::VerifierNetState = Arc::new(Mutex::new(verifier_net));
@@ -2624,8 +2624,7 @@ async fn run_product() -> Result<()> {
         let loop_side = verifier_side_state.clone();
         tokio::spawn(async move {
             loop {
-                verifier_transport_cycle(&loop_node, &loop_net, &loop_net_path, &loop_side)
-                    .await;
+                verifier_transport_cycle(&loop_node, &loop_net, &loop_net_path, &loop_side).await;
                 tokio::time::sleep(std::time::Duration::from_secs(15)).await;
             }
         });
