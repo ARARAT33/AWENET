@@ -2122,33 +2122,66 @@ async fn verifier_transport_cycle(
                 continue;
             };
             let period_start = report.period_start_unix;
-            if let Ok(payload) = verifier_transport::encode(
+            eprintln!(
+                "verifier report sending: observed node {} period_start {}",
+                observed_node.to_hex().to_lowercase(),
+                period_start
+            );
+            let encoded = verifier_transport::encode(
                 &verifier_transport::VerifierTransportMessage::Report(report),
-            ) {
-                match node
-                    .send_to_peer(&peer.awe_id, VERIFIER_TRANSPORT_STREAM, payload.clone())
-                    .await
-                {
-                    Ok(_) => {
-                        if let Ok(mut side) = verifier_side_state.lock() {
-                            side.record_traffic(&peer.awe_id, payload.len() as u64, now);
-                            side.mark_reported(&observed_node, period_start);
+            );
+            match encoded {
+                Ok(payload) => {
+                    // A confirmed roundtrip opens a fresh connection, waits
+                    // for the peer's authenticated DataAck and bypasses the
+                    // cached-connection pool, so a wedged cached socket or a
+                    // peer that silently drops the connection becomes a
+                    // retryable error instead of a silently lost report; the
+                    // budget keeps the cycle ticking even if the transport
+                    // wedges, and an undelivered report is rebuilt on every
+                    // cycle until its send is confirmed.
+                    let send = node.send_to_peer_confirmed(
+                        &peer.awe_id,
+                        VERIFIER_TRANSPORT_STREAM,
+                        payload.clone(),
+                    );
+                    match tokio::time::timeout(std::time::Duration::from_secs(20), send).await {
+                        Ok(Ok(_)) => {
+                            if let Ok(mut side) = verifier_side_state.lock() {
+                                side.record_traffic(&peer.awe_id, payload.len() as u64, now);
+                                side.mark_reported(&observed_node, period_start);
+                            }
+                            eprintln!(
+                                "verifier report delivered: observed node {} period_start {}",
+                                observed_node.to_hex().to_lowercase(),
+                                period_start
+                            );
                         }
-                        eprintln!(
-                            "verifier report delivered: observed node {} period_start {}",
-                            observed_node.to_hex().to_lowercase(),
-                            period_start
-                        );
+                        Ok(Err(error)) => {
+                            // the report stays due and is retried on the
+                            // next cycle; an over-delivery is rejected by
+                            // the contributing node's duplicate rule
+                            eprintln!(
+                                "verifier report to node {} failed: {error}",
+                                observed_node.to_hex().to_lowercase()
+                            );
+                        }
+                        Err(_) => {
+                            // the send wedged past its budget: the in-flight
+                            // socket is dropped and the next cycle retries
+                            // on a fresh connection
+                            eprintln!(
+                                "verifier report to node {} timed out after 20s: retrying next cycle",
+                                observed_node.to_hex().to_lowercase()
+                            );
+                        }
                     }
-                    Err(error) => {
-                        // the report stays due and is retried on the
-                        // next cycle; an over-delivery is rejected by
-                        // the contributing node's duplicate rule
-                        eprintln!(
-                            "verifier report to node {} failed: {error}",
-                            observed_node.to_hex().to_lowercase()
-                        );
-                    }
+                }
+                Err(error) => {
+                    eprintln!(
+                        "verifier report to node {} encode failed: {error}",
+                        observed_node.to_hex().to_lowercase()
+                    );
                 }
             }
         }
