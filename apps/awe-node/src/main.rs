@@ -2104,6 +2104,11 @@ async fn verifier_transport_cycle(
     if !due.is_empty() {
         let peers = node.peers().await;
         for (observed_node, report) in due {
+            eprintln!(
+                "verifier report due: observed node {} period_start {}",
+                observed_node.to_hex().to_lowercase(),
+                report.period_start_unix
+            );
             let Some(peer) = peers
                 .iter()
                 .find(|peer| peer.awe_id == *observed_node.as_bytes())
@@ -2129,6 +2134,11 @@ async fn verifier_transport_cycle(
                             side.record_traffic(&peer.awe_id, payload.len() as u64, now);
                             side.mark_reported(&observed_node, period_start);
                         }
+                        eprintln!(
+                            "verifier report delivered: observed node {} period_start {}",
+                            observed_node.to_hex().to_lowercase(),
+                            period_start
+                        );
                     }
                     Err(error) => {
                         // the report stays due and is retried on the
@@ -2767,14 +2777,26 @@ async fn run_product() -> Result<()> {
                     match verifier_transport::decode(&payload) {
                         Ok(verifier_transport::VerifierTransportMessage::Announce(announce)) => {
                             if let Ok(mut side) = dispatcher_verifier_side.lock() {
+                                let before = side.len();
                                 if let Err(message) =
                                     side.observe_announce(&sender, &announce, now_unix())
                                 {
                                     eprintln!("verifier window announce rejected: {message}");
+                                } else if side.len() > before {
+                                    eprintln!(
+                                        "verifier window observed: node {} period_start {}",
+                                        announce.node.to_hex().to_lowercase(),
+                                        announce.period_start_unix
+                                    );
                                 }
                             }
                         }
                         Ok(verifier_transport::VerifierTransportMessage::Report(report)) => {
+                            eprintln!(
+                                "verifier report received: observed node {} period_start {}",
+                                report.node.to_hex().to_lowercase(),
+                                report.period_start_unix
+                            );
                             if let Ok(mut net) = dispatcher_verifier_net.lock() {
                                 match net.submit_report(report, now_unix()) {
                                     Ok(()) => {
