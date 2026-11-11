@@ -132,9 +132,7 @@ impl AweHost {
         let total = files
             .iter()
             .try_fold(0u64, |total, file| total.checked_add(file.size))
-            .ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidInput, "site size overflow")
-            })?;
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "site size overflow"))?;
         if total > self.policy.max_site_bytes {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -317,10 +315,8 @@ mod tests {
 
     #[test]
     fn site_cache_is_isolated_by_manifest_identity() {
-        let root = std::env::temp_dir().join(format!(
-            "awe-host-cache-isolation-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("awe-host-cache-isolation-{}", std::process::id()));
         let mut host = AweHost::open(&root, 10_000_000, HostPolicy::default()).unwrap();
 
         let first_file = host
@@ -346,10 +342,8 @@ mod tests {
 
     #[test]
     fn site_size_overflow_is_rejected_without_panicking() {
-        let root = std::env::temp_dir().join(format!(
-            "awe-host-size-overflow-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("awe-host-size-overflow-{}", std::process::id()));
         let host = AweHost::open(&root, 10_000_000, HostPolicy::default()).unwrap();
         let files = vec![
             HostedFile {
