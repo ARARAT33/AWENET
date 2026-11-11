@@ -1065,6 +1065,87 @@ fn three_node_product_smoke() {
         assert_eq!(persisted_control.sequence(), signing_state.sequence());
         assert_eq!(persisted_control, signing_state);
 
+        // Live verifier transport between the three nodes: the founder
+        // enrolls nodes 2 and 3 as usage verifiers by their public node
+        // keys, opens a short attestation window for node 1's own
+        // contribution, and the peers must observe the announcement,
+        // deliver one signed report each over the verifier transport
+        // stream and reach the consensus the resource economy settles
+        // from.
+        let status_json: serde_json::Value =
+            serde_json::from_str(&get("127.0.0.1:46201", "/api/status"))
+                .expect("status JSON for verifier enrollment");
+        let peer_keys: Vec<String> = status_json
+            .get("peers")
+            .and_then(|value| value.as_array())
+            .expect("status peers")
+            .iter()
+            .filter_map(|peer| peer.get("public_key").and_then(|value| value.as_str()))
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(
+            peer_keys.len(),
+            2,
+            "node 1 must see both peers with public keys: {status_json}"
+        );
+        for key in &peer_keys {
+            let enrolled = post(
+                "127.0.0.1:46201",
+                "/api/founder/verifier/enroll",
+                &serde_json::json!({ "public_key": key }).to_string(),
+            );
+            assert!(
+                enrolled.contains(r#""status":"enrolled""#),
+                "verifier enrollment failed: {enrolled}"
+            );
+        }
+        let window = post(
+            "127.0.0.1:46201",
+            "/api/founder/verifier/window",
+            r#"{"period_secs":10}"#,
+        );
+        assert!(
+            window.contains(r#""status":"open""#),
+            "attestation window open failed: {window}"
+        );
+        let window_json: serde_json::Value =
+            serde_json::from_str(&window).expect("window JSON");
+        let window_start = window_json
+            .get("period_start_unix")
+            .and_then(|value| value.as_u64())
+            .expect("window period start");
+        let consensus_deadline = Instant::now() + Duration::from_secs(90);
+        loop {
+            let verifier_net: serde_json::Value =
+                serde_json::from_str(&get("127.0.0.1:46201", "/api/verifier/net"))
+                    .expect("verifier net JSON");
+            let observed = verifier_net
+                .get("windows")
+                .and_then(|value| value.as_array())
+                .expect("verifier net windows")
+                .iter()
+                .find(|window| {
+                    window
+                        .get("period_start_unix")
+                        .and_then(|value| value.as_u64())
+                        == Some(window_start)
+                })
+                .expect("the opened attestation window");
+            let reported = observed
+                .get("reports")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0);
+            if observed.get("has_consensus").and_then(|value| value.as_bool()) == Some(true)
+                && reported == 2
+            {
+                break;
+            }
+            if Instant::now() >= consensus_deadline {
+                panic!("peer verifiers did not reach consensus: {verifier_net}");
+            }
+            thread::sleep(Duration::from_millis(500));
+        }
+
         let payload = "AWEP2P-REAL-PRODUCT-SMOKE";
         let hex = payload
             .as_bytes()
@@ -1150,6 +1231,18 @@ fn three_node_product_smoke() {
                 .unwrap()
                 .iter()
                 .any(|peer| peer == "node-0")
+        );
+        // the enrolled verifier roster is a founder-signed snapshot and
+        // must survive the restart untouched
+        let restarted_verifier_net: serde_json::Value =
+            serde_json::from_str(&get("127.0.0.1:46201", "/api/verifier/net"))
+                .expect("restarted verifier net JSON");
+        assert_eq!(
+            restarted_verifier_net
+                .get("active_verifiers")
+                .and_then(|value| value.as_u64()),
+            Some(2),
+            "the enrolled verifier roster must survive the restart: {restarted_verifier_net}"
         );
     }));
 

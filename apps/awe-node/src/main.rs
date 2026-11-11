@@ -28,6 +28,10 @@ use awep2p_core::supervisor::{PeerSupervisor, SupervisorConfig};
 use awep2p_core::user_registry::{
     self, UserAccount, UserRegistry, UserRegistryError, UserRole, UserStatus,
 };
+use awep2p_core::verifier_net::{self as verifier_net_store, VerifierNet};
+use awep2p_core::verifier_transport::{
+    self as verifier_transport, VerifierSide, VERIFIER_TRANSPORT_STREAM,
+};
 use std::{
     collections::BTreeMap,
     env, fs,
@@ -100,6 +104,8 @@ struct UiState {
     network_control_path: PathBuf,
     economy: economy_api::EconomyState,
     economy_path: PathBuf,
+    verifier_net: economy_api::VerifierNetState,
+    verifier_net_path: PathBuf,
 }
 
 async fn build_onecoin_validators(
@@ -476,6 +482,8 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         network_control_path,
         economy,
         economy_path,
+        verifier_net,
+        verifier_net_path,
     } = state;
     let request = read_http_request(&mut stream).await?;
     if !local_request_allowed(&request) {
@@ -946,6 +954,8 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
             let peers = node.closest_peers(node.identity.public.awe_id.as_bytes(), 64).await;
             let peer_json = peers.iter().map(|p| serde_json::json!({
                 "id": format_uid(&p.awe_id),
+                "awe_id": hex::encode(p.awe_id),
+                "public_key": hex::encode(p.public_key),
                 "address": p.addresses.first().map(ToString::to_string).unwrap_or_else(|| "unknown".into()),
                 "last_seen": p.last_seen_unix
             })).collect::<Vec<_>>();
@@ -1972,6 +1982,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
             || path.starts_with("/api/founder")
             || path.starts_with("/api/storefront")
             || path.starts_with("/api/i18n")
+            || path.starts_with("/api/verifier")
             || path == "/api/onecoin/price" =>
         {
             let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
@@ -1984,6 +1995,8 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                 &economy,
                 &economy_path,
                 &onecoin_path,
+                &verifier_net,
+                &verifier_net_path,
             )
         }
         _ => ("404 Not Found", "text/plain; charset=utf-8", "Not Found".to_string()),
@@ -2011,6 +2024,81 @@ fn now_unix() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+/// One tick of the live verifier transport. The contributing side
+/// announces its open attestation windows to every connected peer; the
+/// verifier side delivers the reports that became due; windows past
+/// their report deadline are closed and pruned. Nothing here mints
+/// ONECOIN: settlement stays with the resource economy and reads the
+/// collected verifier consensus.
+async fn verifier_transport_cycle(
+    node: &Node,
+    verifier_net_state: &economy_api::VerifierNetState,
+    verifier_net_path: &std::path::Path,
+    verifier_side_state: &Arc<Mutex<VerifierSide>>,
+) {
+    let now = now_unix();
+    let announce_payloads: Vec<Vec<u8>> = verifier_net_state
+        .lock()
+        .map(|net| {
+            verifier_transport::open_window_announces(&net, now)
+                .into_iter()
+                .filter_map(|announce| {
+                    verifier_transport::encode(
+                        &verifier_transport::VerifierTransportMessage::Announce(announce),
+                    )
+                    .ok()
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if !announce_payloads.is_empty() {
+        for peer in node.peers().await {
+            for payload in &announce_payloads {
+                let _ = node
+                    .send_to_peer(&peer.awe_id, VERIFIER_TRANSPORT_STREAM, payload.clone())
+                    .await;
+            }
+        }
+    }
+    let due = verifier_side_state
+        .lock()
+        .map(|mut side| {
+            let due = side.due_reports(&node.identity, now);
+            let _ = side.prune(now);
+            due
+        })
+        .unwrap_or_default();
+    if !due.is_empty() {
+        let peers = node.peers().await;
+        for (observed_node, report) in due {
+            let Some(peer) = peers
+                .iter()
+                .find(|peer| peer.awe_id == *observed_node.as_bytes())
+            else {
+                continue;
+            };
+            if let Ok(payload) = verifier_transport::encode(
+                &verifier_transport::VerifierTransportMessage::Report(report),
+            ) {
+                if node
+                    .send_to_peer(&peer.awe_id, VERIFIER_TRANSPORT_STREAM, payload.clone())
+                    .await
+                    .is_ok()
+                {
+                    if let Ok(mut side) = verifier_side_state.lock() {
+                        side.record_traffic(&peer.awe_id, payload.len() as u64, now);
+                    }
+                }
+            }
+        }
+    }
+    if let Ok(mut net) = verifier_net_state.lock() {
+        if net.close_expired(now) > 0 {
+            let _ = verifier_net_store::save(verifier_net_path, &net, &node.identity);
+        }
+    }
 }
 
 async fn autonomous_repair_cycle(
@@ -2503,6 +2591,46 @@ async fn run_product() -> Result<()> {
         }
     });
 
+    // Multi-node usage verification: the founder-signed verifier
+    // registry, attestation windows and collected verifier reports
+    // persist in their own signed snapshot. A snapshot that fails
+    // validation is a hard startup error: silently starting a fresh
+    // verifier net would discard the report history the resource
+    // economy settles against.
+    let verifier_net_path = data_dir.join("awenet-verifier-net.json");
+    let verifier_net = if verifier_net_path.exists() {
+        verifier_net_store::load(&verifier_net_path, &node.identity).map_err(|error| {
+            anyhow::anyhow!(
+                "verifier network snapshot {verifier_net_path:?} failed validation: {error}"
+            )
+        })?
+    } else {
+        let fresh = VerifierNet::new(&node.identity, now_unix());
+        verifier_net_store::save(&verifier_net_path, &fresh, &node.identity).map_err(
+            |error| anyhow::anyhow!("verifier network snapshot could not be written: {error}"),
+        )?;
+        fresh
+    };
+    let verifier_net_state: economy_api::VerifierNetState = Arc::new(Mutex::new(verifier_net));
+    // The verifier-side observations are deliberately in-memory: they
+    // are rebuilt from the contributing nodes' live window
+    // announcements, and nothing about them outlives this node's
+    // uptime.
+    let verifier_side_state: Arc<Mutex<VerifierSide>> = Arc::new(Mutex::new(VerifierSide::new()));
+    {
+        let loop_node = node.clone();
+        let loop_net = verifier_net_state.clone();
+        let loop_net_path = verifier_net_path.clone();
+        let loop_side = verifier_side_state.clone();
+        tokio::spawn(async move {
+            loop {
+                verifier_transport_cycle(&loop_node, &loop_net, &loop_net_path, &loop_side)
+                    .await;
+                tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+            }
+        });
+    }
+
     let consensus_state: ConsensusState = {
         let configured = env::var("AWE_ONECOIN_VALIDATORS")
             .unwrap_or_default()
@@ -2565,6 +2693,9 @@ async fn run_product() -> Result<()> {
     let dispatcher_consensus = consensus_state.clone();
     let dispatcher_onecoin_ledger = onecoin_ledger.clone();
     let dispatcher_onecoin_path = onecoin_path.clone();
+    let dispatcher_verifier_net = verifier_net_state.clone();
+    let dispatcher_verifier_net_path = verifier_net_path.clone();
+    let dispatcher_verifier_side = verifier_side_state.clone();
     tokio::spawn(async move {
         loop {
             for (sender, stream, payload) in dispatcher_node.take_inbox() {
@@ -2573,6 +2704,52 @@ async fn run_product() -> Result<()> {
                     .map(|p| p.clone())
                     .unwrap_or_default();
                 if !runtime_policy.allows_stream(stream) {
+                    continue;
+                }
+                // every allowed inbound message counts as traffic this
+                // node exchanged with the sender, which feeds the honest
+                // verifier-side observations of the sender's windows
+                {
+                    let now = now_unix();
+                    if let Ok(mut side) = dispatcher_verifier_side.lock() {
+                        side.record_traffic(&sender, payload.len() as u64, now);
+                    }
+                }
+                if stream == VERIFIER_TRANSPORT_STREAM {
+                    match verifier_transport::decode(&payload) {
+                        Ok(verifier_transport::VerifierTransportMessage::Announce(announce)) => {
+                            if let Ok(mut side) = dispatcher_verifier_side.lock() {
+                                if let Err(message) =
+                                    side.observe_announce(&sender, &announce, now_unix())
+                                {
+                                    eprintln!("verifier window announce rejected: {message}");
+                                }
+                            }
+                        }
+                        Ok(verifier_transport::VerifierTransportMessage::Report(report)) => {
+                            if let Ok(mut net) = dispatcher_verifier_net.lock() {
+                                match net.submit_report(report, now_unix()) {
+                                    Ok(()) => {
+                                        if verifier_net_store::save(
+                                            &dispatcher_verifier_net_path,
+                                            &net,
+                                            &dispatcher_node.identity,
+                                        )
+                                        .is_err()
+                                        {
+                                            eprintln!("verifier network persistence failed");
+                                        }
+                                    }
+                                    Err(error) => {
+                                        eprintln!("verifier report rejected: {error}");
+                                    }
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            eprintln!("verifier transport message rejected: {error}");
+                        }
+                    }
                     continue;
                 }
                 if stream == ONECOIN_CONSENSUS_STREAM {
@@ -3054,6 +3231,8 @@ async fn run_product() -> Result<()> {
             let api_network_control_path = network_control_path.clone();
             let api_economy = economy_state.clone();
             let api_economy_path = economy_path.clone();
+            let api_verifier_net = verifier_net_state.clone();
+            let api_verifier_net_path = verifier_net_path.clone();
             tokio::spawn(async move {
                 if let Err(e) = serve_ui(
                     stream,
@@ -3079,6 +3258,8 @@ async fn run_product() -> Result<()> {
                         network_control_path: api_network_control_path,
                         economy: api_economy,
                         economy_path: api_economy_path,
+                        verifier_net: api_verifier_net,
+                        verifier_net_path: api_verifier_net_path,
                     },
                 )
                 .await
@@ -3351,3 +3532,4 @@ mod tests {
         assert!(parse_json_u16(&json!({}), "online_hours").is_err());
     }
 }
+
