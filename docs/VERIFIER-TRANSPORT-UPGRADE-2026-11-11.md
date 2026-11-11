@@ -31,11 +31,12 @@ across restarts.
 - `VerifierSide`: the verifier-side observation state of one node. It
   tracks announced windows in bounded memory (1,024 windows, oldest-expired
   pruned), accumulates the bytes this node genuinely exchanged with each
-  observed node, and builds exactly one `SignedUsageReport` per window once
-  the settlement period has ended. A report is attempted once and capped to
-  the observation window: a verifier never re-reports the same window, so
-  transport retries can never exercise the contributing node's duplicate
-  rule.
+  observed node, and builds one `SignedUsageReport` per window once the
+  settlement period has ended. A due report is rebuilt on every cycle
+  until the transport accepts its send (`mark_reported`), capped to the
+  report deadline: a failed or unreachable delivery is retried instead
+  of being lost, and the contributing node's duplicate rule makes an
+  over-delivery harmless.
 - `open_window_announces(net, now)`: the windows of a verifier net that
   are still open for reports, ready to be announced.
 - Rejections are explicit and typed: a node cannot announce a window for
@@ -110,10 +111,10 @@ across restarts.
 
 - 8 unit tests in `verifier_transport.rs`: message roundtrip and
   malformed/oversized rejection, announcement well-formedness, foreign/
-  malformed/expired announce rejection, traffic attribution, one-shot
-  due reports capped to the period, prune behavior, bounded observation
-  registry, and a full end-to-end flow from announcement to two-verifier
-  consensus.
+  malformed/expired announce rejection, traffic attribution, due-report
+  retry-until-delivered semantics capped to the period, prune behavior,
+  bounded observation registry, and a full end-to-end flow from
+  announcement to two-verifier consensus.
 - 2 tests in `economy_api`: founder-only gating of the verifier routes
   (a stranger gets 403) and the full flow enroll → window → two signed
   reports → duplicate rejection → forged-signature rejection → consensus
@@ -136,11 +137,13 @@ across restarts.
 - The verifier-side observations are in-memory by design: they are
   rebuilt from live announcements and nothing about them outlives the
   node's uptime. This is stated, not hidden.
-- A report is attempted once per window per verifier node. There is no
-  retry queue: if the contributing node is unreachable at the moment the
-  report is due, that window's report from that verifier is lost, and
-  the settlement simply runs with fewer reports (and may fail its
-  two-verifier minimum, which is the honest outcome).
+- A report is retried every cycle until the transport accepts its send
+  or the window's report deadline passes. An accepted send is a network
+  write, not an application acknowledgement: a report can still be lost
+  after the send was accepted, in which case the window is settled on
+  the verifier side with no consensus contribution and the settlement
+  runs with fewer reports (and may fail its two-verifier minimum, which
+  is the honest outcome).
 - Traffic accounting counts only verifier-transport-relevant messages the
   dispatcher sees; it is an honest lower bound of the exchanged bytes,
   not a byte-perfect accounting of the TCP stream.

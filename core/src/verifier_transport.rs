@@ -19,11 +19,13 @@
 //!   the bytes and contact time it actually measured.
 //! - `VerifierSide`: the verifier-side observation state. It tracks the
 //!   announced windows in bounded memory, accumulates the bytes this
-//!   node exchanged with each observed node, and builds exactly one
-//!   report per window once the settlement period has ended. A report
-//!   is attempted once: a verifier never re-reports the same window, so
-//!   the contributing node's duplicate rule is never exercised by
-//!   transport retries.
+//!   node exchanged with each observed node, and builds one report per
+//!   window once the settlement period has ended. A due report is
+//!   rebuilt on every cycle until the transport accepts its send
+//!   (`mark_reported`), capped to the report deadline, so a failed or
+//!   unreachable delivery is retried instead of being lost; an
+//!   over-delivery is rejected by the contributing node's duplicate
+//!   rule and is therefore harmless.
 //!
 //! Nothing here mints ONECOIN, changes reward rates, enrolls verifiers
 //! or weakens the founder's exclusive rights. Every acceptance decision
@@ -165,9 +167,9 @@ struct ObservedWindow {
 /// genuinely exchanged with each observed node and the contact time it
 /// genuinely observed. The state lives in memory only: announced
 /// windows re-announce while they are open, so a restart simply starts
-/// observing again. A report is built at most once per window, only
-/// after the settlement period ended and only from the observation this
-/// node actually made.
+/// observing again. A due report is rebuilt on every cycle until the
+/// transport confirms its send, only after the settlement period ended
+/// and only from the observation this node actually made.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct VerifierSide {
     observed: BTreeMap<([u8; 32], u64), ObservedWindow>,
@@ -256,9 +258,14 @@ impl VerifierSide {
 
     /// Builds the signed reports that are due now: one per observed
     /// window whose settlement period has ended, whose report deadline
-    /// has not passed and which this node has not reported yet. Each
-    /// report is built exactly once and carries only the bytes and
-    /// contact time actually observed, capped to the settlement period.
+    /// has not passed and which this node has not delivered yet. A due
+    /// report is rebuilt on every call until the transport confirms a
+    /// successful send through [`VerifierSide::mark_reported`], so a
+    /// failed or unreachable delivery is retried on the next cycle
+    /// instead of being lost; the contributing node's duplicate rule
+    /// makes an over-delivery harmless. Every report carries only the
+    /// bytes and contact time actually observed, capped to the
+    /// settlement period.
     pub fn due_reports(
         &mut self,
         verifier: &Identity,
@@ -272,7 +279,6 @@ impl VerifierSide {
             {
                 continue;
             }
-            window.reported = true;
             let observation = PeerObservation {
                 bytes_exchanged: window.bytes_exchanged,
                 observed_available_secs: window
@@ -295,6 +301,17 @@ impl VerifierSide {
             ));
         }
         due
+    }
+
+    /// Marks one observed window as delivered: the transport stops
+    /// rebuilding its report only after a send was accepted. An
+    /// unknown window is a no-op, so a stale acknowledgement cannot
+    /// resurrect or corrupt observation state.
+    pub fn mark_reported(&mut self, node: &AweId, period_start_unix: u64) {
+        let key = (*node.as_bytes(), period_start_unix);
+        if let Some(window) = self.observed.get_mut(&key) {
+            window.reported = true;
+        }
     }
 
     /// Drops observed windows past their report deadline plus the
@@ -460,7 +477,7 @@ mod tests {
     }
 
     #[test]
-    fn reports_are_built_once_after_the_period_and_capped_to_it() {
+    fn due_reports_retry_until_marked_and_capped_to_the_period() {
         let node = identity("due-node");
         let verifier = identity("due-verifier");
         let mut side = VerifierSide::new();
@@ -485,10 +502,17 @@ mod tests {
         // contact: 1_500 seconds, still zero whole hours
         assert_eq!(report.usage.bandwidth_gb, 6);
         assert_eq!(report.usage.uptime_hours, 0);
-        // a window is reported exactly once
+        // an undelivered report is rebuilt on the next cycle, not lost
+        let retried = side.due_reports(&verifier, 2_700);
+        assert_eq!(retried.len(), 1);
+        assert_eq!(retried[0].1.period_start_unix, 1_000);
+        // once the transport confirms the send the window is settled
+        side.mark_reported(&node.public.awe_id, 1_000);
         assert!(side.due_reports(&verifier, 2_700).is_empty());
         // and never again after the deadline either
         assert!(side.due_reports(&verifier, 2_600 + GRACE + 1).is_empty());
+        // marking an unknown window is a harmless no-op
+        side.mark_reported(&verifier.public.awe_id, 1_000);
     }
 
     #[test]
@@ -604,12 +628,15 @@ mod tests {
         for (side, verifier) in [(&mut side_a, &verifier_a), (&mut side_b, &verifier_b)] {
             for (node, report) in side.due_reports(verifier, period_end) {
                 assert_eq!(node, contributor.public.awe_id);
+                let period_start = report.period_start_unix;
                 let bytes = encode(&VerifierTransportMessage::Report(report)).unwrap();
                 let decoded = decode(&bytes).unwrap();
                 let VerifierTransportMessage::Report(report) = decoded else {
                     panic!("expected a report on the verifier transport");
                 };
                 net.submit_report(report, period_end).unwrap();
+                // the accepted send settles the window on the verifier side
+                side.mark_reported(&node, period_start);
             }
         }
         assert!(net.has_consensus(&contributor.public.awe_id, period_start, period_end));
@@ -618,7 +645,8 @@ mod tests {
             .unwrap();
         assert_eq!(consensus.bandwidth_gb, 2);
         assert_eq!(consensus.cpu_core_ticks, 0);
-        // a replayed report from the same verifier is still a duplicate
+        // a settled window is not rebuilt, and a replayed report from the
+        // same verifier would still be rejected as a duplicate
         let replay = side_a
             .due_reports(&verifier_a, period_end + 1)
             .into_iter()

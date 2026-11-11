@@ -2072,10 +2072,13 @@ async fn announce_open_windows(node: &Node, verifier_net_state: &economy_api::Ve
 
 /// One tick of the live verifier transport. The contributing side
 /// announces its open attestation windows to every connected peer; the
-/// verifier side delivers the reports that became due; windows past
-/// their report deadline are closed and pruned. Nothing here mints
-/// ONECOIN: settlement stays with the resource economy and reads the
-/// collected verifier consensus.
+/// verifier side delivers the reports that became due, retrying each
+/// cycle until the transport accepts the send (a failed or unreachable
+/// delivery is rebuilt, not lost, and the contributing node's duplicate
+/// rule makes an over-delivery harmless); windows past their report
+/// deadline are closed and pruned. Nothing here mints ONECOIN:
+/// settlement stays with the resource economy and reads the collected
+/// verifier consensus.
 async fn verifier_transport_cycle(
     node: &Node,
     verifier_net_state: &economy_api::VerifierNetState,
@@ -2099,8 +2102,11 @@ async fn verifier_transport_cycle(
                 .iter()
                 .find(|peer| peer.awe_id == *observed_node.as_bytes())
             else {
+                // the observed node is not connected right now: the
+                // report stays due and is retried on the next cycle
                 continue;
             };
+            let period_start = report.period_start_unix;
             if let Ok(payload) = verifier_transport::encode(
                 &verifier_transport::VerifierTransportMessage::Report(report),
             ) {
@@ -2111,6 +2117,7 @@ async fn verifier_transport_cycle(
                 {
                     if let Ok(mut side) = verifier_side_state.lock() {
                         side.record_traffic(&peer.awe_id, payload.len() as u64, now);
+                        side.mark_reported(&observed_node, period_start);
                     }
                 }
             }
