@@ -124,6 +124,12 @@ across restarts.
   202), then asserts the verifier roster survives a node-1 restart.
 - CI runs fmt, the full workspace tests, the product smoke test and
   clippy -D warnings on Ubuntu and Windows.
+- The `security-audit.yml` workflow no longer depends on the broken
+  `rustsec/audit-check` action (which began failing on 2026-11-10 and
+  silently skipped the locked workspace test gate): it installs
+  `cargo-audit` itself and runs `cargo audit` plus
+  `cargo test --locked --workspace` in the same job, so both the audit
+  and the test gate are reachable again.
 
 ## Honestly not implemented here
 
