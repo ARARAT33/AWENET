@@ -60,9 +60,12 @@ across restarts.
   founder-signed snapshot. Every allowed inbound message also counts as
   traffic against the sender's observed windows, which is the honest
   remote observation the reports are built from.
-- A 15-second `verifier_transport_cycle` announces every open window to
-  the connected peers, delivers the reports that became due, and closes
-  expired windows through `close_expired`.
+- A freshly opened window is announced to the connected peers
+  immediately after the founder opens it, so a window shorter than the
+  cycle interval is still announced while it is open; the 15-second
+  `verifier_transport_cycle` re-announces every open window the same
+  way, delivers the reports that became due, and closes expired
+  windows through `close_expired`.
 - Startup loads `awenet-verifier-net.json` fail-closed: a snapshot that
   fails founder validation is a hard error, never a silent fresh start.
 - New HTTP endpoints in `economy_api`:
