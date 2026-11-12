@@ -421,31 +421,36 @@ mod tests {
         Identity::generate(Username::new(name).unwrap())
     }
 
+    fn core_for(
+        seller: &Identity,
+        product_id: u64,
+        revision: u64,
+        listed: bool,
+    ) -> ListingAnnounceCore {
+        ListingAnnounceCore {
+            version: MARKETPLACE_SYNC_VERSION,
+            product_id,
+            seller: seller.public.awe_id.clone(),
+            seller_public_key: seller.public.public_key,
+            seller_node_address: "127.0.0.1:46102".into(),
+            title: "AWE Theme Pack".into(),
+            description: "Dark and light themes".into(),
+            kind: ProductKind::Digital,
+            category: "themes".into(),
+            price_atoms: 250,
+            stock: None,
+            listed,
+            revision_unix: revision,
+        }
+    }
+
     fn announce(
         seller: &Identity,
         product_id: u64,
         revision: u64,
         listed: bool,
     ) -> ListingAnnounce {
-        ListingAnnounce::sign(
-            ListingAnnounceCore {
-                version: MARKETPLACE_SYNC_VERSION,
-                product_id,
-                seller: seller.public.awe_id.clone(),
-                seller_public_key: seller.public.public_key,
-                seller_node_address: "127.0.0.1:46102".into(),
-                title: "AWE Theme Pack".into(),
-                description: "Dark and light themes".into(),
-                kind: ProductKind::Digital,
-                category: "themes".into(),
-                price_atoms: 250,
-                stock: None,
-                listed,
-                revision_unix: revision,
-            },
-            seller,
-        )
-        .unwrap()
+        ListingAnnounce::sign(core_for(seller, product_id, revision, listed), seller).unwrap()
     }
 
     #[test]
@@ -542,10 +547,13 @@ mod tests {
         // an older revision changes nothing
         let older = announce(&seller, 1, 900, true);
         assert!(!catalog.merge(sender, &older, 1_011).unwrap());
-        // a newer revision updates the listing
-        let mut updated = announce(&seller, 1, 1_100, true);
-        updated.core.price_atoms = 300;
-        updated.core.title = "AWE Theme Pack v2".into();
+        // a newer revision updates the listing. The changed core is
+        // re-signed by the seller: an announcement mutated after
+        // signing is exactly the forgery verify_signature rejects.
+        let mut updated_core = core_for(&seller, 1, 1_100, true);
+        updated_core.price_atoms = 300;
+        updated_core.title = "AWE Theme Pack v2".into();
+        let updated = ListingAnnounce::sign(updated_core, &seller).unwrap();
         assert!(catalog.merge(sender, &updated, 1_105).unwrap());
         let listings = catalog.search(&ProductFilter::default());
         assert_eq!(listings.len(), 1);
@@ -616,7 +624,10 @@ mod tests {
                     &announce(&other, index as u64, 1_000, true),
                     1_000,
                 );
-                if catalog.len() >= MAX_REMOTE_LISTINGS {
+                // fullness is judged before the merge: the merge that
+                // fills the catalog to exactly the bound succeeds
+                let was_full = catalog.len() >= MAX_REMOTE_LISTINGS;
+                if was_full {
                     assert!(matches!(result, Err(MarketplaceSyncError::TooManyListings)));
                 } else {
                     assert!(result.unwrap());
@@ -655,11 +666,12 @@ mod tests {
                 1_000
             )
             .unwrap());
-        let mut service = announce(&seller_b, 1, 1_000, true);
-        service.core.kind = ProductKind::Service;
-        service.core.title = "Node repair service".into();
-        service.core.category = "support".into();
-        service.core.price_atoms = 900;
+        let mut service_core = core_for(&seller_b, 1, 1_000, true);
+        service_core.kind = ProductKind::Service;
+        service_core.title = "Node repair service".into();
+        service_core.category = "support".into();
+        service_core.price_atoms = 900;
+        let service = ListingAnnounce::sign(service_core, &seller_b).unwrap();
         assert!(catalog
             .merge(seller_b.public.awe_id.as_bytes(), &service, 1_000)
             .unwrap());
