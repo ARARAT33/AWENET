@@ -341,7 +341,7 @@ mod tests {
     use super::*;
     use crate::identity::Username;
     use crate::resource_economy::MeasuredUsage;
-    use crate::verifier_net::{CLOSED_WINDOW_RETENTION_SECS, REPORT_GRACE_SECS as GRACE};
+    use crate::verifier_net::REPORT_GRACE_SECS as GRACE;
 
     fn identity(name: &str) -> Identity {
         Identity::generate(Username::new(name).unwrap())
@@ -526,11 +526,15 @@ mod tests {
         side.observe_announce(node.public.awe_id.as_bytes(), &late, 10 * 3_600)
             .unwrap();
         assert_eq!(side.len(), 2);
-        // nothing is pruned before the retention horizon
-        let horizon = 11 * 3_600 + GRACE + CLOSED_WINDOW_RETENTION_SECS;
-        assert_eq!(side.prune(horizon - 1), 0);
+        // an observed window is pruned only past its own report
+        // deadline plus the verifier-side retention horizon
+        let early_horizon = 3_600 + GRACE + OBSERVED_RETENTION_SECS;
+        assert_eq!(side.prune(early_horizon - 1), 0);
         assert_eq!(side.len(), 2);
-        assert_eq!(side.prune(horizon + 1), 2);
+        assert_eq!(side.prune(early_horizon + 1), 1);
+        assert_eq!(side.len(), 1);
+        let late_horizon = 11 * 3_600 + GRACE + OBSERVED_RETENTION_SECS;
+        assert_eq!(side.prune(late_horizon + 1), 1);
         assert!(side.is_empty());
     }
 
@@ -538,11 +542,14 @@ mod tests {
     fn observed_windows_are_bounded() {
         let node = identity("bound-observe-node");
         let mut side = VerifierSide::new();
+        // one-second periods keep every observed window inside the
+        // retention horizon, so the registry bound is exercised
+        // without pruning freeing slots first
         for index in 0..MAX_OBSERVED_WINDOWS {
-            let start = index as u64 * 3_600;
+            let start = index as u64;
             side.observe_announce(
                 node.public.awe_id.as_bytes(),
-                &announce(&node.public.awe_id, start, start + 3_600),
+                &announce(&node.public.awe_id, start, start + 1),
                 start,
             )
             .unwrap();
@@ -550,14 +557,14 @@ mod tests {
         assert_eq!(side.len(), MAX_OBSERVED_WINDOWS);
         let extra = announce(
             &node.public.awe_id,
-            MAX_OBSERVED_WINDOWS as u64 * 3_600,
-            MAX_OBSERVED_WINDOWS as u64 * 3_600 + 3_600,
+            MAX_OBSERVED_WINDOWS as u64,
+            MAX_OBSERVED_WINDOWS as u64 + 1,
         );
         assert!(matches!(
             side.observe_announce(
                 node.public.awe_id.as_bytes(),
                 &extra,
-                MAX_OBSERVED_WINDOWS as u64 * 3_600
+                MAX_OBSERVED_WINDOWS as u64
             ),
             Err(VerifierTransportError::TooManyObservations)
         ));
