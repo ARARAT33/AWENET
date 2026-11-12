@@ -75,6 +75,8 @@ pub enum WorkError {
     SuggestionAlreadyApproved(u64),
     #[error("ledger rejected the payout: {0}")]
     Ledger(String),
+    #[error("work market identifier space is exhausted")]
+    IdExhausted,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -451,6 +453,10 @@ impl WorkMarket {
         if self.tasks.len() >= MAX_TASKS {
             return Err(WorkError::TaskRegistryFull);
         }
+        let next_task_id = self
+            .next_task_id
+            .checked_add(1)
+            .ok_or(WorkError::IdExhausted)?;
         authority.authorize(
             actor_public_key,
             FounderAction::PublishTask,
@@ -458,7 +464,7 @@ impl WorkMarket {
             "publish official task",
         )?;
         let id = self.next_task_id;
-        self.next_task_id += 1;
+        self.next_task_id = next_task_id;
         self.tasks.insert(
             id,
             WorkTask {
@@ -484,6 +490,10 @@ impl WorkMarket {
         if self.tasks.len() >= MAX_TASKS {
             return Err(WorkError::TaskRegistryFull);
         }
+        let next_task_id = self
+            .next_task_id
+            .checked_add(1)
+            .ok_or(WorkError::IdExhausted)?;
         authority.authorize(
             actor_public_key,
             FounderAction::PublishTask,
@@ -491,7 +501,7 @@ impl WorkMarket {
             "draft official task",
         )?;
         let id = self.next_task_id;
-        self.next_task_id += 1;
+        self.next_task_id = next_task_id;
         self.tasks.insert(
             id,
             WorkTask {
@@ -626,7 +636,10 @@ impl WorkMarket {
             return Err(WorkError::SuggestionRegistryFull);
         }
         let id = self.next_suggestion_id;
-        self.next_suggestion_id += 1;
+        self.next_suggestion_id = self
+            .next_suggestion_id
+            .checked_add(1)
+            .ok_or(WorkError::IdExhausted)?;
         self.suggestions.insert(
             id,
             TaskSuggestion {
@@ -651,23 +664,32 @@ impl WorkMarket {
         if self.tasks.len() >= MAX_TASKS {
             return Err(WorkError::TaskRegistryFull);
         }
+        let next_task_id = self
+            .next_task_id
+            .checked_add(1)
+            .ok_or(WorkError::IdExhausted)?;
+        let spec = {
+            let suggestion = self
+                .suggestions
+                .get(&suggestion_id)
+                .ok_or(WorkError::UnknownSuggestion(suggestion_id))?;
+            if suggestion.approved {
+                return Err(WorkError::SuggestionAlreadyApproved(suggestion_id));
+            }
+            suggestion.spec.clone()
+        };
         authority.authorize(
             actor_public_key,
             FounderAction::PublishTask,
             now_unix,
             "approve and publish suggested task",
         )?;
-        let suggestion = self
-            .suggestions
+        self.suggestions
             .get_mut(&suggestion_id)
-            .ok_or(WorkError::UnknownSuggestion(suggestion_id))?;
-        if suggestion.approved {
-            return Err(WorkError::SuggestionAlreadyApproved(suggestion_id));
-        }
-        suggestion.approved = true;
-        let spec = suggestion.spec.clone();
+            .expect("suggestion was validated before authorization")
+            .approved = true;
         let id = self.next_task_id;
-        self.next_task_id += 1;
+        self.next_task_id = next_task_id;
         self.tasks.insert(
             id,
             WorkTask {
@@ -745,7 +767,10 @@ impl WorkMarket {
             return Err(WorkError::SubmissionRegistryFull);
         }
         let id = self.next_submission_id;
-        self.next_submission_id += 1;
+        self.next_submission_id = self
+            .next_submission_id
+            .checked_add(1)
+            .ok_or(WorkError::IdExhausted)?;
         self.submissions.insert(
             id,
             TaskSubmission {
