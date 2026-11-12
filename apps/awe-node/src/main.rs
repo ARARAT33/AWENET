@@ -265,6 +265,13 @@ fn is_loopback_host(host: &str) -> bool {
     hostname.eq_ignore_ascii_case("localhost") || hostname == "127.0.0.1" || hostname == "[::1]"
 }
 
+/// The local control UI must not trust a caller-controlled Host header as proof
+/// that a TCP client is local. A listener may be bound to a non-loopback
+/// address for other node metadata, so enforce the peer address as well.
+fn local_peer_allowed(peer: SocketAddr) -> bool {
+    peer.ip().is_loopback()
+}
+
 fn site_host_id(host: &str) -> Option<String> {
     let (hostname, port) = host.trim().rsplit_once(':')?;
     if port.parse::<u16>().ok()? == 0 {
@@ -4017,13 +4024,25 @@ async fn run_product() -> Result<()> {
     let native_ui_addr = ui_addr;
     tokio::spawn(async move {
         loop {
-            let (stream, _) = match listener.accept().await {
+            let (stream, peer_addr) = match listener.accept().await {
                 Ok(value) => value,
                 Err(error) => {
                     eprintln!("UI listener error: {error}");
                     continue;
                 }
             };
+            if !local_peer_allowed(peer_addr) {
+                let mut stream = stream;
+                let _ = stream
+                    .write_all(&http_response(
+                        "403 Forbidden",
+                        "application/json; charset=utf-8",
+                        r#"{"status":"error","error":"local_peer_not_allowed"}"#,
+                    ))
+                    .await;
+                let _ = stream.shutdown().await;
+                continue;
+            }
             let api_node = node.clone();
             let api_messenger = messenger.clone();
             let api_federation = federation_state.clone();
@@ -4264,9 +4283,18 @@ mod policy_lock_tests {
 #[cfg(test)]
 mod tests {
     use super::{
-        http_response, is_loopback_host, local_request_allowed, parse_json_u16, parse_json_u32,
+        http_response, is_loopback_host, local_peer_allowed, local_request_allowed, parse_json_u16,
+        parse_json_u32,
     };
     use serde_json::json;
+
+    #[test]
+    fn ui_listener_rejects_remote_peers_even_if_they_spoof_a_loopback_host() {
+        assert!(local_peer_allowed("127.0.0.1:41800".parse().unwrap()));
+        assert!(local_peer_allowed("[::1]:41800".parse().unwrap()));
+        assert!(!local_peer_allowed("192.0.2.10:41800".parse().unwrap()));
+        assert!(!local_peer_allowed("[::ffff:192.0.2.10]:41800".parse().unwrap()));
+    }
 
     #[test]
     fn local_api_accepts_only_matching_loopback_origins() {
