@@ -1247,6 +1247,119 @@ fn three_node_product_smoke() {
             thread::sleep(Duration::from_millis(500));
         }
 
+        // Live marketplace catalog sync between the nodes: node 2
+        // lists a product on its own storefront and the listing must
+        // reach node 1's network catalog over the marketplace sync
+        // stream, with the seller's node address attached; node 2 then
+        // delists the product and the next announcement cycle must
+        // remove it from node 1's catalog. The catalog is discovery
+        // data: no cross-node order is executed here.
+        let listed = post(
+            "127.0.0.1:46202",
+            "/api/storefront/products",
+            &serde_json::json!({
+                "title": "AWE Marketplace Sync Theme",
+                "description": "Listed on node 2, discovered on node 1",
+                "kind": "digital",
+                "category": "themes",
+                "price_atoms": 250,
+            })
+            .to_string(),
+        );
+        assert!(
+            listed.contains(r#""status":"listed""#),
+            "node 2 product listing failed: {listed}"
+        );
+        let product_id: u64 = serde_json::from_str::<serde_json::Value>(&listed)
+            .expect("listing JSON")
+            .get("product_id")
+            .and_then(|value| value.as_u64())
+            .expect("listing product id");
+        let sync_deadline = Instant::now() + Duration::from_secs(90);
+        loop {
+            let catalog: serde_json::Value =
+                serde_json::from_str(&get("127.0.0.1:46201", "/api/storefront/network"))
+                    .expect("network catalog JSON");
+            let found = catalog
+                .get("listings")
+                .and_then(|value| value.as_array())
+                .map(|list| {
+                    list.iter().any(|listing| {
+                        listing.get("id").and_then(|value| value.as_u64()) == Some(product_id)
+                            && listing
+                                .get("seller_node_address")
+                                .and_then(|value| value.as_str())
+                                == Some("127.0.0.1:46202")
+                    })
+                })
+                .unwrap_or(false);
+            if found {
+                break;
+            }
+            if Instant::now() >= sync_deadline {
+                panic!(
+                    "node 1 never saw node 2's listing in the network catalog: {catalog}\n\
+                     --- node 1 output tail ---\n{}\n\
+                     --- node 2 output tail ---\n{}",
+                    node_log_tail(&node_logs[0], 600),
+                    node_log_tail(&node_logs[1], 600),
+                );
+            }
+            thread::sleep(Duration::from_millis(500));
+        }
+        // the honest notice keeps the network catalog from being
+        // mistaken for an order route
+        let catalog: serde_json::Value =
+            serde_json::from_str(&get("127.0.0.1:46201", "/api/storefront/network"))
+                .expect("network catalog JSON");
+        let notice = catalog
+            .get("notice")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        assert!(
+            notice.contains("not an order route"),
+            "network catalog notice must state the discovery-only contract: {catalog}"
+        );
+        // node 2 delists the product and the next announcement cycle
+        // must remove it from node 1's catalog
+        let delisted = post(
+            "127.0.0.1:46202",
+            &format!("/api/storefront/products/{product_id}/deactivate"),
+            "",
+        );
+        assert!(
+            delisted.contains(r#""status":"deactivated""#),
+            "node 2 product delisting failed: {delisted}"
+        );
+        let delist_deadline = Instant::now() + Duration::from_secs(90);
+        loop {
+            let catalog: serde_json::Value =
+                serde_json::from_str(&get("127.0.0.1:46201", "/api/storefront/network"))
+                    .expect("network catalog JSON");
+            let still_listed = catalog
+                .get("listings")
+                .and_then(|value| value.as_array())
+                .map(|list| {
+                    list.iter().any(|listing| {
+                        listing.get("id").and_then(|value| value.as_u64()) == Some(product_id)
+                    })
+                })
+                .unwrap_or(false);
+            if !still_listed {
+                break;
+            }
+            if Instant::now() >= delist_deadline {
+                panic!(
+                    "node 1 still sees the delisted product in the network catalog: {catalog}\n\
+                     --- node 1 output tail ---\n{}\n\
+                     --- node 2 output tail ---\n{}",
+                    node_log_tail(&node_logs[0], 600),
+                    node_log_tail(&node_logs[1], 600),
+                );
+            }
+            thread::sleep(Duration::from_millis(500));
+        }
+
         let payload = "AWEP2P-REAL-PRODUCT-SMOKE";
         let hex = payload
             .as_bytes()

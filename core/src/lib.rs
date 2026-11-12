@@ -62,6 +62,7 @@ pub mod journal;
 pub mod keys;
 pub mod lan_mesh;
 pub mod limits;
+pub mod marketplace_sync;
 pub mod messenger;
 pub mod messenger_runtime;
 pub mod metrics;

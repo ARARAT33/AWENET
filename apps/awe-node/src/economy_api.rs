@@ -34,6 +34,7 @@ use awep2p_core::founder::FounderAuthority;
 use awep2p_core::founder_guard::FounderGuard;
 use awep2p_core::i18n::{product_catalog, Locale, FALLBACK_LOCALE};
 use awep2p_core::identity::{secure_random, AweId, Identity, Username};
+use awep2p_core::marketplace_sync::RemoteCatalog;
 use awep2p_core::onecoin::{OnecoinLedger, ATOMS_PER_COIN};
 use awep2p_core::price_control::{OfficialPriceControl, PRICE_DISCLAIMER};
 use awep2p_core::resource_economy::MeasuredUsage;
@@ -52,6 +53,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub type LedgerState = Arc<Mutex<OnecoinLedger>>;
 pub type EconomyState = Arc<Mutex<NodeEconomy>>;
 pub type VerifierNetState = Arc<Mutex<VerifierNet>>;
+pub type RemoteCatalogState = Arc<Mutex<RemoteCatalog>>;
 pub type ApiResponse = (&'static str, &'static str, String);
 
 pub const JSON_MIME: &str = "application/json; charset=utf-8";
@@ -562,6 +564,7 @@ pub fn handle(
     ledger_path: &Path,
     verifier_state: &VerifierNetState,
     verifier_path: &Path,
+    marketplace_state: &RemoteCatalogState,
 ) -> ApiResponse {
     let (path, query) = match target.split_once('?') {
         Some((path, query)) => (path, query),
@@ -704,6 +707,7 @@ pub fn handle(
             None => err(400, "order id must be a number".to_string()),
         },
         ("GET", ["api", "storefront", "products"]) => products_public(&params, economy_state),
+        ("GET", ["api", "storefront", "network"]) => network_catalog(&params, marketplace_state),
         ("GET", ["api", "storefront", "seller"]) => seller_page(identity, economy_state),
         ("GET", ["api", "storefront", "orders"]) => store_orders(identity, economy_state),
         ("POST", ["api", "storefront", "products"]) => {
@@ -2113,6 +2117,76 @@ fn products_public(params: &BTreeMap<String, String>, economy_state: &EconomySta
     ok(serde_json::json!({ "status": "ok", "products": products, "count": products.len() }))
 }
 
+/// The network-wide storefront catalog: the products other nodes
+/// announced over the marketplace sync stream. This is discovery data,
+/// honestly bounded: a listing shows where the seller node accepts
+/// buyers, it is not an order route, and a purchase still settles on
+/// the seller's own ledger. Cross-node order execution is not
+/// implemented.
+fn network_catalog(
+    params: &BTreeMap<String, String>,
+    marketplace_state: &RemoteCatalogState,
+) -> ApiResponse {
+    let catalog = match marketplace_state.lock() {
+        Ok(guard) => guard,
+        Err(_) => return err(500, "marketplace catalog is locked".to_string()),
+    };
+    let kind = match params
+        .get("kind")
+        .map(|text| ProductKind::parse(text).ok_or_else(|| format!("unknown product kind: {text}")))
+    {
+        Some(Ok(kind)) => Some(kind),
+        Some(Err(message)) => return err(400, message),
+        None => None,
+    };
+    let seller = match params.get("seller") {
+        Some(text) => match AweId::from_hex(text) {
+            Ok(seller) => Some(seller),
+            Err(message) => return err(400, message),
+        },
+        None => None,
+    };
+    let filter = ProductFilter {
+        query: params.get("q").cloned().unwrap_or_default(),
+        kind,
+        category: params.get("category").cloned(),
+        seller,
+        min_price_atoms: params
+            .get("min_price_atoms")
+            .and_then(|text| text.parse::<u128>().ok())
+            .unwrap_or(0),
+        max_price_atoms: params
+            .get("max_price_atoms")
+            .and_then(|text| text.parse::<u128>().ok()),
+        include_inactive: false,
+    };
+    let listings: Vec<serde_json::Value> = catalog
+        .search(&filter)
+        .iter()
+        .map(|listing| {
+            serde_json::json!({
+                "id": listing.core.product_id,
+                "seller": listing.core.seller.to_hex(),
+                "seller_node_address": listing.core.seller_node_address,
+                "title": listing.core.title,
+                "description": listing.core.description,
+                "kind": listing.core.kind.as_str(),
+                "category": listing.core.category,
+                "price": money_json(listing.core.price_atoms),
+                "stock": listing.core.stock,
+                "listed_at_unix": listing.first_seen_unix,
+                "last_seen_unix": listing.last_seen_unix,
+            })
+        })
+        .collect();
+    ok(serde_json::json!({
+        "status": "ok",
+        "listings": listings,
+        "count": listings.len(),
+        "notice": "listings are announced by their seller nodes over the marketplace sync stream; a listing points at the seller's node and is not an order route: purchases settle on the seller's own ledger and cross-node order execution is not implemented"
+    }))
+}
+
 fn seller_page(identity: &Identity, economy_state: &EconomyState) -> ApiResponse {
     let economy = match lock_economy(economy_state) {
         Ok(guard) => guard,
@@ -2915,6 +2989,7 @@ mod tests {
             &dir.join("ledger.json"),
             &verifier_state,
             &dir.join("verifier-net.json"),
+            &Arc::new(Mutex::new(RemoteCatalog::new())),
         );
         assert_eq!(status, "403 Forbidden");
         let parsed: serde_json::Value = serde_json::from_str(&response).unwrap();
@@ -2938,6 +3013,7 @@ mod tests {
             &dir.join("ledger.json"),
             &verifier_state,
             &dir.join("verifier-net.json"),
+            &Arc::new(Mutex::new(RemoteCatalog::new())),
         );
         assert_eq!(status, "403 Forbidden");
     }
@@ -2973,6 +3049,7 @@ mod tests {
                 &ledger_path,
                 &verifier_state,
                 &verifier_path,
+                &Arc::new(Mutex::new(RemoteCatalog::new())),
             );
             assert_eq!(status, "200 OK");
             assert!(response.contains(r#""status":"enrolled""#), "{response}");
@@ -2993,6 +3070,7 @@ mod tests {
             &ledger_path,
             &verifier_state,
             &verifier_path,
+            &Arc::new(Mutex::new(RemoteCatalog::new())),
         );
         assert_eq!(status, "400 Bad Request");
         assert!(response.contains("already enrolled"), "{response}");
@@ -3009,6 +3087,7 @@ mod tests {
             &ledger_path,
             &verifier_state,
             &verifier_path,
+            &Arc::new(Mutex::new(RemoteCatalog::new())),
         );
         assert_eq!(status, "200 OK");
         let opened: serde_json::Value = serde_json::from_str(&response).unwrap();
@@ -3049,6 +3128,7 @@ mod tests {
                 &ledger_path,
                 &verifier_state,
                 &verifier_path,
+                &Arc::new(Mutex::new(RemoteCatalog::new())),
             );
             assert_eq!(status, "200 OK", "{response}");
         }
@@ -3071,6 +3151,7 @@ mod tests {
             &ledger_path,
             &verifier_state,
             &verifier_path,
+            &Arc::new(Mutex::new(RemoteCatalog::new())),
         );
         assert_eq!(status, "400 Bad Request");
         assert!(response.contains("already reported"), "{response}");
@@ -3090,6 +3171,7 @@ mod tests {
             &ledger_path,
             &verifier_state,
             &verifier_path,
+            &Arc::new(Mutex::new(RemoteCatalog::new())),
         );
         assert_eq!(status, "400 Bad Request");
 
@@ -3106,6 +3188,7 @@ mod tests {
             &ledger_path,
             &verifier_state,
             &verifier_path,
+            &Arc::new(Mutex::new(RemoteCatalog::new())),
         );
         assert_eq!(status, "200 OK");
         let net: serde_json::Value = serde_json::from_str(&response).unwrap();
@@ -3132,5 +3215,110 @@ mod tests {
         let reloaded = verifier_net_store::load(&verifier_path, &founder).unwrap();
         assert_eq!(reloaded.registry().active_verifiers(), 2);
         assert!(reloaded.has_consensus(&node, period_start, period_end));
+    }
+
+    #[test]
+    fn network_catalog_exposes_peer_listings_as_discovery_data() {
+        use awep2p_core::marketplace_sync::{
+            ListingAnnounce, ListingAnnounceCore, MARKETPLACE_SYNC_VERSION,
+        };
+
+        let founder = identity("api-marketplace-founder");
+        let seller = identity("api-marketplace-seller");
+        let dir = temp_dir("marketplace");
+        let (economy, _created) = load_or_create(&founder, &dir.join("economy.json"));
+        let economy_state: EconomyState = Arc::new(Mutex::new(economy));
+        let ledger: LedgerState = Arc::new(Mutex::new(OnecoinLedger::default()));
+        let verifier_state: VerifierNetState = Arc::new(Mutex::new(VerifierNet::new(&founder, 0)));
+        let marketplace_state: RemoteCatalogState = Arc::new(Mutex::new(RemoteCatalog::new()));
+        // the seller node announces one of its own products over the
+        // marketplace sync stream
+        let announce = ListingAnnounce::sign(
+            ListingAnnounceCore {
+                version: MARKETPLACE_SYNC_VERSION,
+                product_id: 7,
+                seller: seller.public.awe_id.clone(),
+                seller_public_key: seller.public.public_key,
+                seller_node_address: "127.0.0.1:46202".into(),
+                title: "AWE Theme Pack".into(),
+                description: "Dark and light themes".into(),
+                kind: ProductKind::Digital,
+                category: "themes".into(),
+                price_atoms: 250,
+                stock: None,
+                listed: true,
+                revision_unix: 1_000,
+            },
+            &seller,
+        )
+        .unwrap();
+        marketplace_state
+            .lock()
+            .unwrap()
+            .merge(seller.public.awe_id.as_bytes(), &announce, 1_000)
+            .unwrap();
+        let (status, _mime, response) = handle(
+            "GET",
+            "/api/storefront/network",
+            "",
+            &founder,
+            &ledger,
+            &economy_state,
+            &dir.join("economy.json"),
+            &dir.join("ledger.json"),
+            &verifier_state,
+            &dir.join("verifier-net.json"),
+            &marketplace_state,
+        );
+        assert_eq!(status, "200 OK", "{response}");
+        let catalog: serde_json::Value = serde_json::from_str(&response).unwrap();
+        let listings = catalog.get("listings").and_then(|v| v.as_array()).unwrap();
+        assert_eq!(listings.len(), 1, "{catalog}");
+        let listing = &listings[0];
+        assert_eq!(listing.get("id").and_then(|v| v.as_u64()), Some(7));
+        assert_eq!(
+            listing.get("seller").and_then(|v| v.as_str()),
+            Some(seller.public.awe_id.to_hex().as_str())
+        );
+        assert_eq!(
+            listing.get("seller_node_address").and_then(|v| v.as_str()),
+            Some("127.0.0.1:46202")
+        );
+        // the honest notice keeps the listing from being mistaken for
+        // an order route
+        let notice = catalog.get("notice").and_then(|v| v.as_str()).unwrap();
+        assert!(notice.contains("not an order route"), "{notice}");
+        // the established filter surface applies to network listings
+        let (status, _mime, response) = handle(
+            "GET",
+            "/api/storefront/network?q=missing",
+            "",
+            &founder,
+            &ledger,
+            &economy_state,
+            &dir.join("economy.json"),
+            &dir.join("ledger.json"),
+            &verifier_state,
+            &dir.join("verifier-net.json"),
+            &marketplace_state,
+        );
+        assert_eq!(status, "200 OK", "{response}");
+        let filtered: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(filtered.get("count").and_then(|v| v.as_u64()), Some(0));
+        // an unknown seller filter is a 400, not a silent empty list
+        let (status, _mime, response) = handle(
+            "GET",
+            "/api/storefront/network?seller=not-hex",
+            "",
+            &founder,
+            &ledger,
+            &economy_state,
+            &dir.join("economy.json"),
+            &dir.join("ledger.json"),
+            &verifier_state,
+            &dir.join("verifier-net.json"),
+            &marketplace_state,
+        );
+        assert_eq!(status, "400 Bad Request", "{response}");
     }
 }

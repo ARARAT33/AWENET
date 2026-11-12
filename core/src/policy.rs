@@ -41,6 +41,7 @@ impl Default for NetworkPolicy {
                 crate::onecoin_consensus_runtime::ONECOIN_CONSENSUS_STREAM,
                 ONECOIN_TRANSFER_STREAM,
                 crate::verifier_transport::VERIFIER_TRANSPORT_STREAM,
+                crate::marketplace_sync::MARKETPLACE_SYNC_STREAM,
             ],
         }
     }
@@ -134,6 +135,7 @@ mod tests {
         assert!(policy.allows_stream(crate::onecoin_consensus_runtime::ONECOIN_CONSENSUS_STREAM));
         assert!(policy.allows_stream(ONECOIN_TRANSFER_STREAM));
         assert!(policy.allows_stream(crate::verifier_transport::VERIFIER_TRANSPORT_STREAM));
+        assert!(policy.allows_stream(crate::marketplace_sync::MARKETPLACE_SYNC_STREAM));
         assert!(!policy.allows_stream(999_999));
     }
 
