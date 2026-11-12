@@ -111,6 +111,7 @@ pub struct ListingAnnounceCore {
 pub struct ListingAnnounce {
     #[serde(flatten)]
     pub core: ListingAnnounceCore,
+    #[serde(with = "crate::serde_bytes_64")]
     pub signature: [u8; 64],
 }
 
@@ -807,9 +808,7 @@ mod tests {
         assert_eq!(announces.len(), 1);
         let wire = encode(&MarketplaceSyncMessage::Listing(announces[0].clone())).unwrap();
         let decoded = decode(&wire).unwrap();
-        let MarketplaceSyncMessage::Listing(announce) = decoded else {
-            panic!("expected a listing on the marketplace sync transport");
-        };
+        let MarketplaceSyncMessage::Listing(announce) = decoded;
         let mut catalog = RemoteCatalog::new();
         assert!(catalog
             .merge(seller.public.awe_id.as_bytes(), &announce, 10_001)
@@ -830,9 +829,7 @@ mod tests {
         assert_eq!(delistings.len(), 1);
         assert!(!delistings[0].core.listed);
         let wire = encode(&MarketplaceSyncMessage::Listing(delistings[0].clone())).unwrap();
-        let MarketplaceSyncMessage::Listing(announce) = decode(&wire).unwrap() else {
-            panic!("expected a delisting on the marketplace sync transport");
-        };
+        let MarketplaceSyncMessage::Listing(announce) = decode(&wire).unwrap();
         assert!(catalog
             .merge(seller.public.awe_id.as_bytes(), &announce, 20_001)
             .unwrap());
