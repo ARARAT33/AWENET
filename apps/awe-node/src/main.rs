@@ -4293,7 +4293,9 @@ mod tests {
         assert!(local_peer_allowed("127.0.0.1:41800".parse().unwrap()));
         assert!(local_peer_allowed("[::1]:41800".parse().unwrap()));
         assert!(!local_peer_allowed("192.0.2.10:41800".parse().unwrap()));
-        assert!(!local_peer_allowed("[::ffff:192.0.2.10]:41800".parse().unwrap()));
+        assert!(!local_peer_allowed(
+            "[::ffff:192.0.2.10]:41800".parse().unwrap()
+        ));
     }
 
     #[test]
