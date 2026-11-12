@@ -64,8 +64,8 @@ pub enum MarketplaceSyncError {
     MessageTooLarge,
     #[error("marketplace sync serialization failed: {0}")]
     Serialization(String),
-    #[error("the marketplace sync message is malformed")]
-    Malformed,
+    #[error("the marketplace sync message is malformed: {0}")]
+    Malformed(String),
     #[error("the listing announcement is invalid")]
     InvalidListing,
     #[error("only the seller node itself may announce its listing")]
@@ -106,10 +106,9 @@ pub struct ListingAnnounceCore {
 }
 
 /// One signed listing announcement on the marketplace sync transport.
-/// The signature is produced and checked over the flattened core.
+/// The signature is produced and checked over the core.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ListingAnnounce {
-    #[serde(flatten)]
     pub core: ListingAnnounceCore,
     #[serde(with = "crate::serde_bytes_64")]
     pub signature: [u8; 64],
@@ -219,7 +218,8 @@ pub fn decode(bytes: &[u8]) -> Result<MarketplaceSyncMessage, MarketplaceSyncErr
     if bytes.len() > MAX_SYNC_MESSAGE_BYTES {
         return Err(MarketplaceSyncError::MessageTooLarge);
     }
-    serde_json::from_slice(bytes).map_err(|_| MarketplaceSyncError::Malformed)
+    serde_json::from_slice(bytes)
+        .map_err(|error| MarketplaceSyncError::Malformed(error.to_string()))
 }
 
 /// How many announcements one seller node sends per cycle: its own
@@ -456,7 +456,7 @@ mod tests {
         assert_eq!(decode(&bytes).unwrap(), message);
         assert!(matches!(
             decode(b"not marketplace sync json"),
-            Err(MarketplaceSyncError::Malformed)
+            Err(MarketplaceSyncError::Malformed(_))
         ));
         let oversized = vec![b'x'; MAX_SYNC_MESSAGE_BYTES + 1];
         assert!(matches!(

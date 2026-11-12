@@ -2993,7 +2993,11 @@ async fn run_product() -> Result<()> {
                             }
                         }
                         Err(error) => {
-                            eprintln!("marketplace sync message rejected: {error}");
+                            let limit = payload.len().min(240);
+                            let head = String::from_utf8_lossy(&payload[..limit]);
+                            eprintln!(
+                                "marketplace sync message rejected: {error}; payload head: {head}"
+                            );
                         }
                     }
                     continue;
