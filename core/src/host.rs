@@ -466,7 +466,7 @@ mod tests {
     fn load_manifest_rejects_a_different_embedded_domain() {
         let root =
             std::env::temp_dir().join(format!("awe-host-domain-mismatch-{}", std::process::id()));
-        let host = AweHost::open(&root, 10_000_000, HostPolicy::default()).unwrap();
+        let mut host = AweHost::open(&root, 10_000_000, HostPolicy::default()).unwrap();
         let owner = Identity::generate(crate::identity::Username::new("host-owner").unwrap());
         let file = host
             .publish_file("/index.html", b"original", "text/html")
