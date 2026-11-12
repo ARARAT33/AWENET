@@ -9,7 +9,8 @@ use std::{
     io::{Read, Write},
     net::TcpStream,
     path::PathBuf,
-    process::{Child, Command},
+    process::{Child, Command, Stdio},
+    sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant},
 };
@@ -137,15 +138,94 @@ fn wait_for_health(addr: &str) {
     }
 }
 
-fn spawn_node(bin: &PathBuf, data: &PathBuf, listen: u16, ui: u16) -> Child {
-    Command::new(bin)
+/// The combined stdout/stderr of one spawned node, kept bounded so a
+/// long-running smoke test cannot grow it without limit. The panic
+/// diagnostics of the consensus wait include these tails, because the
+/// live transport failures that matter (rejected announces, rejected
+/// reports, deferred deliveries) are printed by the nodes themselves.
+type NodeLog = Arc<Mutex<String>>;
+
+const NODE_LOG_LIMIT: usize = 64 * 1024;
+
+fn spawn_node(bin: &PathBuf, data: &PathBuf, listen: u16, ui: u16) -> (Child, NodeLog) {
+    let mut child = Command::new(bin)
         .env("AWE_DATA_DIR", data)
         .env("AWE_LISTEN_ADDR", format!("127.0.0.1:{listen}"))
         .env("AWE_UI_ADDR", format!("127.0.0.1:{ui}"))
         .env("AWE_NO_BROWSER", "1")
         .env("AWE_NO_NATIVE_UI", "1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
-        .expect("spawn node")
+        .expect("spawn node");
+    let log: NodeLog = Arc::new(Mutex::new(String::new()));
+    let mut pipes: Vec<Box<dyn Read + Send>> = Vec::new();
+    if let Some(stdout) = child.stdout.take() {
+        pipes.push(Box::new(stdout));
+    }
+    if let Some(stderr) = child.stderr.take() {
+        pipes.push(Box::new(stderr));
+    }
+    for mut stream in pipes {
+        let log = Arc::clone(&log);
+        thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            loop {
+                match stream.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if let Ok(mut log) = log.lock() {
+                            log.push_str(&String::from_utf8_lossy(&buf[..n]));
+                            if log.len() > NODE_LOG_LIMIT {
+                                let mut keep = log.len() - NODE_LOG_LIMIT / 2;
+                                while keep < log.len() && !log.is_char_boundary(keep) {
+                                    keep += 1;
+                                }
+                                *log = log[keep..].to_string();
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+    (child, log)
+}
+
+/// The last `chars` characters of one node's captured output.
+fn node_log_tail(log: &NodeLog, chars: usize) -> String {
+    log.lock()
+        .map(|log| {
+            log.chars()
+                .rev()
+                .take(chars)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<String>()
+        })
+        .unwrap_or_default()
+}
+
+/// The verifier transport diagnostics one node printed (failed, deferred
+/// or rejected announces and reports), capped so a noisy node cannot
+/// drown the consensus panic. These lines pinpoint which side of the
+/// live transport kept a verifier's report from being delivered.
+fn node_log_verifier_lines(log: &NodeLog, max_lines: usize) -> String {
+    log.lock()
+        .map(|log| {
+            let lines: Vec<&str> = log
+                .lines()
+                .filter(|line| line.contains("verifier"))
+                .take(max_lines)
+                .collect();
+            if lines.is_empty() {
+                "(no verifier transport diagnostics)".to_string()
+            } else {
+                lines.join("\n")
+            }
+        })
+        .unwrap_or_default()
 }
 
 #[test]
@@ -168,11 +248,16 @@ fn three_node_product_smoke() {
     )
     .expect("write smoke founder secret");
 
-    let mut children = vec![
-        spawn_node(&bin, &dirs[0], 46101, 46201),
-        spawn_node(&bin, &dirs[1], 46102, 46202),
-        spawn_node(&bin, &dirs[2], 46103, 46203),
-    ];
+    let mut children = Vec::new();
+    let mut node_logs = Vec::new();
+    for (index, (listen, ui)) in [(46101u16, 46201u16), (46102, 46202), (46103, 46203)]
+        .into_iter()
+        .enumerate()
+    {
+        let (child, log) = spawn_node(&bin, &dirs[index], listen, ui);
+        children.push(child);
+        node_logs.push(log);
+    }
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         wait_for_health("127.0.0.1:46201");
@@ -1065,6 +1150,103 @@ fn three_node_product_smoke() {
         assert_eq!(persisted_control.sequence(), signing_state.sequence());
         assert_eq!(persisted_control, signing_state);
 
+        // Live verifier transport between the three nodes: the founder
+        // enrolls nodes 2 and 3 as usage verifiers by their public node
+        // keys, opens a short attestation window for node 1's own
+        // contribution, and the peers must observe the announcement,
+        // deliver one signed report each over the verifier transport
+        // stream and reach the consensus the resource economy settles
+        // from.
+        let status_json: serde_json::Value =
+            serde_json::from_str(&get("127.0.0.1:46201", "/api/status"))
+                .expect("status JSON for verifier enrollment");
+        let peer_keys: Vec<String> = status_json
+            .get("peers")
+            .and_then(|value| value.as_array())
+            .expect("status peers")
+            .iter()
+            .filter_map(|peer| peer.get("public_key").and_then(|value| value.as_str()))
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(
+            peer_keys.len(),
+            2,
+            "node 1 must see both peers with public keys: {status_json}"
+        );
+        for key in &peer_keys {
+            let enrolled = post(
+                "127.0.0.1:46201",
+                "/api/founder/verifier/enroll",
+                &serde_json::json!({ "public_key": key }).to_string(),
+            );
+            assert!(
+                enrolled.contains(r#""status":"enrolled""#),
+                "verifier enrollment failed: {enrolled}"
+            );
+        }
+        let window = post(
+            "127.0.0.1:46201",
+            "/api/founder/verifier/window",
+            r#"{"period_secs":10}"#,
+        );
+        assert!(
+            window.contains(r#""status":"open""#),
+            "attestation window open failed: {window}"
+        );
+        let window_json: serde_json::Value = serde_json::from_str(&window).expect("window JSON");
+        let window_start = window_json
+            .get("period_start_unix")
+            .and_then(|value| value.as_u64())
+            .expect("window period start");
+        let consensus_deadline = Instant::now() + Duration::from_secs(90);
+        loop {
+            let verifier_net: serde_json::Value =
+                serde_json::from_str(&get("127.0.0.1:46201", "/api/verifier/net"))
+                    .expect("verifier net JSON");
+            let observed = verifier_net
+                .get("windows")
+                .and_then(|value| value.as_array())
+                .expect("verifier net windows")
+                .iter()
+                .find(|window| {
+                    window
+                        .get("period_start_unix")
+                        .and_then(|value| value.as_u64())
+                        == Some(window_start)
+                })
+                .expect("the opened attestation window");
+            let reported = observed
+                .get("reports")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0);
+            if observed
+                .get("has_consensus")
+                .and_then(|value| value.as_bool())
+                == Some(true)
+                && reported == 2
+            {
+                break;
+            }
+            if Instant::now() >= consensus_deadline {
+                panic!(
+                    "peer verifiers did not reach consensus: {verifier_net}\n\
+                     --- node 1 verifier transport diagnostics ---\n{}\n\
+                     --- node 2 verifier transport diagnostics ---\n{}\n\
+                     --- node 3 verifier transport diagnostics ---\n{}\n\
+                     --- node 1 output tail ---\n{}\n\
+                     --- node 2 output tail ---\n{}\n\
+                     --- node 3 output tail ---\n{}",
+                    node_log_verifier_lines(&node_logs[0], 30),
+                    node_log_verifier_lines(&node_logs[1], 30),
+                    node_log_verifier_lines(&node_logs[2], 30),
+                    node_log_tail(&node_logs[0], 600),
+                    node_log_tail(&node_logs[1], 600),
+                    node_log_tail(&node_logs[2], 600),
+                );
+            }
+            thread::sleep(Duration::from_millis(500));
+        }
+
         let payload = "AWEP2P-REAL-PRODUCT-SMOKE";
         let hex = payload
             .as_bytes()
@@ -1107,7 +1289,9 @@ fn three_node_product_smoke() {
         );
         let _ = children[0].kill();
         let _ = children[0].wait();
-        children[0] = spawn_node(&bin, &dirs[0], 46101, 46201);
+        let (child, log) = spawn_node(&bin, &dirs[0], 46101, 46201);
+        children[0] = child;
+        node_logs[0] = log;
         wait_for_health("127.0.0.1:46201");
         let restarted_control: serde_json::Value =
             serde_json::from_str(&get("127.0.0.1:46201", "/api/network/control"))
@@ -1150,6 +1334,18 @@ fn three_node_product_smoke() {
                 .unwrap()
                 .iter()
                 .any(|peer| peer == "node-0")
+        );
+        // the enrolled verifier roster is a founder-signed snapshot and
+        // must survive the restart untouched
+        let restarted_verifier_net: serde_json::Value =
+            serde_json::from_str(&get("127.0.0.1:46201", "/api/verifier/net"))
+                .expect("restarted verifier net JSON");
+        assert_eq!(
+            restarted_verifier_net
+                .get("active_verifiers")
+                .and_then(|value| value.as_u64()),
+            Some(2),
+            "the enrolled verifier roster must survive the restart: {restarted_verifier_net}"
         );
     }));
 

@@ -36,9 +36,12 @@ use awep2p_core::i18n::{product_catalog, Locale, FALLBACK_LOCALE};
 use awep2p_core::identity::{secure_random, AweId, Identity, Username};
 use awep2p_core::onecoin::{OnecoinLedger, ATOMS_PER_COIN};
 use awep2p_core::price_control::{OfficialPriceControl, PRICE_DISCLAIMER};
+use awep2p_core::resource_economy::MeasuredUsage;
+use awep2p_core::resource_meter::SignedUsageReport;
 use awep2p_core::store_escrow::{DisputeRuling, StoreEscrow, StoreOrder};
 use awep2p_core::storefront::{Product, ProductFilter, ProductKind, Storefront};
 use awep2p_core::treasury::{Treasury, TreasuryFlow};
+use awep2p_core::verifier_net::{self as verifier_net_store, VerifierNet};
 use awep2p_core::webauthn;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -48,6 +51,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub type LedgerState = Arc<Mutex<OnecoinLedger>>;
 pub type EconomyState = Arc<Mutex<NodeEconomy>>;
+pub type VerifierNetState = Arc<Mutex<VerifierNet>>;
 pub type ApiResponse = (&'static str, &'static str, String);
 
 pub const JSON_MIME: &str = "application/json; charset=utf-8";
@@ -556,6 +560,8 @@ pub fn handle(
     economy_state: &EconomyState,
     economy_path: &Path,
     ledger_path: &Path,
+    verifier_state: &VerifierNetState,
+    verifier_path: &Path,
 ) -> ApiResponse {
     let (path, query) = match target.split_once('?') {
         Some((path, query)) => (path, query),
@@ -734,6 +740,31 @@ pub fn handle(
             Some(id) => dispute_order(id, &parsed, identity, economy_state, economy_path),
             None => err(400, "order id must be a number".to_string()),
         },
+        ("GET", ["api", "verifier", "net"]) => verifier_net_status(verifier_state),
+        ("POST", ["api", "verifier", "reports"]) => {
+            verifier_submit_report(&parsed, identity, verifier_state, verifier_path)
+        }
+        ("POST", ["api", "founder", "verifier", "enroll"]) => founder_enroll_verifier(
+            &parsed,
+            identity,
+            economy_state,
+            verifier_state,
+            verifier_path,
+        ),
+        ("POST", ["api", "founder", "verifier", "retire"]) => founder_retire_verifier(
+            &parsed,
+            identity,
+            economy_state,
+            verifier_state,
+            verifier_path,
+        ),
+        ("POST", ["api", "founder", "verifier", "window"]) => founder_open_window(
+            &parsed,
+            identity,
+            economy_state,
+            verifier_state,
+            verifier_path,
+        ),
         _ => err(404, format!("unknown economy endpoint: {method} {path}")),
     }
 }
@@ -2506,5 +2537,600 @@ pub fn sweep_expired_orders(
         }
         Ok(_) => {}
         Err(_) => {}
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Multi-node usage verification: the verifier registry, attestation
+// windows and report intake of the live verifier transport.
+// ---------------------------------------------------------------------------
+
+/// Persists the verifier net as a founder-signed snapshot so a restart
+/// never loses the enrolled verifier roster, open attestation windows or
+/// the reports collected for them.
+fn save_verifier_net(
+    verifier_net: &VerifierNet,
+    verifier_path: &Path,
+    identity: &Identity,
+) -> Result<(), String> {
+    verifier_net_store::save(verifier_path, verifier_net, identity)
+        .map_err(|error| error.to_string())
+}
+
+/// `GET /api/verifier/net`: the live verification state of this node.
+/// Read-only: the founder-signed verifier roster, every attestation
+/// window with the reports collected for it and the consensus reached
+/// so far. Nothing here mints ONECOIN; settlement stays with the
+/// resource economy and reads the consensus this endpoint exposes.
+fn verifier_net_status(verifier_state: &VerifierNetState) -> ApiResponse {
+    let Ok(verifier_net) = verifier_state.lock() else {
+        return err(500, "verifier state lock failed".to_string());
+    };
+    let now = now_unix();
+    let verifiers: Vec<serde_json::Value> = verifier_net
+        .registry()
+        .verifiers()
+        .map(|certificate| {
+            serde_json::json!({
+                "verifier": certificate.verifier.to_hex(),
+                "public_key": hex::encode(certificate.public_key),
+                "enrolled_at_unix": certificate.enrolled_at_unix,
+                "retired_at_unix": certificate.retired_at_unix,
+                "active": certificate.is_active(),
+            })
+        })
+        .collect();
+    let mut windows = Vec::new();
+    for window in verifier_net.windows() {
+        let reports = verifier_net.reports_for(&window.node, window.period_start_unix);
+        windows.push(serde_json::json!({
+            "node": window.node.to_hex(),
+            "period_start_unix": window.period_start_unix,
+            "period_end_unix": window.period_end_unix,
+            "report_deadline_unix": window.report_deadline_unix,
+            "closed": window.closed,
+            "reports": reports.len(),
+            "has_consensus": verifier_net.has_consensus(
+                &window.node,
+                window.period_start_unix,
+                window.period_end_unix,
+            ),
+        }));
+    }
+    ok(serde_json::json!({
+        "active_verifiers": verifier_net.registry().active_verifiers(),
+        "verifiers": verifiers,
+        "windows": windows,
+        "now_unix": now,
+    }))
+}
+
+fn parse_hex_32(value: &serde_json::Value, field: &str) -> Result<[u8; 32], ApiResponse> {
+    let text = value
+        .get(field)
+        .and_then(|field| field.as_str())
+        .ok_or_else(|| err(400, format!("{field} is required (hex)")))?;
+    let bytes = hex::decode(text).map_err(|_| err(400, format!("{field} must be valid hex")))?;
+    let key: [u8; 32] = bytes.try_into().map_err(|_| {
+        err(
+            400,
+            format!("{field} must be exactly 32 bytes (64 hex chars)"),
+        )
+    })?;
+    Ok(key)
+}
+
+fn parse_hex_64(value: &serde_json::Value, field: &str) -> Result<[u8; 64], ApiResponse> {
+    let text = value
+        .get(field)
+        .and_then(|field| field.as_str())
+        .ok_or_else(|| err(400, format!("{field} is required (hex)")))?;
+    let bytes = hex::decode(text).map_err(|_| err(400, format!("{field} must be valid hex")))?;
+    let signature: [u8; 64] = bytes.try_into().map_err(|_| {
+        err(
+            400,
+            format!("{field} must be exactly 64 bytes (128 hex chars)"),
+        )
+    })?;
+    Ok(signature)
+}
+
+/// Parses one signed usage report from the wire format the live
+/// transport also carries: every field is hex or plain, the signature
+/// must verify before the report is ever offered to the verifier net.
+fn parse_signed_report(value: &serde_json::Value) -> Result<SignedUsageReport, ApiResponse> {
+    let node_text = value
+        .get("node")
+        .and_then(|node| node.as_str())
+        .ok_or_else(|| err(400, "node is required (hex AWE id)".to_string()))?;
+    let node = AweId::from_hex(node_text)
+        .map_err(|message| err(400, format!("node is not a valid AWE id: {message}")))?;
+    let period_start_unix = value
+        .get("period_start_unix")
+        .and_then(|field| field.as_u64())
+        .ok_or_else(|| err(400, "period_start_unix is required".to_string()))?;
+    let period_end_unix = value
+        .get("period_end_unix")
+        .and_then(|field| field.as_u64())
+        .ok_or_else(|| err(400, "period_end_unix is required".to_string()))?;
+    let usage = value
+        .get("usage")
+        .cloned()
+        .and_then(|usage| serde_json::from_value::<MeasuredUsage>(usage).ok())
+        .ok_or_else(|| err(400, "usage must be a measured usage object".to_string()))?;
+    let verifier_public_key = parse_hex_32(value, "verifier_public_key")?;
+    let signature = parse_hex_64(value, "signature")?;
+    let report = SignedUsageReport {
+        node,
+        period_start_unix,
+        period_end_unix,
+        usage,
+        verifier_public_key,
+        signature,
+    };
+    if !report.verify() {
+        return Err(err(
+            400,
+            "the usage report signature is invalid".to_string(),
+        ));
+    }
+    Ok(report)
+}
+
+/// `POST /api/verifier/reports`: intake for one signed verifier report,
+/// the HTTP twin of the live transport. The verifier net enforces every
+/// acceptance rule (enrolled active verifier, open window, no
+/// self-attestation, no duplicates); a rejected report never reaches a
+/// settlement. Accepted reports persist immediately in the
+/// founder-signed snapshot.
+fn verifier_submit_report(
+    parsed: &serde_json::Value,
+    identity: &Identity,
+    verifier_state: &VerifierNetState,
+    verifier_path: &Path,
+) -> ApiResponse {
+    let report = match parse_signed_report(parsed) {
+        Ok(report) => report,
+        Err(response) => return response,
+    };
+    let now = now_unix();
+    let Ok(mut verifier_net) = verifier_state.lock() else {
+        return err(500, "verifier state lock failed".to_string());
+    };
+    match verifier_net.submit_report(report, now) {
+        Ok(()) => {}
+        Err(message) => return err(400, message.to_string()),
+    }
+    if let Err(message) = save_verifier_net(&verifier_net, verifier_path, identity) {
+        return err(
+            500,
+            format!("verifier snapshot persistence failed: {message}"),
+        );
+    }
+    ok(serde_json::json!({ "status": "accepted" }))
+}
+
+/// `POST /api/founder/verifier/enroll`: the founder enrolls a live peer
+/// node as a usage verifier by its public node key. Founder-only and
+/// backend-gated exactly like every other founder action; the economy
+/// lock is always taken before the verifier lock.
+fn founder_enroll_verifier(
+    parsed: &serde_json::Value,
+    identity: &Identity,
+    economy_state: &EconomyState,
+    verifier_state: &VerifierNetState,
+    verifier_path: &Path,
+) -> ApiResponse {
+    let Ok(economy) = economy_state.lock() else {
+        return err(500, "economy state lock failed".to_string());
+    };
+    if let Some(response) = require_founder_action(&economy, identity) {
+        return response;
+    }
+    let verifier_public_key = match parse_hex_32(parsed, "public_key") {
+        Ok(key) => key,
+        Err(response) => return response,
+    };
+    // the AWE id of a live peer node is the deterministic hash of its
+    // public key, so the founder can enroll a running peer by its
+    // announced public key alone
+    let node = AweId::from_public_key(&verifier_public_key);
+    let now = now_unix();
+    let Ok(mut verifier_net) = verifier_state.lock() else {
+        return err(500, "verifier state lock failed".to_string());
+    };
+    let certificate =
+        match verifier_net.enroll_verifier_public(identity, &node, &verifier_public_key, now) {
+            Ok(certificate) => certificate,
+            Err(message) => return err(400, message.to_string()),
+        };
+    if let Err(message) = save_verifier_net(&verifier_net, verifier_path, identity) {
+        return err(
+            500,
+            format!("verifier snapshot persistence failed: {message}"),
+        );
+    }
+    ok(serde_json::json!({
+        "status": "enrolled",
+        "verifier": certificate.verifier.to_hex(),
+        "public_key": hex::encode(certificate.public_key),
+        "enrolled_at_unix": certificate.enrolled_at_unix,
+    }))
+}
+
+/// `POST /api/founder/verifier/retire`: the founder retires an enrolled
+/// verifier by its public key; retired verifiers stop being accepted for
+/// new reports.
+fn founder_retire_verifier(
+    parsed: &serde_json::Value,
+    identity: &Identity,
+    economy_state: &EconomyState,
+    verifier_state: &VerifierNetState,
+    verifier_path: &Path,
+) -> ApiResponse {
+    let Ok(economy) = economy_state.lock() else {
+        return err(500, "economy state lock failed".to_string());
+    };
+    if let Some(response) = require_founder_action(&economy, identity) {
+        return response;
+    }
+    let verifier_public_key = match parse_hex_32(parsed, "public_key") {
+        Ok(key) => key,
+        Err(response) => return response,
+    };
+    let now = now_unix();
+    let Ok(mut verifier_net) = verifier_state.lock() else {
+        return err(500, "verifier state lock failed".to_string());
+    };
+    let certificate = match verifier_net.retire_verifier(identity, &verifier_public_key, now) {
+        Ok(certificate) => certificate,
+        Err(message) => return err(400, message.to_string()),
+    };
+    if let Err(message) = save_verifier_net(&verifier_net, verifier_path, identity) {
+        return err(
+            500,
+            format!("verifier snapshot persistence failed: {message}"),
+        );
+    }
+    ok(serde_json::json!({
+        "status": "retired",
+        "verifier": certificate.verifier.to_hex(),
+        "public_key": hex::encode(certificate.public_key),
+    }))
+}
+
+/// `POST /api/founder/verifier/window`: the founder opens one
+/// attestation window for a contributing node (default: this node).
+/// The transport announces the window to the peers, which then deliver
+/// their signed reports through the verifier transport stream or this
+/// HTTP intake.
+fn founder_open_window(
+    parsed: &serde_json::Value,
+    identity: &Identity,
+    economy_state: &EconomyState,
+    verifier_state: &VerifierNetState,
+    verifier_path: &Path,
+) -> ApiResponse {
+    let Ok(economy) = economy_state.lock() else {
+        return err(500, "economy state lock failed".to_string());
+    };
+    if let Some(response) = require_founder_action(&economy, identity) {
+        return response;
+    }
+    let node = match parsed.get("node").and_then(|node| node.as_str()) {
+        Some(hex) => match AweId::from_hex(hex) {
+            Ok(node) => node,
+            Err(message) => return err(400, format!("node is not a valid AWE id: {message}")),
+        },
+        None => identity.public.awe_id.clone(),
+    };
+    let period_secs = match parsed.get("period_secs").and_then(|field| field.as_u64()) {
+        Some(secs) => secs,
+        None => return err(400, "period_secs is required".to_string()),
+    };
+    let period_start_unix = parsed
+        .get("period_start_unix")
+        .and_then(|field| field.as_u64())
+        .unwrap_or_else(now_unix);
+    let period_end_unix = match period_start_unix.checked_add(period_secs) {
+        Some(end) => end,
+        None => return err(400, "the settlement period overflows".to_string()),
+    };
+    let now = now_unix();
+    let Ok(mut verifier_net) = verifier_state.lock() else {
+        return err(500, "verifier state lock failed".to_string());
+    };
+    let window = match verifier_net.open_window(&node, period_start_unix, period_end_unix, now) {
+        Ok(window) => window,
+        Err(message) => return err(400, message.to_string()),
+    };
+    if let Err(message) = save_verifier_net(&verifier_net, verifier_path, identity) {
+        return err(
+            500,
+            format!("verifier snapshot persistence failed: {message}"),
+        );
+    }
+    ok(serde_json::json!({
+        "status": "open",
+        "node": window.node.to_hex(),
+        "period_start_unix": window.period_start_unix,
+        "period_end_unix": window.period_end_unix,
+        "report_deadline_unix": window.report_deadline_unix,
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn identity(name: &str) -> Identity {
+        Identity::generate(Username::new(name).unwrap())
+    }
+
+    fn temp_dir(label: &str) -> std::path::PathBuf {
+        static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let unique = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let path = std::env::temp_dir().join(format!(
+            "awenet-verifier-api-{label}-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&path).expect("create temp verifier api dir");
+        path
+    }
+
+    fn report_body(report: &SignedUsageReport) -> String {
+        serde_json::json!({
+            "node": report.node.to_hex(),
+            "period_start_unix": report.period_start_unix,
+            "period_end_unix": report.period_end_unix,
+            "usage": report.usage.clone(),
+            "verifier_public_key": hex::encode(report.verifier_public_key),
+            "signature": hex::encode(report.signature),
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn verifier_endpoints_reject_everyone_but_the_founder() {
+        let founder = identity("api-founder");
+        let stranger = identity("api-stranger");
+        let verifier = identity("api-verifier");
+        let dir = temp_dir("gate");
+        let (economy, _created) = load_or_create(&founder, &dir.join("economy.json"));
+        let economy_state: EconomyState = Arc::new(Mutex::new(economy));
+        let ledger: LedgerState = Arc::new(Mutex::new(OnecoinLedger::default()));
+        let verifier_state: VerifierNetState = Arc::new(Mutex::new(VerifierNet::new(&founder, 0)));
+        let body = serde_json::json!({
+            "public_key": hex::encode(verifier.public.public_key)
+        })
+        .to_string();
+        let (status, _mime, response) = handle(
+            "POST",
+            "/api/founder/verifier/enroll",
+            &body,
+            &stranger,
+            &ledger,
+            &economy_state,
+            &dir.join("economy.json"),
+            &dir.join("ledger.json"),
+            &verifier_state,
+            &dir.join("verifier-net.json"),
+        );
+        assert_eq!(status, "403 Forbidden");
+        let parsed: serde_json::Value = serde_json::from_str(&response).unwrap();
+        let message = parsed
+            .get("error")
+            .and_then(|error| error.as_str())
+            .unwrap_or("");
+        assert!(
+            message.contains("only the AWENET founder"),
+            "a stranger must not enroll verifiers: {response}"
+        );
+        // the founder-only window endpoint is gated the same way
+        let (status, _mime, _response) = handle(
+            "POST",
+            "/api/founder/verifier/window",
+            r#"{"period_secs":3600}"#,
+            &stranger,
+            &ledger,
+            &economy_state,
+            &dir.join("economy.json"),
+            &dir.join("ledger.json"),
+            &verifier_state,
+            &dir.join("verifier-net.json"),
+        );
+        assert_eq!(status, "403 Forbidden");
+    }
+
+    #[test]
+    fn verifier_flow_enrolls_opens_reports_and_persists() {
+        let founder = identity("flow-founder");
+        let verifier_a = identity("flow-verifier-a");
+        let verifier_b = identity("flow-verifier-b");
+        let dir = temp_dir("flow");
+        let economy_path = dir.join("economy.json");
+        let ledger_path = dir.join("ledger.json");
+        let verifier_path = dir.join("verifier-net.json");
+        let (economy, _created) = load_or_create(&founder, &economy_path);
+        let economy_state: EconomyState = Arc::new(Mutex::new(economy));
+        let ledger: LedgerState = Arc::new(Mutex::new(OnecoinLedger::default()));
+        let verifier_state: VerifierNetState = Arc::new(Mutex::new(VerifierNet::new(&founder, 0)));
+
+        // the founder enrolls two verifiers by their public node keys
+        for verifier in [&verifier_a, &verifier_b] {
+            let body = serde_json::json!({
+                "public_key": hex::encode(verifier.public.public_key)
+            })
+            .to_string();
+            let (status, _mime, response) = handle(
+                "POST",
+                "/api/founder/verifier/enroll",
+                &body,
+                &founder,
+                &ledger,
+                &economy_state,
+                &economy_path,
+                &ledger_path,
+                &verifier_state,
+                &verifier_path,
+            );
+            assert_eq!(status, "200 OK");
+            assert!(response.contains(r#""status":"enrolled""#), "{response}");
+        }
+        // a verifier cannot be enrolled twice
+        let body = serde_json::json!({
+            "public_key": hex::encode(verifier_a.public.public_key)
+        })
+        .to_string();
+        let (status, _mime, response) = handle(
+            "POST",
+            "/api/founder/verifier/enroll",
+            &body,
+            &founder,
+            &ledger,
+            &economy_state,
+            &economy_path,
+            &ledger_path,
+            &verifier_state,
+            &verifier_path,
+        );
+        assert_eq!(status, "400 Bad Request");
+        assert!(response.contains("already enrolled"), "{response}");
+
+        // the founder opens a one hour attestation window for this node
+        let (status, _mime, response) = handle(
+            "POST",
+            "/api/founder/verifier/window",
+            r#"{"period_secs":3600}"#,
+            &founder,
+            &ledger,
+            &economy_state,
+            &economy_path,
+            &ledger_path,
+            &verifier_state,
+            &verifier_path,
+        );
+        assert_eq!(status, "200 OK");
+        let opened: serde_json::Value = serde_json::from_str(&response).unwrap();
+        let period_start = opened
+            .get("period_start_unix")
+            .and_then(|value| value.as_u64())
+            .unwrap();
+        let period_end = opened
+            .get("period_end_unix")
+            .and_then(|value| value.as_u64())
+            .unwrap();
+        assert_eq!(period_end, period_start + 3_600);
+
+        // both verifiers deliver one signed report each through the
+        // HTTP intake, the twin of the live transport
+        let node = founder.public.awe_id.clone();
+        let usage = MeasuredUsage {
+            bandwidth_gb: 3,
+            uptime_hours: 1,
+            ..MeasuredUsage::default()
+        };
+        for verifier in [&verifier_a, &verifier_b] {
+            let report = SignedUsageReport::new(
+                verifier,
+                node.clone(),
+                period_start,
+                period_end,
+                usage.clone(),
+            );
+            let (status, _mime, response) = handle(
+                "POST",
+                "/api/verifier/reports",
+                &report_body(&report),
+                &founder,
+                &ledger,
+                &economy_state,
+                &economy_path,
+                &ledger_path,
+                &verifier_state,
+                &verifier_path,
+            );
+            assert_eq!(status, "200 OK", "{response}");
+        }
+        // a replay of the same report is a duplicate and never counts twice
+        let replay = SignedUsageReport::new(
+            &verifier_a,
+            node.clone(),
+            period_start,
+            period_end,
+            usage.clone(),
+        );
+        let (status, _mime, response) = handle(
+            "POST",
+            "/api/verifier/reports",
+            &report_body(&replay),
+            &founder,
+            &ledger,
+            &economy_state,
+            &economy_path,
+            &ledger_path,
+            &verifier_state,
+            &verifier_path,
+        );
+        assert_eq!(status, "400 Bad Request");
+        assert!(response.contains("already reported"), "{response}");
+        // a tampered signature never reaches the verifier net
+        let mut forged = report_body(&replay);
+        forged.pop();
+        forged.pop();
+        forged.push_str("00\"}");
+        let (status, _mime, _response) = handle(
+            "POST",
+            "/api/verifier/reports",
+            &forged,
+            &founder,
+            &ledger,
+            &economy_state,
+            &economy_path,
+            &ledger_path,
+            &verifier_state,
+            &verifier_path,
+        );
+        assert_eq!(status, "400 Bad Request");
+
+        // the public status exposes the consensus the resource economy
+        // settles from
+        let (status, _mime, response) = handle(
+            "GET",
+            "/api/verifier/net",
+            "",
+            &founder,
+            &ledger,
+            &economy_state,
+            &economy_path,
+            &ledger_path,
+            &verifier_state,
+            &verifier_path,
+        );
+        assert_eq!(status, "200 OK");
+        let net: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(
+            net.get("active_verifiers").and_then(|v| v.as_u64()),
+            Some(2),
+            "{net}"
+        );
+        let windows = net.get("windows").and_then(|v| v.as_array()).unwrap();
+        let window = windows
+            .iter()
+            .find(|window| {
+                window.get("period_start_unix").and_then(|v| v.as_u64()) == Some(period_start)
+            })
+            .unwrap();
+        assert_eq!(window.get("reports").and_then(|v| v.as_u64()), Some(2));
+        assert_eq!(
+            window.get("has_consensus").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+
+        // the verifier net persists as a founder-signed snapshot that
+        // survives a restart
+        let reloaded = verifier_net_store::load(&verifier_path, &founder).unwrap();
+        assert_eq!(reloaded.registry().active_verifiers(), 2);
+        assert!(reloaded.has_consensus(&node, period_start, period_end));
     }
 }

@@ -86,7 +86,7 @@ jobs:
               echo "#### test failures"
               echo '```'
               cargo test --workspace --all-targets > tests.txt 2>&1; echo "cargo test exit: $?" >> tests.txt
-              grep -E -A3 '(^failures:$|^---- |FAILED|panicked at )' tests.txt | head -n 100
+              grep -E -A200 '(^failures:$|^---- |FAILED|panicked at )' tests.txt | head -n 400
               echo '```'
             fi
             if [ "${{ steps.smoke.outcome }}" = "failure" ]; then
@@ -94,7 +94,7 @@ jobs:
               echo "#### product smoke test (tail)"
               echo '```'
               cargo test -p awe-node --test product_smoke -- --nocapture > smoke.txt 2>&1; echo "smoke exit: $?" >> smoke.txt
-              tail -n 60 smoke.txt
+              tail -n 200 smoke.txt
               echo '```'
             fi
             if [ "${{ steps.clippy.outcome }}" = "failure" ]; then

@@ -16,6 +16,7 @@ on:
 permissions:
   contents: read
   checks: write
+  pull-requests: write
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -32,10 +33,57 @@ jobs:
         with:
           toolchain: stable
 
+      - name: Install cargo-audit
+        id: install
+        run: |
+          set -o pipefail
+          cargo install cargo-audit --locked 2>&1 | tee install.log
+
       - name: Cargo audit
-        uses: rustsec/audit-check@v2
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+        id: audit
+        run: |
+          set -o pipefail
+          cargo audit 2>&1 | tee audit.log
 
       - name: Tests
-        run: cargo test --locked --workspace
+        id: tests
+        run: |
+          set -o pipefail
+          cargo test --locked --workspace 2>&1 | tee tests.log
+
+      - name: Publish diagnostics to PR
+        if: failure() && github.event_name == 'pull_request'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          {
+            echo "### Security audit diagnostics (automated)"
+            echo ""
+            echo "install=${{ steps.install.outcome }} audit=${{ steps.audit.outcome }} tests=${{ steps.tests.outcome }}"
+            echo ""
+            echo "environment: $(rustc -V) cargo $(cargo -V 2>&1 | head -n 1)"
+            if [ -f install.log ]; then
+              echo ""
+              echo "#### cargo install cargo-audit (tail)"
+              echo '```'
+              tail -n 60 install.log
+              echo '```'
+            fi
+            if [ -f audit.log ]; then
+              echo ""
+              echo "#### cargo audit (tail)"
+              echo '```'
+              tail -n 120 audit.log
+              echo '```'
+            fi
+            if [ -f tests.log ]; then
+              echo ""
+              echo "#### tests (tail)"
+              echo '```'
+              tail -n 150 tests.log
+              echo '```'
+            fi
+          } > diagnostics.md
+          gh pr comment "${{ github.event.pull_request.number }}" --body-file diagnostics.md

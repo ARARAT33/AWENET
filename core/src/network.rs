@@ -72,6 +72,26 @@ pub enum NetworkError {
     Backpressure,
 }
 
+impl NetworkError {
+    /// True when the error only means the connection went away: the peer
+    /// closed or reset the socket. Routine patterns (short-lived confirmed
+    /// sends, discovery lookups, node restarts) end with exactly these
+    /// errors, and treating them as hostile strikes would quarantine
+    /// well-behaved peers after eight routine connection lifetimes.
+    pub fn is_disconnect(&self) -> bool {
+        match self {
+            NetworkError::Io(error) => matches!(
+                error.kind(),
+                std::io::ErrorKind::UnexpectedEof
+                    | std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::BrokenPipe
+            ),
+            _ => false,
+        }
+    }
+}
+
 pub const A2P2_PROTOCOL_SCHEME: &str = "a2p2://";
 pub const A2P2_FIXED_PACKET_SIZE: usize = 1280;
 pub const A2P2_NONCE_SIZE: usize = 12;
@@ -1005,11 +1025,22 @@ impl Node {
                         Control::Nodes { .. } | Control::Hello { .. } => break,
                     }
                 }
-                Ok(Err(_)) => {
-                    let _ = defense
-                        .lock()
-                        .expect("defense lock poisoned")
-                        .strike(c.remote_id, now());
+                Ok(Err(error)) => {
+                    // A clean disconnect is normal churn, not hostile
+                    // traffic: short-lived confirmed sends (messenger
+                    // delivery, verifier report delivery), discovery
+                    // lookups and node restarts all end with the socket
+                    // closing. Striking on EOF quarantined well-behaved
+                    // peers after eight routine connection lifetimes and
+                    // made their later confirmed sends fail with a broken
+                    // pipe. Malformed, unauthenticated or oversized input
+                    // keeps its strike.
+                    if !error.is_disconnect() {
+                        let _ = defense
+                            .lock()
+                            .expect("defense lock poisoned")
+                            .strike(c.remote_id, now());
+                    }
                     break;
                 }
                 Err(_) => {
@@ -1710,5 +1741,63 @@ fn inbox_limits_are_finite() {
     const {
         assert!(MAX_INBOX_MESSAGES < 10_000);
         assert!(MAX_INBOX_BYTES <= 64 * 1024 * 1024);
+    }
+}
+
+#[test]
+fn only_connection_loss_is_a_clean_disconnect() {
+    use std::io::ErrorKind;
+    assert!(
+        NetworkError::Io(ErrorKind::UnexpectedEof.into()).is_disconnect(),
+        "EOF is the peer closing the socket"
+    );
+    assert!(NetworkError::Io(ErrorKind::ConnectionReset.into()).is_disconnect());
+    assert!(NetworkError::Io(ErrorKind::ConnectionAborted.into()).is_disconnect());
+    assert!(NetworkError::Io(ErrorKind::BrokenPipe.into()).is_disconnect());
+    assert!(!NetworkError::Protocol("replayed frame".into()).is_disconnect());
+    assert!(!NetworkError::Authentication.is_disconnect());
+    assert!(!NetworkError::FrameTooLarge.is_disconnect());
+    assert!(!NetworkError::Timeout.is_disconnect());
+}
+
+#[tokio::test]
+async fn routine_short_lived_connections_do_not_quarantine_the_peer() {
+    use crate::defense::DEFAULT_MAX_STRIKES;
+    use crate::identity::Username;
+    // Reserve an ephemeral port for the server node, then release it for
+    // the real listener.
+    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let server_addr: SocketAddr = format!("127.0.0.1:{}", probe.local_addr().unwrap().port())
+        .parse()
+        .unwrap();
+    drop(probe);
+
+    let server = Node::new(
+        Identity::generate(Username::new("defense-server").unwrap()),
+        server_addr,
+    );
+    let server_for_listener = server.clone();
+    tokio::spawn(async move {
+        let _ = server_for_listener.listen().await;
+    });
+
+    let client = Node::new(
+        Identity::generate(Username::new("defense-client").unwrap()),
+        "127.0.0.1:0".parse().unwrap(),
+    );
+    client.bootstrap(&[server_addr]).await.unwrap();
+    let server_id = *server.identity.public.awe_id.as_bytes();
+
+    // Every confirmed send opens a fresh connection and drops it after the
+    // authenticated acknowledgement, exactly like messenger delivery and
+    // verifier report delivery do. Two full strike budgets of these used to
+    // quarantine the client on the server, after which every later
+    // confirmed send failed with a broken pipe because the server closed
+    // the quarantined peer's connections right after the handshake.
+    for attempt in 0..(DEFAULT_MAX_STRIKES as usize * 2) {
+        client
+            .send_to_peer_confirmed(&server_id, 100, b"routine".to_vec())
+            .await
+            .unwrap_or_else(|error| panic!("confirmed send {attempt} failed: {error}"));
     }
 }
