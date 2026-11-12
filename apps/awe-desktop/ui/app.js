@@ -185,8 +185,13 @@ function bind(k){
     const frame=document.getElementById("browserFrame");
     if(!input||!frame)return;
     frame.referrerPolicy="no-referrer";
+    const site=input.match(/^awe:\/\/site-([0-9a-f]{64})$/i);
+    if(site){
+      const id=site[1].toLowerCase(),port=location.port||"41800";
+      frame.setAttribute("sandbox","allow-scripts allow-forms allow-popups allow-downloads allow-same-origin");
+      frame.src="http://"+id+".localhost:"+port+"/site/"+id+"/index.html";return;
+    }
     const awe=input.match(/^awe:\/\/fid-([0-9a-f]{64})$/i);
-    if(awe){
       try{
         const r=await api("/api/storage/get?file_id="+encodeURIComponent(awe[1]));
         const raw=String(r.data_hex||"");
