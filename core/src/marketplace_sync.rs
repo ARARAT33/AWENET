@@ -619,14 +619,14 @@ mod tests {
             let other = identity(&format!("bound-other-{round}"));
             let other_sender = other.public.awe_id.as_bytes();
             for index in 1..=MAX_LISTINGS_PER_SELLER {
+                // fullness is judged before the merge: the merge that
+                // fills the catalog to exactly the bound succeeds
+                let was_full = catalog.len() >= MAX_REMOTE_LISTINGS;
                 let result = catalog.merge(
                     other_sender,
                     &announce(&other, index as u64, 1_000, true),
                     1_000,
                 );
-                // fullness is judged before the merge: the merge that
-                // fills the catalog to exactly the bound succeeds
-                let was_full = catalog.len() >= MAX_REMOTE_LISTINGS;
                 if was_full {
                     assert!(matches!(result, Err(MarketplaceSyncError::TooManyListings)));
                 } else {
@@ -669,6 +669,7 @@ mod tests {
         let mut service_core = core_for(&seller_b, 1, 1_000, true);
         service_core.kind = ProductKind::Service;
         service_core.title = "Node repair service".into();
+        service_core.description = "On-site and remote node repairs".into();
         service_core.category = "support".into();
         service_core.price_atoms = 900;
         let service = ListingAnnounce::sign(service_core, &seller_b).unwrap();
