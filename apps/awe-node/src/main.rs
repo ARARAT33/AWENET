@@ -2832,13 +2832,8 @@ async fn run_product() -> Result<()> {
         let loop_catalog = remote_catalog_state.clone();
         tokio::spawn(async move {
             loop {
-                marketplace_sync_cycle(
-                    &loop_node,
-                    &loop_economy,
-                    &loop_ui_address,
-                    &loop_catalog,
-                )
-                .await;
+                marketplace_sync_cycle(&loop_node, &loop_economy, &loop_ui_address, &loop_catalog)
+                    .await;
                 tokio::time::sleep(std::time::Duration::from_secs(15)).await;
             }
         });

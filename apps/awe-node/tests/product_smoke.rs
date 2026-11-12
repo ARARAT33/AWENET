@@ -1286,7 +1286,9 @@ fn three_node_product_smoke() {
                 .map(|list| {
                     list.iter().any(|listing| {
                         listing.get("id").and_then(|value| value.as_u64()) == Some(product_id)
-                            && listing.get("seller_node_address").and_then(|value| value.as_str())
+                            && listing
+                                .get("seller_node_address")
+                                .and_then(|value| value.as_str())
                                 == Some("127.0.0.1:46202")
                     })
                 })
@@ -1338,8 +1340,9 @@ fn three_node_product_smoke() {
                 .get("listings")
                 .and_then(|value| value.as_array())
                 .map(|list| {
-                    list.iter()
-                        .any(|listing| listing.get("id").and_then(|value| value.as_u64()) == Some(product_id))
+                    list.iter().any(|listing| {
+                        listing.get("id").and_then(|value| value.as_u64()) == Some(product_id)
+                    })
                 })
                 .unwrap_or(false);
             if !still_listed {

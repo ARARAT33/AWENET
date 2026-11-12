@@ -3281,9 +3281,7 @@ mod tests {
             Some(seller.public.awe_id.to_hex().as_str())
         );
         assert_eq!(
-            listing
-                .get("seller_node_address")
-                .and_then(|v| v.as_str()),
+            listing.get("seller_node_address").and_then(|v| v.as_str()),
             Some("127.0.0.1:46202")
         );
         // the honest notice keeps the listing from being mistaken for

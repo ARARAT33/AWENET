@@ -186,9 +186,7 @@ impl ListingAnnounce {
             return false;
         }
         match serde_json::to_vec(&self.core) {
-            Ok(bytes) => {
-                Identity::verify(&self.core.seller_public_key, &bytes, &self.signature)
-            }
+            Ok(bytes) => Identity::verify(&self.core.seller_public_key, &bytes, &self.signature),
             Err(_) => false,
         }
     }
@@ -391,7 +389,10 @@ impl RemoteCatalog {
             .listings
             .iter()
             .filter(|(_, listing)| {
-                now_unix > listing.last_seen_unix.saturating_add(LISTING_RETENTION_SECS)
+                now_unix
+                    > listing
+                        .last_seen_unix
+                        .saturating_add(LISTING_RETENTION_SECS)
             })
             .map(|(key, _)| *key)
             .collect();
@@ -449,8 +450,7 @@ mod tests {
     #[test]
     fn messages_roundtrip_and_reject_malformed_input() {
         let seller = identity("encode-seller");
-        let message =
-            MarketplaceSyncMessage::Listing(announce(&seller, 1, 1_000, true));
+        let message = MarketplaceSyncMessage::Listing(announce(&seller, 1, 1_000, true));
         let bytes = encode(&message).unwrap();
         assert_eq!(decode(&bytes).unwrap(), message);
         assert!(matches!(
@@ -559,35 +559,27 @@ mod tests {
         let seller = identity("delist-seller");
         let mut catalog = RemoteCatalog::new();
         let sender = seller.public.awe_id.as_bytes();
-        assert!(
-            catalog
-                .merge(sender, &announce(&seller, 1, 1_000, true), 1_000)
-                .unwrap()
-        );
+        assert!(catalog
+            .merge(sender, &announce(&seller, 1, 1_000, true), 1_000)
+            .unwrap());
         assert_eq!(catalog.search(&ProductFilter::default()).len(), 1);
         // the seller delists the product: it leaves the visible catalog
-        assert!(
-            catalog
-                .merge(sender, &announce(&seller, 1, 2_000, false), 2_000)
-                .unwrap()
-        );
+        assert!(catalog
+            .merge(sender, &announce(&seller, 1, 2_000, false), 2_000)
+            .unwrap());
         assert_eq!(catalog.search(&ProductFilter::default()).len(), 0);
         // a reordered stale listing cannot resurrect the product: the
         // tombstone holds a newer revision
-        assert!(
-            !catalog
-                .merge(sender, &announce(&seller, 1, 1_500, true), 2_010)
-                .unwrap()
-        );
+        assert!(!catalog
+            .merge(sender, &announce(&seller, 1, 1_500, true), 2_010)
+            .unwrap());
         assert_eq!(catalog.search(&ProductFilter::default()).len(), 0);
         // the tombstone itself still occupies the bounded catalog
         assert_eq!(catalog.len(), 1);
         // a delisting for an unknown product is a no-op
-        assert!(
-            !catalog
-                .merge(sender, &announce(&seller, 42, 2_500, false), 2_500)
-                .unwrap()
-        );
+        assert!(!catalog
+            .merge(sender, &announce(&seller, 42, 2_500, false), 2_500)
+            .unwrap());
         assert_eq!(catalog.len(), 1);
     }
 
@@ -597,11 +589,9 @@ mod tests {
         let mut catalog = RemoteCatalog::new();
         let sender = seller.public.awe_id.as_bytes();
         for index in 1..=MAX_LISTINGS_PER_SELLER {
-            assert!(
-                catalog
-                    .merge(sender, &announce(&seller, index as u64, 1_000, true), 1_000)
-                    .unwrap()
-            );
+            assert!(catalog
+                .merge(sender, &announce(&seller, index as u64, 1_000, true), 1_000)
+                .unwrap());
         }
         // one more listing from the same seller exceeds the per-seller bound
         assert!(matches!(
@@ -614,9 +604,8 @@ mod tests {
         ));
         assert_eq!(catalog.len(), MAX_LISTINGS_PER_SELLER);
         // the total bound covers all sellers together
-        let others = 1..=((MAX_REMOTE_LISTINGS - MAX_LISTINGS_PER_SELLER)
-            / MAX_LISTINGS_PER_SELLER
-            + 1);
+        let others =
+            1..=((MAX_REMOTE_LISTINGS - MAX_LISTINGS_PER_SELLER) / MAX_LISTINGS_PER_SELLER + 1);
         for round in others {
             let other = identity(&format!("bound-other-{round}"));
             let other_sender = other.public.awe_id.as_bytes();
@@ -641,11 +630,9 @@ mod tests {
         let seller = identity("prune-seller");
         let mut catalog = RemoteCatalog::new();
         let sender = seller.public.awe_id.as_bytes();
-        assert!(
-            catalog
-                .merge(sender, &announce(&seller, 1, 100, true), 100)
-                .unwrap()
-        );
+        assert!(catalog
+            .merge(sender, &announce(&seller, 1, 100, true), 100)
+            .unwrap());
         // a listing is kept while its seller re-announces within the
         // retention horizon
         assert_eq!(catalog.prune(100 + LISTING_RETENTION_SECS - 1), 0);
@@ -660,25 +647,21 @@ mod tests {
         let seller_a = identity("search-seller-a");
         let seller_b = identity("search-seller-b");
         let mut catalog = RemoteCatalog::new();
-        assert!(
-            catalog
-                .merge(
-                    seller_a.public.awe_id.as_bytes(),
-                    &announce(&seller_a, 1, 1_000, true),
-                    1_000
-                )
-                .unwrap()
-        );
+        assert!(catalog
+            .merge(
+                seller_a.public.awe_id.as_bytes(),
+                &announce(&seller_a, 1, 1_000, true),
+                1_000
+            )
+            .unwrap());
         let mut service = announce(&seller_b, 1, 1_000, true);
         service.core.kind = ProductKind::Service;
         service.core.title = "Node repair service".into();
         service.core.category = "support".into();
         service.core.price_atoms = 900;
-        assert!(
-            catalog
-                .merge(seller_b.public.awe_id.as_bytes(), &service, 1_000)
-                .unwrap()
-        );
+        assert!(catalog
+            .merge(seller_b.public.awe_id.as_bytes(), &service, 1_000)
+            .unwrap());
         let all = catalog.search(&ProductFilter::default());
         assert_eq!(all.len(), 2);
         let by_query = catalog.search(&ProductFilter {
@@ -749,7 +732,9 @@ mod tests {
                 3,
             )
             .unwrap();
-        store.deactivate_product(&seller.public.awe_id, delisted).unwrap();
+        store
+            .deactivate_product(&seller.public.awe_id, delisted)
+            .unwrap();
         // a product sold by another account is not ours to announce
         store
             .list_product(
@@ -763,8 +748,7 @@ mod tests {
                 4,
             )
             .unwrap();
-        let announces =
-            storefront_announces(&store, &seller, "127.0.0.1:46102", 10_000);
+        let announces = storefront_announces(&store, &seller, "127.0.0.1:46102", 10_000);
         assert_eq!(announces.len(), 3);
         assert!(announces.iter().all(|announce| announce.verify_signature()));
         // active listings come first, the delisting comes last
@@ -819,8 +803,7 @@ mod tests {
                 1,
             )
             .unwrap();
-        let announces =
-            storefront_announces(&store, &seller, "127.0.0.1:46102", 10_000);
+        let announces = storefront_announces(&store, &seller, "127.0.0.1:46102", 10_000);
         assert_eq!(announces.len(), 1);
         let wire = encode(&MarketplaceSyncMessage::Listing(announces[0].clone())).unwrap();
         let decoded = decode(&wire).unwrap();
@@ -828,11 +811,9 @@ mod tests {
             panic!("expected a listing on the marketplace sync transport");
         };
         let mut catalog = RemoteCatalog::new();
-        assert!(
-            catalog
-                .merge(seller.public.awe_id.as_bytes(), &announce, 10_001)
-                .unwrap()
-        );
+        assert!(catalog
+            .merge(seller.public.awe_id.as_bytes(), &announce, 10_001)
+            .unwrap());
         let found = catalog.search(&ProductFilter {
             seller: Some(seller.public.awe_id.clone()),
             ..ProductFilter::default()
@@ -842,20 +823,19 @@ mod tests {
         assert_eq!(found[0].core.seller_node_address, "127.0.0.1:46102");
         assert_ne!(found[0].core.seller, peer.public.awe_id);
         // the seller delists the product and the next cycle clears it
-        store.deactivate_product(&seller.public.awe_id, product_id).unwrap();
-        let delistings =
-            storefront_announces(&store, &seller, "127.0.0.1:46102", 20_000);
+        store
+            .deactivate_product(&seller.public.awe_id, product_id)
+            .unwrap();
+        let delistings = storefront_announces(&store, &seller, "127.0.0.1:46102", 20_000);
         assert_eq!(delistings.len(), 1);
         assert!(!delistings[0].core.listed);
         let wire = encode(&MarketplaceSyncMessage::Listing(delistings[0].clone())).unwrap();
         let MarketplaceSyncMessage::Listing(announce) = decode(&wire).unwrap() else {
             panic!("expected a delisting on the marketplace sync transport");
         };
-        assert!(
-            catalog
-                .merge(seller.public.awe_id.as_bytes(), &announce, 20_001)
-                .unwrap()
-        );
+        assert!(catalog
+            .merge(seller.public.awe_id.as_bytes(), &announce, 20_001)
+            .unwrap());
         assert_eq!(catalog.search(&ProductFilter::default()).len(), 0);
     }
 }
