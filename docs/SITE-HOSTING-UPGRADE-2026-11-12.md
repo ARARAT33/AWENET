@@ -49,4 +49,11 @@ bytes are verified. Quota statistics count only 32-byte content IDs.
 - Unpublished objects await garbage collection.
 - The API uses local same-origin/loopback controls, not network-wide
   Session/Capability authorization.
+
+
+The HTTP listener also checks the actual TCP peer address and serves the
+local UI/API only to loopback peers. A caller cannot gain local access by
+spoofing `Host: localhost` or an `Origin` header from a remote address.
+Remote site delivery must use a separate authenticated network transport;
+this local UI listener is not that transport.
 - Binary data is hex-encoded and has additional request-body overhead.
