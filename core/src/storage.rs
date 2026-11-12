@@ -347,15 +347,32 @@ impl LocalNodeStore {
     fn path(&self, id: &[u8; 32]) -> PathBuf {
         self.root.join("objects").join(hex::encode(id))
     }
-    pub fn put(&self,data:&[u8])->io::Result<[u8;32]>{
-        let id=content_id(data);let path=self.path(&id);
-        let existing_len=match fs::metadata(&path){
-            Ok(meta)=>match self.get(&id){Ok(_)=>return Ok(id),Err(e)if e.kind()==io::ErrorKind::InvalidData=>meta.len(),Err(e)if e.kind()==io::ErrorKind::NotFound=>0,Err(e)=>return Err(e)},
-            Err(e)if e.kind()==io::ErrorKind::NotFound=>0,Err(e)=>return Err(e)
+    pub fn put(&self, data: &[u8]) -> io::Result<[u8; 32]> {
+        let id = content_id(data);
+        let path = self.path(&id);
+        let existing_len = match fs::metadata(&path) {
+            Ok(meta) => match self.get(&id) {
+                Ok(_) => return Ok(id),
+                Err(e) if e.kind() == io::ErrorKind::InvalidData => meta.len(),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => 0,
+                Err(e) => return Err(e),
+            },
+            Err(e) if e.kind() == io::ErrorKind::NotFound => 0,
+            Err(e) => return Err(e),
         };
-        let used=self.stats()?.used.saturating_sub(existing_len);
-        if used.saturating_add(data.len()as u64)>self.quota{return Err(io::Error::new(io::ErrorKind::StorageFull,"AWE node storage quota exceeded"))}
-        if let Err(e)=atomic_write_file(&path,data){if self.get(&id).is_ok(){return Ok(id)}return Err(e)}
+        let used = self.stats()?.used.saturating_sub(existing_len);
+        if used.saturating_add(data.len() as u64) > self.quota {
+            return Err(io::Error::new(
+                io::ErrorKind::StorageFull,
+                "AWE node storage quota exceeded",
+            ));
+        }
+        if let Err(e) = atomic_write_file(&path, data) {
+            if self.get(&id).is_ok() {
+                return Ok(id);
+            }
+            return Err(e);
+        }
         Ok(id)
     }
     pub fn get(&self, id: &[u8; 32]) -> io::Result<Vec<u8>> {
@@ -378,9 +395,17 @@ impl LocalNodeStore {
             ..Default::default()
         };
         for entry in fs::read_dir(self.root.join("objects"))? {
-            let entry=entry?;if !entry.file_type()?.is_file(){continue}
-            let name=entry.file_name();let Some(name)=name.to_str()else{continue};
-            if hex::decode(name).map(|b|b.len()==32).unwrap_or(false){let meta=entry.metadata()?;s.used+=meta.len();s.objects+=1;}
+            let entry = entry?;
+            if !entry.file_type()?.is_file() {
+                continue;
+            }
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            if hex::decode(name).map(|b| b.len() == 32).unwrap_or(false) {
+                let meta = entry.metadata()?;
+                s.used += meta.len();
+                s.objects += 1;
+            }
         }
         Ok(s)
     }
@@ -404,20 +429,59 @@ impl LocalNodeStore {
     }
 }
 
-fn atomic_write_file(path:&Path,bytes:&[u8])->io::Result<()>{
- let parent=path.parent().filter(|p|!p.as_os_str().is_empty()).unwrap_or_else(||Path::new("."));
- fs::create_dir_all(parent)?;let mut opened=None;
- for _ in 0..8{
-  let mut nonce=[0u8;16];OsRng.try_fill_bytes(&mut nonce).map_err(|e|io::Error::new(io::ErrorKind::Other,format!("secure temp name generation failed: {e}")))?;
-  let temp=parent.join(format!(".awenet-state-{}.tmp",hex::encode(nonce)));let mut opts=OpenOptions::new();opts.write(true).create_new(true);
-  #[cfg(unix)]{use std::os::unix::fs::OpenOptionsExt;opts.mode(0o600);}
-  match opts.open(&temp){Ok(file)=>{opened=Some((temp,file));break},Err(e)if e.kind()==io::ErrorKind::AlreadyExists=>continue,Err(e)=>return Err(e)}
- }
- let Some((temp,mut file))=opened else{return Err(io::Error::new(io::ErrorKind::AlreadyExists,"cannot allocate AWENET temp file"))};
- if let Err(e)=file.write_all(bytes).and_then(|_|file.sync_all()){drop(file);let _=fs::remove_file(&temp);return Err(e)}drop(file);
- if let Err(e)=fs::rename(&temp,path){let _=fs::remove_file(&temp);return Err(e)}
- #[cfg(unix)]if let Ok(dir)=OpenOptions::new().read(true).open(parent){let _=dir.sync_all();}
- Ok(())
+fn atomic_write_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)?;
+    let mut opened = None;
+    for _ in 0..8 {
+        let mut nonce = [0u8; 16];
+        OsRng.try_fill_bytes(&mut nonce).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("secure temp name generation failed: {e}"),
+            )
+        })?;
+        let temp = parent.join(format!(".awenet-state-{}.tmp", hex::encode(nonce)));
+        let mut opts = OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        match opts.open(&temp) {
+            Ok(file) => {
+                opened = Some((temp, file));
+                break;
+            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    let Some((temp, mut file)) = opened else {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "cannot allocate AWENET temp file",
+        ));
+    };
+    if let Err(e) = file.write_all(bytes).and_then(|_| file.sync_all()) {
+        drop(file);
+        let _ = fs::remove_file(&temp);
+        return Err(e);
+    }
+    drop(file);
+    if let Err(e) = fs::rename(&temp, path) {
+        let _ = fs::remove_file(&temp);
+        return Err(e);
+    }
+    #[cfg(unix)]
+    if let Ok(dir) = OpenOptions::new().read(true).open(parent) {
+        let _ = dir.sync_all();
+    }
+    Ok(())
 }
 
 pub fn save_manifest(path: impl AsRef<Path>, manifest: &[u8]) -> io::Result<()> {
@@ -734,9 +798,58 @@ mod tests {
         let recovered = recover_shards(&mut shards, &policy).unwrap();
         assert_eq!(&recovered[..data.len()], &data[..]);
     }
-    fn unique_storage_test_dir(label:&str)->PathBuf{let mut nonce=[0u8;16];OsRng.fill_bytes(&mut nonce);std::env::temp_dir().join(format!("awenet-{label}-{}-{}",std::process::id(),hex::encode(nonce)))}
-    #[test]fn content_addressed_store_repairs_corrupt_existing_object(){let dir=unique_storage_test_dir("repair");let store=LocalNodeStore::open(&dir,1_000_000).unwrap();let id=store.put(b"durable object").unwrap();fs::write(store.path(&id),b"corrupt bytes").unwrap();assert!(store.get(&id).is_err());assert_eq!(store.put(b"durable object").unwrap(),id);assert_eq!(store.get(&id).unwrap(),b"durable object");fs::remove_dir_all(dir).unwrap();}
-    #[test]fn storage_stats_ignore_temp_and_non_content_files(){let dir=unique_storage_test_dir("stats");let store=LocalNodeStore::open(&dir,1_000_000).unwrap();let objects=dir.join("objects");fs::write(objects.join(".awenet-state-interrupted.tmp"),b"temp").unwrap();fs::write(objects.join("not-a-content-id"),b"junk").unwrap();store.put(b"count me").unwrap();let stats=store.stats().unwrap();assert_eq!(stats.objects,1);assert_eq!(stats.used,8);fs::remove_dir_all(dir).unwrap();}
-    #[test]fn concurrent_content_addressed_writers_publish_one_verified_object(){let dir=unique_storage_test_dir("concurrent");let store=std::sync::Arc::new(LocalNodeStore::open(&dir,1_000_000).unwrap());let writers=(0..8).map(|_|{let store=store.clone();std::thread::spawn(move||store.put(b"shared object").unwrap())}).collect::<Vec<_>>();let ids=writers.into_iter().map(|w|w.join().unwrap()).collect::<Vec<_>>();assert!(ids.iter().all(|id|*id==ids[0]));assert_eq!(store.get(&ids[0]).unwrap(),b"shared object");let stats=store.stats().unwrap();assert_eq!(stats.objects,1);assert_eq!(stats.used,13);fs::remove_dir_all(dir).unwrap();}
-
+    fn unique_storage_test_dir(label: &str) -> PathBuf {
+        let mut nonce = [0u8; 16];
+        OsRng.fill_bytes(&mut nonce);
+        std::env::temp_dir().join(format!(
+            "awenet-{label}-{}-{}",
+            std::process::id(),
+            hex::encode(nonce)
+        ))
+    }
+    #[test]
+    fn content_addressed_store_repairs_corrupt_existing_object() {
+        let dir = unique_storage_test_dir("repair");
+        let store = LocalNodeStore::open(&dir, 1_000_000).unwrap();
+        let id = store.put(b"durable object").unwrap();
+        fs::write(store.path(&id), b"corrupt bytes").unwrap();
+        assert!(store.get(&id).is_err());
+        assert_eq!(store.put(b"durable object").unwrap(), id);
+        assert_eq!(store.get(&id).unwrap(), b"durable object");
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn storage_stats_ignore_temp_and_non_content_files() {
+        let dir = unique_storage_test_dir("stats");
+        let store = LocalNodeStore::open(&dir, 1_000_000).unwrap();
+        let objects = dir.join("objects");
+        fs::write(objects.join(".awenet-state-interrupted.tmp"), b"temp").unwrap();
+        fs::write(objects.join("not-a-content-id"), b"junk").unwrap();
+        store.put(b"count me").unwrap();
+        let stats = store.stats().unwrap();
+        assert_eq!(stats.objects, 1);
+        assert_eq!(stats.used, 8);
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn concurrent_content_addressed_writers_publish_one_verified_object() {
+        let dir = unique_storage_test_dir("concurrent");
+        let store = std::sync::Arc::new(LocalNodeStore::open(&dir, 1_000_000).unwrap());
+        let writers = (0..8)
+            .map(|_| {
+                let store = store.clone();
+                std::thread::spawn(move || store.put(b"shared object").unwrap())
+            })
+            .collect::<Vec<_>>();
+        let ids = writers
+            .into_iter()
+            .map(|w| w.join().unwrap())
+            .collect::<Vec<_>>();
+        assert!(ids.iter().all(|id| *id == ids[0]));
+        assert_eq!(store.get(&ids[0]).unwrap(), b"shared object");
+        let stats = store.stats().unwrap();
+        assert_eq!(stats.objects, 1);
+        assert_eq!(stats.used, 13);
+        fs::remove_dir_all(dir).unwrap();
+    }
 }

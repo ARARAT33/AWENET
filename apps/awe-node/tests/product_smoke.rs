@@ -265,35 +265,82 @@ fn three_node_product_smoke() {
         wait_for_health("127.0.0.1:46203");
 
         let body=serde_json::json!({"domain":"smoke-site","version":1,"files":[{"path":"/index.html","content_type":"text/html; charset=utf-8","content":"<h1>site v1</h1>"},{"path":"/style.css","content_type":"text/css","content":"h1{}"}]}).to_string();
-        let published=post_raw("127.0.0.1:46201","/api/sites/publish",&body);
-        assert!(published.starts_with("HTTP/1.1 201 Created"),"site publish: {published}");
-        let parsed:serde_json::Value=serde_json::from_str(published.split("\r\n\r\n").nth(1).unwrap_or("")).unwrap();
-        let id=parsed["site_id"].as_str().unwrap().to_string();let expected=format!("awe://site-{id}");
-        assert_eq!(parsed["url"].as_str(),Some(expected.as_str()));
-        let list:serde_json::Value=serde_json::from_str(&get("127.0.0.1:46201","/api/sites")).unwrap();
-        assert!(list["sites"].as_array().unwrap().iter().any(|v|v["site_id"]==id));
-        let detail:serde_json::Value=serde_json::from_str(&get("127.0.0.1:46201","/api/sites/smoke-site")).unwrap();
-        assert_eq!(detail["version"].as_u64(),Some(1));
+        let published = post_raw("127.0.0.1:46201", "/api/sites/publish", &body);
+        assert!(
+            published.starts_with("HTTP/1.1 201 Created"),
+            "site publish: {published}"
+        );
+        let parsed: serde_json::Value =
+            serde_json::from_str(published.split("\r\n\r\n").nth(1).unwrap_or("")).unwrap();
+        let id = parsed["site_id"].as_str().unwrap().to_string();
+        let expected = format!("awe://site-{id}");
+        assert_eq!(parsed["url"].as_str(), Some(expected.as_str()));
+        let list: serde_json::Value =
+            serde_json::from_str(&get("127.0.0.1:46201", "/api/sites")).unwrap();
+        assert!(list["sites"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v["site_id"] == id));
+        let detail: serde_json::Value =
+            serde_json::from_str(&get("127.0.0.1:46201", "/api/sites/smoke-site")).unwrap();
+        assert_eq!(detail["version"].as_u64(), Some(1));
         let redirect=request_raw("127.0.0.1:46201",&format!("GET /site/{id}/index.html HTTP/1.1\r\nHost: 127.0.0.1:46201\r\nConnection: close\r\n\r\n"));
-        assert!(redirect.starts_with("HTTP/1.1 302 Found")&&redirect.contains(&format!("Location: http://{id}.localhost:46201/site/{id}/index.html")),"redirect: {redirect}");
+        assert!(
+            redirect.starts_with("HTTP/1.1 302 Found")
+                && redirect.contains(&format!(
+                    "Location: http://{id}.localhost:46201/site/{id}/index.html"
+                )),
+            "redirect: {redirect}"
+        );
         let served=request_raw("127.0.0.1:46201",&format!("GET /site/{id}/index.html HTTP/1.1\r\nHost: {id}.localhost:46201\r\nConnection: close\r\n\r\n"));
-        assert!(served.starts_with("HTTP/1.1 200 OK")&&served.contains("site v1"),"serve: {served}");
+        assert!(
+            served.starts_with("HTTP/1.1 200 OK") && served.contains("site v1"),
+            "serve: {served}"
+        );
         let api=request_raw("127.0.0.1:46201",&format!("GET /api/status HTTP/1.1\r\nHost: {id}.localhost:46201\r\nConnection: close\r\n\r\n"));
-        assert!(api.starts_with("HTTP/1.1 403 Forbidden"),"site origin API access: {api}");
+        assert!(
+            api.starts_with("HTTP/1.1 403 Forbidden"),
+            "site origin API access: {api}"
+        );
         let cross=request_raw("127.0.0.1:46201",&format!("GET /site/{}/index.html HTTP/1.1\r\nHost: {id}.localhost:46201\r\nConnection: close\r\n\r\n","b".repeat(64)));
-        assert!(cross.starts_with("HTTP/1.1 403 Forbidden"),"cross site: {cross}");
-        let same=post_raw("127.0.0.1:46201","/api/sites/publish",&body);
-        assert!(same.starts_with("HTTP/1.1 409 Conflict"),"same version accepted: {same}");
-        let mut v2=serde_json::from_str::<serde_json::Value>(&body).unwrap();v2["version"]=serde_json::json!(2);v2["files"][0]["content"]=serde_json::json!("<h1>site v2</h1>");
-        let updated=post_raw("127.0.0.1:46201","/api/sites/publish",&v2.to_string());
-        assert!(updated.starts_with("HTTP/1.1 201 Created"),"update: {updated}");
-        let new_id=serde_json::from_str::<serde_json::Value>(updated.split("\r\n\r\n").nth(1).unwrap()).unwrap()["site_id"].as_str().unwrap().to_string();
-        assert_ne!(id,new_id);
+        assert!(
+            cross.starts_with("HTTP/1.1 403 Forbidden"),
+            "cross site: {cross}"
+        );
+        let same = post_raw("127.0.0.1:46201", "/api/sites/publish", &body);
+        assert!(
+            same.starts_with("HTTP/1.1 409 Conflict"),
+            "same version accepted: {same}"
+        );
+        let mut v2 = serde_json::from_str::<serde_json::Value>(&body).unwrap();
+        v2["version"] = serde_json::json!(2);
+        v2["files"][0]["content"] = serde_json::json!("<h1>site v2</h1>");
+        let updated = post_raw("127.0.0.1:46201", "/api/sites/publish", &v2.to_string());
+        assert!(
+            updated.starts_with("HTTP/1.1 201 Created"),
+            "update: {updated}"
+        );
+        let new_id =
+            serde_json::from_str::<serde_json::Value>(updated.split("\r\n\r\n").nth(1).unwrap())
+                .unwrap()["site_id"]
+                .as_str()
+                .unwrap()
+                .to_string();
+        assert_ne!(id, new_id);
         let old=request_raw("127.0.0.1:46201",&format!("GET /site/{id}/index.html HTTP/1.1\r\nHost: {id}.localhost:46201\r\nConnection: close\r\n\r\n"));
-        assert!(old.starts_with("HTTP/1.1 404 Not Found"),"old ID still resolves: {old}");
+        assert!(
+            old.starts_with("HTTP/1.1 404 Not Found"),
+            "old ID still resolves: {old}"
+        );
         let removed=request_raw("127.0.0.1:46201","DELETE /api/sites/smoke-site HTTP/1.1\r\nHost: 127.0.0.1:46201\r\nConnection: close\r\n\r\n");
-        assert!(removed.starts_with("HTTP/1.1 200 OK")&&removed.contains("unpublished"),"unpublish: {removed}");
-        let after:serde_json::Value=serde_json::from_str(&get("127.0.0.1:46201","/api/sites")).unwrap();assert_eq!(after["count"].as_u64(),Some(0));
+        assert!(
+            removed.starts_with("HTTP/1.1 200 OK") && removed.contains("unpublished"),
+            "unpublish: {removed}"
+        );
+        let after: serde_json::Value =
+            serde_json::from_str(&get("127.0.0.1:46201", "/api/sites")).unwrap();
+        assert_eq!(after["count"].as_u64(), Some(0));
         let same_origin = request_raw(
             "127.0.0.1:46201",
             "GET /api/status HTTP/1.1\r\nHost: 127.0.0.1:46201\r\nOrigin: http://127.0.0.1:46201\r\nConnection: close\r\n\r\n",

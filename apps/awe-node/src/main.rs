@@ -214,9 +214,10 @@ fn load_identity(path: &PathBuf, password: &str, username: &str) -> Result<Ident
 fn http_response(status: &str, content_type: &str, body: &str) -> Vec<u8> {
     format!("HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nX-Content-Type-Options: nosniff\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}", body.len()).into_bytes()
 }
-fn http_response_bytes(status:&str,content_type:&str,body:&[u8])->Vec<u8>{
- let mut response=format!("HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nX-Content-Type-Options: nosniff\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",body.len()).into_bytes();
- response.extend_from_slice(body);response
+fn http_response_bytes(status: &str, content_type: &str, body: &[u8]) -> Vec<u8> {
+    let mut response=format!("HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nX-Content-Type-Options: nosniff\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",body.len()).into_bytes();
+    response.extend_from_slice(body);
+    response
 }
 
 async fn write_json_error(
@@ -264,28 +265,94 @@ fn is_loopback_host(host: &str) -> bool {
     hostname.eq_ignore_ascii_case("localhost") || hostname == "127.0.0.1" || hostname == "[::1]"
 }
 
-fn site_host_id(host:&str)->Option<String>{
- let (hostname,port)=host.trim().rsplit_once(':')?;if port.parse::<u16>().ok()?==0{return None}
- let id=hostname.strip_suffix(".localhost")?;if id.len()!=64||!id.bytes().all(|b|b.is_ascii_hexdigit()){return None}Some(id.to_ascii_lowercase())
+fn site_host_id(host: &str) -> Option<String> {
+    let (hostname, port) = host.trim().rsplit_once(':')?;
+    if port.parse::<u16>().ok()? == 0 {
+        return None;
+    }
+    let id = hostname.strip_suffix(".localhost")?;
+    if id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some(id.to_ascii_lowercase())
 }
-fn site_path_matches(id:&str,path:&str)->bool{let prefix=format!("/site/{id}");path==prefix||path.strip_prefix(&prefix).is_some_and(|rest|rest.starts_with('/'))}
+fn site_path_matches(id: &str, path: &str) -> bool {
+    let prefix = format!("/site/{id}");
+    path == prefix
+        || path
+            .strip_prefix(&prefix)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
 /// Hosted sites receive a dedicated origin that can GET only that site's files.
-fn local_request_allowed(request:&str)->bool{
- let line=request.lines().next().unwrap_or("");let mut parts=line.split_whitespace();let method=parts.next().unwrap_or("");let target=parts.next().unwrap_or("/");let path=target.split('?').next().unwrap_or("/");
- let mut host=None;let mut origin=None;
- for line in request.lines().skip(1){if line.is_empty(){break}let Some((n,v))=line.split_once(':')else{continue};let n=n.trim();let v=v.trim();
-  if n.eq_ignore_ascii_case("host"){if host.replace(v).is_some(){return false}}else if n.eq_ignore_ascii_case("origin")&&origin.replace(v).is_some(){return false}
- }
- let Some(host)=host else{return false};
- if let Some(id)=site_host_id(host){if !method.eq_ignore_ascii_case("GET")||!site_path_matches(&id,path){return false}return origin.map(|v|v.eq_ignore_ascii_case(&format!("http://{host}"))).unwrap_or(true)}
- match origin{None=>host.eq_ignore_ascii_case("awenet")||is_loopback_host(host),Some(v)=>is_loopback_host(host)&&v.eq_ignore_ascii_case(&format!("http://{host}"))}
+fn local_request_allowed(request: &str) -> bool {
+    let line = request.lines().next().unwrap_or("");
+    let mut parts = line.split_whitespace();
+    let method = parts.next().unwrap_or("");
+    let target = parts.next().unwrap_or("/");
+    let path = target.split('?').next().unwrap_or("/");
+    let mut host = None;
+    let mut origin = None;
+    for line in request.lines().skip(1) {
+        if line.is_empty() {
+            break;
+        }
+        let Some((n, v)) = line.split_once(':') else {
+            continue;
+        };
+        let n = n.trim();
+        let v = v.trim();
+        if n.eq_ignore_ascii_case("host") {
+            if host.replace(v).is_some() {
+                return false;
+            }
+        } else if n.eq_ignore_ascii_case("origin") && origin.replace(v).is_some() {
+            return false;
+        }
+    }
+    let Some(host) = host else { return false };
+    if let Some(id) = site_host_id(host) {
+        if !method.eq_ignore_ascii_case("GET") || !site_path_matches(&id, path) {
+            return false;
+        }
+        return origin
+            .map(|v| v.eq_ignore_ascii_case(&format!("http://{host}")))
+            .unwrap_or(true);
+    }
+    match origin {
+        None => host.eq_ignore_ascii_case("awenet") || is_loopback_host(host),
+        Some(v) => is_loopback_host(host) && v.eq_ignore_ascii_case(&format!("http://{host}")),
+    }
 }
-fn decode_site_path(value:&str)->Option<String>{
- let bytes=value.as_bytes();let mut out=Vec::with_capacity(bytes.len());let mut i=0;
- while i<bytes.len(){if bytes[i]==b'%'{if i+2>=bytes.len(){return None}let hi=(bytes[i+1]as char).to_digit(16)?;let lo=(bytes[i+2]as char).to_digit(16)?;out.push(((hi<<4)|lo)as u8);i+=3}else{out.push(bytes[i]);i+=1}}
- String::from_utf8(out).ok()
+fn decode_site_path(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            if i + 2 >= bytes.len() {
+                return None;
+            }
+            let hi = (bytes[i + 1] as char).to_digit(16)?;
+            let lo = (bytes[i + 2] as char).to_digit(16)?;
+            out.push(((hi << 4) | lo) as u8);
+            i += 3
+        } else {
+            out.push(bytes[i]);
+            i += 1
+        }
+    }
+    String::from_utf8(out).ok()
 }
-fn valid_site_content_type(value:&str)->bool{!value.is_empty()&&value.len()<=128&&!value.contains('\r')&&!value.contains('\n')&&value.contains('/')&&value.bytes().all(|b|b.is_ascii_alphanumeric()||b" /;=.+-_".contains(&b))}
+fn valid_site_content_type(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && !value.contains('\r')
+        && !value.contains('\n')
+        && value.contains('/')
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b" /;=.+-_".contains(&b))
+}
 
 async fn read_http_request(stream: &mut tokio::net::TcpStream) -> Result<String> {
     const HEADER_LIMIT: usize = 64 * 1024;
@@ -456,9 +523,18 @@ fn network_control_error_status(error: &NetworkControlError) -> &'static str {
     }
 }
 
-fn site_api_list(host:&HostState,identity:&Identity)->(&'static str,&'static str,String){
- let guard=match host.lock(){Ok(g)=>g,Err(_)=>return("500 Internal Server Error","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"site host lock failed"}).to_string())};
- match guard.list_manifests(){Ok(manifests)=>{
+fn site_api_list(host: &HostState, identity: &Identity) -> (&'static str, &'static str, String) {
+    let guard = match host.lock() {
+        Ok(g) => g,
+        Err(_) => {
+            return (
+                "500 Internal Server Error",
+                "application/json; charset=utf-8",
+                serde_json::json!({"status":"error","error":"site host lock failed"}).to_string(),
+            )
+        }
+    };
+    match guard.list_manifests(){Ok(manifests)=>{
   let sites=manifests.into_iter().filter(|m|m.owner_key.as_slice()==identity.public.public_key.as_slice()).map(|m|{
    let bytes=m.files.iter().fold(0u64,|n,f|n.saturating_add(f.size));let id=hex::encode(m.root_hash);let open=m.open();
    serde_json::json!({"site_id":id,"name":m.domain,"version":m.version,"files":m.files.len(),"bytes":bytes,"open":open,"url":format!("awe://site-{id}")})
@@ -466,46 +542,330 @@ fn site_api_list(host:&HostState,identity:&Identity)->(&'static str,&'static str
   ("200 OK","application/json; charset=utf-8",serde_json::json!({"status":"ok","sites":sites,"count":count}).to_string())
  },Err(e)=>("500 Internal Server Error","application/json; charset=utf-8",serde_json::json!({"status":"error","error":format!("cannot list site manifests: {e}")}).to_string())}
 }
-fn site_api_get(domain:&str,host:&HostState,identity:&Identity)->(&'static str,&'static str,String){
- let domain=domain.trim().to_ascii_lowercase();if !awep2p_core::registry::valid_name(&domain){return("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"invalid site domain"}).to_string())}
- let guard=match host.lock(){Ok(g)=>g,Err(_)=>return("500 Internal Server Error","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"site host lock failed"}).to_string())};
- match guard.load_manifest(&domain){
-  Ok(m) if m.owner_key.as_slice()==identity.public.public_key.as_slice()=>{let id=hex::encode(m.root_hash);let name=m.domain.clone();let version=m.version;let files=m.files.clone();let open=m.open();("200 OK","application/json; charset=utf-8",serde_json::json!({"status":"ok","site_id":id,"name":name,"version":version,"files":files,"open":open}).to_string())},
-  Ok(_)=>("403 Forbidden","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"site is not owned by this node identity"}).to_string()),
-  Err(e)if e.kind()==std::io::ErrorKind::NotFound=>("404 Not Found","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"site_not_found"}).to_string()),
-  Err(e)=>("500 Internal Server Error","application/json; charset=utf-8",serde_json::json!({"status":"error","error":format!("cannot load site manifest: {e}")}).to_string())
- }
+fn site_api_get(
+    domain: &str,
+    host: &HostState,
+    identity: &Identity,
+) -> (&'static str, &'static str, String) {
+    let domain = domain.trim().to_ascii_lowercase();
+    if !awep2p_core::registry::valid_name(&domain) {
+        return (
+            "400 Bad Request",
+            "application/json; charset=utf-8",
+            serde_json::json!({"status":"error","error":"invalid site domain"}).to_string(),
+        );
+    }
+    let guard = match host.lock() {
+        Ok(g) => g,
+        Err(_) => {
+            return (
+                "500 Internal Server Error",
+                "application/json; charset=utf-8",
+                serde_json::json!({"status":"error","error":"site host lock failed"}).to_string(),
+            )
+        }
+    };
+    match guard.load_manifest(&domain) {
+        Ok(m) if m.owner_key.as_slice() == identity.public.public_key.as_slice() => {
+            let id = hex::encode(m.root_hash);
+            let name = m.domain.clone();
+            let version = m.version;
+            let files = m.files.clone();
+            let open = m.open();
+            ("200 OK","application/json; charset=utf-8",serde_json::json!({"status":"ok","site_id":id,"name":name,"version":version,"files":files,"open":open}).to_string())
+        }
+        Ok(_) => (
+            "403 Forbidden",
+            "application/json; charset=utf-8",
+            serde_json::json!({"status":"error","error":"site is not owned by this node identity"})
+                .to_string(),
+        ),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (
+            "404 Not Found",
+            "application/json; charset=utf-8",
+            serde_json::json!({"status":"error","error":"site_not_found"}).to_string(),
+        ),
+        Err(e) => (
+            "500 Internal Server Error",
+            "application/json; charset=utf-8",
+            serde_json::json!({"status":"error","error":format!("cannot load site manifest: {e}")})
+                .to_string(),
+        ),
+    }
 }
-fn site_api_publish(body:&str,host:&HostState,identity:&Identity)->(&'static str,&'static str,String){
- let payload=match serde_json::from_str::<serde_json::Value>(body){Ok(v)=>v,Err(e)=>return("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":format!("invalid JSON: {e}")}).to_string())};
- let domain=payload.get("domain").and_then(serde_json::Value::as_str).unwrap_or("").trim().to_ascii_lowercase();let version=payload.get("version").and_then(serde_json::Value::as_u64).unwrap_or(0);
- let files=match payload.get("files").and_then(serde_json::Value::as_array){Some(v)if !v.is_empty()&&v.len()<=256=>v,_=>return("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"files must contain 1-256 entries"}).to_string())};
- if !awep2p_core::registry::valid_name(&domain)||version==0{return("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"invalid domain or version"}).to_string())}
- let (max_file,max_site)=match host.lock(){Ok(g)=>(g.policy().max_file_bytes,g.policy().max_site_bytes),Err(_)=>return("500 Internal Server Error","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"site host lock failed"}).to_string())};
- let mut staged=Vec::new();let mut seen=std::collections::BTreeSet::new();let mut total=0u64;let mut index=false;
- for f in files{
-  let path=match f.get("path").and_then(serde_json::Value::as_str){Some(v)=>v,None=>return("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"file path required"}).to_string())};
-  let path=match awep2p_core::host::normalize_path(path){Ok(v)=>v,Err(e)=>return("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":e.to_string()}).to_string())};
-  if !seen.insert(path.clone()){return("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"duplicate file path"}).to_string())}index|=path=="/index.html";
-  let ct=f.get("content_type").and_then(serde_json::Value::as_str).unwrap_or("text/plain; charset=utf-8");if !valid_site_content_type(ct){return("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"invalid content type"}).to_string())}
-  let data=if let Some(v)=f.get("content").and_then(serde_json::Value::as_str){v.as_bytes().to_vec()}else if let Some(v)=f.get("data_hex").and_then(serde_json::Value::as_str){match hex::decode(v){Ok(v)=>v,Err(_)=>return("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"invalid data_hex"}).to_string())}}else{return("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"file content required"}).to_string())};
-  if data.len()as u64>max_file{return("413 Payload Too Large","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"file exceeds host limit"}).to_string())}
-  total=match total.checked_add(data.len()as u64){Some(v)if v<=max_site=>v,_=>return("413 Payload Too Large","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"site exceeds host limit"}).to_string())};staged.push((path,ct.to_string(),data));
- }
- if !index{return("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"site requires /index.html"}).to_string())}
- let mut g=match host.lock(){Ok(g)=>g,Err(_)=>return("500 Internal Server Error","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"site host lock failed"}).to_string())};
- match g.load_manifest(&domain){Ok(old)=>{if old.owner_key.as_slice()!=identity.public.public_key.as_slice(){return("403 Forbidden","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"site belongs to another owner"}).to_string())}if version<=old.version{return("409 Conflict","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"version must increase"}).to_string())}},Err(e)if e.kind()==std::io::ErrorKind::NotFound=>{},Err(e)=>return("500 Internal Server Error","application/json; charset=utf-8",serde_json::json!({"status":"error","error":format!("manifest invalid: {e}")}).to_string())}
- let mut hosted=Vec::new();for(path,ct,data)in staged{match g.publish_file(&path,&data,&ct){Ok(v)=>hosted.push(v),Err(e)if e.kind()==std::io::ErrorKind::StorageFull=>return("507 Insufficient Storage","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"site quota exceeded"}).to_string()),Err(e)=>return("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":e.to_string()}).to_string())}}
- let manifest=match g.publish_manifest(&domain,version,identity,hosted){Ok(v)=>v,Err(e)=>return("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":e.to_string()}).to_string())};
- if let Err(e)=g.save_manifest(&manifest){return("500 Internal Server Error","application/json; charset=utf-8",serde_json::json!({"status":"error","error":e.to_string()}).to_string())}
- let id=hex::encode(manifest.root_hash);("201 Created","application/json; charset=utf-8",serde_json::json!({"status":"published","name":manifest.domain,"version":manifest.version,"site_id":id,"files":manifest.files.len(),"url":format!("awe://site-{id}")}).to_string())
+fn site_api_publish(
+    body: &str,
+    host: &HostState,
+    identity: &Identity,
+) -> (&'static str, &'static str, String) {
+    let payload = match serde_json::from_str::<serde_json::Value>(body) {
+        Ok(v) => v,
+        Err(e) => {
+            return (
+                "400 Bad Request",
+                "application/json; charset=utf-8",
+                serde_json::json!({"status":"error","error":format!("invalid JSON: {e}")})
+                    .to_string(),
+            )
+        }
+    };
+    let domain = payload
+        .get("domain")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    let version = payload
+        .get("version")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    let files =
+        match payload.get("files").and_then(serde_json::Value::as_array) {
+            Some(v) if !v.is_empty() && v.len() <= 256 => v,
+            _ => return (
+                "400 Bad Request",
+                "application/json; charset=utf-8",
+                serde_json::json!({"status":"error","error":"files must contain 1-256 entries"})
+                    .to_string(),
+            ),
+        };
+    if !awep2p_core::registry::valid_name(&domain) || version == 0 {
+        return (
+            "400 Bad Request",
+            "application/json; charset=utf-8",
+            serde_json::json!({"status":"error","error":"invalid domain or version"}).to_string(),
+        );
+    }
+    let (max_file, max_site) = match host.lock() {
+        Ok(g) => (g.policy().max_file_bytes, g.policy().max_site_bytes),
+        Err(_) => {
+            return (
+                "500 Internal Server Error",
+                "application/json; charset=utf-8",
+                serde_json::json!({"status":"error","error":"site host lock failed"}).to_string(),
+            )
+        }
+    };
+    let mut staged = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    let mut total = 0u64;
+    let mut index = false;
+    for f in files {
+        let path = match f.get("path").and_then(serde_json::Value::as_str) {
+            Some(v) => v,
+            None => {
+                return (
+                    "400 Bad Request",
+                    "application/json; charset=utf-8",
+                    serde_json::json!({"status":"error","error":"file path required"}).to_string(),
+                )
+            }
+        };
+        let path = match awep2p_core::host::normalize_path(path) {
+            Ok(v) => v,
+            Err(e) => {
+                return (
+                    "400 Bad Request",
+                    "application/json; charset=utf-8",
+                    serde_json::json!({"status":"error","error":e.to_string()}).to_string(),
+                )
+            }
+        };
+        if !seen.insert(path.clone()) {
+            return (
+                "400 Bad Request",
+                "application/json; charset=utf-8",
+                serde_json::json!({"status":"error","error":"duplicate file path"}).to_string(),
+            );
+        }
+        index |= path == "/index.html";
+        let ct = f
+            .get("content_type")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("text/plain; charset=utf-8");
+        if !valid_site_content_type(ct) {
+            return (
+                "400 Bad Request",
+                "application/json; charset=utf-8",
+                serde_json::json!({"status":"error","error":"invalid content type"}).to_string(),
+            );
+        }
+        let data = if let Some(v) = f.get("content").and_then(serde_json::Value::as_str) {
+            v.as_bytes().to_vec()
+        } else if let Some(v) = f.get("data_hex").and_then(serde_json::Value::as_str) {
+            match hex::decode(v) {
+                Ok(v) => v,
+                Err(_) => {
+                    return (
+                        "400 Bad Request",
+                        "application/json; charset=utf-8",
+                        serde_json::json!({"status":"error","error":"invalid data_hex"})
+                            .to_string(),
+                    )
+                }
+            }
+        } else {
+            return (
+                "400 Bad Request",
+                "application/json; charset=utf-8",
+                serde_json::json!({"status":"error","error":"file content required"}).to_string(),
+            );
+        };
+        if data.len() as u64 > max_file {
+            return (
+                "413 Payload Too Large",
+                "application/json; charset=utf-8",
+                serde_json::json!({"status":"error","error":"file exceeds host limit"}).to_string(),
+            );
+        }
+        total = match total.checked_add(data.len() as u64) {
+            Some(v) if v <= max_site => v,
+            _ => {
+                return (
+                    "413 Payload Too Large",
+                    "application/json; charset=utf-8",
+                    serde_json::json!({"status":"error","error":"site exceeds host limit"})
+                        .to_string(),
+                )
+            }
+        };
+        staged.push((path, ct.to_string(), data));
+    }
+    if !index {
+        return (
+            "400 Bad Request",
+            "application/json; charset=utf-8",
+            serde_json::json!({"status":"error","error":"site requires /index.html"}).to_string(),
+        );
+    }
+    let mut g = match host.lock() {
+        Ok(g) => g,
+        Err(_) => {
+            return (
+                "500 Internal Server Error",
+                "application/json; charset=utf-8",
+                serde_json::json!({"status":"error","error":"site host lock failed"}).to_string(),
+            )
+        }
+    };
+    match g.load_manifest(&domain) {
+        Ok(old) => {
+            if old.owner_key.as_slice() != identity.public.public_key.as_slice() {
+                return (
+                    "403 Forbidden",
+                    "application/json; charset=utf-8",
+                    serde_json::json!({"status":"error","error":"site belongs to another owner"})
+                        .to_string(),
+                );
+            }
+            if version <= old.version {
+                return (
+                    "409 Conflict",
+                    "application/json; charset=utf-8",
+                    serde_json::json!({"status":"error","error":"version must increase"})
+                        .to_string(),
+                );
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return (
+                "500 Internal Server Error",
+                "application/json; charset=utf-8",
+                serde_json::json!({"status":"error","error":format!("manifest invalid: {e}")})
+                    .to_string(),
+            )
+        }
+    }
+    let mut hosted = Vec::new();
+    for (path, ct, data) in staged {
+        match g.publish_file(&path, &data, &ct) {
+            Ok(v) => hosted.push(v),
+            Err(e) if e.kind() == std::io::ErrorKind::StorageFull => {
+                return (
+                    "507 Insufficient Storage",
+                    "application/json; charset=utf-8",
+                    serde_json::json!({"status":"error","error":"site quota exceeded"}).to_string(),
+                )
+            }
+            Err(e) => {
+                return (
+                    "400 Bad Request",
+                    "application/json; charset=utf-8",
+                    serde_json::json!({"status":"error","error":e.to_string()}).to_string(),
+                )
+            }
+        }
+    }
+    let manifest = match g.publish_manifest(&domain, version, identity, hosted) {
+        Ok(v) => v,
+        Err(e) => {
+            return (
+                "400 Bad Request",
+                "application/json; charset=utf-8",
+                serde_json::json!({"status":"error","error":e.to_string()}).to_string(),
+            )
+        }
+    };
+    if let Err(e) = g.save_manifest(&manifest) {
+        return (
+            "500 Internal Server Error",
+            "application/json; charset=utf-8",
+            serde_json::json!({"status":"error","error":e.to_string()}).to_string(),
+        );
+    }
+    let id = hex::encode(manifest.root_hash);
+    ("201 Created","application/json; charset=utf-8",serde_json::json!({"status":"published","name":manifest.domain,"version":manifest.version,"site_id":id,"files":manifest.files.len(),"url":format!("awe://site-{id}")}).to_string())
 }
-fn site_api_unpublish(domain:&str,host:&HostState,identity:&Identity)->(&'static str,&'static str,String){
- let domain=domain.trim().to_ascii_lowercase();if !awep2p_core::registry::valid_name(&domain){return("400 Bad Request","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"invalid site domain"}).to_string())}
- let g=match host.lock(){Ok(g)=>g,Err(_)=>return("500 Internal Server Error","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"site host lock failed"}).to_string())};
- let m=match g.load_manifest(&domain){Ok(m)=>m,Err(e)if e.kind()==std::io::ErrorKind::NotFound=>return("404 Not Found","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"site_not_found"}).to_string()),Err(e)=>return("500 Internal Server Error","application/json; charset=utf-8",serde_json::json!({"status":"error","error":format!("cannot load manifest: {e}")}).to_string())};
- if m.owner_key.as_slice()!=identity.public.public_key.as_slice(){return("403 Forbidden","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"site belongs to another owner"}).to_string())}
- match g.remove_manifest(&domain){Ok(())=>("200 OK","application/json; charset=utf-8",serde_json::json!({"status":"unpublished","name":domain,"site_id":hex::encode(m.root_hash)}).to_string()),Err(e)if e.kind()==std::io::ErrorKind::NotFound=>("404 Not Found","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"site_not_found"}).to_string()),Err(e)=>("500 Internal Server Error","application/json; charset=utf-8",serde_json::json!({"status":"error","error":e.to_string()}).to_string())}
+fn site_api_unpublish(
+    domain: &str,
+    host: &HostState,
+    identity: &Identity,
+) -> (&'static str, &'static str, String) {
+    let domain = domain.trim().to_ascii_lowercase();
+    if !awep2p_core::registry::valid_name(&domain) {
+        return (
+            "400 Bad Request",
+            "application/json; charset=utf-8",
+            serde_json::json!({"status":"error","error":"invalid site domain"}).to_string(),
+        );
+    }
+    let g = match host.lock() {
+        Ok(g) => g,
+        Err(_) => {
+            return (
+                "500 Internal Server Error",
+                "application/json; charset=utf-8",
+                serde_json::json!({"status":"error","error":"site host lock failed"}).to_string(),
+            )
+        }
+    };
+    let m =
+        match g.load_manifest(&domain) {
+            Ok(m) => m,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return (
+                    "404 Not Found",
+                    "application/json; charset=utf-8",
+                    serde_json::json!({"status":"error","error":"site_not_found"}).to_string(),
+                )
+            }
+            Err(e) => return (
+                "500 Internal Server Error",
+                "application/json; charset=utf-8",
+                serde_json::json!({"status":"error","error":format!("cannot load manifest: {e}")})
+                    .to_string(),
+            ),
+        };
+    if m.owner_key.as_slice() != identity.public.public_key.as_slice() {
+        return (
+            "403 Forbidden",
+            "application/json; charset=utf-8",
+            serde_json::json!({"status":"error","error":"site belongs to another owner"})
+                .to_string(),
+        );
+    }
+    match g.remove_manifest(&domain){Ok(())=>("200 OK","application/json; charset=utf-8",serde_json::json!({"status":"unpublished","name":domain,"site_id":hex::encode(m.root_hash)}).to_string()),Err(e)if e.kind()==std::io::ErrorKind::NotFound=>("404 Not Found","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"site_not_found"}).to_string()),Err(e)=>("500 Internal Server Error","application/json; charset=utf-8",serde_json::json!({"status":"error","error":e.to_string()}).to_string())}
 }
 
 async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<()> {
@@ -555,23 +915,143 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
     let method = parts.next().unwrap_or("GET");
     let target = parts.next().unwrap_or("/");
     let path = target.split('?').next().unwrap_or("/");
-    let request_host=request.lines().skip(1).find_map(|l|{let(n,v)=l.split_once(':')?;n.eq_ignore_ascii_case("host").then_some(v.trim())}).unwrap_or("");
-    if let Some(id)=site_host_id(request_host){if !site_path_matches(&id,path){stream.write_all(&http_response("404 Not Found","text/plain; charset=utf-8","Not Found")).await?;stream.shutdown().await?;return Ok(())}}
-    if let Some(route)=path.strip_prefix("/site/"){
-        let mut parts=route.splitn(2,'/');let id=parts.next().unwrap_or("").to_ascii_lowercase();
-        if id.len()!=64||!id.bytes().all(|b|b.is_ascii_hexdigit()){stream.write_all(&http_response("400 Bad Request","text/plain; charset=utf-8","Invalid site ID")).await?;stream.shutdown().await?;return Ok(())}
-        let tail=parts.next().unwrap_or("index.html");let port=ui_address.rsplit_once(':').map(|(_,p)|p).unwrap_or("41800");let expected=format!("{id}.localhost:{port}");
-        if !request_host.eq_ignore_ascii_case(&expected){let tail=if tail.is_empty(){"index.html"}else{tail};let location=format!("http://{expected}/site/{id}/{tail}");let response=format!("HTTP/1.1 302 Found\r\nLocation: {location}\r\nCache-Control: no-store\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");stream.write_all(response.as_bytes()).await?;stream.shutdown().await?;return Ok(())}
-        let decoded=match decode_site_path(tail){Some(v)=>v,None=>{stream.write_all(&http_response("400 Bad Request","text/plain; charset=utf-8","Invalid site path")).await?;stream.shutdown().await?;return Ok(())}};
-        let raw=if decoded.is_empty()||decoded=="/"{"/index.html".to_string()}else if decoded.starts_with('/'){decoded}else{format!("/{decoded}")};
-        let requested=match awep2p_core::host::normalize_path(&raw){Ok(v)=>v,Err(_)=>{stream.write_all(&http_response("400 Bad Request","text/plain; charset=utf-8","Invalid site path")).await?;stream.shutdown().await?;return Ok(())}};
-        let response=match host.lock(){Ok(mut g)=>match g.find_manifest_by_id(&id){
-            Ok(manifest)=>{let ct=manifest.files.iter().find(|f|f.path==requested).map(|f|f.content_type.clone()).unwrap_or_else(||"application/octet-stream".into());match g.get_authorized(&manifest,&requested,None){Ok(bytes)=>http_response_bytes("200 OK",&ct,&bytes),Err(e)if e.kind()==std::io::ErrorKind::NotFound||e.kind()==std::io::ErrorKind::PermissionDenied=>http_response_bytes("404 Not Found","text/plain; charset=utf-8",b"Not Found"),Err(_)=>http_response_bytes("500 Internal Server Error","text/plain; charset=utf-8",b"Site read failed")}},
-            Err(e)if e.kind()==std::io::ErrorKind::NotFound=>http_response_bytes("404 Not Found","text/plain; charset=utf-8",b"Site not found"),
-            Err(e)if e.kind()==std::io::ErrorKind::InvalidInput=>http_response_bytes("400 Bad Request","text/plain; charset=utf-8",b"Invalid site ID"),
-            Err(_)=>http_response_bytes("500 Internal Server Error","text/plain; charset=utf-8",b"Site manifest invalid")
-        },Err(_)=>http_response_bytes("500 Internal Server Error","text/plain; charset=utf-8",b"Site host unavailable")};
-        stream.write_all(&response).await?;stream.shutdown().await?;return Ok(())
+    let request_host = request
+        .lines()
+        .skip(1)
+        .find_map(|l| {
+            let (n, v) = l.split_once(':')?;
+            n.eq_ignore_ascii_case("host").then_some(v.trim())
+        })
+        .unwrap_or("");
+    if let Some(id) = site_host_id(request_host) {
+        if !site_path_matches(&id, path) {
+            stream
+                .write_all(&http_response(
+                    "404 Not Found",
+                    "text/plain; charset=utf-8",
+                    "Not Found",
+                ))
+                .await?;
+            stream.shutdown().await?;
+            return Ok(());
+        }
+    }
+    if let Some(route) = path.strip_prefix("/site/") {
+        let mut parts = route.splitn(2, '/');
+        let id = parts.next().unwrap_or("").to_ascii_lowercase();
+        if id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+            stream
+                .write_all(&http_response(
+                    "400 Bad Request",
+                    "text/plain; charset=utf-8",
+                    "Invalid site ID",
+                ))
+                .await?;
+            stream.shutdown().await?;
+            return Ok(());
+        }
+        let tail = parts.next().unwrap_or("index.html");
+        let port = ui_address
+            .rsplit_once(':')
+            .map(|(_, p)| p)
+            .unwrap_or("41800");
+        let expected = format!("{id}.localhost:{port}");
+        if !request_host.eq_ignore_ascii_case(&expected) {
+            let tail = if tail.is_empty() { "index.html" } else { tail };
+            let location = format!("http://{expected}/site/{id}/{tail}");
+            let response=format!("HTTP/1.1 302 Found\r\nLocation: {location}\r\nCache-Control: no-store\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            stream.write_all(response.as_bytes()).await?;
+            stream.shutdown().await?;
+            return Ok(());
+        }
+        let decoded = match decode_site_path(tail) {
+            Some(v) => v,
+            None => {
+                stream
+                    .write_all(&http_response(
+                        "400 Bad Request",
+                        "text/plain; charset=utf-8",
+                        "Invalid site path",
+                    ))
+                    .await?;
+                stream.shutdown().await?;
+                return Ok(());
+            }
+        };
+        let raw = if decoded.is_empty() || decoded == "/" {
+            "/index.html".to_string()
+        } else if decoded.starts_with('/') {
+            decoded
+        } else {
+            format!("/{decoded}")
+        };
+        let requested = match awep2p_core::host::normalize_path(&raw) {
+            Ok(v) => v,
+            Err(_) => {
+                stream
+                    .write_all(&http_response(
+                        "400 Bad Request",
+                        "text/plain; charset=utf-8",
+                        "Invalid site path",
+                    ))
+                    .await?;
+                stream.shutdown().await?;
+                return Ok(());
+            }
+        };
+        let response = match host.lock() {
+            Ok(mut g) => match g.find_manifest_by_id(&id) {
+                Ok(manifest) => {
+                    let ct = manifest
+                        .files
+                        .iter()
+                        .find(|f| f.path == requested)
+                        .map(|f| f.content_type.clone())
+                        .unwrap_or_else(|| "application/octet-stream".into());
+                    match g.get_authorized(&manifest, &requested, None) {
+                        Ok(bytes) => http_response_bytes("200 OK", &ct, &bytes),
+                        Err(e)
+                            if e.kind() == std::io::ErrorKind::NotFound
+                                || e.kind() == std::io::ErrorKind::PermissionDenied =>
+                        {
+                            http_response_bytes(
+                                "404 Not Found",
+                                "text/plain; charset=utf-8",
+                                b"Not Found",
+                            )
+                        }
+                        Err(_) => http_response_bytes(
+                            "500 Internal Server Error",
+                            "text/plain; charset=utf-8",
+                            b"Site read failed",
+                        ),
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => http_response_bytes(
+                    "404 Not Found",
+                    "text/plain; charset=utf-8",
+                    b"Site not found",
+                ),
+                Err(e) if e.kind() == std::io::ErrorKind::InvalidInput => http_response_bytes(
+                    "400 Bad Request",
+                    "text/plain; charset=utf-8",
+                    b"Invalid site ID",
+                ),
+                Err(_) => http_response_bytes(
+                    "500 Internal Server Error",
+                    "text/plain; charset=utf-8",
+                    b"Site manifest invalid",
+                ),
+            },
+            Err(_) => http_response_bytes(
+                "500 Internal Server Error",
+                "text/plain; charset=utf-8",
+                b"Site host unavailable",
+            ),
+        };
+        stream.write_all(&response).await?;
+        stream.shutdown().await?;
+        return Ok(());
     }
     let (status, mime, body) = match path {
         "/" | "/index.html" => ("200 OK", "text/html; charset=utf-8", UI_HTML.to_string()),
@@ -2668,14 +3148,23 @@ async fn run_product() -> Result<()> {
     if storage_quota == 0 {
         anyhow::bail!("node storage has no available capacity");
     }
-    let available_storage=storage_quota;
-    let host_quota=(available_storage/4).max(1);
-    let storage_quota=available_storage.saturating_sub(host_quota);
-    if storage_quota==0{anyhow::bail!("not enough free disk space to reserve node and site storage")}
-    let storage:StorageState=Arc::new(LocalNodeStore::open(&storage_root,storage_quota)?);
-    let host_root=data_dir.join("host");fs::create_dir_all(&host_root)?;
-    let mut host_policy=HostPolicy::default();host_policy.max_site_bytes=host_quota;host_policy.max_file_bytes=host_policy.max_file_bytes.min(host_quota);
-    let host:HostState=Arc::new(Mutex::new(AweHost::open(&host_root,host_quota,host_policy)?));
+    let available_storage = storage_quota;
+    let host_quota = (available_storage / 4).max(1);
+    let storage_quota = available_storage.saturating_sub(host_quota);
+    if storage_quota == 0 {
+        anyhow::bail!("not enough free disk space to reserve node and site storage")
+    }
+    let storage: StorageState = Arc::new(LocalNodeStore::open(&storage_root, storage_quota)?);
+    let host_root = data_dir.join("host");
+    fs::create_dir_all(&host_root)?;
+    let mut host_policy = HostPolicy::default();
+    host_policy.max_site_bytes = host_quota;
+    host_policy.max_file_bytes = host_policy.max_file_bytes.min(host_quota);
+    let host: HostState = Arc::new(Mutex::new(AweHost::open(
+        &host_root,
+        host_quota,
+        host_policy,
+    )?));
     let messenger: MessengerLog = Arc::new(Mutex::new(Vec::new()));
     let community_path = data_dir.join("community.json");
     let community: CommunityState = Arc::new(Mutex::new(
@@ -3836,11 +4325,20 @@ mod tests {
 
     #[test]
     fn hosted_site_origins_are_limited_to_their_own_static_paths() {
-        let site="a".repeat(64);let other="b".repeat(64);
-        assert!(local_request_allowed(&format!("GET /site/{site}/index.html HTTP/1.1\r\nHost: {site}.localhost:41800\r\n\r\n")));
-        assert!(!local_request_allowed(&format!("GET /api/status HTTP/1.1\r\nHost: {site}.localhost:41800\r\n\r\n")));
-        assert!(!local_request_allowed(&format!("GET /site/{other}/index.html HTTP/1.1\r\nHost: {site}.localhost:41800\r\n\r\n")));
-        assert!(!local_request_allowed(&format!("POST /site/{site}/index.html HTTP/1.1\r\nHost: {site}.localhost:41800\r\n\r\n")));
+        let site = "a".repeat(64);
+        let other = "b".repeat(64);
+        assert!(local_request_allowed(&format!(
+            "GET /site/{site}/index.html HTTP/1.1\r\nHost: {site}.localhost:41800\r\n\r\n"
+        )));
+        assert!(!local_request_allowed(&format!(
+            "GET /api/status HTTP/1.1\r\nHost: {site}.localhost:41800\r\n\r\n"
+        )));
+        assert!(!local_request_allowed(&format!(
+            "GET /site/{other}/index.html HTTP/1.1\r\nHost: {site}.localhost:41800\r\n\r\n"
+        )));
+        assert!(!local_request_allowed(&format!(
+            "POST /site/{site}/index.html HTTP/1.1\r\nHost: {site}.localhost:41800\r\n\r\n"
+        )));
         assert!(!local_request_allowed(&format!("GET /site/{site}/index.html HTTP/1.1\r\nHost: {site}.localhost:41800\r\nOrigin: https://evil.example\r\n\r\n")));
     }
 
