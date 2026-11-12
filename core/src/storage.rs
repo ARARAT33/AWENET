@@ -438,12 +438,9 @@ fn atomic_write_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let mut opened = None;
     for _ in 0..8 {
         let mut nonce = [0u8; 16];
-        OsRng.try_fill_bytes(&mut nonce).map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                format!("secure temp name generation failed: {e}"),
-            )
-        })?;
+        OsRng
+            .try_fill_bytes(&mut nonce)
+            .map_err(|e| io::Error::other(format!("secure temp name generation failed: {e}")))?;
         let temp = parent.join(format!(".awenet-state-{}.tmp", hex::encode(nonce)));
         let mut opts = OpenOptions::new();
         opts.write(true).create_new(true);
