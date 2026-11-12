@@ -11,6 +11,9 @@ use awep2p_core::federation::{
 use awep2p_core::founder_guard::FounderGuard;
 use awep2p_core::identity::{AweId, AweSecret, Identity, LocalVault, Username};
 use awep2p_core::lan_mesh::LanPeerBeacon;
+use awep2p_core::marketplace_sync::{
+    self as marketplace_sync, RemoteCatalog, MARKETPLACE_SYNC_STREAM,
+};
 use awep2p_core::messenger::format_uid;
 use awep2p_core::network::{format_node_descriptor, Node};
 use awep2p_core::network_control::{self, NetworkAction, NetworkControlError, NetworkControlPlane};
@@ -106,6 +109,8 @@ struct UiState {
     economy_path: PathBuf,
     verifier_net: economy_api::VerifierNetState,
     verifier_net_path: PathBuf,
+    marketplace_catalog: economy_api::RemoteCatalogState,
+    ui_address: String,
 }
 
 async fn build_onecoin_validators(
@@ -484,6 +489,8 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         economy_path,
         verifier_net,
         verifier_net_path,
+        marketplace_catalog,
+        ui_address,
     } = state;
     let request = read_http_request(&mut stream).await?;
     if !local_request_allowed(&request) {
@@ -1997,6 +2004,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                 &onecoin_path,
                 &verifier_net,
                 &verifier_net_path,
+                &marketplace_catalog,
             );
             // A freshly opened attestation window is announced right
             // away: a window shorter than the transport cycle would
@@ -2006,6 +2014,15 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                 && response.0 == "200 OK"
             {
                 announce_open_windows(&node, &verifier_net).await;
+            }
+            // A fresh listing or delisting is announced right away as
+            // well: the periodic cycle would otherwise delay discovery
+            // by up to its interval.
+            if method == "POST"
+                && target.starts_with("/api/storefront/products")
+                && response.0 == "200 OK"
+            {
+                announce_storefront(&node, &economy, &ui_address).await;
             }
             response
         }
@@ -2072,6 +2089,80 @@ async fn announce_open_windows(node: &Node, verifier_net_state: &economy_api::Ve
                     hex::encode(peer.awe_id).to_lowercase()
                 );
             }
+        }
+    }
+}
+
+/// Announces this node's own storefront products to every connected
+/// peer over the marketplace sync stream: active listings first, then
+/// the delisting announcements that clear retired products from the
+/// peers' catalogs. Shared by the periodic sync cycle and the
+/// immediate announcement after the storefront changes, so a fresh
+/// listing is discoverable without waiting for the cycle. The
+/// announcements only restate storefront state this node already
+/// holds; nothing here mints ONECOIN or executes orders.
+async fn announce_storefront(
+    node: &Node,
+    economy_state: &economy_api::EconomyState,
+    ui_address: &str,
+) {
+    let now = now_unix();
+    let announce_payloads: Vec<Vec<u8>> = economy_state
+        .lock()
+        .map(|economy| {
+            marketplace_sync::storefront_announces(
+                &economy.storefront,
+                &node.identity,
+                ui_address,
+                now,
+            )
+            .into_iter()
+            .filter_map(|announce| {
+                marketplace_sync::encode(&marketplace_sync::MarketplaceSyncMessage::Listing(
+                    announce,
+                ))
+                .ok()
+            })
+            .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if announce_payloads.is_empty() {
+        return;
+    }
+    for peer in node.peers().await {
+        for payload in &announce_payloads {
+            if let Err(error) = node
+                .send_to_peer(&peer.awe_id, MARKETPLACE_SYNC_STREAM, payload.clone())
+                .await
+            {
+                eprintln!(
+                    "marketplace listing announce to peer {} failed: {error}",
+                    hex::encode(peer.awe_id).to_lowercase()
+                );
+            }
+        }
+    }
+}
+
+/// One tick of the live marketplace catalog sync. The seller side
+/// announces this node's own storefront products to every connected
+/// peer; the buyer side prunes remote listings whose seller went
+/// silent past the retention horizon, so a disappeared seller leaves
+/// the catalog instead of lingering forever. Nothing here mints
+/// ONECOIN or executes orders: the network catalog is discovery data
+/// and purchases still settle on the seller's own ledger.
+async fn marketplace_sync_cycle(
+    node: &Node,
+    economy_state: &economy_api::EconomyState,
+    ui_address: &str,
+    remote_catalog_state: &Arc<Mutex<RemoteCatalog>>,
+) {
+    announce_storefront(node, economy_state, ui_address).await;
+    let now = now_unix();
+    if let Ok(mut catalog) = remote_catalog_state.lock() {
+        let pruned = catalog.prune(now);
+        if pruned > 0 {
+            eprintln!("marketplace catalog pruned {pruned} stale remote listings");
         }
     }
 }
@@ -2722,6 +2813,37 @@ async fn run_product() -> Result<()> {
         });
     }
 
+    // The UI address is parsed once, before the economy cycles and the
+    // UI listener: it is the address remote buyers see as this node's
+    // seller node address in the network-wide marketplace catalog.
+    let ui_addr: SocketAddr = env::var("AWE_UI_ADDR")
+        .unwrap_or_else(|_| DEFAULT_UI_ADDR.into())
+        .parse()
+        .context("invalid AWE_UI_ADDR")?;
+    // The remote marketplace catalog is deliberately in-memory:
+    // sellers re-announce their storefronts on every cycle, so a
+    // restart simply starts collecting again.
+    let remote_catalog_state: Arc<Mutex<RemoteCatalog>> =
+        Arc::new(Mutex::new(RemoteCatalog::new()));
+    {
+        let loop_node = node.clone();
+        let loop_economy = economy_state.clone();
+        let loop_ui_address = ui_addr.to_string();
+        let loop_catalog = remote_catalog_state.clone();
+        tokio::spawn(async move {
+            loop {
+                marketplace_sync_cycle(
+                    &loop_node,
+                    &loop_economy,
+                    &loop_ui_address,
+                    &loop_catalog,
+                )
+                .await;
+                tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+            }
+        });
+    }
+
     let consensus_state: ConsensusState = {
         let configured = env::var("AWE_ONECOIN_VALIDATORS")
             .unwrap_or_default()
@@ -2787,6 +2909,7 @@ async fn run_product() -> Result<()> {
     let dispatcher_verifier_net = verifier_net_state.clone();
     let dispatcher_verifier_net_path = verifier_net_path.clone();
     let dispatcher_verifier_side = verifier_side_state.clone();
+    let dispatcher_marketplace_catalog = remote_catalog_state.clone();
     tokio::spawn(async move {
         loop {
             for (sender, stream, payload) in dispatcher_node.take_inbox() {
@@ -2851,6 +2974,31 @@ async fn run_product() -> Result<()> {
                         }
                         Err(error) => {
                             eprintln!("verifier transport message rejected: {error}");
+                        }
+                    }
+                    continue;
+                }
+                if stream == MARKETPLACE_SYNC_STREAM {
+                    match marketplace_sync::decode(&payload) {
+                        Ok(marketplace_sync::MarketplaceSyncMessage::Listing(announce)) => {
+                            let now = now_unix();
+                            if let Ok(mut catalog) = dispatcher_marketplace_catalog.lock() {
+                                match catalog.merge(&sender, &announce, now) {
+                                    Ok(true) => eprintln!(
+                                        "marketplace listing synced: seller {} product {} listed {}",
+                                        announce.core.seller.to_hex().to_lowercase(),
+                                        announce.core.product_id,
+                                        announce.core.listed
+                                    ),
+                                    Ok(false) => {}
+                                    Err(message) => {
+                                        eprintln!("marketplace listing rejected: {message}");
+                                    }
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            eprintln!("marketplace sync message rejected: {error}");
                         }
                     }
                     continue;
@@ -3291,10 +3439,6 @@ async fn run_product() -> Result<()> {
         }
     });
 
-    let ui_addr: SocketAddr = env::var("AWE_UI_ADDR")
-        .unwrap_or_else(|_| DEFAULT_UI_ADDR.into())
-        .parse()
-        .context("invalid AWE_UI_ADDR")?;
     let listener = tokio::net::TcpListener::bind(ui_addr)
         .await
         .with_context(|| format!("cannot bind AWEp2P UI to {ui_addr}"))?;
@@ -3336,6 +3480,8 @@ async fn run_product() -> Result<()> {
             let api_economy_path = economy_path.clone();
             let api_verifier_net = verifier_net_state.clone();
             let api_verifier_net_path = verifier_net_path.clone();
+            let api_marketplace_catalog = remote_catalog_state.clone();
+            let api_ui_address = ui_addr.to_string();
             tokio::spawn(async move {
                 if let Err(e) = serve_ui(
                     stream,
@@ -3363,6 +3509,8 @@ async fn run_product() -> Result<()> {
                         economy_path: api_economy_path,
                         verifier_net: api_verifier_net,
                         verifier_net_path: api_verifier_net_path,
+                        marketplace_catalog: api_marketplace_catalog,
+                        ui_address: api_ui_address,
                     },
                 )
                 .await

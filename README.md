@@ -44,6 +44,7 @@ while exposing a small, stable product orchestration model on top.
 | Economy UI localization | `i18n` (extended catalog + `Locale`/`Catalog::messages`), `economy_api` `/api/i18n/messages`, `i18n.js`, `awenetwork.js`, `storefront.js`, `founder.js`, `onecoin.js` | Bilingual Armenian/English economy screens from one core catalog, served by the node, with a persisted choice and a topbar language toggle |
 | Multi-node usage verification | `verifier_net`, `resource_meter`, `resource_economy` | Founder-enrolled verifier registry with founder-signed certificates, per-period attestation windows with bounded report deadlines, honest peer-observation reports, min-consensus settlement evidence |
 | Live verifier transport | `verifier_transport`, `verifier_net` (roster/window accessors), `economy_api` verifier routes, `awe-node` stream 202 | Peer-to-peer attestation-window announcements, verifier-side observation tracking with retried-until-delivered signed reports, founder-managed enrollment and HTTP report intake |
+| Marketplace catalog sync | `marketplace_sync`, `storefront`, `economy_api` `/api/storefront/network`, `awe-node` stream 203 | Signed seller-node listing and delisting announcements, bounded last-writer-wins remote catalogs with retention prune, network-wide storefront discovery (no cross-node order execution) |
 | Identity & security | `identity`, `user_registry`, `sessions`, `keys`, `security`, `crypto`, `defense`, `sandbox` | Self-certifying AWE IDs, founder-signed local user directory, authenticated encrypted transport, hostile-traffic limits |
 | Discovery & routing | `discovery`, `routing`, `network_topology`, `lan_mesh` | DHT-style lookup, Data Centre topology, relay failover, LAN mesh |
 | Data plane | `data_plane`, `storage`, `replication`, `repair`, `recovery` | Chunked content-addressed storage, replica placement, repair planning |
@@ -308,6 +309,26 @@ retirement and windows over the node API (`POST /api/founder/verifier/enroll`,
 weakens the founder's exclusive rights. See
 [docs/VERIFIER-TRANSPORT-UPGRADE-2026-11-11.md](docs/VERIFIER-TRANSPORT-UPGRADE-2026-11-11.md).
 
+## Marketplace catalog sync
+
+The 2026-11-12 upgrade gives the AWENET Store its network-wide catalog in
+`core/src/marketplace_sync.rs`. A seller node announces its own storefront
+products to its connected peers on the marketplace sync stream (stream 203):
+each announcement is signed by the seller's identity, carries the seller's
+node address, and is accepted only when the announcing peer really is the
+seller, the signature verifies under the public key the seller AWE-ID was
+derived from, and the revision is strictly newer than what the receiver
+already holds. Receivers keep a bounded last-writer-wins `RemoteCatalog`
+(per-seller and total bounds, delisting tombstones so a reordered stale
+announcement cannot resurrect a delisted product, and a retention prune so a
+silent seller disappears instead of lingering forever). Buyers search the
+network catalog through `GET /api/storefront/network` with the established
+filter surface. The catalog is discovery data, honestly stated: a listing
+points at the seller's node, it is not an order route, purchases still
+settle on the seller's own ledger, and cross-node order execution is not
+implemented. See
+[docs/MARKETPLACE-SYNC-UPGRADE-2026-11-12.md](docs/MARKETPLACE-SYNC-UPGRADE-2026-11-12.md).
+
 ## Important status rule
 
 A source module or UI screen is not proof of end-to-end functionality.
@@ -344,6 +365,7 @@ model is in [docs/PRODUCT-ARCHITECTURE.md](docs/PRODUCT-ARCHITECTURE.md) and
 - [GPU utilization metering](docs/GPU-METERING-2026-11-09.md)
 - [Multi-node usage verification](docs/VERIFIER-NET-UPGRADE-2026-11-10.md)
 - [Live verifier transport](docs/VERIFIER-TRANSPORT-UPGRADE-2026-11-11.md)
+- [Marketplace catalog sync](docs/MARKETPLACE-SYNC-UPGRADE-2026-11-12.md)
 
 ## Security
 
