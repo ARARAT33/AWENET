@@ -895,7 +895,6 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         verifier_net,
         verifier_net_path,
         marketplace_catalog,
-        host,
         ui_address,
     } = state;
     let request = read_http_request(&mut stream).await?;
