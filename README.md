@@ -270,6 +270,16 @@ inside the local node and its UI, without changing any protocol guarantee:
   counter report zero GPU ticks. See
   [docs/GPU-METERING-2026-11-09.md](docs/GPU-METERING-2026-11-09.md).
 
+## ID-addressed site hosting
+
+The 2026-11-12 site-hosting increment connects signed `AweHost` manifests
+to local node APIs for publish, list, inspect, update and unpublish. Immutable
+versions open by `awe://site-<64-hex-id>` on a dedicated
+`<site-id>.localhost` origin that cannot call node APIs or read another
+site's paths. This is local hosting only; remote replication and federated
+domain ownership remain open. See
+[docs/SITE-HOSTING-UPGRADE-2026-11-12.md](docs/SITE-HOSTING-UPGRADE-2026-11-12.md).
+
 ## Multi-node usage verification
 
 The 2026-11-10 upgrade gives the resource economy's verifier consensus its
