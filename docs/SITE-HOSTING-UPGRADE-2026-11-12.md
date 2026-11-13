@@ -29,6 +29,14 @@ shared by another site's manifest remain live. If any manifest cannot be
 loaded or verified, collection fails closed and reports cleanup as pending;
 it does not delete objects based on an incomplete reference set.
 
+## Publish and cleanup response
+
+Successful publish/update and unpublish responses include:
+- `garbage_collected_objects`: the number of unreferenced objects removed by this operation.
+- `cleanup_pending`: `true` when collection could not build a complete verified reference set or could not finish safely.
+
+A successful site mutation remains committed when cleanup is pending. Clients must not retry the publish/unpublish solely because cleanup is pending; a later successful site lifecycle operation can retry collection. Collection never deletes objects when any persisted manifest fails verification.
+
 ## Browser isolation
 
 A site ID is the manifest root hash. Opening `awe://site-<64-hex-id>`
