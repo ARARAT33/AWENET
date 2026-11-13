@@ -408,6 +408,28 @@ impl AweHost {
         }
         Ok(())
     }
+
+    /// Remove content-addressed site objects that are not referenced by any
+    /// valid, persisted site manifest. If even one manifest cannot be loaded
+    /// or verified, collection aborts before deleting anything.
+    ///
+    /// Callers must serialize this with publish/unpublish operations. The node
+    /// HTTP layer does so by holding the shared host mutex for the whole flow.
+    pub fn collect_garbage(&mut self) -> io::Result<u64> {
+        let manifests = self.list_manifests()?;
+        let mut live = BTreeMap::new();
+        for manifest in manifests {
+            for file in manifest.files {
+                live.insert(file.object_id, ());
+            }
+        }
+
+        let removed = self.store.gc(&live)?;
+        self.cache
+            .retain(|(object_id, _), _| live.contains_key(object_id));
+        Ok(removed)
+    }
+
     pub fn manifest_path(&self, domain: &str) -> PathBuf {
         // Valid site names are already constrained to DNS-safe ASCII labels.
         // Hash invalid input so even direct callers cannot escape the host root.
@@ -541,6 +563,86 @@ mod tests {
             .publish_manifest("overflow.awe", 1, &owner, files)
             .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn garbage_collection_removes_orphans_and_preserves_shared_objects() {
+        let root = std::env::temp_dir().join(format!(
+            "awe-host-gc-shared-{}",
+            std::process::id()
+        ));
+        let mut host = AweHost::open(&root, 10_000_000, HostPolicy::default()).unwrap();
+        let owner_a = Identity::generate(crate::identity::Username::new("gc-owner-a").unwrap());
+        let owner_b = Identity::generate(crate::identity::Username::new("gc-owner-b").unwrap());
+
+        let shared = host
+            .publish_file("/shared.css", b"shared stylesheet", "text/css")
+            .unwrap();
+        let orphan = host
+            .publish_file("/private.js", b"site one only", "text/javascript")
+            .unwrap();
+        let first = host
+            .publish_manifest(
+                "first-gc.awe",
+                1,
+                &owner_a,
+                vec![shared.clone(), orphan.clone()],
+            )
+            .unwrap();
+        let second = host
+            .publish_manifest("second-gc.awe", 1, &owner_b, vec![shared.clone()])
+            .unwrap();
+        host.save_manifest(&first).unwrap();
+        host.save_manifest(&second).unwrap();
+
+        host.remove_manifest("first-gc.awe").unwrap();
+        assert_eq!(host.collect_garbage().unwrap(), 1);
+        assert_eq!(
+            host.store.get(&shared.object_id).unwrap(),
+            b"shared stylesheet"
+        );
+        assert_eq!(
+            host.store.get(&orphan.object_id).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+        let remaining = host.load_manifest("second-gc.awe").unwrap();
+        assert_eq!(
+            host.get(&remaining, "/shared.css").unwrap(),
+            b"shared stylesheet"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn garbage_collection_fails_closed_when_any_manifest_is_invalid() {
+        let root = std::env::temp_dir().join(format!(
+            "awe-host-gc-invalid-{}",
+            std::process::id()
+        ));
+        let mut host = AweHost::open(&root, 10_000_000, HostPolicy::default()).unwrap();
+        let owner = Identity::generate(crate::identity::Username::new("gc-owner").unwrap());
+        let live = host
+            .publish_file("/index.html", b"live object", "text/html")
+            .unwrap();
+        let orphan = host
+            .publish_file("/orphan.bin", b"keep until safe", "application/octet-stream")
+            .unwrap();
+        let manifest = host
+            .publish_manifest("valid-gc.awe", 1, &owner, vec![live.clone()])
+            .unwrap();
+        host.save_manifest(&manifest).unwrap();
+        fs::write(host.manifest_path("broken-gc.awe"), b"{invalid manifest").unwrap();
+
+        let error = host.collect_garbage().unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(host.store.get(&live.object_id).unwrap(), b"live object");
+        assert_eq!(
+            host.store.get(&orphan.object_id).unwrap(),
+            b"keep until safe"
+        );
 
         let _ = fs::remove_dir_all(root);
     }
