@@ -376,6 +376,7 @@ model is in [docs/PRODUCT-ARCHITECTURE.md](docs/PRODUCT-ARCHITECTURE.md) and
 - [Multi-node usage verification](docs/VERIFIER-NET-UPGRADE-2026-11-10.md)
 - [Live verifier transport](docs/VERIFIER-TRANSPORT-UPGRADE-2026-11-11.md)
 - [Marketplace catalog sync](docs/MARKETPLACE-SYNC-UPGRADE-2026-11-12.md)
+- [CellNet Fabric — distributed cell execution architecture](docs/CELLNET-FABRIC-ARCHITECTURE.md)
 
 ## Security
 
