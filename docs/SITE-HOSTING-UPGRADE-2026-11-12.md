@@ -22,8 +22,12 @@ The node identity signs the complete manifest. The signature covers the owner
 key, domain, version, file metadata, policy and access descriptor; the root
 hash is recomputed on load. Invalid signatures or hashes fail closed.
 Updates require a strictly increasing version and the current node identity
-must match the existing owner. Unpublish removes the manifest; unreferenced
-objects remain for storage garbage collection.
+must match the existing owner. After a manifest is durably replaced or
+unpublished, the node rebuilds the live-object set from every valid persisted
+site manifest and removes only unreferenced content-addressed objects. Objects
+shared by another site's manifest remain live. If any manifest cannot be
+loaded or verified, collection fails closed and reports cleanup as pending;
+it does not delete objects based on an incomplete reference set.
 
 ## Browser isolation
 
@@ -46,7 +50,8 @@ bytes are verified. Quota statistics count only 32-byte content IDs.
 - Federated domain ownership and transfer are not implemented.
 - Site updates create a new content-addressed ID; the previous ID stops
   resolving after the new version is committed.
-- Unpublished objects await garbage collection.
+- Site-object garbage collection runs after publish/update/unpublish; a
+  corrupt manifest blocks collection rather than risking deletion of live data.
 - The API uses local same-origin/loopback controls, not network-wide
   Session/Capability authorization.
 
