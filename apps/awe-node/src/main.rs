@@ -794,7 +794,7 @@ fn site_api_publish(
                     "507 Insufficient Storage",
                     "application/json; charset=utf-8",
                     serde_json::json!({"status":"error","error":"site quota exceeded"}).to_string(),
-                )
+                );
             }
             Err(e) => {
                 let _ = g.collect_garbage();
@@ -802,7 +802,7 @@ fn site_api_publish(
                     "400 Bad Request",
                     "application/json; charset=utf-8",
                     serde_json::json!({"status":"error","error":e.to_string()}).to_string(),
-                )
+                );
             }
         }
     }
@@ -814,7 +814,7 @@ fn site_api_publish(
                 "400 Bad Request",
                 "application/json; charset=utf-8",
                 serde_json::json!({"status":"error","error":e.to_string()}).to_string(),
-            )
+            );
         }
     };
     if let Err(e) = g.save_manifest(&manifest) {
@@ -842,7 +842,8 @@ fn site_api_publish(
             "url": format!("awe://site-{id}"),
             "garbage_collected_objects": garbage_collected_objects,
             "cleanup_pending": cleanup_pending
-        }).to_string()
+        })
+        .to_string(),
     )
 }
 fn site_api_unpublish(
@@ -877,19 +878,19 @@ fn site_api_unpublish(
                 serde_json::json!({"status":"error","error":"site_not_found"}).to_string(),
             )
         }
-        Err(error) => {
-            return (
-                "500 Internal Server Error",
-                "application/json; charset=utf-8",
-                serde_json::json!({"status":"error","error":format!("cannot load manifest: {error}")}).to_string(),
-            )
-        }
+        Err(error) => return (
+            "500 Internal Server Error",
+            "application/json; charset=utf-8",
+            serde_json::json!({"status":"error","error":format!("cannot load manifest: {error}")})
+                .to_string(),
+        ),
     };
     if manifest.owner_key.as_slice() != identity.public.public_key.as_slice() {
         return (
             "403 Forbidden",
             "application/json; charset=utf-8",
-            serde_json::json!({"status":"error","error":"site belongs to another owner"}).to_string(),
+            serde_json::json!({"status":"error","error":"site belongs to another owner"})
+                .to_string(),
         );
     }
     if let Err(error) = g.remove_manifest(&domain) {
@@ -917,7 +918,8 @@ fn site_api_unpublish(
             "site_id": hex::encode(manifest.root_hash),
             "garbage_collected_objects": garbage_collected_objects,
             "cleanup_pending": cleanup_pending
-        }).to_string()
+        })
+        .to_string(),
     )
 }
 

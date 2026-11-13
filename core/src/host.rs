@@ -569,10 +569,7 @@ mod tests {
 
     #[test]
     fn garbage_collection_removes_orphans_and_preserves_shared_objects() {
-        let root = std::env::temp_dir().join(format!(
-            "awe-host-gc-shared-{}",
-            std::process::id()
-        ));
+        let root = std::env::temp_dir().join(format!("awe-host-gc-shared-{}", std::process::id()));
         let mut host = AweHost::open(&root, 10_000_000, HostPolicy::default()).unwrap();
         let owner_a = Identity::generate(crate::identity::Username::new("gc-owner-a").unwrap());
         let owner_b = Identity::generate(crate::identity::Username::new("gc-owner-b").unwrap());
@@ -618,17 +615,18 @@ mod tests {
 
     #[test]
     fn garbage_collection_fails_closed_when_any_manifest_is_invalid() {
-        let root = std::env::temp_dir().join(format!(
-            "awe-host-gc-invalid-{}",
-            std::process::id()
-        ));
+        let root = std::env::temp_dir().join(format!("awe-host-gc-invalid-{}", std::process::id()));
         let mut host = AweHost::open(&root, 10_000_000, HostPolicy::default()).unwrap();
         let owner = Identity::generate(crate::identity::Username::new("gc-owner").unwrap());
         let live = host
             .publish_file("/index.html", b"live object", "text/html")
             .unwrap();
         let orphan = host
-            .publish_file("/orphan.bin", b"keep until safe", "application/octet-stream")
+            .publish_file(
+                "/orphan.bin",
+                b"keep until safe",
+                "application/octet-stream",
+            )
             .unwrap();
         let manifest = host
             .publish_manifest("valid-gc.awe", 1, &owner, vec![live.clone()])
