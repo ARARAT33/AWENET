@@ -546,7 +546,7 @@ fn site_api_list(host: &HostState, identity: &Identity) -> (&'static str, &'stat
    let bytes=m.files.iter().fold(0u64,|n,f|n.saturating_add(f.size));let id=hex::encode(m.root_hash);let open=m.open();
    serde_json::json!({"site_id":id,"name":m.domain,"version":m.version,"files":m.files.len(),"bytes":bytes,"open":open,"url":format!("awe://site-{id}")})
   }).collect::<Vec<_>>();let count=sites.len();
-  ("200 OK","application/json; charset=utf-8",serde_json::json!({"status":"ok","sites":sites,"count":count}).to_string())
+  ("200 OK","application/json; charset=utf-8",serde_json::json!({"status":"ok","sites":sites,"count":count,"cleanup_pending":guard.cleanup_pending()}).to_string())
  },Err(e)=>("500 Internal Server Error","application/json; charset=utf-8",serde_json::json!({"status":"error","error":format!("cannot list site manifests: {e}")}).to_string())}
 }
 fn site_api_get(
