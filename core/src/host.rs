@@ -598,9 +598,13 @@ mod tests {
         let root = std::env::temp_dir().join(format!("awe-host-gc-startup-{}", std::process::id()));
         let orphan_id = {
             let mut host = AweHost::open(&root, 10_000_000, HostPolicy::default()).unwrap();
-            host.publish_file("/staged.bin", b"staged before manifest", "application/octet-stream")
-                .unwrap()
-                .object_id
+            host.publish_file(
+                "/staged.bin",
+                b"staged before manifest",
+                "application/octet-stream",
+            )
+            .unwrap()
+            .object_id
         };
 
         let reopened = AweHost::open(&root, 10_000_000, HostPolicy::default()).unwrap();
