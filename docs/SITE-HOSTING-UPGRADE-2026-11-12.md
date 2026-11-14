@@ -38,9 +38,11 @@ Successful publish/update and unpublish responses include:
 - `garbage_collected_objects`: the number of unreferenced objects removed by this operation.
 - `cleanup_pending`: `true` when collection could not build a complete verified reference set or could not finish safely.
 
-The `GET /api/sites` response also includes `cleanup_pending`. The node retries
-collection during startup; if a manifest is corrupt, the node remains available,
-the flag stays true, and no object is deleted until the manifest problem is fixed.
+The `GET /api/sites` response includes `cleanup_pending` on both successful
+lists and manifest-list errors. The node retries collection during startup;
+if a manifest is corrupt, the node remains available, the error response still
+reports the flag as true, and no object is deleted until the manifest problem
+is fixed.
 
 A successful site mutation remains committed when cleanup is pending. Clients must not retry the publish/unpublish solely because cleanup is pending; a later successful site lifecycle operation can retry collection. Collection never deletes objects when any persisted manifest fails verification.
 
