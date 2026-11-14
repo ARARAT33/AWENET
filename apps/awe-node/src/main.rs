@@ -4438,10 +4438,8 @@ mod tests {
         use super::{site_api_list, AweHost, HostPolicy, HostState, Identity, Username};
         use std::sync::{Arc, Mutex};
 
-        let root = std::env::temp_dir().join(format!(
-            "awe-node-site-list-gc-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("awe-node-site-list-gc-{}", std::process::id()));
         let owner = Identity::generate(Username::new("site-list-owner").unwrap());
         let mut host = AweHost::open(&root, 10_000_000, HostPolicy::default()).unwrap();
         let file = host
