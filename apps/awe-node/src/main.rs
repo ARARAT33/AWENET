@@ -546,8 +546,8 @@ fn site_api_list(host: &HostState, identity: &Identity) -> (&'static str, &'stat
    let bytes=m.files.iter().fold(0u64,|n,f|n.saturating_add(f.size));let id=hex::encode(m.root_hash);let open=m.open();
    serde_json::json!({"site_id":id,"name":m.domain,"version":m.version,"files":m.files.len(),"bytes":bytes,"open":open,"url":format!("awe://site-{id}")})
   }).collect::<Vec<_>>();let count=sites.len();
-  ("200 OK","application/json; charset=utf-8",serde_json::json!({"status":"ok","sites":sites,"count":count}).to_string())
- },Err(e)=>("500 Internal Server Error","application/json; charset=utf-8",serde_json::json!({"status":"error","error":format!("cannot list site manifests: {e}")}).to_string())}
+  ("200 OK","application/json; charset=utf-8",serde_json::json!({"status":"ok","sites":sites,"count":count,"cleanup_pending":guard.cleanup_pending()}).to_string())
+ },Err(e)=>("500 Internal Server Error","application/json; charset=utf-8",serde_json::json!({"status":"error","error":format!("cannot list site manifests: {e}"),"cleanup_pending":guard.cleanup_pending()}).to_string())}
 }
 fn site_api_get(
     domain: &str,
@@ -789,32 +789,36 @@ fn site_api_publish(
         match g.publish_file(&path, &data, &ct) {
             Ok(v) => hosted.push(v),
             Err(e) if e.kind() == std::io::ErrorKind::StorageFull => {
+                let _ = g.collect_garbage();
                 return (
                     "507 Insufficient Storage",
                     "application/json; charset=utf-8",
                     serde_json::json!({"status":"error","error":"site quota exceeded"}).to_string(),
-                )
+                );
             }
             Err(e) => {
+                let _ = g.collect_garbage();
                 return (
                     "400 Bad Request",
                     "application/json; charset=utf-8",
                     serde_json::json!({"status":"error","error":e.to_string()}).to_string(),
-                )
+                );
             }
         }
     }
     let manifest = match g.publish_manifest(&domain, version, identity, hosted) {
         Ok(v) => v,
         Err(e) => {
+            let _ = g.collect_garbage();
             return (
                 "400 Bad Request",
                 "application/json; charset=utf-8",
                 serde_json::json!({"status":"error","error":e.to_string()}).to_string(),
-            )
+            );
         }
     };
     if let Err(e) = g.save_manifest(&manifest) {
+        let _ = g.collect_garbage();
         return (
             "500 Internal Server Error",
             "application/json; charset=utf-8",
@@ -822,7 +826,25 @@ fn site_api_publish(
         );
     }
     let id = hex::encode(manifest.root_hash);
-    ("201 Created","application/json; charset=utf-8",serde_json::json!({"status":"published","name":manifest.domain,"version":manifest.version,"site_id":id,"files":manifest.files.len(),"url":format!("awe://site-{id}")}).to_string())
+    let (garbage_collected_objects, cleanup_pending) = match g.collect_garbage() {
+        Ok(removed) => (removed, false),
+        Err(_) => (0, true),
+    };
+    (
+        "201 Created",
+        "application/json; charset=utf-8",
+        serde_json::json!({
+            "status": "published",
+            "name": manifest.domain,
+            "version": manifest.version,
+            "site_id": id,
+            "files": manifest.files.len(),
+            "url": format!("awe://site-{id}"),
+            "garbage_collected_objects": garbage_collected_objects,
+            "cleanup_pending": cleanup_pending
+        })
+        .to_string(),
+    )
 }
 fn site_api_unpublish(
     domain: &str,
@@ -837,7 +859,7 @@ fn site_api_unpublish(
             serde_json::json!({"status":"error","error":"invalid site domain"}).to_string(),
         );
     }
-    let g = match host.lock() {
+    let mut g = match host.lock() {
         Ok(g) => g,
         Err(_) => {
             return (
@@ -847,24 +869,23 @@ fn site_api_unpublish(
             )
         }
     };
-    let m =
-        match g.load_manifest(&domain) {
-            Ok(m) => m,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return (
-                    "404 Not Found",
-                    "application/json; charset=utf-8",
-                    serde_json::json!({"status":"error","error":"site_not_found"}).to_string(),
-                )
-            }
-            Err(e) => return (
-                "500 Internal Server Error",
+    let manifest = match g.load_manifest(&domain) {
+        Ok(manifest) => manifest,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return (
+                "404 Not Found",
                 "application/json; charset=utf-8",
-                serde_json::json!({"status":"error","error":format!("cannot load manifest: {e}")})
-                    .to_string(),
-            ),
-        };
-    if m.owner_key.as_slice() != identity.public.public_key.as_slice() {
+                serde_json::json!({"status":"error","error":"site_not_found"}).to_string(),
+            )
+        }
+        Err(error) => return (
+            "500 Internal Server Error",
+            "application/json; charset=utf-8",
+            serde_json::json!({"status":"error","error":format!("cannot load manifest: {error}")})
+                .to_string(),
+        ),
+    };
+    if manifest.owner_key.as_slice() != identity.public.public_key.as_slice() {
         return (
             "403 Forbidden",
             "application/json; charset=utf-8",
@@ -872,7 +893,34 @@ fn site_api_unpublish(
                 .to_string(),
         );
     }
-    match g.remove_manifest(&domain){Ok(())=>("200 OK","application/json; charset=utf-8",serde_json::json!({"status":"unpublished","name":domain,"site_id":hex::encode(m.root_hash)}).to_string()),Err(e)if e.kind()==std::io::ErrorKind::NotFound=>("404 Not Found","application/json; charset=utf-8",serde_json::json!({"status":"error","error":"site_not_found"}).to_string()),Err(e)=>("500 Internal Server Error","application/json; charset=utf-8",serde_json::json!({"status":"error","error":e.to_string()}).to_string())}
+    if let Err(error) = g.remove_manifest(&domain) {
+        let (status, message) = if error.kind() == std::io::ErrorKind::NotFound {
+            ("404 Not Found", "site_not_found".to_string())
+        } else {
+            ("500 Internal Server Error", error.to_string())
+        };
+        return (
+            status,
+            "application/json; charset=utf-8",
+            serde_json::json!({"status":"error","error":message}).to_string(),
+        );
+    }
+    let (garbage_collected_objects, cleanup_pending) = match g.collect_garbage() {
+        Ok(removed) => (removed, false),
+        Err(_) => (0, true),
+    };
+    (
+        "200 OK",
+        "application/json; charset=utf-8",
+        serde_json::json!({
+            "status": "unpublished",
+            "name": domain,
+            "site_id": hex::encode(manifest.root_hash),
+            "garbage_collected_objects": garbage_collected_objects,
+            "cleanup_pending": cleanup_pending
+        })
+        .to_string(),
+    )
 }
 
 async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<()> {
@@ -4383,6 +4431,36 @@ mod tests {
             .to_ascii_lowercase()
             .contains("access-control-allow-origin"));
         assert!(response.contains("X-Content-Type-Options: nosniff"));
+    }
+
+    #[test]
+    fn site_list_reports_cleanup_pending_when_a_manifest_is_invalid() {
+        use super::{site_api_list, AweHost, HostPolicy, HostState, Identity, Username};
+        use std::sync::{Arc, Mutex};
+
+        let root =
+            std::env::temp_dir().join(format!("awe-node-site-list-gc-{}", std::process::id()));
+        let owner = Identity::generate(Username::new("site-list-owner").unwrap());
+        let mut host = AweHost::open(&root, 10_000_000, HostPolicy::default()).unwrap();
+        let file = host
+            .publish_file("/index.html", b"site list", "text/html")
+            .unwrap();
+        let manifest = host
+            .publish_manifest("site-list.awe", 1, &owner, vec![file])
+            .unwrap();
+        host.save_manifest(&manifest).unwrap();
+        std::fs::write(host.manifest_path("broken-site-list.awe"), b"{invalid").unwrap();
+        drop(host);
+
+        let reopened = AweHost::open(&root, 10_000_000, HostPolicy::default()).unwrap();
+        assert!(reopened.cleanup_pending());
+        let state: HostState = Arc::new(Mutex::new(reopened));
+        let (status, _, body) = site_api_list(&state, &owner);
+        assert_eq!(status, "500 Internal Server Error");
+        let response: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(response["cleanup_pending"], true);
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

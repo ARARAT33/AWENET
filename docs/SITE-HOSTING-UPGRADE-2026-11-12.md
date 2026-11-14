@@ -22,8 +22,29 @@ The node identity signs the complete manifest. The signature covers the owner
 key, domain, version, file metadata, policy and access descriptor; the root
 hash is recomputed on load. Invalid signatures or hashes fail closed.
 Updates require a strictly increasing version and the current node identity
-must match the existing owner. Unpublish removes the manifest; unreferenced
-objects remain for storage garbage collection.
+must match the existing owner. After a manifest is durably replaced or
+unpublished, and again during node startup, the node rebuilds the live-object
+set from every valid persisted site manifest and removes only unreferenced
+content-addressed objects. Startup collection recovers objects staged before
+a crash or left behind when a process stopped between manifest removal and
+cleanup. Objects
+shared by another site's manifest remain live. If any manifest cannot be
+loaded or verified, collection fails closed and reports cleanup as pending;
+it does not delete objects based on an incomplete reference set.
+
+## Publish and cleanup response
+
+Successful publish/update and unpublish responses include:
+- `garbage_collected_objects`: the number of unreferenced objects removed by this operation.
+- `cleanup_pending`: `true` when collection could not build a complete verified reference set or could not finish safely.
+
+The `GET /api/sites` response includes `cleanup_pending` on both successful
+lists and manifest-list errors. The node retries collection during startup;
+if a manifest is corrupt, the node remains available, the error response still
+reports the flag as true, and no object is deleted until the manifest problem
+is fixed.
+
+A successful site mutation remains committed when cleanup is pending. Clients must not retry the publish/unpublish solely because cleanup is pending; a later successful site lifecycle operation can retry collection. Collection never deletes objects when any persisted manifest fails verification.
 
 ## Browser isolation
 
@@ -46,7 +67,9 @@ bytes are verified. Quota statistics count only 32-byte content IDs.
 - Federated domain ownership and transfer are not implemented.
 - Site updates create a new content-addressed ID; the previous ID stops
   resolving after the new version is committed.
-- Unpublished objects await garbage collection.
+- Site-object garbage collection runs after publish/update/unpublish and on
+  startup; a corrupt manifest blocks collection rather than risking deletion
+  of live data. The site-list API exposes a pending-cleanup flag.
 - The API uses local same-origin/loopback controls, not network-wide
   Session/Capability authorization.
 

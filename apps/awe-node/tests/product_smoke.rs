@@ -273,6 +273,12 @@ fn three_node_product_smoke() {
         let parsed: serde_json::Value =
             serde_json::from_str(published.split("\r\n\r\n").nth(1).unwrap_or("")).unwrap();
         let id = parsed["site_id"].as_str().unwrap().to_string();
+        let host_objects = dirs[0].join("host/objects/objects");
+        assert_eq!(
+            fs::read_dir(&host_objects).unwrap().count(),
+            2,
+            "first publish should persist exactly two site objects"
+        );
         let expected = format!("awe://site-{id}");
         assert_eq!(parsed["url"].as_str(), Some(expected.as_str()));
         let list: serde_json::Value =
@@ -328,6 +334,11 @@ fn three_node_product_smoke() {
                 .unwrap()
                 .to_string();
         assert_ne!(id, new_id);
+        assert_eq!(
+            fs::read_dir(&host_objects).unwrap().count(),
+            2,
+            "update should collect the old index while retaining the shared stylesheet"
+        );
         let old=request_raw("127.0.0.1:46201",&format!("GET /site/{id}/index.html HTTP/1.1\r\nHost: {id}.localhost:46201\r\nConnection: close\r\n\r\n"));
         assert!(
             old.starts_with("HTTP/1.1 404 Not Found"),
@@ -337,6 +348,11 @@ fn three_node_product_smoke() {
         assert!(
             removed.starts_with("HTTP/1.1 200 OK") && removed.contains("unpublished"),
             "unpublish: {removed}"
+        );
+        assert_eq!(
+            fs::read_dir(&host_objects).unwrap().count(),
+            0,
+            "unpublish should reclaim all site objects that no other manifest references"
         );
         let after: serde_json::Value =
             serde_json::from_str(&get("127.0.0.1:46201", "/api/sites")).unwrap();
