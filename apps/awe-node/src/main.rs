@@ -547,7 +547,7 @@ fn site_api_list(host: &HostState, identity: &Identity) -> (&'static str, &'stat
    serde_json::json!({"site_id":id,"name":m.domain,"version":m.version,"files":m.files.len(),"bytes":bytes,"open":open,"url":format!("awe://site-{id}")})
   }).collect::<Vec<_>>();let count=sites.len();
   ("200 OK","application/json; charset=utf-8",serde_json::json!({"status":"ok","sites":sites,"count":count,"cleanup_pending":guard.cleanup_pending()}).to_string())
- },Err(e)=>("500 Internal Server Error","application/json; charset=utf-8",serde_json::json!({"status":"error","error":format!("cannot list site manifests: {e}")}).to_string())}
+ },Err(e)=>("500 Internal Server Error","application/json; charset=utf-8",serde_json::json!({"status":"error","error":format!("cannot list site manifests: {e}"),"cleanup_pending":guard.cleanup_pending()}).to_string())}
 }
 fn site_api_get(
     domain: &str,
@@ -4431,6 +4431,38 @@ mod tests {
             .to_ascii_lowercase()
             .contains("access-control-allow-origin"));
         assert!(response.contains("X-Content-Type-Options: nosniff"));
+    }
+
+    #[test]
+    fn site_list_reports_cleanup_pending_when_a_manifest_is_invalid() {
+        use super::{site_api_list, AweHost, HostPolicy, HostState, Identity, Username};
+        use std::sync::{Arc, Mutex};
+
+        let root = std::env::temp_dir().join(format!(
+            "awe-node-site-list-gc-{}",
+            std::process::id()
+        ));
+        let owner = Identity::generate(Username::new("site-list-owner").unwrap());
+        let mut host = AweHost::open(&root, 10_000_000, HostPolicy::default()).unwrap();
+        let file = host
+            .publish_file("/index.html", b"site list", "text/html")
+            .unwrap();
+        let manifest = host
+            .publish_manifest("site-list.awe", 1, &owner, vec![file])
+            .unwrap();
+        host.save_manifest(&manifest).unwrap();
+        std::fs::write(host.manifest_path("broken-site-list.awe"), b"{invalid").unwrap();
+        drop(host);
+
+        let reopened = AweHost::open(&root, 10_000_000, HostPolicy::default()).unwrap();
+        assert!(reopened.cleanup_pending());
+        let state: HostState = Arc::new(Mutex::new(reopened));
+        let (status, _, body) = site_api_list(&state, &owner);
+        assert_eq!(status, "500 Internal Server Error");
+        let response: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(response["cleanup_pending"], true);
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
