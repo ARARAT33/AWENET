@@ -1085,7 +1085,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
             None => format!("http://{expected}/site/{id}/{tail}"),
         };
         let response = format!(
-            "HTTP/1.1 302 Found\\r\\nLocation: {location}\\r\\nCache-Control: no-store\\r\\nContent-Length: 0\\r\\nConnection: close\\r\\n\\r\\n"
+            "HTTP/1.1 302 Found\r\nLocation: {location}\r\nCache-Control: no-store\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
         );
         stream.write_all(response.as_bytes()).await?;
         stream.shutdown().await?;
@@ -4420,6 +4420,7 @@ mod tests {
             Some("/app.js".to_string())
         );
         assert!(!site_path_matches(&site, "/api/status"));
+        assert!(!site_path_matches(&site, "http://example.test/app.js"));
         assert!(!site_path_matches(
             &site,
             &format!("/site/{}/index.html", "b".repeat(64))
@@ -4436,7 +4437,9 @@ mod tests {
         assert!(site_quota >= 20 * MIB);
 
         assert_eq!(split_storage_quotas(u64::MAX, 1, 1), None);
+        assert_eq!(split_storage_quotas(0, u64::MAX, 0), None);
         assert_eq!(split_storage_quotas(0, 0, 0), None);
+        assert_eq!(split_storage_quotas(0, 0, 20), Some((0, 20)));
     }
 
     #[test]
