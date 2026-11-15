@@ -283,6 +283,7 @@ fn split_storage_quotas(
     let node_growth = available_free.checked_sub(site_growth)?;
     let node_quota = existing_node_bytes.checked_add(node_growth)?;
     let site_quota = existing_site_bytes.checked_add(site_growth)?;
+    node_quota.checked_add(site_quota)?;
     if node_quota == 0 && site_quota == 0 {
         None
     } else {
@@ -302,6 +303,9 @@ fn site_host_id(host: &str) -> Option<String> {
     Some(id.to_ascii_lowercase())
 }
 fn site_path_matches(id: &str, path: &str) -> bool {
+    if !path.starts_with('/') {
+        return false;
+    }
     let prefix = format!("/site/{id}");
     let site_scoped = path == prefix
         || path
@@ -1054,7 +1058,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
     if let Some(route) = path.strip_prefix("/site/") {
         let mut parts = route.splitn(2, '/');
         let id = parts.next().unwrap_or("").to_ascii_lowercase();
-        if id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+        if id.len() != 64 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             stream
                 .write_all(&http_response(
                     "400 Bad Request",
@@ -1066,112 +1070,24 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
             return Ok(());
         }
         let tail = parts.next().unwrap_or("index.html");
+        let tail = if tail.is_empty() { "index.html" } else { tail };
         let port = ui_address
             .rsplit_once(':')
-            .map(|(_, p)| p)
+            .map(|(_, port)| port)
             .unwrap_or("41800");
         let expected = format!("{id}.localhost:{port}");
-        if !request_host.eq_ignore_ascii_case(&expected) {
-            let tail = if tail.is_empty() { "index.html" } else { tail };
-            let query = target.split_once('?').map(|(_, value)| value);
-            let query = query.filter(|value| {
-                !value.is_empty() && !value.bytes().any(|byte| byte.is_ascii_control())
-            });
-            let location = match query {
-                Some(query) => format!("http://{expected}/site/{id}/{tail}?{query}"),
-                None => format!("http://{expected}/site/{id}/{tail}"),
-            };
-            let response=format!("HTTP/1.1 302 Found\r\nLocation: {location}\r\nCache-Control: no-store\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
-            stream.write_all(response.as_bytes()).await?;
-            stream.shutdown().await?;
-            return Ok(());
-        }
-        let decoded = match decode_site_path(tail) {
-            Some(v) => v,
-            None => {
-                stream
-                    .write_all(&http_response(
-                        "400 Bad Request",
-                        "text/plain; charset=utf-8",
-                        "Invalid site path",
-                    ))
-                    .await?;
-                stream.shutdown().await?;
-                return Ok(());
-            }
+        let query = target.split_once('?').map(|(_, value)| value);
+        let query = query.filter(|value| {
+            !value.is_empty() && !value.bytes().any(|byte| byte.is_ascii_control())
+        });
+        let location = match query {
+            Some(query) => format!("http://{expected}/site/{id}/{tail}?{query}"),
+            None => format!("http://{expected}/site/{id}/{tail}"),
         };
-        let raw = if decoded.is_empty() || decoded == "/" {
-            "/index.html".to_string()
-        } else if decoded.starts_with('/') {
-            decoded
-        } else {
-            format!("/{decoded}")
-        };
-        let requested = match awep2p_core::host::normalize_path(&raw) {
-            Ok(v) => v,
-            Err(_) => {
-                stream
-                    .write_all(&http_response(
-                        "400 Bad Request",
-                        "text/plain; charset=utf-8",
-                        "Invalid site path",
-                    ))
-                    .await?;
-                stream.shutdown().await?;
-                return Ok(());
-            }
-        };
-        let response = match host.lock() {
-            Ok(mut g) => match g.find_manifest_by_id(&id) {
-                Ok(manifest) => {
-                    let ct = manifest
-                        .files
-                        .iter()
-                        .find(|f| f.path == requested)
-                        .map(|f| f.content_type.clone())
-                        .unwrap_or_else(|| "application/octet-stream".into());
-                    match g.get_authorized(&manifest, &requested, None) {
-                        Ok(bytes) => http_response_bytes("200 OK", &ct, &bytes),
-                        Err(e)
-                            if e.kind() == std::io::ErrorKind::NotFound
-                                || e.kind() == std::io::ErrorKind::PermissionDenied =>
-                        {
-                            http_response_bytes(
-                                "404 Not Found",
-                                "text/plain; charset=utf-8",
-                                b"Not Found",
-                            )
-                        }
-                        Err(_) => http_response_bytes(
-                            "500 Internal Server Error",
-                            "text/plain; charset=utf-8",
-                            b"Site read failed",
-                        ),
-                    }
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => http_response_bytes(
-                    "404 Not Found",
-                    "text/plain; charset=utf-8",
-                    b"Site not found",
-                ),
-                Err(e) if e.kind() == std::io::ErrorKind::InvalidInput => http_response_bytes(
-                    "400 Bad Request",
-                    "text/plain; charset=utf-8",
-                    b"Invalid site ID",
-                ),
-                Err(_) => http_response_bytes(
-                    "500 Internal Server Error",
-                    "text/plain; charset=utf-8",
-                    b"Site manifest invalid",
-                ),
-            },
-            Err(_) => http_response_bytes(
-                "500 Internal Server Error",
-                "text/plain; charset=utf-8",
-                b"Site host unavailable",
-            ),
-        };
-        stream.write_all(&response).await?;
+        let response = format!(
+            "HTTP/1.1 302 Found\\r\\nLocation: {location}\\r\\nCache-Control: no-store\\r\\nContent-Length: 0\\r\\nConnection: close\\r\\n\\r\\n"
+        );
+        stream.write_all(response.as_bytes()).await?;
         stream.shutdown().await?;
         return Ok(());
     }
