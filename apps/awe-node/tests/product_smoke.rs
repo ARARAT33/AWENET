@@ -310,7 +310,10 @@ fn three_node_product_smoke() {
             root_asset.starts_with("HTTP/1.1 200 OK") && root_asset.contains("h1{}"),
             "root-relative site asset failed: {root_asset}"
         );
-        let root_index=request_raw("127.0.0.1:46201",&format!("GET / HTTP/1.1\r\nHost: {id}.localhost:46201\r\nConnection: close\r\n\r\n"));
+        let root_index = request_raw(
+            "127.0.0.1:46201",
+            &format!("GET / HTTP/1.1\r\nHost: {id}.localhost:46201\r\nConnection: close\r\n\r\n"),
+        );
         assert!(
             root_index.starts_with("HTTP/1.1 200 OK") && root_index.contains("site v1"),
             "site root did not resolve to index.html: {root_index}"

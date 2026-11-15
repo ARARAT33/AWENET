@@ -3269,10 +3269,10 @@ async fn run_product() -> Result<()> {
     fs::create_dir_all(&host_root)?;
     let available_free = awep2p_core::node::get_available_disk_space(&storage_root)
         .context("failed to determine available node storage capacity")?;
-    let existing_node_bytes =
-        LocalNodeStore::open(&storage_root, u64::MAX)?.stats()?.used;
-    let existing_site_bytes =
-        LocalNodeStore::open(host_root.join("objects"), u64::MAX)?.stats()?.used;
+    let existing_node_bytes = LocalNodeStore::open(&storage_root, u64::MAX)?.stats()?.used;
+    let existing_site_bytes = LocalNodeStore::open(host_root.join("objects"), u64::MAX)?
+        .stats()?
+        .used;
     let (storage_quota, host_quota) =
         split_storage_quotas(available_free, existing_node_bytes, existing_site_bytes)
             .ok_or_else(|| anyhow::anyhow!("node and site storage have no allocatable capacity"))?;
@@ -4397,9 +4397,8 @@ mod policy_lock_tests {
 #[cfg(test)]
 mod tests {
     use super::{
-        http_response, is_loopback_host, local_peer_allowed, local_request_allowed,
-        parse_json_u16, parse_json_u32, site_path_matches, site_request_file_path,
-        split_storage_quotas,
+        http_response, is_loopback_host, local_peer_allowed, local_request_allowed, parse_json_u16,
+        parse_json_u32, site_path_matches, site_request_file_path, split_storage_quotas,
     };
     use serde_json::json;
 
@@ -4505,15 +4504,17 @@ mod tests {
             Some("/app.js".to_string())
         );
         assert!(!site_path_matches(&site, "/api/status"));
-        assert!(!site_path_matches(&site, &format!("/site/{}/index.html", "b".repeat(64))));
+        assert!(!site_path_matches(
+            &site,
+            &format!("/site/{}/index.html", "b".repeat(64))
+        ));
         assert_eq!(site_request_file_path(&site, "/%2e%2e/secret"), None);
     }
 
     #[test]
     fn storage_quota_split_preserves_existing_usage_after_restart() {
         const MIB: u64 = 1024 * 1024;
-        let (node_quota, site_quota) =
-            split_storage_quotas(80 * MIB, 0, 20 * MIB).unwrap();
+        let (node_quota, site_quota) = split_storage_quotas(80 * MIB, 0, 20 * MIB).unwrap();
         assert_eq!(site_quota, 40 * MIB);
         assert_eq!(node_quota, 60 * MIB);
         assert!(site_quota >= 20 * MIB);
