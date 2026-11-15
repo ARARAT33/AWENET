@@ -307,7 +307,7 @@ fn three_node_product_smoke() {
         );
         let root_asset=request_raw("127.0.0.1:46201",&format!("GET /style.css HTTP/1.1\r\nHost: {id}.localhost:46201\r\nConnection: close\r\n\r\n"));
         assert!(
-            root_asset.starts_with("HTTP/1.1 200 OK") && root_asset.contains("h1{{}}"),
+            root_asset.starts_with("HTTP/1.1 200 OK") && root_asset.contains("h1{}"),
             "root-relative site asset failed: {root_asset}"
         );
         let root_index=request_raw("127.0.0.1:46201",&format!("GET / HTTP/1.1\r\nHost: {id}.localhost:46201\r\nConnection: close\r\n\r\n"));
