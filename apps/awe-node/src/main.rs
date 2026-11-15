@@ -4437,7 +4437,7 @@ mod tests {
         assert!(site_quota >= 20 * MIB);
 
         assert_eq!(split_storage_quotas(u64::MAX, 1, 1), None);
-        assert_eq!(split_storage_quotas(0, u64::MAX, 0), None);
+        assert_eq!(split_storage_quotas(0, u64::MAX, 1), None);
         assert_eq!(split_storage_quotas(0, 0, 0), None);
         assert_eq!(split_storage_quotas(0, 0, 20), Some((0, 20)));
     }
