@@ -1371,7 +1371,7 @@ fn three_node_product_smoke() {
             .checked_add(1)
             .expect("admin network mutation timestamp");
         let admin_message = signing_state
-            .admin_signing_message(&network_admin_id, &admin_centre, admin_at)
+            .admin_signing_message(expected_registry.sequence(), &network_admin_id, &admin_centre, admin_at)
             .expect("build admin topology signing message");
         let admin_signature = network_admin.sign(&admin_message);
         let admin_body = serde_json::json!({
@@ -1423,7 +1423,7 @@ fn three_node_product_smoke() {
         };
         let forbidden_user_at = signing_state.updated_at_unix() + 1;
         let forbidden_user_message = signing_state
-            .admin_signing_message(&managed_user_id, &forbidden_user_action, forbidden_user_at)
+            .admin_signing_message(expected_registry.sequence(), &managed_user_id, &forbidden_user_action, forbidden_user_at)
             .expect("build ordinary user topology message");
         let forbidden_user_signature = managed_user.sign(&forbidden_user_message);
         let forbidden_user = post_raw(
@@ -1450,6 +1450,7 @@ fn three_node_product_smoke() {
         let forbidden_telemetry_at = signing_state.updated_at_unix() + 1;
         let forbidden_telemetry_message = signing_state
             .admin_signing_message(
+                expected_registry.sequence(),
                 &network_admin_id,
                 &forbidden_telemetry,
                 forbidden_telemetry_at,
