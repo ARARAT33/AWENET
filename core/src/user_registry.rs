@@ -906,6 +906,18 @@ mod tests {
         let user_account = register(&mut registry, &user, "regular-user", 3);
         let other_admin_account = register(&mut registry, &other_admin, "other-admin", 4);
 
+        assert_eq!(
+            registry
+                .admin_status_change_message(
+                    &user_account.awe_id,
+                    &user_account.awe_id,
+                    UserStatus::Suspended,
+                    5,
+                )
+                .unwrap_err(),
+            UserRegistryError::InsufficientPrivileges
+        );
+
         for (account, at) in [(&admin_account, 5), (&other_admin_account, 6)] {
             let message = registry
                 .role_change_message(&account.awe_id, UserRole::Admin, at)
