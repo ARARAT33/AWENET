@@ -46,12 +46,15 @@ public key in the founder-signed User Registry. The signing bytes contain:
 2. Network control version (u16 big-endian).
 3. Founder AWEID length and UTF-8 bytes.
 4. Actor AWEID length and UTF-8 bytes.
-5. Next control-plane sequence (u64 big-endian).
-6. Mutation timestamp (u64 big-endian).
-7. Action JSON length (u32 big-endian) and serialized `NetworkAction`.
+5. Current signed User Registry sequence (u64 big-endian).
+6. Next control-plane sequence (u64 big-endian).
+7. Mutation timestamp (u64 big-endian).
+8. Action JSON length (u32 big-endian) and serialized `NetworkAction`.
 
-The actor identity, action, timestamp and next sequence are therefore bound
-to the signature. Replays fail after the sequence advances.
+The actor identity, current User Registry sequence, action, timestamp and next
+control-plane sequence are therefore bound to the signature. A role/status
+change invalidates outstanding admin signatures even if the control-plane
+sequence has not changed; topology replays also fail after the sequence advances.
 
 The node verifies the actor capability, applies the action to a candidate
 topology, validates all topology invariants, and writes the new snapshot before
