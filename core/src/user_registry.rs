@@ -182,8 +182,8 @@ impl UserRegistry {
         self.accounts.values().cloned().collect()
     }
 
-    /// Resolves active account roles to the capabilities currently enforced by
-    /// the user-management API. Suspended accounts receive no capabilities.
+    /// Resolves active account roles to product capabilities. Suspended accounts
+    /// receive no capabilities; each API still enforces its own action scope.
     pub fn capabilities_for(&self, awe_id: &str) -> Option<CapabilitySet> {
         let account = self.accounts.get(awe_id)?;
         let mut capabilities = CapabilitySet::default();
@@ -191,6 +191,7 @@ impl UserRegistry {
             && matches!(account.role, UserRole::Founder | UserRole::Admin)
         {
             capabilities.grant(Capability::UserModerate);
+            capabilities.grant(Capability::TopologyManage);
         }
         Some(capabilities)
     }
