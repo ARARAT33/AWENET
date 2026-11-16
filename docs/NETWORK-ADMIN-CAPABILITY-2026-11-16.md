@@ -52,7 +52,9 @@ public key in the founder-signed User Registry. The signing bytes contain:
 8. Action JSON length (u32 big-endian) and serialized `NetworkAction`.
 
 The actor identity, current User Registry sequence, action, timestamp and next
-control-plane sequence are therefore bound to the signature. A role/status
+control-plane sequence are therefore bound to the signature. Clients obtain
+the current registry sequence from `GET /api/users`; it is part of the signed
+bytes, not a client-trusted authorization claim. A role/status
 change invalidates outstanding admin signatures even if the control-plane
 sequence has not changed; topology replays also fail after the sequence advances.
 
