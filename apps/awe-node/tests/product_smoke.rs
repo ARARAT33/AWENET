@@ -662,6 +662,28 @@ fn three_node_product_smoke() {
             "signed AWEID registration failed: {registration}"
         );
         let new_user_id = new_user.public.awe_id.to_hex();
+
+        let managed_user =
+            Identity::generate(Username::new("managed-user-key".to_string()).unwrap());
+        let managed_registration_message =
+            UserRegistry::registration_message("managed-user", &managed_user.public.public_key);
+        let managed_registration_signature = managed_user.sign(&managed_registration_message);
+        let managed_registration = post(
+            "127.0.0.1:46201",
+            "/api/users/register",
+            &serde_json::json!({
+                "username": "managed-user",
+                "public_key": hex::encode(managed_user.public.public_key),
+                "signature": hex::encode(managed_registration_signature)
+            })
+            .to_string(),
+        );
+        assert!(
+            managed_registration.contains(r#""status":"created""#),
+            "second signed AWEID registration failed: {managed_registration}"
+        );
+        let managed_user_id = managed_user.public.awe_id.to_hex();
+
         let mut expected_registry = UserRegistry::new(&founder, 1);
         expected_registry
             .register(
@@ -670,7 +692,15 @@ fn three_node_product_smoke() {
                 &registration_signature,
                 2,
             )
-            .expect("build expected user registry sequence");
+            .expect("build expected first user registry sequence");
+        expected_registry
+            .register(
+                "managed-user",
+                &managed_user.public.public_key,
+                &managed_registration_signature,
+                3,
+            )
+            .expect("build expected second user registry sequence");
 
         let server_time = initial_users
             .get("server_time_unix")
@@ -717,7 +747,137 @@ fn three_node_product_smoke() {
             .set_role(&new_user_id, UserRole::Admin, role_at, &role_signature)
             .expect("advance expected registry after promotion");
 
-        let status_at = role_at + 1;
+        // An active Admin can suspend and reactivate ordinary User accounts.
+        // The signature binds both AWE IDs and the registry sequence.
+        let admin_status_at = role_at + 1;
+        let admin_status_message = expected_registry
+            .admin_status_change_message(
+                &new_user_id,
+                &managed_user_id,
+                UserStatus::Suspended,
+                admin_status_at,
+            )
+            .expect("admin moderation message");
+        let admin_status_signature = new_user.sign(&admin_status_message);
+        let admin_suspended_body = serde_json::json!({
+            "actor_awe_id": new_user_id,
+            "awe_id": managed_user_id,
+            "status": "suspended",
+            "at_unix": admin_status_at,
+            "signature": hex::encode(admin_status_signature)
+        })
+        .to_string();
+        let admin_suspended = post_raw(
+            "127.0.0.1:46201",
+            "/api/admin/users/status",
+            &admin_suspended_body,
+        );
+        assert!(
+            admin_suspended.starts_with("HTTP/1.1 200 OK")
+                && admin_suspended.contains(r#""status":"suspended""#)
+                && admin_suspended.contains(&format!(r#""actor_awe_id":"{new_user_id}""#)),
+            "active admin could not suspend a regular user: {admin_suspended}"
+        );
+        expected_registry
+            .admin_set_status(
+                &new_user_id,
+                &managed_user_id,
+                UserStatus::Suspended,
+                admin_status_at,
+                &admin_status_signature,
+            )
+            .expect("advance expected registry after admin suspension");
+
+        let replayed_admin_status = post_raw(
+            "127.0.0.1:46201",
+            "/api/admin/users/status",
+            &admin_suspended_body,
+        );
+        assert!(
+            replayed_admin_status.starts_with("HTTP/1.1 403 Forbidden"),
+            "admin moderation signature replay was not rejected: {replayed_admin_status}"
+        );
+
+        let reactivate_at = admin_status_at + 1;
+        let reactivate_message = expected_registry
+            .admin_status_change_message(
+                &new_user_id,
+                &managed_user_id,
+                UserStatus::Active,
+                reactivate_at,
+            )
+            .expect("admin reactivation message");
+        let reactivate_signature = new_user.sign(&reactivate_message);
+        let reactivated = post_raw(
+            "127.0.0.1:46201",
+            "/api/admin/users/status",
+            &serde_json::json!({
+                "actor_awe_id": new_user_id,
+                "awe_id": managed_user_id,
+                "status": "active",
+                "at_unix": reactivate_at,
+                "signature": hex::encode(reactivate_signature)
+            })
+            .to_string(),
+        );
+        assert!(
+            reactivated.starts_with("HTTP/1.1 200 OK")
+                && reactivated.contains(r#""status":"active""#),
+            "active admin could not reactivate a regular user: {reactivated}"
+        );
+        expected_registry
+            .admin_set_status(
+                &new_user_id,
+                &managed_user_id,
+                UserStatus::Active,
+                reactivate_at,
+                &reactivate_signature,
+            )
+            .expect("advance expected registry after admin reactivation");
+
+        // Admins cannot promote accounts; role assignment remains founder-only.
+        let attempted_promotion_at = reactivate_at + 1;
+        let attempted_promotion_message = expected_registry
+            .role_change_message(&managed_user_id, UserRole::Admin, attempted_promotion_at)
+            .expect("founder role-change message for admin restriction test");
+        let attempted_promotion = post_raw(
+            "127.0.0.1:46201",
+            "/api/admin/users/role",
+            &serde_json::json!({
+                "awe_id": managed_user_id,
+                "role": "admin",
+                "at_unix": attempted_promotion_at,
+                "signature": hex::encode(new_user.sign(&attempted_promotion_message))
+            })
+            .to_string(),
+        );
+        assert!(
+            attempted_promotion.starts_with("HTTP/1.1 403 Forbidden"),
+            "admin was able to promote another account: {attempted_promotion}"
+        );
+
+        // Admins cannot manage the founder or another privileged account.
+        let protected_target = post_raw(
+            "127.0.0.1:46201",
+            "/api/admin/users/status",
+            &serde_json::json!({
+                "actor_awe_id": new_user_id,
+                "awe_id": founder_id,
+                "status": "suspended",
+                "at_unix": attempted_promotion_at,
+                "signature": hex::encode([0u8; 64])
+            })
+            .to_string(),
+        );
+        assert!(
+            protected_target.starts_with("HTTP/1.1 403 Forbidden")
+                && protected_target
+                    .contains("administrators may only manage regular user accounts"),
+            "admin could target the founder account: {protected_target}"
+        );
+
+        // Founder retains authority over administrators and can suspend one.
+        let status_at = attempted_promotion_at + 1;
         let status_message = expected_registry
             .status_change_message(&new_user_id, UserStatus::Suspended, status_at)
             .expect("founder status-change message");
@@ -738,11 +898,38 @@ fn three_node_product_smoke() {
                 && suspended.contains(r#""status":"suspended""#),
             "founder-signed suspension failed: {suspended}"
         );
+        expected_registry
+            .set_status(
+                &new_user_id,
+                UserStatus::Suspended,
+                status_at,
+                &status_signature,
+            )
+            .expect("advance expected registry after founder suspension");
+
+        let suspended_admin_attempt = post_raw(
+            "127.0.0.1:46201",
+            "/api/admin/users/status",
+            &serde_json::json!({
+                "actor_awe_id": new_user_id,
+                "awe_id": managed_user_id,
+                "status": "suspended",
+                "at_unix": status_at + 1,
+                "signature": hex::encode([0u8; 64])
+            })
+            .to_string(),
+        );
+        assert!(
+            suspended_admin_attempt.starts_with("HTTP/1.1 403 Forbidden")
+                && suspended_admin_attempt.contains("actor does not have permission"),
+            "suspended admin retained moderation rights: {suspended_admin_attempt}"
+        );
+
         let user_detail: serde_json::Value = serde_json::from_str(&get(
             "127.0.0.1:46201",
             &format!("/api/users/{new_user_id}"),
         ))
-        .expect("user detail JSON");
+        .expect("admin user detail JSON");
         assert_eq!(
             user_detail
                 .pointer("/user/role")
@@ -755,6 +942,18 @@ fn three_node_product_smoke() {
                 .and_then(|value| value.as_str()),
             Some("suspended")
         );
+        let managed_detail: serde_json::Value = serde_json::from_str(&get(
+            "127.0.0.1:46201",
+            &format!("/api/users/{managed_user_id}"),
+        ))
+        .expect("managed user detail JSON");
+        assert_eq!(
+            managed_detail
+                .pointer("/user/status")
+                .and_then(|value| value.as_str()),
+            Some("active")
+        );
+
         let durable_users = user_registry::load(&dirs[0].join("users.json"), &founder)
             .expect("founder-signed durable user registry");
         assert_eq!(
@@ -766,6 +965,12 @@ fn three_node_product_smoke() {
                 .get(&new_user_id)
                 .map(|account| account.status),
             Some(UserStatus::Suspended)
+        );
+        assert_eq!(
+            durable_users
+                .get(&managed_user_id)
+                .map(|account| account.status),
+            Some(UserStatus::Active)
         );
 
         // A failed disk publish must not make a newly registered account
