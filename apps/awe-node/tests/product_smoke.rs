@@ -684,6 +684,28 @@ fn three_node_product_smoke() {
         );
         let managed_user_id = managed_user.public.awe_id.to_hex();
 
+        let network_admin =
+            Identity::generate(Username::new("network-admin-key".to_string()).unwrap());
+        let network_admin_registration_message =
+            UserRegistry::registration_message("network-admin", &network_admin.public.public_key);
+        let network_admin_registration_signature =
+            network_admin.sign(&network_admin_registration_message);
+        let network_admin_registration = post(
+            "127.0.0.1:46201",
+            "/api/users/register",
+            &serde_json::json!({
+                "username": "network-admin",
+                "public_key": hex::encode(network_admin.public.public_key),
+                "signature": hex::encode(network_admin_registration_signature)
+            })
+            .to_string(),
+        );
+        assert!(
+            network_admin_registration.contains(r#""status":"created""#),
+            "network admin AWEID registration failed: {network_admin_registration}"
+        );
+        let network_admin_id = network_admin.public.awe_id.to_hex();
+
         let mut expected_registry = UserRegistry::new(&founder, 1);
         expected_registry
             .register(
@@ -701,6 +723,14 @@ fn three_node_product_smoke() {
                 3,
             )
             .expect("build expected second user registry sequence");
+        expected_registry
+            .register(
+                "network-admin",
+                &network_admin.public.public_key,
+                &network_admin_registration_signature,
+                4,
+            )
+            .expect("build expected network admin registry sequence");
 
         let server_time = initial_users
             .get("server_time_unix")
@@ -925,6 +955,37 @@ fn three_node_product_smoke() {
             "suspended admin retained moderation rights: {suspended_admin_attempt}"
         );
 
+
+        let network_admin_role_at = status_at + 2;
+        let network_admin_role_message = expected_registry
+            .role_change_message(&network_admin_id, UserRole::Admin, network_admin_role_at)
+            .expect("network admin founder role-change message");
+        let network_admin_role_signature = founder.sign(&network_admin_role_message);
+        let network_admin_promoted = post(
+            "127.0.0.1:46201",
+            "/api/admin/users/role",
+            &serde_json::json!({
+                "awe_id": network_admin_id,
+                "role": "admin",
+                "at_unix": network_admin_role_at,
+                "signature": hex::encode(network_admin_role_signature)
+            })
+            .to_string(),
+        );
+        assert!(
+            network_admin_promoted.contains(r#""status":"updated""#)
+                && network_admin_promoted.contains(r#""role":"admin""#),
+            "founder could not promote network admin: {network_admin_promoted}"
+        );
+        expected_registry
+            .set_role(
+                &network_admin_id,
+                UserRole::Admin,
+                network_admin_role_at,
+                &network_admin_role_signature,
+            )
+            .expect("advance expected registry after network admin promotion");
+
         let user_detail: serde_json::Value = serde_json::from_str(&get(
             "127.0.0.1:46201",
             &format!("/api/users/{new_user_id}"),
@@ -971,6 +1032,12 @@ fn three_node_product_smoke() {
                 .get(&managed_user_id)
                 .map(|account| account.status),
             Some(UserStatus::Active)
+        );
+        assert_eq!(
+            durable_users
+                .get(&network_admin_id)
+                .map(|account| (account.role, account.status)),
+            Some((UserRole::Admin, UserStatus::Active))
         );
 
         // A failed disk publish must not make a newly registered account
@@ -1293,6 +1360,119 @@ fn three_node_product_smoke() {
             .as_u64()
             .expect("initial network control timestamp");
         let mut signing_state = NetworkControlPlane::new(&founder_identity, initial_time);
+
+        // An active Admin may change structural topology, but cannot forge
+        // telemetry or use a regular user's key to mutate the control plane.
+        let admin_centre = NetworkAction::CreateCentre {
+            centre_id: "dc-admin-temporary".into(),
+        };
+        let admin_at = signing_state
+            .updated_at_unix()
+            .checked_add(1)
+            .expect("admin network mutation timestamp");
+        let admin_message = signing_state
+            .admin_signing_message(&network_admin_id, &admin_centre, admin_at)
+            .expect("build admin topology signing message");
+        let admin_signature = network_admin.sign(&admin_message);
+        let admin_body = serde_json::json!({
+            "actor_awe_id": network_admin_id,
+            "action": admin_centre,
+            "at_unix": admin_at,
+            "signature": hex::encode(admin_signature)
+        })
+        .to_string();
+        let admin_applied = post_raw(
+            "127.0.0.1:46201",
+            "/api/network/control",
+            &admin_body,
+        );
+        assert!(
+            admin_applied.starts_with("HTTP/1.1 200 OK")
+                && admin_applied.contains(r#""actor_awe_id":"#),
+            "active admin could not create a data centre: {admin_applied}"
+        );
+        signing_state
+            .apply_authorized(
+                &expected_registry,
+                &network_admin_id,
+                &admin_centre,
+                admin_at,
+                admin_at,
+                &admin_signature,
+            )
+            .expect("mirror accepted admin topology mutation");
+        let admin_status: serde_json::Value =
+            serde_json::from_str(&get("127.0.0.1:46201", "/api/network/control"))
+                .expect("admin network control status");
+        assert_eq!(
+            admin_status["last_actor_awe_id"].as_str(),
+            Some(network_admin_id.as_str())
+        );
+        let admin_snapshot = network_control::load(
+            &dirs[0].join("network-control.json"),
+            &founder_identity,
+        )
+        .expect("durable founder-signed snapshot after admin mutation");
+        assert_eq!(
+            admin_snapshot.last_actor_awe_id(),
+            Some(network_admin_id.as_str())
+        );
+
+        let forbidden_user_action = NetworkAction::CreateCentre {
+            centre_id: "dc-user-forbidden".into(),
+        };
+        let forbidden_user_at = signing_state.updated_at_unix() + 1;
+        let forbidden_user_message = signing_state
+            .admin_signing_message(&managed_user_id, &forbidden_user_action, forbidden_user_at)
+            .expect("build ordinary user topology message");
+        let forbidden_user_signature = managed_user.sign(&forbidden_user_message);
+        let forbidden_user = post_raw(
+            "127.0.0.1:46201",
+            "/api/network/control",
+            &serde_json::json!({
+                "actor_awe_id": managed_user_id,
+                "action": forbidden_user_action,
+                "at_unix": forbidden_user_at,
+                "signature": hex::encode(forbidden_user_signature)
+            })
+            .to_string(),
+        );
+        assert!(
+            forbidden_user.starts_with("HTTP/1.1 403 Forbidden")
+                && forbidden_user.contains("does not have permission"),
+            "ordinary user changed network topology: {forbidden_user}"
+        );
+
+        let forbidden_telemetry = NetworkAction::SetNodeHealth {
+            node_id: "node-0".into(),
+            alive: false,
+        };
+        let forbidden_telemetry_at = signing_state.updated_at_unix() + 1;
+        let forbidden_telemetry_message = signing_state
+            .admin_signing_message(
+                &network_admin_id,
+                &forbidden_telemetry,
+                forbidden_telemetry_at,
+            )
+            .expect("build protected telemetry message");
+        let forbidden_telemetry_signature = network_admin.sign(&forbidden_telemetry_message);
+        let telemetry_denied = post_raw(
+            "127.0.0.1:46201",
+            "/api/network/control",
+            &serde_json::json!({
+                "actor_awe_id": network_admin_id,
+                "action": forbidden_telemetry,
+                "at_unix": forbidden_telemetry_at,
+                "signature": hex::encode(forbidden_telemetry_signature)
+            })
+            .to_string(),
+        );
+        assert!(
+            telemetry_denied.starts_with("HTTP/1.1 403 Forbidden")
+                && telemetry_denied.contains("reserved for the founder or runtime telemetry"),
+            "admin changed runtime telemetry: {telemetry_denied}"
+        );
+
         let mut actions = Vec::new();
         for index in 0..6 {
             actions.push(NetworkAction::CreateCentre {
@@ -1329,6 +1509,9 @@ fn three_node_product_smoke() {
         actions.push(NetworkAction::SetNodeHealth {
             node_id: "node-0".into(),
             alive: true,
+        });
+        actions.push(NetworkAction::RemoveCentre {
+            centre_id: "dc-admin-temporary".into(),
         });
 
         let mut first_signed_request: Option<(NetworkAction, u64, [u8; 64])> = None;
