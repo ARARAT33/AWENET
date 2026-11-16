@@ -7,11 +7,11 @@
 //! authorization and cross-node replication are separate integration work.
 
 use crate::identity::{AweId, Identity};
-use crate::permissions::Capability;
-use crate::user_registry::UserRegistry;
 use crate::network_topology::{
     AweNet, CentreGroup, CentreLinkMode, DataCentre, DataGroup, Node, PeerMetrics,
 };
+use crate::permissions::Capability;
+use crate::user_registry::UserRegistry;
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File},
@@ -282,8 +282,8 @@ impl NetworkControlPlane {
         }
         let founder_len = u16::try_from(self.founder_awe_id.len())
             .map_err(|_| NetworkControlError::InvalidState)?;
-        let actor_len =
-            u16::try_from(actor_awe_id.len()).map_err(|_| NetworkControlError::InvalidIdentifier)?;
+        let actor_len = u16::try_from(actor_awe_id.len())
+            .map_err(|_| NetworkControlError::InvalidIdentifier)?;
         let payload_len =
             u32::try_from(payload.len()).map_err(|_| NetworkControlError::ActionTooLarge)?;
         let mut message = Vec::with_capacity(
@@ -350,12 +350,8 @@ impl NetworkControlPlane {
         if at_unix > now_unix.saturating_add(MAX_CLOCK_SKEW_SECS) {
             return Err(NetworkControlError::TimestampInFuture);
         }
-        let message = self.admin_signing_message(
-            registry.sequence(),
-            actor_awe_id,
-            action,
-            at_unix,
-        )?;
+        let message =
+            self.admin_signing_message(registry.sequence(), actor_awe_id, action, at_unix)?;
         if !Identity::verify(&account.public_key, &message, signature) {
             return Err(NetworkControlError::InvalidSignature);
         }
@@ -788,10 +784,8 @@ mod tests {
         let founder = identity("founder");
         let admin = identity("network-admin");
         let mut registry = UserRegistry::new(&founder, 1);
-        let registration = UserRegistry::registration_message(
-            "network-admin",
-            &admin.public.public_key,
-        );
+        let registration =
+            UserRegistry::registration_message("network-admin", &admin.public.public_key);
         let account = registry
             .register(
                 "network-admin",

@@ -955,7 +955,6 @@ fn three_node_product_smoke() {
             "suspended admin retained moderation rights: {suspended_admin_attempt}"
         );
 
-
         let network_admin_role_at = status_at + 2;
         let network_admin_role_message = expected_registry
             .role_change_message(&network_admin_id, UserRole::Admin, network_admin_role_at)
@@ -1371,7 +1370,12 @@ fn three_node_product_smoke() {
             .checked_add(1)
             .expect("admin network mutation timestamp");
         let admin_message = signing_state
-            .admin_signing_message(expected_registry.sequence(), &network_admin_id, &admin_centre, admin_at)
+            .admin_signing_message(
+                expected_registry.sequence(),
+                &network_admin_id,
+                &admin_centre,
+                admin_at,
+            )
             .expect("build admin topology signing message");
         let admin_signature = network_admin.sign(&admin_message);
         let admin_body = serde_json::json!({
@@ -1381,11 +1385,7 @@ fn three_node_product_smoke() {
             "signature": hex::encode(admin_signature)
         })
         .to_string();
-        let admin_applied = post_raw(
-            "127.0.0.1:46201",
-            "/api/network/control",
-            &admin_body,
-        );
+        let admin_applied = post_raw("127.0.0.1:46201", "/api/network/control", &admin_body);
         assert!(
             admin_applied.starts_with("HTTP/1.1 200 OK")
                 && admin_applied.contains(r#""actor_awe_id":"#),
@@ -1408,11 +1408,9 @@ fn three_node_product_smoke() {
             admin_status["last_actor_awe_id"].as_str(),
             Some(network_admin_id.as_str())
         );
-        let admin_snapshot = network_control::load(
-            &dirs[0].join("network-control.json"),
-            &founder_identity,
-        )
-        .expect("durable founder-signed snapshot after admin mutation");
+        let admin_snapshot =
+            network_control::load(&dirs[0].join("network-control.json"), &founder_identity)
+                .expect("durable founder-signed snapshot after admin mutation");
         assert_eq!(
             admin_snapshot.last_actor_awe_id(),
             Some(network_admin_id.as_str())
@@ -1423,7 +1421,12 @@ fn three_node_product_smoke() {
         };
         let forbidden_user_at = signing_state.updated_at_unix() + 1;
         let forbidden_user_message = signing_state
-            .admin_signing_message(expected_registry.sequence(), &managed_user_id, &forbidden_user_action, forbidden_user_at)
+            .admin_signing_message(
+                expected_registry.sequence(),
+                &managed_user_id,
+                &forbidden_user_action,
+                forbidden_user_at,
+            )
             .expect("build ordinary user topology message");
         let forbidden_user_signature = managed_user.sign(&forbidden_user_message);
         let forbidden_user = post_raw(
