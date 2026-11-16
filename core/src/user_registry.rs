@@ -5,7 +5,10 @@
 //! a founder-signed atomic snapshot. This module is an account directory;
 //! it does not by itself grant HTTP/API capabilities to an Admin role.
 
-use crate::identity::{AweId, Identity, Username};
+use crate::{
+    identity::{AweId, Identity, Username},
+    permissions::{Capability, CapabilitySet},
+};
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -21,6 +24,7 @@ pub const USER_REGISTRY_VERSION: u16 = 1;
 pub const MAX_USERS: usize = 100_000;
 const REGISTER_CONTEXT: &[u8] = b"AWENET-USER-REGISTER/v1\0";
 const MUTATION_CONTEXT: &[u8] = b"AWENET-USER-MUTATION/v1\0";
+const ADMIN_MUTATION_CONTEXT: &[u8] = b"AWENET-USER-ADMIN-MUTATION/v1\0";
 const STORE_CONTEXT: &[u8] = b"AWENET-USER-REGISTRY-STORE/v1\0";
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -96,6 +100,10 @@ pub enum UserRegistryError {
     UnknownUser,
     #[error("the founder account cannot be demoted or suspended")]
     FounderProtected,
+    #[error("actor does not have permission to moderate users")]
+    InsufficientPrivileges,
+    #[error("administrators may only manage regular user accounts")]
+    ProtectedAccount,
     #[error("registry has reached its user limit")]
     RegistryFull,
     #[error("user registry sequence is exhausted")]
@@ -172,6 +180,19 @@ impl UserRegistry {
 
     pub fn accounts(&self) -> Vec<UserAccount> {
         self.accounts.values().cloned().collect()
+    }
+
+    /// Resolves active account roles to the capabilities currently enforced by
+    /// the user-management API. Suspended accounts receive no capabilities.
+    pub fn capabilities_for(&self, awe_id: &str) -> Option<CapabilitySet> {
+        let account = self.accounts.get(awe_id)?;
+        let mut capabilities = CapabilitySet::default();
+        if account.status == UserStatus::Active
+            && matches!(account.role, UserRole::Founder | UserRole::Admin)
+        {
+            capabilities.grant(Capability::UserModerate);
+        }
+        Some(capabilities)
     }
 
     /// Canonical proof-of-possession message for a new account.
@@ -339,6 +360,112 @@ impl UserRegistry {
         let updated = account.clone();
         self.sequence = sequence;
         Ok(updated)
+    }
+
+    /// Returns the canonical message an active moderator signs to suspend or
+    /// reactivate a regular user. Actor, target, status, sequence and timestamp
+    /// are bound to prevent cross-user substitution and replay.
+    pub fn admin_status_change_message(
+        &self,
+        actor_awe_id: &str,
+        target_awe_id: &str,
+        status: UserStatus,
+        at_unix: u64,
+    ) -> Result<Vec<u8>, UserRegistryError> {
+        self.moderator_public_key(actor_awe_id)?;
+        let target = self.moderatable_target(target_awe_id)?;
+        if at_unix < target.updated_at_unix {
+            return Err(UserRegistryError::InvalidTimestamp);
+        }
+        self.admin_mutation_message(actor_awe_id, target_awe_id, status, at_unix)
+    }
+
+    /// Applies a signed moderation operation. Active Founder/Admin accounts may
+    /// manage only regular User accounts; only founder-signed methods can change
+    /// administrator or founder accounts.
+    pub fn admin_set_status(
+        &mut self,
+        actor_awe_id: &str,
+        target_awe_id: &str,
+        status: UserStatus,
+        at_unix: u64,
+        signature: &[u8; 64],
+    ) -> Result<UserAccount, UserRegistryError> {
+        let actor_public_key = self.moderator_public_key(actor_awe_id)?;
+        let current = self.moderatable_target(target_awe_id)?.clone();
+        if at_unix < current.updated_at_unix {
+            return Err(UserRegistryError::InvalidTimestamp);
+        }
+        let message = self.admin_status_change_message(
+            actor_awe_id,
+            target_awe_id,
+            status,
+            at_unix,
+        )?;
+        if !Identity::verify(&actor_public_key, &message, signature) {
+            return Err(UserRegistryError::InvalidSignature);
+        }
+        if current.status == status {
+            return Ok(current);
+        }
+
+        let sequence = self.next_sequence()?;
+        let account = self
+            .accounts
+            .get_mut(target_awe_id)
+            .ok_or(UserRegistryError::UnknownUser)?;
+        account.status = status;
+        account.updated_at_unix = at_unix;
+        account.sequence = sequence;
+        let updated = account.clone();
+        self.sequence = sequence;
+        Ok(updated)
+    }
+
+    fn moderator_public_key(&self, actor_awe_id: &str) -> Result<[u8; 32], UserRegistryError> {
+        let account = self
+            .accounts
+            .get(actor_awe_id)
+            .ok_or(UserRegistryError::UnknownUser)?;
+        let capabilities = self
+            .capabilities_for(actor_awe_id)
+            .ok_or(UserRegistryError::UnknownUser)?;
+        if !capabilities.allows(&Capability::UserModerate) {
+            return Err(UserRegistryError::InsufficientPrivileges);
+        }
+        Ok(account.public_key)
+    }
+
+    fn moderatable_target(&self, target_awe_id: &str) -> Result<&UserAccount, UserRegistryError> {
+        let target = self
+            .accounts
+            .get(target_awe_id)
+            .ok_or(UserRegistryError::UnknownUser)?;
+        if target.role != UserRole::User {
+            return Err(UserRegistryError::ProtectedAccount);
+        }
+        Ok(target)
+    }
+
+    fn admin_mutation_message(
+        &self,
+        actor_awe_id: &str,
+        target_awe_id: &str,
+        status: UserStatus,
+        at_unix: u64,
+    ) -> Result<Vec<u8>, UserRegistryError> {
+        let sequence = self.next_sequence()?;
+        let mut message = Vec::new();
+        message.extend_from_slice(ADMIN_MUTATION_CONTEXT);
+        for field in ["set_status", actor_awe_id, target_awe_id, status.as_str()] {
+            let length =
+                u16::try_from(field.len()).map_err(|_| UserRegistryError::InconsistentRegistry)?;
+            message.extend_from_slice(&length.to_be_bytes());
+            message.extend_from_slice(field.as_bytes());
+        }
+        message.extend_from_slice(&sequence.to_be_bytes());
+        message.extend_from_slice(&at_unix.to_be_bytes());
+        Ok(message)
     }
 
     fn mutation_message(
@@ -699,6 +826,206 @@ mod tests {
             .unwrap();
         assert_eq!(suspended.status, UserStatus::Suspended);
         assert_eq!(registry.sequence(), 4);
+    }
+
+    #[test]
+    fn active_admin_can_suspend_and_reactivate_regular_users() {
+        let founder = identity("founder");
+        let admin = identity("admin-key");
+        let user = identity("regular-user");
+        let mut registry = UserRegistry::new(&founder, 1);
+        let admin_account = register(&mut registry, &admin, "admin", 2);
+        let user_account = register(&mut registry, &user, "regular-user", 3);
+
+        let promote_at = 4;
+        let promote_message = registry
+            .role_change_message(&admin_account.awe_id, UserRole::Admin, promote_at)
+            .unwrap();
+        registry
+            .set_role(
+                &admin_account.awe_id,
+                UserRole::Admin,
+                promote_at,
+                &founder.sign(&promote_message),
+            )
+            .unwrap();
+        assert!(registry
+            .capabilities_for(&admin_account.awe_id)
+            .unwrap()
+            .allows(&Capability::UserModerate));
+        assert!(!registry
+            .capabilities_for(&user_account.awe_id)
+            .unwrap()
+            .allows(&Capability::UserModerate));
+
+        let suspend_at = 5;
+        let suspend_message = registry
+            .admin_status_change_message(
+                &admin_account.awe_id,
+                &user_account.awe_id,
+                UserStatus::Suspended,
+                suspend_at,
+            )
+            .unwrap();
+        let suspended = registry
+            .admin_set_status(
+                &admin_account.awe_id,
+                &user_account.awe_id,
+                UserStatus::Suspended,
+                suspend_at,
+                &admin.sign(&suspend_message),
+            )
+            .unwrap();
+        assert_eq!(suspended.status, UserStatus::Suspended);
+
+        let reactivate_at = 6;
+        let reactivate_message = registry
+            .admin_status_change_message(
+                &admin_account.awe_id,
+                &user_account.awe_id,
+                UserStatus::Active,
+                reactivate_at,
+            )
+            .unwrap();
+        let active = registry
+            .admin_set_status(
+                &admin_account.awe_id,
+                &user_account.awe_id,
+                UserStatus::Active,
+                reactivate_at,
+                &admin.sign(&reactivate_message),
+            )
+            .unwrap();
+        assert_eq!(active.status, UserStatus::Active);
+    }
+
+    #[test]
+    fn admin_moderation_rejects_forgery_replay_suspended_actors_and_privileged_targets() {
+        let founder = identity("founder");
+        let admin = identity("admin-key");
+        let other_admin = identity("other-admin-key");
+        let user = identity("regular-user");
+        let mut registry = UserRegistry::new(&founder, 1);
+        let admin_account = register(&mut registry, &admin, "admin", 2);
+        let user_account = register(&mut registry, &user, "regular-user", 3);
+        let other_admin_account = register(&mut registry, &other_admin, "other-admin", 4);
+
+        for (account, at) in [(&admin_account, 5), (&other_admin_account, 6)] {
+            let message = registry
+                .role_change_message(&account.awe_id, UserRole::Admin, at)
+                .unwrap();
+            registry
+                .set_role(
+                    &account.awe_id,
+                    UserRole::Admin,
+                    at,
+                    &founder.sign(&message),
+                )
+                .unwrap();
+        }
+
+        let at = 7;
+        let message = registry
+            .admin_status_change_message(
+                &admin_account.awe_id,
+                &user_account.awe_id,
+                UserStatus::Suspended,
+                at,
+            )
+            .unwrap();
+        let sequence_before_forgery = registry.sequence();
+        let impostor = identity("impostor");
+        assert_eq!(
+            registry
+                .admin_set_status(
+                    &admin_account.awe_id,
+                    &user_account.awe_id,
+                    UserStatus::Suspended,
+                    at,
+                    &impostor.sign(&message),
+                )
+                .unwrap_err(),
+            UserRegistryError::InvalidSignature
+        );
+        assert_eq!(registry.sequence(), sequence_before_forgery);
+
+        let admin_signature = admin.sign(&message);
+        registry
+            .admin_set_status(
+                &admin_account.awe_id,
+                &user_account.awe_id,
+                UserStatus::Suspended,
+                at,
+                &admin_signature,
+            )
+            .unwrap();
+        assert_eq!(
+            registry
+                .admin_set_status(
+                    &admin_account.awe_id,
+                    &user_account.awe_id,
+                    UserStatus::Suspended,
+                    at,
+                    &admin_signature,
+                )
+                .unwrap_err(),
+            UserRegistryError::InvalidSignature
+        );
+
+        assert_eq!(
+            registry
+                .admin_status_change_message(
+                    &admin_account.awe_id,
+                    &other_admin_account.awe_id,
+                    UserStatus::Suspended,
+                    8,
+                )
+                .unwrap_err(),
+            UserRegistryError::ProtectedAccount
+        );
+        assert_eq!(
+            registry
+                .admin_status_change_message(
+                    &admin_account.awe_id,
+                    &founder.public.awe_id.to_hex(),
+                    UserStatus::Suspended,
+                    8,
+                )
+                .unwrap_err(),
+            UserRegistryError::ProtectedAccount
+        );
+
+        let suspend_admin_at = 8;
+        let suspend_admin_message = registry
+            .status_change_message(
+                &admin_account.awe_id,
+                UserStatus::Suspended,
+                suspend_admin_at,
+            )
+            .unwrap();
+        registry
+            .set_status(
+                &admin_account.awe_id,
+                UserStatus::Suspended,
+                suspend_admin_at,
+                &founder.sign(&suspend_admin_message),
+            )
+            .unwrap();
+        assert!(!registry
+            .capabilities_for(&admin_account.awe_id)
+            .unwrap()
+            .allows(&Capability::UserModerate));
+        assert_eq!(
+            registry
+                .admin_status_change_message(
+                    &admin_account.awe_id,
+                    &user_account.awe_id,
+                    UserStatus::Active,
+                    9,
+                )
+                .unwrap_err(),
+            UserRegistryError::InsufficientPrivileges
+        );
     }
 
     #[test]
