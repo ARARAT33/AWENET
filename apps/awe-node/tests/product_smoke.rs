@@ -299,10 +299,30 @@ fn three_node_product_smoke() {
                 )),
             "redirect: {redirect}"
         );
+        let query_redirect=request_raw("127.0.0.1:46201",&format!("GET /site/{id}/index.html?lang=hy&mode=edit HTTP/1.1\r\nHost: 127.0.0.1:46201\r\nConnection: close\r\n\r\n"));
+        assert!(
+            query_redirect.contains(&format!(
+                "Location: http://{id}.localhost:46201/site/{id}/index.html?lang=hy&mode=edit"
+            )),
+            "query parameters were lost during site redirect: {query_redirect}"
+        );
         let served=request_raw("127.0.0.1:46201",&format!("GET /site/{id}/index.html HTTP/1.1\r\nHost: {id}.localhost:46201\r\nConnection: close\r\n\r\n"));
         assert!(
             served.starts_with("HTTP/1.1 200 OK") && served.contains("site v1"),
             "serve: {served}"
+        );
+        let root_asset=request_raw("127.0.0.1:46201",&format!("GET /style.css HTTP/1.1\r\nHost: {id}.localhost:46201\r\nConnection: close\r\n\r\n"));
+        assert!(
+            root_asset.starts_with("HTTP/1.1 200 OK") && root_asset.contains("h1{}"),
+            "root-relative site asset failed: {root_asset}"
+        );
+        let root_index = request_raw(
+            "127.0.0.1:46201",
+            &format!("GET / HTTP/1.1\r\nHost: {id}.localhost:46201\r\nConnection: close\r\n\r\n"),
+        );
+        assert!(
+            root_index.starts_with("HTTP/1.1 200 OK") && root_index.contains("site v1"),
+            "site root did not resolve to index.html: {root_index}"
         );
         let api=request_raw("127.0.0.1:46201",&format!("GET /api/status HTTP/1.1\r\nHost: {id}.localhost:46201\r\nConnection: close\r\n\r\n"));
         assert!(

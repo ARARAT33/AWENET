@@ -272,6 +272,25 @@ fn local_peer_allowed(peer: SocketAddr) -> bool {
     peer.ip().is_loopback()
 }
 
+/// Preserve the existing object usage when splitting newly available disk
+/// capacity. Quotas are maximum-used-byte limits, not just fresh free space.
+fn split_storage_quotas(
+    available_free: u64,
+    existing_node_bytes: u64,
+    existing_site_bytes: u64,
+) -> Option<(u64, u64)> {
+    let site_growth = available_free / 4;
+    let node_growth = available_free.checked_sub(site_growth)?;
+    let node_quota = existing_node_bytes.checked_add(node_growth)?;
+    let site_quota = existing_site_bytes.checked_add(site_growth)?;
+    node_quota.checked_add(site_quota)?;
+    if node_quota == 0 && site_quota == 0 {
+        None
+    } else {
+        Some((node_quota, site_quota))
+    }
+}
+
 fn site_host_id(host: &str) -> Option<String> {
     let (hostname, port) = host.trim().rsplit_once(':')?;
     if port.parse::<u16>().ok()? == 0 {
@@ -284,11 +303,25 @@ fn site_host_id(host: &str) -> Option<String> {
     Some(id.to_ascii_lowercase())
 }
 fn site_path_matches(id: &str, path: &str) -> bool {
+    if !path.starts_with('/') {
+        return false;
+    }
     let prefix = format!("/site/{id}");
-    path == prefix
+    let site_scoped = path == prefix
         || path
             .strip_prefix(&prefix)
-            .is_some_and(|rest| rest.starts_with('/'))
+            .is_some_and(|rest| rest.starts_with('/'));
+    if site_scoped {
+        return true;
+    }
+
+    // A site-specific origin may serve root-relative assets such as /app.js,
+    // but must never expose the node control API or another site's namespace.
+    let lower = path.to_ascii_lowercase();
+    lower != "/api"
+        && !lower.starts_with("/api/")
+        && lower != "/site"
+        && !lower.starts_with("/site/")
 }
 /// Hosted sites receive a dedicated origin that can GET only that site's files.
 fn local_request_allowed(request: &str) -> bool {
@@ -349,6 +382,26 @@ fn decode_site_path(value: &str) -> Option<String> {
         }
     }
     String::from_utf8(out).ok()
+}
+fn site_request_file_path(id: &str, path: &str) -> Option<String> {
+    let prefix = format!("/site/{id}");
+    let scoped_prefix = format!("{prefix}/");
+    let tail = if path == prefix {
+        ""
+    } else if let Some(rest) = path.strip_prefix(&scoped_prefix) {
+        rest
+    } else {
+        path.strip_prefix('/').unwrap_or(path)
+    };
+    let decoded = decode_site_path(tail)?;
+    let raw = if decoded.is_empty() || decoded == "/" {
+        "/index.html".to_string()
+    } else if decoded.starts_with('/') {
+        decoded
+    } else {
+        format!("/{decoded}")
+    };
+    awep2p_core::host::normalize_path(&raw).ok()
 }
 fn valid_site_content_type(value: &str) -> bool {
     !value.is_empty()
@@ -923,6 +976,59 @@ fn site_api_unpublish(
     )
 }
 
+fn site_file_response(host: &HostState, id: &str, requested: &str) -> Vec<u8> {
+    match host.lock() {
+        Ok(mut guard) => match guard.find_manifest_by_id(id) {
+            Ok(manifest) => {
+                let content_type = manifest
+                    .files
+                    .iter()
+                    .find(|file| file.path == requested)
+                    .map(|file| file.content_type.clone())
+                    .unwrap_or_else(|| "application/octet-stream".into());
+                match guard.get_authorized(&manifest, requested, None) {
+                    Ok(bytes) => http_response_bytes("200 OK", &content_type, &bytes),
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::NotFound
+                            || error.kind() == std::io::ErrorKind::PermissionDenied =>
+                    {
+                        http_response_bytes(
+                            "404 Not Found",
+                            "text/plain; charset=utf-8",
+                            b"Not Found",
+                        )
+                    }
+                    Err(_) => http_response_bytes(
+                        "500 Internal Server Error",
+                        "text/plain; charset=utf-8",
+                        b"Site read failed",
+                    ),
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => http_response_bytes(
+                "404 Not Found",
+                "text/plain; charset=utf-8",
+                b"Site not found",
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => http_response_bytes(
+                "400 Bad Request",
+                "text/plain; charset=utf-8",
+                b"Invalid site ID",
+            ),
+            Err(_) => http_response_bytes(
+                "500 Internal Server Error",
+                "text/plain; charset=utf-8",
+                b"Site manifest invalid",
+            ),
+        },
+        Err(_) => http_response_bytes(
+            "500 Internal Server Error",
+            "text/plain; charset=utf-8",
+            b"Site host unavailable",
+        ),
+    }
+}
+
 async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<()> {
     let UiState {
         node,
@@ -978,48 +1084,8 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         })
         .unwrap_or("");
     if let Some(id) = site_host_id(request_host) {
-        if !site_path_matches(&id, path) {
-            stream
-                .write_all(&http_response(
-                    "404 Not Found",
-                    "text/plain; charset=utf-8",
-                    "Not Found",
-                ))
-                .await?;
-            stream.shutdown().await?;
-            return Ok(());
-        }
-    }
-    if let Some(route) = path.strip_prefix("/site/") {
-        let mut parts = route.splitn(2, '/');
-        let id = parts.next().unwrap_or("").to_ascii_lowercase();
-        if id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
-            stream
-                .write_all(&http_response(
-                    "400 Bad Request",
-                    "text/plain; charset=utf-8",
-                    "Invalid site ID",
-                ))
-                .await?;
-            stream.shutdown().await?;
-            return Ok(());
-        }
-        let tail = parts.next().unwrap_or("index.html");
-        let port = ui_address
-            .rsplit_once(':')
-            .map(|(_, p)| p)
-            .unwrap_or("41800");
-        let expected = format!("{id}.localhost:{port}");
-        if !request_host.eq_ignore_ascii_case(&expected) {
-            let tail = if tail.is_empty() { "index.html" } else { tail };
-            let location = format!("http://{expected}/site/{id}/{tail}");
-            let response=format!("HTTP/1.1 302 Found\r\nLocation: {location}\r\nCache-Control: no-store\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
-            stream.write_all(response.as_bytes()).await?;
-            stream.shutdown().await?;
-            return Ok(());
-        }
-        let decoded = match decode_site_path(tail) {
-            Some(v) => v,
+        let requested = match site_request_file_path(&id, path) {
+            Some(path) => path,
             None => {
                 stream
                     .write_all(&http_response(
@@ -1032,78 +1098,44 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                 return Ok(());
             }
         };
-        let raw = if decoded.is_empty() || decoded == "/" {
-            "/index.html".to_string()
-        } else if decoded.starts_with('/') {
-            decoded
-        } else {
-            format!("/{decoded}")
-        };
-        let requested = match awep2p_core::host::normalize_path(&raw) {
-            Ok(v) => v,
-            Err(_) => {
-                stream
-                    .write_all(&http_response(
-                        "400 Bad Request",
-                        "text/plain; charset=utf-8",
-                        "Invalid site path",
-                    ))
-                    .await?;
-                stream.shutdown().await?;
-                return Ok(());
-            }
-        };
-        let response = match host.lock() {
-            Ok(mut g) => match g.find_manifest_by_id(&id) {
-                Ok(manifest) => {
-                    let ct = manifest
-                        .files
-                        .iter()
-                        .find(|f| f.path == requested)
-                        .map(|f| f.content_type.clone())
-                        .unwrap_or_else(|| "application/octet-stream".into());
-                    match g.get_authorized(&manifest, &requested, None) {
-                        Ok(bytes) => http_response_bytes("200 OK", &ct, &bytes),
-                        Err(e)
-                            if e.kind() == std::io::ErrorKind::NotFound
-                                || e.kind() == std::io::ErrorKind::PermissionDenied =>
-                        {
-                            http_response_bytes(
-                                "404 Not Found",
-                                "text/plain; charset=utf-8",
-                                b"Not Found",
-                            )
-                        }
-                        Err(_) => http_response_bytes(
-                            "500 Internal Server Error",
-                            "text/plain; charset=utf-8",
-                            b"Site read failed",
-                        ),
-                    }
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => http_response_bytes(
-                    "404 Not Found",
-                    "text/plain; charset=utf-8",
-                    b"Site not found",
-                ),
-                Err(e) if e.kind() == std::io::ErrorKind::InvalidInput => http_response_bytes(
+        let response = site_file_response(&host, &id, &requested);
+        stream.write_all(&response).await?;
+        stream.shutdown().await?;
+        return Ok(());
+    }
+    if let Some(route) = path.strip_prefix("/site/") {
+        let mut parts = route.splitn(2, '/');
+        let id = parts.next().unwrap_or("").to_ascii_lowercase();
+        if id.len() != 64 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            stream
+                .write_all(&http_response(
                     "400 Bad Request",
                     "text/plain; charset=utf-8",
-                    b"Invalid site ID",
-                ),
-                Err(_) => http_response_bytes(
-                    "500 Internal Server Error",
-                    "text/plain; charset=utf-8",
-                    b"Site manifest invalid",
-                ),
-            },
-            Err(_) => http_response_bytes(
-                "500 Internal Server Error",
-                "text/plain; charset=utf-8",
-                b"Site host unavailable",
-            ),
+                    "Invalid site ID",
+                ))
+                .await?;
+            stream.shutdown().await?;
+            return Ok(());
+        }
+        let tail = parts.next().unwrap_or("index.html");
+        let tail = if tail.is_empty() { "index.html" } else { tail };
+        let port = ui_address
+            .rsplit_once(':')
+            .map(|(_, port)| port)
+            .unwrap_or("41800");
+        let expected = format!("{id}.localhost:{port}");
+        let query = target.split_once('?').map(|(_, value)| value);
+        let query = query.filter(|value| {
+            !value.is_empty() && !value.bytes().any(|byte| byte.is_ascii_control())
+        });
+        let location = match query {
+            Some(query) => format!("http://{expected}/site/{id}/{tail}?{query}"),
+            None => format!("http://{expected}/site/{id}/{tail}"),
         };
-        stream.write_all(&response).await?;
+        let response = format!(
+            "HTTP/1.1 302 Found\r\nLocation: {location}\r\nCache-Control: no-store\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        );
+        stream.write_all(response.as_bytes()).await?;
         stream.shutdown().await?;
         return Ok(());
     }
@@ -3196,21 +3228,19 @@ async fn run_product() -> Result<()> {
         .context("invalid AWE_LISTEN_ADDR")?;
     let node = Node::new(identity, listen);
     let storage_root = data_dir.join("storage");
-    fs::create_dir_all(&storage_root)?;
-    let storage_quota = awep2p_core::node::get_available_disk_space(&storage_root)
-        .context("failed to determine available node storage capacity")?;
-    if storage_quota == 0 {
-        anyhow::bail!("node storage has no available capacity");
-    }
-    let available_storage = storage_quota;
-    let host_quota = (available_storage / 4).max(1);
-    let storage_quota = available_storage.saturating_sub(host_quota);
-    if storage_quota == 0 {
-        anyhow::bail!("not enough free disk space to reserve node and site storage")
-    }
-    let storage: StorageState = Arc::new(LocalNodeStore::open(&storage_root, storage_quota)?);
     let host_root = data_dir.join("host");
+    fs::create_dir_all(&storage_root)?;
     fs::create_dir_all(&host_root)?;
+    let available_free = awep2p_core::node::get_available_disk_space(&storage_root)
+        .context("failed to determine available node storage capacity")?;
+    let existing_node_bytes = LocalNodeStore::open(&storage_root, u64::MAX)?.stats()?.used;
+    let existing_site_bytes = LocalNodeStore::open(host_root.join("objects"), u64::MAX)?
+        .stats()?
+        .used;
+    let (storage_quota, host_quota) =
+        split_storage_quotas(available_free, existing_node_bytes, existing_site_bytes)
+            .ok_or_else(|| anyhow::anyhow!("node and site storage have no allocatable capacity"))?;
+    let storage: StorageState = Arc::new(LocalNodeStore::open(&storage_root, storage_quota)?);
     let mut host_policy = HostPolicy::default();
     host_policy.max_site_bytes = host_quota;
     host_policy.max_file_bytes = host_policy.max_file_bytes.min(host_quota);
@@ -4332,7 +4362,7 @@ mod policy_lock_tests {
 mod tests {
     use super::{
         http_response, is_loopback_host, local_peer_allowed, local_request_allowed, parse_json_u16,
-        parse_json_u32,
+        parse_json_u32, site_path_matches, site_request_file_path, split_storage_quotas,
     };
     use serde_json::json;
 
@@ -4407,6 +4437,9 @@ mod tests {
         assert!(local_request_allowed(&format!(
             "GET /site/{site}/index.html HTTP/1.1\r\nHost: {site}.localhost:41800\r\n\r\n"
         )));
+        assert!(local_request_allowed(&format!(
+            "GET /style.css HTTP/1.1\r\nHost: {site}.localhost:41800\r\n\r\n"
+        )));
         assert!(!local_request_allowed(&format!(
             "GET /api/status HTTP/1.1\r\nHost: {site}.localhost:41800\r\n\r\n"
         )));
@@ -4417,6 +4450,44 @@ mod tests {
             "POST /site/{site}/index.html HTTP/1.1\r\nHost: {site}.localhost:41800\r\n\r\n"
         )));
         assert!(!local_request_allowed(&format!("GET /site/{site}/index.html HTTP/1.1\r\nHost: {site}.localhost:41800\r\nOrigin: https://evil.example\r\n\r\n")));
+    }
+
+    #[test]
+    fn site_origin_maps_root_relative_paths_without_cross_site_escape() {
+        let site = "a".repeat(64);
+        assert_eq!(
+            site_request_file_path(&site, "/"),
+            Some("/index.html".to_string())
+        );
+        assert_eq!(
+            site_request_file_path(&site, "/app.js"),
+            Some("/app.js".to_string())
+        );
+        assert_eq!(
+            site_request_file_path(&site, &format!("/site/{site}/app.js")),
+            Some("/app.js".to_string())
+        );
+        assert!(!site_path_matches(&site, "/api/status"));
+        assert!(!site_path_matches(&site, "http://example.test/app.js"));
+        assert!(!site_path_matches(
+            &site,
+            &format!("/site/{}/index.html", "b".repeat(64))
+        ));
+        assert_eq!(site_request_file_path(&site, "/%2e%2e/secret"), None);
+    }
+
+    #[test]
+    fn storage_quota_split_preserves_existing_usage_after_restart() {
+        const MIB: u64 = 1024 * 1024;
+        let (node_quota, site_quota) = split_storage_quotas(80 * MIB, 0, 20 * MIB).unwrap();
+        assert_eq!(site_quota, 40 * MIB);
+        assert_eq!(node_quota, 60 * MIB);
+        assert!(site_quota >= 20 * MIB);
+
+        assert_eq!(split_storage_quotas(u64::MAX, 1, 1), None);
+        assert_eq!(split_storage_quotas(0, u64::MAX, 1), None);
+        assert_eq!(split_storage_quotas(0, 0, 0), None);
+        assert_eq!(split_storage_quotas(0, 0, 20), Some((0, 20)));
     }
 
     #[test]
