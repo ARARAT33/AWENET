@@ -854,7 +854,7 @@ mod tests {
         let stranger_founder = identity("other-founder");
         let mut registry = UserRegistry::new(&founder, 1);
 
-        let register = |registry: &mut UserRegistry, user: &Identity, username: &str, at| {
+        let register = |registry: &mut UserRegistry, user: &Identity, username: &str, at: u64| {
             let message = UserRegistry::registration_message(username, &user.public.public_key);
             registry
                 .register(username, &user.public.public_key, &user.sign(&message), at)
@@ -1001,7 +1001,8 @@ mod tests {
 
         assert_eq!(control.sequence(), 0);
         assert!(control.topology().centres.is_empty());
-        assert_eq!(control.last_actor_awe_id(), Some(founder.public.awe_id.to_hex().as_str()));
+        let founder_id = founder.public.awe_id.to_hex();
+        assert_eq!(control.last_actor_awe_id(), Some(founder_id.as_str()));
     }
 
     #[test]
