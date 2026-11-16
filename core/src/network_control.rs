@@ -265,6 +265,7 @@ impl NetworkControlPlane {
     /// bound to prevent actor substitution and replay.
     pub fn admin_signing_message(
         &self,
+        registry_sequence: u64,
         actor_awe_id: &str,
         action: &NetworkAction,
         at_unix: u64,
@@ -294,6 +295,7 @@ impl NetworkControlPlane {
                 + actor_awe_id.len()
                 + 8
                 + 8
+                + 8
                 + 4
                 + payload.len(),
         );
@@ -303,6 +305,7 @@ impl NetworkControlPlane {
         message.extend_from_slice(self.founder_awe_id.as_bytes());
         message.extend_from_slice(&actor_len.to_be_bytes());
         message.extend_from_slice(actor_awe_id.as_bytes());
+        message.extend_from_slice(&registry_sequence.to_be_bytes());
         message.extend_from_slice(&next_sequence.to_be_bytes());
         message.extend_from_slice(&at_unix.to_be_bytes());
         message.extend_from_slice(&payload_len.to_be_bytes());
@@ -347,7 +350,12 @@ impl NetworkControlPlane {
         if at_unix > now_unix.saturating_add(MAX_CLOCK_SKEW_SECS) {
             return Err(NetworkControlError::TimestampInFuture);
         }
-        let message = self.admin_signing_message(actor_awe_id, action, at_unix)?;
+        let message = self.admin_signing_message(
+            registry.sequence(),
+            actor_awe_id,
+            action,
+            at_unix,
+        )?;
         if !Identity::verify(&account.public_key, &message, signature) {
             return Err(NetworkControlError::InvalidSignature);
         }
@@ -811,7 +819,7 @@ mod tests {
             centre_id: "dc-admin".into(),
         };
         let message = control
-            .admin_signing_message(&account.awe_id, &action, 101)
+            .admin_signing_message(registry.sequence(), &account.awe_id, &action, 101)
             .unwrap();
         let signature = admin.sign(&message);
         assert_eq!(
@@ -871,7 +879,7 @@ mod tests {
             centre_id: "dc-protected".into(),
         };
         let regular_message = control
-            .admin_signing_message(&regular_account.awe_id, &action, 101)
+            .admin_signing_message(registry.sequence(), &regular_account.awe_id, &action, 101)
             .unwrap();
         let regular_signature = regular.sign(&regular_message);
         assert_eq!(
@@ -891,7 +899,7 @@ mod tests {
             alive: false,
         };
         let telemetry_message = control
-            .admin_signing_message(&admin_account.awe_id, &telemetry, 101)
+            .admin_signing_message(registry.sequence(), &admin_account.awe_id, &telemetry, 101)
             .unwrap();
         let telemetry_signature = admin.sign(&telemetry_message);
         assert_eq!(
@@ -907,7 +915,7 @@ mod tests {
         );
 
         let forged_message = control
-            .admin_signing_message(&admin_account.awe_id, &action, 101)
+            .admin_signing_message(registry.sequence(), &admin_account.awe_id, &action, 101)
             .unwrap();
         let forged_signature = regular.sign(&forged_message);
         assert_eq!(
@@ -924,7 +932,7 @@ mod tests {
 
         let wrong_registry = UserRegistry::new(&stranger_founder, 1);
         let wrong_registry_message = control
-            .admin_signing_message(&admin_account.awe_id, &action, 101)
+            .admin_signing_message(registry.sequence(), &admin_account.awe_id, &action, 101)
             .unwrap();
         let wrong_registry_signature = admin.sign(&wrong_registry_message);
         assert_eq!(
@@ -951,7 +959,7 @@ mod tests {
             )
             .unwrap();
         let suspended_message = control
-            .admin_signing_message(&admin_account.awe_id, &action, 101)
+            .admin_signing_message(registry.sequence(), &admin_account.awe_id, &action, 101)
             .unwrap();
         let suspended_signature = admin.sign(&suspended_message);
         assert_eq!(
@@ -964,6 +972,31 @@ mod tests {
                 &suspended_signature,
             ),
             Err(NetworkControlError::InsufficientPrivileges)
+        );
+
+        let reactivate = registry
+            .status_change_message(&admin_account.awe_id, UserStatus::Active, 6)
+            .unwrap();
+        registry
+            .set_status(
+                &admin_account.awe_id,
+                UserStatus::Active,
+                6,
+                &founder.sign(&reactivate),
+            )
+            .unwrap();
+        // The pre-suspension signature is still cryptographically valid for
+        // the admin key, but the changed registry sequence makes it unusable.
+        assert_eq!(
+            control.apply_authorized(
+                &registry,
+                &admin_account.awe_id,
+                &action,
+                101,
+                101,
+                &suspended_signature,
+            ),
+            Err(NetworkControlError::InvalidSignature)
         );
 
         assert_eq!(control.sequence(), 0);
