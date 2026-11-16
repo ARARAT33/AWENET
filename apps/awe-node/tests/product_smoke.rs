@@ -745,7 +745,8 @@ fn three_node_product_smoke() {
             "status": "suspended",
             "at_unix": admin_status_at,
             "signature": hex::encode(admin_status_signature)
-        }).to_string();
+        })
+        .to_string();
         let admin_suspended = post_raw(
             "127.0.0.1:46201",
             "/api/admin/users/status",
@@ -850,7 +851,8 @@ fn three_node_product_smoke() {
         );
         assert!(
             protected_target.starts_with("HTTP/1.1 403 Forbidden")
-                && protected_target.contains("administrators may only manage regular user accounts"),
+                && protected_target
+                    .contains("administrators may only manage regular user accounts"),
             "admin could target the founder account: {protected_target}"
         );
 
@@ -877,7 +879,12 @@ fn three_node_product_smoke() {
             "founder-signed suspension failed: {suspended}"
         );
         expected_registry
-            .set_status(&new_user_id, UserStatus::Suspended, status_at, &status_signature)
+            .set_status(
+                &new_user_id,
+                UserStatus::Suspended,
+                status_at,
+                &status_signature,
+            )
             .expect("advance expected registry after founder suspension");
 
         let suspended_admin_attempt = post_raw(
@@ -934,11 +941,15 @@ fn three_node_product_smoke() {
             Some(UserRole::Admin)
         );
         assert_eq!(
-            durable_users.get(&new_user_id).map(|account| account.status),
+            durable_users
+                .get(&new_user_id)
+                .map(|account| account.status),
             Some(UserStatus::Suspended)
         );
         assert_eq!(
-            durable_users.get(&managed_user_id).map(|account| account.status),
+            durable_users
+                .get(&managed_user_id)
+                .map(|account| account.status),
             Some(UserStatus::Active)
         );
 

@@ -396,12 +396,8 @@ impl UserRegistry {
         if at_unix < current.updated_at_unix {
             return Err(UserRegistryError::InvalidTimestamp);
         }
-        let message = self.admin_status_change_message(
-            actor_awe_id,
-            target_awe_id,
-            status,
-            at_unix,
-        )?;
+        let message =
+            self.admin_status_change_message(actor_awe_id, target_awe_id, status, at_unix)?;
         if !Identity::verify(&actor_public_key, &message, signature) {
             return Err(UserRegistryError::InvalidSignature);
         }
