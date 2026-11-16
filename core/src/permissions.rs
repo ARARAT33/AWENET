@@ -11,6 +11,7 @@ pub enum Capability {
     HostPublish,
     StoreInstall,
     DeviceMedia,
+    UserModerate,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
