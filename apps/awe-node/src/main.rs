@@ -1371,17 +1371,6 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                     _ => return write_json_error(&mut stream, "400 Bad Request", "actor_awe_id must be a non-empty string").await,
                 },
             };
-            // Keep the registry lock through the topology commit. Otherwise an
-            // administrator could be suspended after a snapshot clone but before
-            // the signed network mutation is applied.
-            let registry_guard = if actor_awe_id.is_some() {
-                match user_registry.lock() {
-                    Ok(registry) => Some(registry),
-                    Err(_) => return write_json_error(&mut stream, "500 Internal Server Error", "user_registry_lock_failed").await,
-                }
-            } else {
-                None
-            };
             let at_unix = match parse_json_u64(&parsed, "at_unix") {
                 Ok(value) => value,
                 Err(error) => return write_json_error(&mut stream, "400 Bad Request", &error).await,
@@ -1392,6 +1381,17 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
             ) {
                 Ok(value) => value,
                 Err(error) => return write_json_error(&mut stream, "400 Bad Request", &error).await,
+            };
+            // Lock order is User Registry -> Network Control. Keep the
+            // registry locked until the topology commit so suspension/revocation
+            // cannot race a previously authorized request.
+            let registry_guard = if actor_awe_id.is_some() {
+                match user_registry.lock() {
+                    Ok(registry) => Some(registry),
+                    Err(_) => return write_json_error(&mut stream, "500 Internal Server Error", "user_registry_lock_failed").await,
+                }
+            } else {
+                None
             };
             match network_control.lock() {
                 Ok(mut current) => {
