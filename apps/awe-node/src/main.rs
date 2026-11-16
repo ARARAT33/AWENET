@@ -502,7 +502,9 @@ fn user_registry_error_status(error: &UserRegistryError) -> &'static str {
         UserRegistryError::InvalidSignature
         | UserRegistryError::FounderProtected
         | UserRegistryError::WrongFounder
-        | UserRegistryError::InvalidStoreSignature => "403 Forbidden",
+        | UserRegistryError::InvalidStoreSignature
+        | UserRegistryError::InsufficientPrivileges
+        | UserRegistryError::ProtectedAccount => "403 Forbidden",
         UserRegistryError::UnknownUser => "404 Not Found",
         UserRegistryError::UsernameTaken | UserRegistryError::AlreadyRegistered => "409 Conflict",
         _ => "400 Bad Request",
@@ -1487,6 +1489,13 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                 Err(error) => return write_json_error(&mut stream, "400 Bad Request", &format!("invalid_json: {error}")).await,
             };
             let target = parsed.get("awe_id").and_then(|value| value.as_str()).unwrap_or("");
+            let actor_awe_id = match parsed.get("actor_awe_id") {
+                None => None,
+                Some(value) => match value.as_str() {
+                    Some(actor) if !actor.trim().is_empty() => Some(actor),
+                    _ => return write_json_error(&mut stream, "400 Bad Request", "actor_awe_id must be a non-empty string").await,
+                },
+            };
             let at_unix = match parse_json_u64(&parsed, "at_unix") {
                 Ok(value) => value,
                 Err(error) => return write_json_error(&mut stream, "400 Bad Request", &error).await,
@@ -1503,7 +1512,12 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
             match user_registry.lock() {
                 Ok(mut current) => {
                     let mut candidate = current.clone();
-                    match candidate.set_status(target, status, at_unix, &signature) {
+                    let mutation = if let Some(actor) = actor_awe_id {
+                        candidate.admin_set_status(actor, target, status, at_unix, &signature)
+                    } else {
+                        candidate.set_status(target, status, at_unix, &signature)
+                    };
+                    match mutation {
                         Ok(account) => {
                             if candidate.sequence() != current.sequence() {
                                 if let Err(error) = user_registry::save(&user_registry_path, &candidate, &node.identity) {
@@ -1512,11 +1526,21 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                                 } else {
                                     *current = candidate;
                                     ("200 OK", "application/json; charset=utf-8",
-                                        serde_json::json!({"status":"updated","user":user_account_json(&account),"sequence":current.sequence()}).to_string())
+                                        serde_json::json!({
+                                            "status":"updated",
+                                            "user":user_account_json(&account),
+                                            "actor_awe_id":actor_awe_id.unwrap_or(current.founder_awe_id()),
+                                            "sequence":current.sequence()
+                                        }).to_string())
                                 }
                             } else {
                                 ("200 OK", "application/json; charset=utf-8",
-                                    serde_json::json!({"status":"unchanged","user":user_account_json(&account),"sequence":current.sequence()}).to_string())
+                                    serde_json::json!({
+                                        "status":"unchanged",
+                                        "user":user_account_json(&account),
+                                        "actor_awe_id":actor_awe_id.unwrap_or(current.founder_awe_id()),
+                                        "sequence":current.sequence()
+                                    }).to_string())
                             }
                         }
                         Err(error) => (user_registry_error_status(&error), "application/json; charset=utf-8",
