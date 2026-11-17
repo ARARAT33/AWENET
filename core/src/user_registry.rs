@@ -16,7 +16,6 @@ use std::{
     fs::{self, OpenOptions},
     io::Write,
     path::Path,
-    time::{SystemTime, UNIX_EPOCH},
 };
 use thiserror::Error;
 use zeroize::Zeroize;
@@ -374,13 +373,14 @@ impl UserRegistry {
         target_awe_id: &str,
         status: UserStatus,
         at_unix: u64,
+        now_unix: u64,
     ) -> Result<Vec<u8>, UserRegistryError> {
         self.moderator_public_key(actor_awe_id)?;
         let target = self.moderatable_target(target_awe_id)?;
         if at_unix < target.updated_at_unix {
             return Err(UserRegistryError::InvalidTimestamp);
         }
-        self.admin_mutation_message(actor_awe_id, target_awe_id, status, at_unix)
+        self.admin_mutation_message(actor_awe_id, target_awe_id, status, at_unix, now_unix)
     }
 
     /// Applies a signed moderation operation. Active Founder/Admin accounts may
@@ -392,6 +392,7 @@ impl UserRegistry {
         target_awe_id: &str,
         status: UserStatus,
         at_unix: u64,
+        now_unix: u64,
         signature: &[u8; 64],
     ) -> Result<UserAccount, UserRegistryError> {
         let actor_public_key = self.moderator_public_key(actor_awe_id)?;
@@ -399,8 +400,13 @@ impl UserRegistry {
         if at_unix < current.updated_at_unix {
             return Err(UserRegistryError::InvalidTimestamp);
         }
-        let message =
-            self.admin_status_change_message(actor_awe_id, target_awe_id, status, at_unix)?;
+        let message = self.admin_status_change_message(
+            actor_awe_id,
+            target_awe_id,
+            status,
+            at_unix,
+            now_unix,
+        )?;
         if !Identity::verify(&actor_public_key, &message, signature) {
             return Err(UserRegistryError::InvalidSignature);
         }
@@ -452,11 +458,8 @@ impl UserRegistry {
         target_awe_id: &str,
         status: UserStatus,
         at_unix: u64,
+        now_unix: u64,
     ) -> Result<Vec<u8>, UserRegistryError> {
-        let now_unix = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|_| UserRegistryError::InvalidTimestamp)?
-            .as_secs();
         if at_unix > now_unix.saturating_add(MAX_ADMIN_MUTATION_FUTURE_SKEW_SECS) {
             return Err(UserRegistryError::InvalidTimestamp);
         }
@@ -878,6 +881,7 @@ mod tests {
                 &user_account.awe_id,
                 UserStatus::Suspended,
                 suspend_at,
+                suspend_at,
             )
             .unwrap();
         let suspended = registry
@@ -885,6 +889,7 @@ mod tests {
                 &admin_account.awe_id,
                 &user_account.awe_id,
                 UserStatus::Suspended,
+                suspend_at,
                 suspend_at,
                 &admin.sign(&suspend_message),
             )
@@ -898,6 +903,7 @@ mod tests {
                 &user_account.awe_id,
                 UserStatus::Active,
                 reactivate_at,
+                reactivate_at,
             )
             .unwrap();
         let active = registry
@@ -905,6 +911,7 @@ mod tests {
                 &admin_account.awe_id,
                 &user_account.awe_id,
                 UserStatus::Active,
+                reactivate_at,
                 reactivate_at,
                 &admin.sign(&reactivate_message),
             )
@@ -929,6 +936,7 @@ mod tests {
                     &user_account.awe_id,
                     &user_account.awe_id,
                     UserStatus::Suspended,
+                    5,
                     5,
                 )
                 .unwrap_err(),
@@ -957,6 +965,7 @@ mod tests {
                     &user_account.awe_id,
                     UserStatus::Suspended,
                     u64::MAX,
+                    at,
                 )
                 .unwrap_err(),
             UserRegistryError::InvalidTimestamp
@@ -966,6 +975,7 @@ mod tests {
                 &admin_account.awe_id,
                 &user_account.awe_id,
                 UserStatus::Suspended,
+                at,
                 at,
             )
             .unwrap();
@@ -977,6 +987,7 @@ mod tests {
                     &admin_account.awe_id,
                     &user_account.awe_id,
                     UserStatus::Suspended,
+                    at,
                     at,
                     &impostor.sign(&message),
                 )
@@ -1017,6 +1028,7 @@ mod tests {
                     &replay_user_account.awe_id,
                     UserStatus::Suspended,
                     at,
+                    at,
                     &admin_signature,
                 )
                 .unwrap_err(),
@@ -1029,6 +1041,7 @@ mod tests {
                 &user_account.awe_id,
                 UserStatus::Suspended,
                 at,
+                at,
                 &admin_signature,
             )
             .unwrap();
@@ -1038,6 +1051,7 @@ mod tests {
                     &admin_account.awe_id,
                     &user_account.awe_id,
                     UserStatus::Suspended,
+                    at,
                     at,
                     &admin_signature,
                 )
@@ -1052,6 +1066,7 @@ mod tests {
                     &other_admin_account.awe_id,
                     UserStatus::Suspended,
                     8,
+                    8,
                 )
                 .unwrap_err(),
             UserRegistryError::ProtectedAccount
@@ -1062,6 +1077,7 @@ mod tests {
                     &admin_account.awe_id,
                     &founder.public.awe_id.to_hex(),
                     UserStatus::Suspended,
+                    8,
                     8,
                 )
                 .unwrap_err(),
@@ -1094,6 +1110,7 @@ mod tests {
                     &admin_account.awe_id,
                     &user_account.awe_id,
                     UserStatus::Active,
+                    9,
                     9,
                 )
                 .unwrap_err(),
