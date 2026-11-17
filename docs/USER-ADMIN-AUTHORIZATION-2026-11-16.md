@@ -38,17 +38,21 @@ client-supplied username or role.
 
 The Ed25519 signature covers these bytes:
 
-1. Domain separator: `AWENET-USER-ADMIN-MUTATION/v1\0`.
-2. Four UTF-8 fields, each preceded by its byte length as unsigned 16-bit
-   big-endian: `set_status`, actor AWEID, target AWEID, and status string.
+1. Domain separator: `AWENET-USER-ADMIN-MUTATION/v2\0`.
+2. Five UTF-8 fields, each preceded by its byte length as unsigned 16-bit
+   big-endian: `set_status`, founder AWEID, actor AWEID, target AWEID, and
+   status string.
 3. The next registry sequence as unsigned 64-bit big-endian.
 4. `at_unix` as unsigned 64-bit big-endian.
 
 The server resolves the actor's public key from the signed user registry and
 checks that the account is active and has `UserModerate`. The target must be an
-ordinary user, and the timestamp cannot precede the target's last update.
-Including the registry sequence makes an accepted signature unusable for a
-second mutation.
+ordinary user, and the timestamp cannot precede the target's last update or
+exceed the server's current Unix time by more than five minutes. Binding the
+founder AWEID prevents a valid administrator signature from being replayed
+against another founder-owned registry with matching actor, target and
+sequence. Including the registry sequence also makes an accepted signature
+unusable for a second mutation.
 
 ## Security boundary and remaining work
 
