@@ -1,0 +1,60 @@
+name: Safe branch integration
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 * * * *"
+
+permissions:
+  contents: write
+  pull-requests: write
+  checks: read
+
+concurrency:
+  group: safe-branch-integration
+  cancel-in-progress: false
+
+jobs:
+  integrate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create integration PRs and enable safe auto-merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+
+          # Preserve the repository's configured default branch (AWEOS uses master).
+          mapfile -t branches < <(gh api --paginate "repos/$GH_REPO/branches?per_page=100" --jq '.[].name')
+          prs_json="$(gh pr list --repo "$GH_REPO" --state open --limit 500 --json number,headRefName,baseRefName,isDraft)"
+          
+          for branch in "${branches[@]}"; do
+            [[ "$branch" == "$DEFAULT_BRANCH" ]] && continue
+
+            existing="$(jq -r --arg b "$branch" '[.[] | select(.headRefName == $b)] | length' <<<"$prs_json")"
+            if [[ "$existing" == "0" ]]; then
+              # Do not overwrite or delete a branch; propose it as a normal PR.
+              gh pr create --repo "$GH_REPO" --base "$DEFAULT_BRANCH" --head "$branch" \
+                --title "Integrate branch: $branch" \
+                --body "Automated integration proposal. This PR preserves the source branch and its commits. It will only be auto-merged after GitHub reports successful checks and the PR is mergeable."
+              prs_json="$(gh pr list --repo "$GH_REPO" --state open --limit 500 --json number,headRefName,baseRefName,isDraft)"
+            fi
+          done
+
+          # Only auto-merge non-draft PRs directly targeting the default branch.
+          # Stacked PRs, conflicts, missing checks, and failing/pending checks are left untouched.
+          while IFS=$'\t' read -r number head base draft; do
+            [[ -z "$number" || "$draft" == "true" || "$base" != "$DEFAULT_BRANCH" ]] && continue
+
+            checks="$(gh pr checks "$number" --repo "$GH_REPO" --json name,state 2>/dev/null || echo '[]')"
+            count="$(jq 'length' <<<"$checks")"
+            passed="$(jq '[.[] | select(.state == "SUCCESS")] | length' <<<"$checks")"
+            all_passed="$(jq 'length > 0 and all(.[]; .state == "SUCCESS")' <<<"$checks")"
+
+            # Require at least one check, and require every reported check to pass.
+            if [[ "$count" -gt 0 && "$passed" -eq "$count" && "$all_passed" == "true" ]]; then
+              gh pr merge "$number" --repo "$GH_REPO" --merge --auto || true
+            fi
+          done < <(jq -r '.[] | [.number, .headRefName, .baseRefName, (.isDraft|tostring)] | @tsv' <<<"$prs_json")
