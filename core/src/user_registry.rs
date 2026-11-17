@@ -970,6 +970,27 @@ mod tests {
                 .unwrap_err(),
             UserRegistryError::InvalidTimestamp
         );
+        assert!(registry
+            .admin_status_change_message(
+                &admin_account.awe_id,
+                &user_account.awe_id,
+                UserStatus::Suspended,
+                at + 300,
+                at,
+            )
+            .is_ok());
+        assert_eq!(
+            registry
+                .admin_status_change_message(
+                    &admin_account.awe_id,
+                    &user_account.awe_id,
+                    UserStatus::Suspended,
+                    at + 301,
+                    at,
+                )
+                .unwrap_err(),
+            UserRegistryError::InvalidTimestamp
+        );
         let message = registry
             .admin_status_change_message(
                 &admin_account.awe_id,
