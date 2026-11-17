@@ -16,6 +16,7 @@ use std::{
     fs::{self, OpenOptions},
     io::Write,
     path::Path,
+    time::{SystemTime, UNIX_EPOCH},
 };
 use thiserror::Error;
 use zeroize::Zeroize;
@@ -24,7 +25,8 @@ pub const USER_REGISTRY_VERSION: u16 = 1;
 pub const MAX_USERS: usize = 100_000;
 const REGISTER_CONTEXT: &[u8] = b"AWENET-USER-REGISTER/v1\0";
 const MUTATION_CONTEXT: &[u8] = b"AWENET-USER-MUTATION/v1\0";
-const ADMIN_MUTATION_CONTEXT: &[u8] = b"AWENET-USER-ADMIN-MUTATION/v1\0";
+const ADMIN_MUTATION_CONTEXT: &[u8] = b"AWENET-USER-ADMIN-MUTATION/v2\0";
+const MAX_ADMIN_MUTATION_FUTURE_SKEW_SECS: u64 = 300;
 const STORE_CONTEXT: &[u8] = b"AWENET-USER-REGISTRY-STORE/v1\0";
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -450,10 +452,24 @@ impl UserRegistry {
         status: UserStatus,
         at_unix: u64,
     ) -> Result<Vec<u8>, UserRegistryError> {
+        let now_unix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| UserRegistryError::InvalidTimestamp)?
+            .as_secs();
+        if at_unix > now_unix.saturating_add(MAX_ADMIN_MUTATION_FUTURE_SKEW_SECS) {
+            return Err(UserRegistryError::InvalidTimestamp);
+        }
+
         let sequence = self.next_sequence()?;
         let mut message = Vec::new();
         message.extend_from_slice(ADMIN_MUTATION_CONTEXT);
-        for field in ["set_status", actor_awe_id, target_awe_id, status.as_str()] {
+        for field in [
+            "set_status",
+            self.founder_awe_id.as_str(),
+            actor_awe_id,
+            target_awe_id,
+            status.as_str(),
+        ] {
             let length =
                 u16::try_from(field.len()).map_err(|_| UserRegistryError::InconsistentRegistry)?;
             message.extend_from_slice(&length.to_be_bytes());
@@ -933,6 +949,17 @@ mod tests {
         }
 
         let at = 7;
+        assert_eq!(
+            registry
+                .admin_status_change_message(
+                    &admin_account.awe_id,
+                    &user_account.awe_id,
+                    UserStatus::Suspended,
+                    u64::MAX,
+                )
+                .unwrap_err(),
+            UserRegistryError::InvalidTimestamp
+        );
         let message = registry
             .admin_status_change_message(
                 &admin_account.awe_id,
@@ -958,6 +985,46 @@ mod tests {
         assert_eq!(registry.sequence(), sequence_before_forgery);
 
         let admin_signature = admin.sign(&message);
+
+        // The same administrator and target identities can exist in a
+        // different founder-owned registry with the same sequence. A signature
+        // from this registry must not authorize a mutation in that registry.
+        let other_founder = identity("other-founder");
+        let mut other_registry = UserRegistry::new(&other_founder, 1);
+        let replay_admin_account = register(&mut other_registry, &admin, "admin", 2);
+        let replay_user_account = register(&mut other_registry, &user, "regular-user", 3);
+        let replay_other_admin_account =
+            register(&mut other_registry, &other_admin, "other-admin", 4);
+        for (account, at) in [
+            (&replay_admin_account, 5),
+            (&replay_other_admin_account, 6),
+        ] {
+            let promotion = other_registry
+                .role_change_message(&account.awe_id, UserRole::Admin, at)
+                .unwrap();
+            other_registry
+                .set_role(
+                    &account.awe_id,
+                    UserRole::Admin,
+                    at,
+                    &other_founder.sign(&promotion),
+                )
+                .unwrap();
+        }
+        assert_eq!(other_registry.sequence(), registry.sequence());
+        assert_eq!(
+            other_registry
+                .admin_set_status(
+                    &replay_admin_account.awe_id,
+                    &replay_user_account.awe_id,
+                    UserStatus::Suspended,
+                    at,
+                    &admin_signature,
+                )
+                .unwrap_err(),
+            UserRegistryError::InvalidSignature
+        );
+
         registry
             .admin_set_status(
                 &admin_account.awe_id,
