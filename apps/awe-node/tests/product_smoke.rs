@@ -786,6 +786,7 @@ fn three_node_product_smoke() {
                 &managed_user_id,
                 UserStatus::Suspended,
                 admin_status_at,
+                server_time,
             )
             .expect("admin moderation message");
         let admin_status_signature = new_user.sign(&admin_status_message);
@@ -814,6 +815,7 @@ fn three_node_product_smoke() {
                 &managed_user_id,
                 UserStatus::Suspended,
                 admin_status_at,
+                server_time,
                 &admin_status_signature,
             )
             .expect("advance expected registry after admin suspension");
@@ -835,6 +837,7 @@ fn three_node_product_smoke() {
                 &managed_user_id,
                 UserStatus::Active,
                 reactivate_at,
+                server_time,
             )
             .expect("admin reactivation message");
         let reactivate_signature = new_user.sign(&reactivate_message);
@@ -861,6 +864,7 @@ fn three_node_product_smoke() {
                 &managed_user_id,
                 UserStatus::Active,
                 reactivate_at,
+                server_time,
                 &reactivate_signature,
             )
             .expect("advance expected registry after admin reactivation");
