@@ -991,6 +991,21 @@ mod tests {
                 .unwrap_err(),
             UserRegistryError::InvalidTimestamp
         );
+        let sequence_before_future_apply = registry.sequence();
+        assert_eq!(
+            registry
+                .admin_set_status(
+                    &admin_account.awe_id,
+                    &user_account.awe_id,
+                    UserStatus::Suspended,
+                    u64::MAX,
+                    at,
+                    &[0u8; 64],
+                )
+                .unwrap_err(),
+            UserRegistryError::InvalidTimestamp
+        );
+        assert_eq!(registry.sequence(), sequence_before_future_apply);
         let message = registry
             .admin_status_change_message(
                 &admin_account.awe_id,
