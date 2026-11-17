@@ -1,0 +1,48 @@
+name: Auto-merge green PRs
+
+# Automatically squash-merges open, non-draft PRs into main once every
+# required check run on their head commit has succeeded and nothing failed.
+# Draft PRs and PRs with failing, pending or conflicting state are skipped
+# and picked up on a later cycle.
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  checks: read
+
+concurrency:
+  group: auto-merge
+  cancel-in-progress: false
+
+jobs:
+  automerge:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Merge PRs with all checks green
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          REPO="$GITHUB_REPOSITORY"
+          prs=$(gh pr list --repo "$REPO" --state open --limit 50 --json number,isDraft --jq '.[] | select(.isDraft==false) | .number' || true)
+          [ -z "$prs" ] && { echo "No open non-draft PRs"; exit 0; }
+          for n in $prs; do
+            state=$(gh pr view "$n" --repo "$REPO" --json mergeStateStatus --jq .mergeStateStatus)
+            echo "PR #$n mergeStateStatus=$state"
+            case "$state" in
+              DIRTY|DRAFT) echo "skip #$n (conflict/draft)"; continue;;
+            esac
+            sha=$(gh pr view "$n" --repo "$REPO" --json headRefOid --jq .headRefOid)
+            summary=$(gh api "repos/$REPO/commits/$sha/check-runs")
+            failed=$(echo "$summary" | jq '[.check_runs[] | select(.conclusion=="failure" or .conclusion=="cancelled" or .conclusion=="timed_out" or .conclusion=="action_required")] | length')
+            pending=$(echo "$summary" | jq '[.check_runs[] | select(.status!="completed")] | length')
+            if [ "$failed" -gt 0 ]; then echo "skip #$n ($failed failed checks)"; continue; fi
+            if [ "$pending" -gt 0 ]; then echo "skip #$n ($pending pending checks)"; continue; fi
+            echo "Merging PR #$n (squash)"
+            gh pr merge "$n" --repo "$REPO" --squash --delete-branch || echo "merge of #$n did not complete, will retry next cycle"
+          done
