@@ -1384,68 +1384,77 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
             };
             // Lock order is User Registry -> Network Control. Keep the
             // registry locked until the topology commit so suspension/revocation
-            // cannot race a previously authorized request.
+            // cannot race a previously authorized request. Do not await while a
+            // std::sync::MutexGuard is alive: the request future must remain Send.
             let registry_guard = if actor_awe_id.is_some() {
-                match user_registry.lock() {
-                    Ok(registry) => Some(registry),
-                    Err(_) => return write_json_error(&mut stream, "500 Internal Server Error", "user_registry_lock_failed").await,
-                }
+                user_registry.lock().ok()
             } else {
                 None
             };
-            match network_control.lock() {
-                Ok(mut current) => {
-                    let result = if let Some(actor) = actor_awe_id.as_deref() {
-                        match registry_guard.as_ref() {
-                            Some(registry) => current.apply_and_save_authorized(
+            let registry_lock_failed = actor_awe_id.is_some() && registry_guard.is_none();
+            let response = if registry_lock_failed {
+                (
+                    "500 Internal Server Error",
+                    "application/json; charset=utf-8",
+                    r#"{"status":"error","error":"user_registry_lock_failed"}"#.into(),
+                )
+            } else {
+                match network_control.lock() {
+                    Ok(mut current) => {
+                        let result = if let Some(actor) = actor_awe_id.as_deref() {
+                            match registry_guard.as_ref() {
+                                Some(registry) => current.apply_and_save_authorized(
+                                    &network_control_path,
+                                    &node.identity,
+                                    registry,
+                                    actor,
+                                    &action,
+                                    at_unix,
+                                    now_unix(),
+                                    &signature,
+                                ),
+                                None => Err(NetworkControlError::InvalidState),
+                            }
+                        } else {
+                            current.apply_and_save(
                                 &network_control_path,
                                 &node.identity,
-                                registry,
-                                actor,
                                 &action,
                                 at_unix,
                                 now_unix(),
                                 &signature,
+                            )
+                        };
+                        match result {
+                            Ok(sequence) => (
+                                "200 OK",
+                                "application/json; charset=utf-8",
+                                serde_json::json!({
+                                    "status": "applied",
+                                    "actor_awe_id": current.last_actor_awe_id(),
+                                    "sequence": sequence,
+                                    "updated_at_unix": current.updated_at_unix()
+                                }).to_string(),
                             ),
-                            None => Err(NetworkControlError::InvalidState),
-                        }
-                    } else {
-                        current.apply_and_save(
-                            &network_control_path,
-                            &node.identity,
-                            &action,
-                            at_unix,
-                            now_unix(),
-                            &signature,
-                        )
-                    };
-                    match result {
-                        Ok(sequence) => (
-                            "200 OK",
-                            "application/json; charset=utf-8",
-                            serde_json::json!({
-                                "status": "applied",
-                                "actor_awe_id": current.last_actor_awe_id(),
-                                "sequence": sequence,
-                                "updated_at_unix": current.updated_at_unix()
-                            }).to_string(),
-                        ),
-                        Err(error) => {
-                            let status = network_control_error_status(&error);
-                            (status, "application/json; charset=utf-8", serde_json::json!({
-                                "status": "error",
-                                "error": error.to_string(),
-                                "sequence": current.sequence()
-                            }).to_string())
+                            Err(error) => {
+                                let status = network_control_error_status(&error);
+                                (status, "application/json; charset=utf-8", serde_json::json!({
+                                    "status": "error",
+                                    "error": error.to_string(),
+                                    "sequence": current.sequence()
+                                }).to_string())
+                            }
                         }
                     }
+                    Err(_) => (
+                        "500 Internal Server Error",
+                        "application/json; charset=utf-8",
+                        r#"{"status":"error","error":"network_control_lock_failed"}"#.into(),
+                    ),
                 }
-                Err(_) => (
-                    "500 Internal Server Error",
-                    "application/json; charset=utf-8",
-                    r#"{"status":"error","error":"network_control_lock_failed"}"#.into(),
-                ),
-            }
+            };
+            drop(registry_guard);
+            response
         },
         "/api/users" if method == "GET" => {
             match user_registry.lock() {
