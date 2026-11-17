@@ -38,7 +38,7 @@ jobs:
               # Do not overwrite or delete a branch; propose it as a normal PR.
               gh pr create --repo "$GH_REPO" --base "$DEFAULT_BRANCH" --head "$branch" \
                 --title "Integrate branch: $branch" \
-                --body "Automated integration proposal. This PR preserves the source branch and its commits. It will only be auto-merged after GitHub reports successful checks and the PR is mergeable."
+                --body "Automated integration proposal. This PR preserves the source branch and its commits. It will only be auto-merged after GitHub reports successful checks and the PR is mergeable." || true
               prs_json="$(gh pr list --repo "$GH_REPO" --state open --limit 500 --json number,headRefName,baseRefName,isDraft)"
             fi
           done
