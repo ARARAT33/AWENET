@@ -996,10 +996,7 @@ mod tests {
         let replay_user_account = register(&mut other_registry, &user, "regular-user", 3);
         let replay_other_admin_account =
             register(&mut other_registry, &other_admin, "other-admin", 4);
-        for (account, at) in [
-            (&replay_admin_account, 5),
-            (&replay_other_admin_account, 6),
-        ] {
+        for (account, at) in [(&replay_admin_account, 5), (&replay_other_admin_account, 6)] {
             let promotion = other_registry
                 .role_change_message(&account.awe_id, UserRole::Admin, at)
                 .unwrap();
