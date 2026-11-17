@@ -1597,7 +1597,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                 Ok(mut current) => {
                     let mut candidate = current.clone();
                     let mutation = if let Some(actor) = actor_awe_id {
-                        candidate.admin_set_status(actor, target, status, at_unix, &signature)
+                        candidate.admin_set_status(actor, target, status, at_unix, now_unix(), &signature)
                     } else {
                         candidate.set_status(target, status, at_unix, &signature)
                     };
