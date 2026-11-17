@@ -48,7 +48,10 @@ The Ed25519 signature covers these bytes:
 The server resolves the actor's public key from the signed user registry and
 checks that the account is active and has `UserModerate`. The target must be an
 ordinary user, and the timestamp cannot precede the target's last update or
-exceed the server's current Unix time by more than five minutes. Binding the
+exceed the server's current Unix time by more than five minutes. The core API
+receives `now_unix` from its caller rather than reading a platform wall clock,
+so validation remains deterministic and usable by non-native clients; the HTTP
+server supplies its own current time when applying the mutation. Binding the
 founder AWEID prevents a valid administrator signature from being replayed
 against another founder-owned registry with matching actor, target and
 sequence. Including the registry sequence also makes an accepted signature
