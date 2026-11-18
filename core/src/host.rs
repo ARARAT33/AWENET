@@ -350,9 +350,6 @@ impl AweHost {
         let mut manifests = Vec::new();
         for entry in fs::read_dir(&self.root)? {
             let entry = entry?;
-            if !entry.file_type()?.is_file() {
-                continue;
-            }
             let filename = entry.file_name();
             let Some(filename) = filename.to_str() else {
                 continue;
@@ -364,6 +361,16 @@ impl AweHost {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "invalid site manifest filename",
+                ));
+            }
+            // A manifest-shaped directory or symlink is not safe to ignore:
+            // it may be a damaged/replaced manifest whose references are
+            // unknown. Garbage collection must fail closed rather than
+            // treating the incomplete manifest set as authoritative.
+            if !entry.file_type()?.is_file() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "site manifest is not a regular file",
                 ));
             }
             manifests.push(self.load_manifest(domain)?);
@@ -701,6 +708,53 @@ mod tests {
             host.store.get(&orphan.object_id).unwrap_err().kind(),
             io::ErrorKind::NotFound
         );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn garbage_collection_fails_closed_when_manifest_entry_is_not_a_regular_file() {
+        let root =
+            std::env::temp_dir().join(format!("awe-host-gc-non-file-{}", std::process::id()));
+        let mut host = AweHost::open(&root, 10_000_000, HostPolicy::default()).unwrap();
+        let owner = Identity::generate(crate::identity::Username::new("gc-non-file-owner").unwrap());
+        let live = host
+            .publish_file("/live.html", b"must remain live", "text/html")
+            .unwrap();
+        let manifest = host
+            .publish_manifest("hidden-gc.awe", 1, &owner, vec![live.clone()])
+            .unwrap();
+        host.save_manifest(&manifest).unwrap();
+        let orphan = host
+            .publish_file(
+                "/orphan.bin",
+                b"must remain until the manifest set is trustworthy",
+                "application/octet-stream",
+            )
+            .unwrap();
+
+        // Simulate a damaged manifest path replaced by a directory. Ignoring
+        // this entry would make the collector believe the live object is
+        // orphaned and delete it.
+        let manifest_path = host.manifest_path("hidden-gc.awe");
+        fs::remove_file(&manifest_path).unwrap();
+        fs::create_dir(&manifest_path).unwrap();
+
+        let error = host.collect_garbage().unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(host.cleanup_pending());
+        assert_eq!(
+            host.store.get(&live.object_id).unwrap(),
+            b"must remain live"
+        );
+        assert_eq!(
+            host.store.get(&orphan.object_id).unwrap(),
+            b"must remain until the manifest set is trustworthy"
+        );
+
+        fs::remove_dir(&manifest_path).unwrap();
+        assert_eq!(host.collect_garbage().unwrap(), 2);
+        assert!(!host.cleanup_pending());
 
         let _ = fs::remove_dir_all(root);
     }
