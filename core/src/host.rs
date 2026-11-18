@@ -717,7 +717,8 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("awe-host-gc-non-file-{}", std::process::id()));
         let mut host = AweHost::open(&root, 10_000_000, HostPolicy::default()).unwrap();
-        let owner = Identity::generate(crate::identity::Username::new("gc-non-file-owner").unwrap());
+        let owner =
+            Identity::generate(crate::identity::Username::new("gc-non-file-owner").unwrap());
         let live = host
             .publish_file("/live.html", b"must remain live", "text/html")
             .unwrap();
