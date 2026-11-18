@@ -351,9 +351,10 @@ impl AweHost {
         for entry in fs::read_dir(&self.root)? {
             let entry = entry?;
             let filename = entry.file_name();
-            let Some(filename) = filename.to_str() else {
-                continue;
-            };
+            // Lossy conversion preserves an ASCII manifest suffix even when
+            // the prefix contains invalid UTF-8. Such a path must be rejected
+            // as an invalid manifest name, not silently omitted from GC.
+            let filename = filename.to_string_lossy();
             let Some(domain) = filename.strip_suffix(".manifest.json") else {
                 continue;
             };
@@ -756,6 +757,54 @@ mod tests {
         fs::remove_dir(&manifest_path).unwrap();
         assert_eq!(host.collect_garbage().unwrap(), 2);
         assert!(!host.cleanup_pending());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn garbage_collection_fails_closed_on_non_utf8_manifest_filename() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let root =
+            std::env::temp_dir().join(format!("awe-host-gc-non-utf8-{}", std::process::id()));
+        let mut host = AweHost::open(&root, 10_000_000, HostPolicy::default()).unwrap();
+        let owner =
+            Identity::generate(crate::identity::Username::new("gc-non-utf8-owner").unwrap());
+        let live = host
+            .publish_file("/live.html", b"must remain live", "text/html")
+            .unwrap();
+        let manifest = host
+            .publish_manifest("valid-gc.awe", 1, &owner, vec![live.clone()])
+            .unwrap();
+        host.save_manifest(&manifest).unwrap();
+        let orphan = host
+            .publish_file(
+                "/orphan.bin",
+                b"must remain while an invalid manifest path exists",
+                "application/octet-stream",
+            )
+            .unwrap();
+
+        let mut invalid_name = vec![0xff];
+        invalid_name.extend_from_slice(b".manifest.json");
+        fs::write(
+            root.join(std::ffi::OsString::from_vec(invalid_name)),
+            b"invalid manifest path",
+        )
+        .unwrap();
+
+        let error = host.collect_garbage().unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(host.cleanup_pending());
+        assert_eq!(
+            host.store.get(&live.object_id).unwrap(),
+            b"must remain live"
+        );
+        assert_eq!(
+            host.store.get(&orphan.object_id).unwrap(),
+            b"must remain while an invalid manifest path exists"
+        );
 
         let _ = fs::remove_dir_all(root);
     }
