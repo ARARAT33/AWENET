@@ -42,23 +42,37 @@ jobs:
           base="$(jq -r '.baseRefName' <<<"$pr")"
           head="$(jq -r '.headRefOid' <<<"$pr")"
           author="$(jq -r '.author.login' <<<"$pr")"
-          decision="$(jq -r '.reviewDecision // "REVIEW_REQUIRED"' <<<"$pr")"
+          decision="$(jq -r '.reviewDecision // "NOT_REQUIRED"' <<<"$pr")"
           mergeable="$(jq -r '.mergeable' <<<"$pr")"
           merge_state="$(jq -r '.mergeStateStatus' <<<"$pr")"
 
           [[ "$state" == "OPEN" ]] || { echo "PR is not open"; exit 1; }
           [[ "$draft" == "false" ]] || { echo "Draft PRs cannot be merged"; exit 1; }
           [[ "$base" == "$DEFAULT_BRANCH" ]] || { echo "PR must target $DEFAULT_BRANCH"; exit 1; }
-          [[ "$decision" == "APPROVED" ]] || { echo "GitHub review decision is $decision, not APPROVED"; exit 1; }
+          [[ "$decision" != "CHANGES_REQUESTED" ]] || { echo "GitHub reports outstanding change requests"; exit 1; }
           [[ "$mergeable" == "MERGEABLE" && "$merge_state" == "CLEAN" ]] || {
             echo "PR is not cleanly mergeable (mergeable=$mergeable, state=$merge_state)"
             exit 1
           }
 
           reviews="$(gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/reviews" | jq -s 'add')"
-          independent_approvals="$(jq --arg author "$author" '[.[] | select(.state == "APPROVED" and .user.login != $author)] | length' <<<"$reviews")"
+          review_summary="$(jq --arg author "$author" '
+            map(select(.submitted_at != null)) |
+            sort_by(.user.login) |
+            group_by(.user.login) |
+            map(sort_by(.submitted_at) | last) |
+            {
+              independent_approvals: ([.[] | select(.user.login != $author and .state == "APPROVED")] | length),
+              changes_requested: ([.[] | select(.state == "CHANGES_REQUESTED")] | length)
+            }' <<<"$reviews")"
+          independent_approvals="$(jq -r '.independent_approvals' <<<"$review_summary")"
+          changes_requested="$(jq -r '.changes_requested' <<<"$review_summary")"
           [[ "$independent_approvals" -ge 1 ]] || {
-            echo "At least one approval from someone other than the PR author is required"
+            echo "At least one current approval from someone other than the PR author is required"
+            exit 1
+          }
+          [[ "$changes_requested" -eq 0 ]] || {
+            echo "A reviewer still has an outstanding change request"
             exit 1
           }
 
