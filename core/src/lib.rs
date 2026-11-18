@@ -124,6 +124,7 @@ pub mod tasks;
 pub mod treasury;
 pub mod trust;
 pub mod update;
+pub mod user_auth;
 pub mod user_registry;
 pub mod verifier_net;
 pub mod verifier_transport;
