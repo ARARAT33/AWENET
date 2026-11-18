@@ -4597,7 +4597,6 @@ mod tests {
     }
 }
 
-
 #[cfg(test)]
 mod site_cleanup_pending_tests {
     use super::{site_api_list, AweHost, HostPolicy, HostState, Identity, Username};
@@ -4605,10 +4604,8 @@ mod site_cleanup_pending_tests {
 
     #[test]
     fn site_list_reports_cleanup_pending_when_a_manifest_is_invalid() {
-        let root = std::env::temp_dir().join(format!(
-            "awe-node-site-list-gc-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("awe-node-site-list-gc-{}", std::process::id()));
         let owner = Identity::generate(Username::new("site-list-owner").unwrap());
         let mut host = AweHost::open(&root, 10_000_000, HostPolicy::default()).unwrap();
         let file = host
