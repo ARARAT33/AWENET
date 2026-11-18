@@ -273,6 +273,8 @@ fn three_node_product_smoke() {
         let parsed: serde_json::Value =
             serde_json::from_str(published.split("\r\n\r\n").nth(1).unwrap_or("")).unwrap();
         let id = parsed["site_id"].as_str().unwrap().to_string();
+        assert_eq!(parsed["cleanup_pending"], false);
+        assert_eq!(parsed["garbage_collected_objects"].as_u64(), Some(0));
         let host_objects = dirs[0].join("host/objects/objects");
         assert_eq!(
             fs::read_dir(&host_objects).unwrap().count(),
@@ -283,6 +285,7 @@ fn three_node_product_smoke() {
         assert_eq!(parsed["url"].as_str(), Some(expected.as_str()));
         let list: serde_json::Value =
             serde_json::from_str(&get("127.0.0.1:46201", "/api/sites")).unwrap();
+        assert_eq!(list["cleanup_pending"], false);
         assert!(list["sites"]
             .as_array()
             .unwrap()
@@ -347,12 +350,11 @@ fn three_node_product_smoke() {
             updated.starts_with("HTTP/1.1 201 Created"),
             "update: {updated}"
         );
-        let new_id =
-            serde_json::from_str::<serde_json::Value>(updated.split("\r\n\r\n").nth(1).unwrap())
-                .unwrap()["site_id"]
-                .as_str()
-                .unwrap()
-                .to_string();
+        let updated_json: serde_json::Value =
+            serde_json::from_str(updated.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(updated_json["cleanup_pending"], false);
+        assert_eq!(updated_json["garbage_collected_objects"].as_u64(), Some(1));
+        let new_id = updated_json["site_id"].as_str().unwrap().to_string();
         assert_ne!(id, new_id);
         assert_eq!(
             fs::read_dir(&host_objects).unwrap().count(),
@@ -369,6 +371,10 @@ fn three_node_product_smoke() {
             removed.starts_with("HTTP/1.1 200 OK") && removed.contains("unpublished"),
             "unpublish: {removed}"
         );
+        let removed_json: serde_json::Value =
+            serde_json::from_str(removed.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(removed_json["cleanup_pending"], false);
+        assert_eq!(removed_json["garbage_collected_objects"].as_u64(), Some(2));
         assert_eq!(
             fs::read_dir(&host_objects).unwrap().count(),
             0,
@@ -377,6 +383,7 @@ fn three_node_product_smoke() {
         let after: serde_json::Value =
             serde_json::from_str(&get("127.0.0.1:46201", "/api/sites")).unwrap();
         assert_eq!(after["count"].as_u64(), Some(0));
+        assert_eq!(after["cleanup_pending"], false);
         let same_origin = request_raw(
             "127.0.0.1:46201",
             "GET /api/status HTTP/1.1\r\nHost: 127.0.0.1:46201\r\nOrigin: http://127.0.0.1:46201\r\nConnection: close\r\n\r\n",
