@@ -2,7 +2,7 @@ name: Review-gated PR merge
 
 # This workflow is deliberately manual. It never merges an unreviewed PR and
 # never deletes source branches. The selected PR must target the default branch,
-# have a human approval for its exact head commit, be mergeable, and have every check run green.
+# have a human approval for its exact head commit, be mergeable, and have every required check green.
 
 on:
   workflow_dispatch:
@@ -74,6 +74,16 @@ jobs:
             exit 1
           }
 
+          changed_files="$(gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/files?per_page=100" --jq '.[].filename')"
+          needs_rust_validation=false
+          if grep -Eq '^(Cargo\.toml|Cargo\.lock|core/|apps/|platforms/|\.github/workflows/core\.yml$)' <<<"$changed_files"; then
+            needs_rust_validation=true
+          fi
+          needs_rust_format=false
+          if grep -Eq '(\.rs$|^Cargo\.toml$|^Cargo\.lock$|^\.github/workflows/format\.yml$)' <<<"$changed_files"; then
+            needs_rust_format=true
+          fi
+
           check_runs="$(gh api --paginate "repos/$REPO/commits/$head/check-runs?per_page=100" | jq -s '[.[].check_runs[]]')"
           check_count="$(jq 'length' <<<"$check_runs")"
           non_green="$(jq '[.[] | select(.status != "completed" or .conclusion != "success")] | length' <<<"$check_runs")"
@@ -83,6 +93,20 @@ jobs:
             exit 1
           }
 
-          echo "PR #$PR_NUMBER has an independent human approval for exact head $head and $check_count successful check runs."
+          required_checks=("audit")
+          if [[ "$needs_rust_validation" == "true" ]]; then
+            required_checks+=("Rust validation (ubuntu-24.04)" "Rust validation (windows-latest)" "Architecture integrity checks")
+          fi
+          if [[ "$needs_rust_format" == "true" ]]; then
+            required_checks+=("rustfmt")
+          fi
+          for required in "${required_checks[@]}"; do
+            matches="$(jq --arg name "$required" '[.[] | select(.name == $name)] | length' <<<"$check_runs")"
+            [[ "$matches" -gt 0 ]] || { echo "Missing required check: $required"; exit 1; }
+            pending="$(jq --arg name "$required" '[.[] | select(.name == $name) | select(.status != "completed" or .conclusion != "success")] | length' <<<"$check_runs")"
+            [[ "$pending" -eq 0 ]] || { echo "Required check is not successful: $required"; exit 1; }
+          done
+
+          echo "PR #$PR_NUMBER has an independent human approval for exact head $head and all required checks passed."
           echo "Merging the reviewed PR without deleting its source branch."
           gh pr merge "$PR_NUMBER" --repo "$REPO" --squash --match-head-commit "$head"
