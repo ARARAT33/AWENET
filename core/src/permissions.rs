@@ -12,6 +12,7 @@ pub enum Capability {
     StoreInstall,
     DeviceMedia,
     UserModerate,
+    TopologyManage,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

@@ -24,7 +24,8 @@ pub const USER_REGISTRY_VERSION: u16 = 1;
 pub const MAX_USERS: usize = 100_000;
 const REGISTER_CONTEXT: &[u8] = b"AWENET-USER-REGISTER/v1\0";
 const MUTATION_CONTEXT: &[u8] = b"AWENET-USER-MUTATION/v1\0";
-const ADMIN_MUTATION_CONTEXT: &[u8] = b"AWENET-USER-ADMIN-MUTATION/v1\0";
+const ADMIN_MUTATION_CONTEXT: &[u8] = b"AWENET-USER-ADMIN-MUTATION/v2\0";
+const MAX_ADMIN_MUTATION_FUTURE_SKEW_SECS: u64 = 300;
 const STORE_CONTEXT: &[u8] = b"AWENET-USER-REGISTRY-STORE/v1\0";
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -182,8 +183,8 @@ impl UserRegistry {
         self.accounts.values().cloned().collect()
     }
 
-    /// Resolves active account roles to the capabilities currently enforced by
-    /// the user-management API. Suspended accounts receive no capabilities.
+    /// Resolves active account roles to product capabilities. Suspended accounts
+    /// receive no capabilities; each API still enforces its own action scope.
     pub fn capabilities_for(&self, awe_id: &str) -> Option<CapabilitySet> {
         let account = self.accounts.get(awe_id)?;
         let mut capabilities = CapabilitySet::default();
@@ -191,6 +192,7 @@ impl UserRegistry {
             && matches!(account.role, UserRole::Founder | UserRole::Admin)
         {
             capabilities.grant(Capability::UserModerate);
+            capabilities.grant(Capability::TopologyManage);
         }
         Some(capabilities)
     }
@@ -371,13 +373,14 @@ impl UserRegistry {
         target_awe_id: &str,
         status: UserStatus,
         at_unix: u64,
+        now_unix: u64,
     ) -> Result<Vec<u8>, UserRegistryError> {
         self.moderator_public_key(actor_awe_id)?;
         let target = self.moderatable_target(target_awe_id)?;
         if at_unix < target.updated_at_unix {
             return Err(UserRegistryError::InvalidTimestamp);
         }
-        self.admin_mutation_message(actor_awe_id, target_awe_id, status, at_unix)
+        self.admin_mutation_message(actor_awe_id, target_awe_id, status, at_unix, now_unix)
     }
 
     /// Applies a signed moderation operation. Active Founder/Admin accounts may
@@ -389,6 +392,7 @@ impl UserRegistry {
         target_awe_id: &str,
         status: UserStatus,
         at_unix: u64,
+        now_unix: u64,
         signature: &[u8; 64],
     ) -> Result<UserAccount, UserRegistryError> {
         let actor_public_key = self.moderator_public_key(actor_awe_id)?;
@@ -396,8 +400,13 @@ impl UserRegistry {
         if at_unix < current.updated_at_unix {
             return Err(UserRegistryError::InvalidTimestamp);
         }
-        let message =
-            self.admin_status_change_message(actor_awe_id, target_awe_id, status, at_unix)?;
+        let message = self.admin_status_change_message(
+            actor_awe_id,
+            target_awe_id,
+            status,
+            at_unix,
+            now_unix,
+        )?;
         if !Identity::verify(&actor_public_key, &message, signature) {
             return Err(UserRegistryError::InvalidSignature);
         }
@@ -449,11 +458,22 @@ impl UserRegistry {
         target_awe_id: &str,
         status: UserStatus,
         at_unix: u64,
+        now_unix: u64,
     ) -> Result<Vec<u8>, UserRegistryError> {
+        if at_unix > now_unix.saturating_add(MAX_ADMIN_MUTATION_FUTURE_SKEW_SECS) {
+            return Err(UserRegistryError::InvalidTimestamp);
+        }
+
         let sequence = self.next_sequence()?;
         let mut message = Vec::new();
         message.extend_from_slice(ADMIN_MUTATION_CONTEXT);
-        for field in ["set_status", actor_awe_id, target_awe_id, status.as_str()] {
+        for field in [
+            "set_status",
+            self.founder_awe_id.as_str(),
+            actor_awe_id,
+            target_awe_id,
+            status.as_str(),
+        ] {
             let length =
                 u16::try_from(field.len()).map_err(|_| UserRegistryError::InconsistentRegistry)?;
             message.extend_from_slice(&length.to_be_bytes());
@@ -861,6 +881,7 @@ mod tests {
                 &user_account.awe_id,
                 UserStatus::Suspended,
                 suspend_at,
+                suspend_at,
             )
             .unwrap();
         let suspended = registry
@@ -868,6 +889,7 @@ mod tests {
                 &admin_account.awe_id,
                 &user_account.awe_id,
                 UserStatus::Suspended,
+                suspend_at,
                 suspend_at,
                 &admin.sign(&suspend_message),
             )
@@ -881,6 +903,7 @@ mod tests {
                 &user_account.awe_id,
                 UserStatus::Active,
                 reactivate_at,
+                reactivate_at,
             )
             .unwrap();
         let active = registry
@@ -888,6 +911,7 @@ mod tests {
                 &admin_account.awe_id,
                 &user_account.awe_id,
                 UserStatus::Active,
+                reactivate_at,
                 reactivate_at,
                 &admin.sign(&reactivate_message),
             )
@@ -913,6 +937,7 @@ mod tests {
                     &user_account.awe_id,
                     UserStatus::Suspended,
                     5,
+                    5,
                 )
                 .unwrap_err(),
             UserRegistryError::InsufficientPrivileges
@@ -933,11 +958,60 @@ mod tests {
         }
 
         let at = 7;
+        assert_eq!(
+            registry
+                .admin_status_change_message(
+                    &admin_account.awe_id,
+                    &user_account.awe_id,
+                    UserStatus::Suspended,
+                    u64::MAX,
+                    at,
+                )
+                .unwrap_err(),
+            UserRegistryError::InvalidTimestamp
+        );
+        assert!(registry
+            .admin_status_change_message(
+                &admin_account.awe_id,
+                &user_account.awe_id,
+                UserStatus::Suspended,
+                at + 300,
+                at,
+            )
+            .is_ok());
+        assert_eq!(
+            registry
+                .admin_status_change_message(
+                    &admin_account.awe_id,
+                    &user_account.awe_id,
+                    UserStatus::Suspended,
+                    at + 301,
+                    at,
+                )
+                .unwrap_err(),
+            UserRegistryError::InvalidTimestamp
+        );
+        let sequence_before_future_apply = registry.sequence();
+        assert_eq!(
+            registry
+                .admin_set_status(
+                    &admin_account.awe_id,
+                    &user_account.awe_id,
+                    UserStatus::Suspended,
+                    u64::MAX,
+                    at,
+                    &[0u8; 64],
+                )
+                .unwrap_err(),
+            UserRegistryError::InvalidTimestamp
+        );
+        assert_eq!(registry.sequence(), sequence_before_future_apply);
         let message = registry
             .admin_status_change_message(
                 &admin_account.awe_id,
                 &user_account.awe_id,
                 UserStatus::Suspended,
+                at,
                 at,
             )
             .unwrap();
@@ -950,6 +1024,7 @@ mod tests {
                     &user_account.awe_id,
                     UserStatus::Suspended,
                     at,
+                    at,
                     &impostor.sign(&message),
                 )
                 .unwrap_err(),
@@ -958,11 +1033,50 @@ mod tests {
         assert_eq!(registry.sequence(), sequence_before_forgery);
 
         let admin_signature = admin.sign(&message);
+
+        // The same administrator and target identities can exist in a
+        // different founder-owned registry with the same sequence. A signature
+        // from this registry must not authorize a mutation in that registry.
+        let other_founder = identity("other-founder");
+        let mut other_registry = UserRegistry::new(&other_founder, 1);
+        let replay_admin_account = register(&mut other_registry, &admin, "admin", 2);
+        let replay_user_account = register(&mut other_registry, &user, "regular-user", 3);
+        let replay_other_admin_account =
+            register(&mut other_registry, &other_admin, "other-admin", 4);
+        for (account, at) in [(&replay_admin_account, 5), (&replay_other_admin_account, 6)] {
+            let promotion = other_registry
+                .role_change_message(&account.awe_id, UserRole::Admin, at)
+                .unwrap();
+            other_registry
+                .set_role(
+                    &account.awe_id,
+                    UserRole::Admin,
+                    at,
+                    &other_founder.sign(&promotion),
+                )
+                .unwrap();
+        }
+        assert_eq!(other_registry.sequence(), registry.sequence());
+        assert_eq!(
+            other_registry
+                .admin_set_status(
+                    &replay_admin_account.awe_id,
+                    &replay_user_account.awe_id,
+                    UserStatus::Suspended,
+                    at,
+                    at,
+                    &admin_signature,
+                )
+                .unwrap_err(),
+            UserRegistryError::InvalidSignature
+        );
+
         registry
             .admin_set_status(
                 &admin_account.awe_id,
                 &user_account.awe_id,
                 UserStatus::Suspended,
+                at,
                 at,
                 &admin_signature,
             )
@@ -973,6 +1087,7 @@ mod tests {
                     &admin_account.awe_id,
                     &user_account.awe_id,
                     UserStatus::Suspended,
+                    at,
                     at,
                     &admin_signature,
                 )
@@ -987,6 +1102,7 @@ mod tests {
                     &other_admin_account.awe_id,
                     UserStatus::Suspended,
                     8,
+                    8,
                 )
                 .unwrap_err(),
             UserRegistryError::ProtectedAccount
@@ -997,6 +1113,7 @@ mod tests {
                     &admin_account.awe_id,
                     &founder.public.awe_id.to_hex(),
                     UserStatus::Suspended,
+                    8,
                     8,
                 )
                 .unwrap_err(),
@@ -1029,6 +1146,7 @@ mod tests {
                     &admin_account.awe_id,
                     &user_account.awe_id,
                     UserStatus::Active,
+                    9,
                     9,
                 )
                 .unwrap_err(),

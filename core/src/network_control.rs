@@ -10,6 +10,8 @@ use crate::identity::{AweId, Identity};
 use crate::network_topology::{
     AweNet, CentreGroup, CentreLinkMode, DataCentre, DataGroup, Node, PeerMetrics,
 };
+use crate::permissions::Capability;
+use crate::user_registry::UserRegistry;
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File},
@@ -25,6 +27,7 @@ pub const MAX_NETWORK_ID_BYTES: usize = 128;
 pub const MAX_CLOCK_SKEW_SECS: u64 = 300;
 
 const MUTATION_CONTEXT: &[u8] = b"AWENET-NETWORK-CONTROL-MUTATION/v1\0";
+const ADMIN_MUTATION_CONTEXT: &[u8] = b"AWENET-NETWORK-CONTROL-ADMIN-MUTATION/v1\0";
 const STORE_CONTEXT: &[u8] = b"AWENET-NETWORK-CONTROL-STORE/v1\0";
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -86,6 +89,14 @@ pub enum NetworkControlError {
     NotFounder,
     #[error("the founder mutation signature is invalid")]
     InvalidSignature,
+    #[error("the account registry does not belong to this network founder")]
+    RegistryMismatch,
+    #[error("the requested actor account was not found")]
+    UnknownActor,
+    #[error("the actor does not have permission to manage network topology")]
+    InsufficientPrivileges,
+    #[error("the requested topology action is reserved for the founder or runtime telemetry")]
+    ProtectedAction,
     #[error("the requested mutation sequence is exhausted")]
     SequenceExhausted,
     #[error("the mutation timestamp is older than the last committed mutation")]
@@ -121,6 +132,8 @@ pub struct NetworkControlPlane {
     founder_public_key: [u8; 32],
     sequence: u64,
     updated_at_unix: u64,
+    #[serde(default)]
+    last_actor_awe_id: Option<String>,
     topology: AweNet,
 }
 
@@ -136,12 +149,14 @@ struct SignedNetworkControlFile {
 
 impl NetworkControlPlane {
     pub fn new(founder: &Identity, at_unix: u64) -> Self {
+        let founder_awe_id = founder.public.awe_id.to_hex();
         Self {
             version: NETWORK_CONTROL_VERSION,
-            founder_awe_id: founder.public.awe_id.to_hex(),
+            founder_awe_id: founder_awe_id.clone(),
             founder_public_key: founder.public.public_key,
             sequence: 0,
             updated_at_unix: at_unix,
+            last_actor_awe_id: Some(founder_awe_id),
             topology: AweNet::default(),
         }
     }
@@ -166,6 +181,10 @@ impl NetworkControlPlane {
         self.updated_at_unix
     }
 
+    pub fn last_actor_awe_id(&self) -> Option<&str> {
+        self.last_actor_awe_id.as_deref()
+    }
+
     pub fn topology(&self) -> &AweNet {
         &self.topology
     }
@@ -175,6 +194,15 @@ impl NetworkControlPlane {
         if self.version != NETWORK_CONTROL_VERSION
             || self.founder_awe_id != AweId::from_public_key(&self.founder_public_key).to_hex()
         {
+            return Err(NetworkControlError::InvalidState);
+        }
+        if self.last_actor_awe_id.as_deref().is_some_and(|actor| {
+            actor.is_empty()
+                || actor.len() > MAX_NETWORK_ID_BYTES
+                || actor
+                    .chars()
+                    .any(|character| character.is_control() || character.is_whitespace())
+        }) {
             return Err(NetworkControlError::InvalidState);
         }
         let node_count = self
@@ -232,6 +260,118 @@ impl NetworkControlPlane {
         Ok(message)
     }
 
+    /// Returns the canonical message an active Founder/Admin account signs for
+    /// a structural topology mutation. The actor ID and current sequence are
+    /// bound to prevent actor substitution and replay.
+    pub fn admin_signing_message(
+        &self,
+        registry_sequence: u64,
+        actor_awe_id: &str,
+        action: &NetworkAction,
+        at_unix: u64,
+    ) -> Result<Vec<u8>, NetworkControlError> {
+        validate_id(actor_awe_id)?;
+        let next_sequence = self
+            .sequence
+            .checked_add(1)
+            .ok_or(NetworkControlError::SequenceExhausted)?;
+        let payload = serde_json::to_vec(action)
+            .map_err(|error| NetworkControlError::Serialization(error.to_string()))?;
+        if payload.len() > MAX_NETWORK_ACTION_BYTES {
+            return Err(NetworkControlError::ActionTooLarge);
+        }
+        let founder_len = u16::try_from(self.founder_awe_id.len())
+            .map_err(|_| NetworkControlError::InvalidState)?;
+        let actor_len = u16::try_from(actor_awe_id.len())
+            .map_err(|_| NetworkControlError::InvalidIdentifier)?;
+        let payload_len =
+            u32::try_from(payload.len()).map_err(|_| NetworkControlError::ActionTooLarge)?;
+        let mut message = Vec::with_capacity(
+            ADMIN_MUTATION_CONTEXT.len()
+                + 2
+                + 2
+                + self.founder_awe_id.len()
+                + 2
+                + actor_awe_id.len()
+                + 8
+                + 8
+                + 8
+                + 4
+                + payload.len(),
+        );
+        message.extend_from_slice(ADMIN_MUTATION_CONTEXT);
+        message.extend_from_slice(&self.version.to_be_bytes());
+        message.extend_from_slice(&founder_len.to_be_bytes());
+        message.extend_from_slice(self.founder_awe_id.as_bytes());
+        message.extend_from_slice(&actor_len.to_be_bytes());
+        message.extend_from_slice(actor_awe_id.as_bytes());
+        message.extend_from_slice(&registry_sequence.to_be_bytes());
+        message.extend_from_slice(&next_sequence.to_be_bytes());
+        message.extend_from_slice(&at_unix.to_be_bytes());
+        message.extend_from_slice(&payload_len.to_be_bytes());
+        message.extend_from_slice(&payload);
+        Ok(message)
+    }
+
+    /// Applies a signed topology mutation from an active Founder/Admin account.
+    /// Administrative actions are limited to membership and topology structure;
+    /// node health and metrics remain founder/runtime-owned telemetry.
+    pub fn apply_authorized(
+        &mut self,
+        registry: &UserRegistry,
+        actor_awe_id: &str,
+        action: &NetworkAction,
+        at_unix: u64,
+        now_unix: u64,
+        signature: &[u8; 64],
+    ) -> Result<u64, NetworkControlError> {
+        self.validate()?;
+        if registry.founder_awe_id() != self.founder_awe_id {
+            return Err(NetworkControlError::RegistryMismatch);
+        }
+        let account = registry
+            .get(actor_awe_id)
+            .ok_or(NetworkControlError::UnknownActor)?;
+        if AweId::from_public_key(&account.public_key).to_hex() != actor_awe_id {
+            return Err(NetworkControlError::InvalidState);
+        }
+        let capabilities = registry
+            .capabilities_for(actor_awe_id)
+            .ok_or(NetworkControlError::UnknownActor)?;
+        if !capabilities.allows(&Capability::TopologyManage) {
+            return Err(NetworkControlError::InsufficientPrivileges);
+        }
+        if !admin_topology_action_allowed(action) {
+            return Err(NetworkControlError::ProtectedAction);
+        }
+        if at_unix < self.updated_at_unix {
+            return Err(NetworkControlError::TimestampWentBackwards);
+        }
+        if at_unix > now_unix.saturating_add(MAX_CLOCK_SKEW_SECS) {
+            return Err(NetworkControlError::TimestampInFuture);
+        }
+        let message =
+            self.admin_signing_message(registry.sequence(), actor_awe_id, action, at_unix)?;
+        if !Identity::verify(&account.public_key, &message, signature) {
+            return Err(NetworkControlError::InvalidSignature);
+        }
+
+        let mut candidate = self.topology.clone();
+        apply_action(&mut candidate, action, at_unix)?;
+        candidate
+            .validate()
+            .map_err(NetworkControlError::Topology)?;
+        let next_sequence = self
+            .sequence
+            .checked_add(1)
+            .ok_or(NetworkControlError::SequenceExhausted)?;
+        self.topology = candidate;
+        self.sequence = next_sequence;
+        self.updated_at_unix = at_unix;
+        self.last_actor_awe_id = Some(actor_awe_id.to_string());
+        Ok(next_sequence)
+    }
+
     /// Applies a founder-signed mutation in memory. Callers that need
     /// durability should use apply_and_save instead.
     pub fn apply_signed(
@@ -272,6 +412,7 @@ impl NetworkControlPlane {
         self.topology = candidate;
         self.sequence = next_sequence;
         self.updated_at_unix = at_unix;
+        self.last_actor_awe_id = Some(self.founder_awe_id.clone());
         Ok(next_sequence)
     }
 
@@ -292,6 +433,51 @@ impl NetworkControlPlane {
         *self = candidate;
         Ok(sequence)
     }
+
+    /// Commits an admin-signed structural mutation. The resulting snapshot is
+    /// still signed by the installed founder key, while the actor AWEID is
+    /// retained in the snapshot for operator visibility.
+    pub fn apply_and_save_authorized(
+        &mut self,
+        path: &Path,
+        founder: &Identity,
+        registry: &UserRegistry,
+        actor_awe_id: &str,
+        action: &NetworkAction,
+        at_unix: u64,
+        now_unix: u64,
+        signature: &[u8; 64],
+    ) -> Result<u64, NetworkControlError> {
+        let mut candidate = self.clone();
+        let sequence = candidate.apply_authorized(
+            registry,
+            actor_awe_id,
+            action,
+            at_unix,
+            now_unix,
+            signature,
+        )?;
+        save(path, &candidate, founder)?;
+        *self = candidate;
+        Ok(sequence)
+    }
+}
+
+fn admin_topology_action_allowed(action: &NetworkAction) -> bool {
+    matches!(
+        action,
+        NetworkAction::CreateCentre { .. }
+            | NetworkAction::AddNode { .. }
+            | NetworkAction::CreateDataGroup { .. }
+            | NetworkAction::CreateCentreGroup { .. }
+            | NetworkAction::ConnectCentres { .. }
+            | NetworkAction::FailoverRelay { .. }
+            | NetworkAction::DisconnectCentres { .. }
+            | NetworkAction::RemoveNode { .. }
+            | NetworkAction::RemoveCentre { .. }
+            | NetworkAction::RemoveDataGroup { .. }
+            | NetworkAction::RemoveCentreGroup { .. }
+    )
 }
 
 fn validate_id(value: &str) -> Result<(), NetworkControlError> {
@@ -589,6 +775,228 @@ mod tests {
         let message = control.signing_message(&action, at_unix)?;
         let signature = founder.sign(&message);
         control.apply_signed(founder, &action, at_unix, at_unix, &signature)
+    }
+
+    #[test]
+    fn active_admin_can_commit_durable_structural_topology_changes() {
+        use crate::user_registry::{UserRegistry, UserRole};
+
+        let founder = identity("founder");
+        let admin = identity("network-admin");
+        let mut registry = UserRegistry::new(&founder, 1);
+        let registration =
+            UserRegistry::registration_message("network-admin", &admin.public.public_key);
+        let account = registry
+            .register(
+                "network-admin",
+                &admin.public.public_key,
+                &admin.sign(&registration),
+                2,
+            )
+            .unwrap();
+        let promotion = registry
+            .role_change_message(&account.awe_id, UserRole::Admin, 3)
+            .unwrap();
+        registry
+            .set_role(
+                &account.awe_id,
+                UserRole::Admin,
+                3,
+                &founder.sign(&promotion),
+            )
+            .unwrap();
+
+        let path = temporary_path("admin-commit");
+        let mut control = NetworkControlPlane::new(&founder, 100);
+        save(&path, &control, &founder).unwrap();
+        let action = NetworkAction::CreateCentre {
+            centre_id: "dc-admin".into(),
+        };
+        let message = control
+            .admin_signing_message(registry.sequence(), &account.awe_id, &action, 101)
+            .unwrap();
+        let signature = admin.sign(&message);
+        assert_eq!(
+            control.apply_and_save_authorized(
+                &path,
+                &founder,
+                &registry,
+                &account.awe_id,
+                &action,
+                101,
+                101,
+                &signature,
+            ),
+            Ok(1)
+        );
+        assert_eq!(control.last_actor_awe_id(), Some(account.awe_id.as_str()));
+        assert!(control.topology().centres.contains_key("dc-admin"));
+
+        let restored = load(&path, &founder).unwrap();
+        assert_eq!(restored, control);
+        assert_eq!(restored.last_actor_awe_id(), Some(account.awe_id.as_str()));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn topology_admin_denials_are_fail_closed_and_leave_state_unchanged() {
+        use crate::user_registry::{UserRegistry, UserRole, UserStatus};
+
+        let founder = identity("founder");
+        let admin = identity("network-admin");
+        let regular = identity("regular-user");
+        let stranger_founder = identity("other-founder");
+        let mut registry = UserRegistry::new(&founder, 1);
+
+        let register = |registry: &mut UserRegistry, user: &Identity, username: &str, at: u64| {
+            let message = UserRegistry::registration_message(username, &user.public.public_key);
+            registry
+                .register(username, &user.public.public_key, &user.sign(&message), at)
+                .unwrap()
+        };
+        let admin_account = register(&mut registry, &admin, "network-admin", 2);
+        let regular_account = register(&mut registry, &regular, "regular-user", 3);
+        let promotion = registry
+            .role_change_message(&admin_account.awe_id, UserRole::Admin, 4)
+            .unwrap();
+        registry
+            .set_role(
+                &admin_account.awe_id,
+                UserRole::Admin,
+                4,
+                &founder.sign(&promotion),
+            )
+            .unwrap();
+
+        let mut control = NetworkControlPlane::new(&founder, 100);
+        let action = NetworkAction::CreateCentre {
+            centre_id: "dc-protected".into(),
+        };
+        let regular_message = control
+            .admin_signing_message(registry.sequence(), &regular_account.awe_id, &action, 101)
+            .unwrap();
+        let regular_signature = regular.sign(&regular_message);
+        assert_eq!(
+            control.apply_authorized(
+                &registry,
+                &regular_account.awe_id,
+                &action,
+                101,
+                101,
+                &regular_signature,
+            ),
+            Err(NetworkControlError::InsufficientPrivileges)
+        );
+
+        let telemetry = NetworkAction::SetNodeHealth {
+            node_id: "node-0".into(),
+            alive: false,
+        };
+        let telemetry_message = control
+            .admin_signing_message(registry.sequence(), &admin_account.awe_id, &telemetry, 101)
+            .unwrap();
+        let telemetry_signature = admin.sign(&telemetry_message);
+        assert_eq!(
+            control.apply_authorized(
+                &registry,
+                &admin_account.awe_id,
+                &telemetry,
+                101,
+                101,
+                &telemetry_signature,
+            ),
+            Err(NetworkControlError::ProtectedAction)
+        );
+
+        let forged_message = control
+            .admin_signing_message(registry.sequence(), &admin_account.awe_id, &action, 101)
+            .unwrap();
+        let forged_signature = regular.sign(&forged_message);
+        assert_eq!(
+            control.apply_authorized(
+                &registry,
+                &admin_account.awe_id,
+                &action,
+                101,
+                101,
+                &forged_signature,
+            ),
+            Err(NetworkControlError::InvalidSignature)
+        );
+
+        let wrong_registry = UserRegistry::new(&stranger_founder, 1);
+        let wrong_registry_message = control
+            .admin_signing_message(registry.sequence(), &admin_account.awe_id, &action, 101)
+            .unwrap();
+        let wrong_registry_signature = admin.sign(&wrong_registry_message);
+        assert_eq!(
+            control.apply_authorized(
+                &wrong_registry,
+                &admin_account.awe_id,
+                &action,
+                101,
+                101,
+                &wrong_registry_signature,
+            ),
+            Err(NetworkControlError::RegistryMismatch)
+        );
+
+        let suspension = registry
+            .status_change_message(&admin_account.awe_id, UserStatus::Suspended, 5)
+            .unwrap();
+        registry
+            .set_status(
+                &admin_account.awe_id,
+                UserStatus::Suspended,
+                5,
+                &founder.sign(&suspension),
+            )
+            .unwrap();
+        let suspended_message = control
+            .admin_signing_message(registry.sequence(), &admin_account.awe_id, &action, 101)
+            .unwrap();
+        let suspended_signature = admin.sign(&suspended_message);
+        assert_eq!(
+            control.apply_authorized(
+                &registry,
+                &admin_account.awe_id,
+                &action,
+                101,
+                101,
+                &suspended_signature,
+            ),
+            Err(NetworkControlError::InsufficientPrivileges)
+        );
+
+        let reactivate = registry
+            .status_change_message(&admin_account.awe_id, UserStatus::Active, 6)
+            .unwrap();
+        registry
+            .set_status(
+                &admin_account.awe_id,
+                UserStatus::Active,
+                6,
+                &founder.sign(&reactivate),
+            )
+            .unwrap();
+        // The pre-suspension signature is still cryptographically valid for
+        // the admin key, but the changed registry sequence makes it unusable.
+        assert_eq!(
+            control.apply_authorized(
+                &registry,
+                &admin_account.awe_id,
+                &action,
+                101,
+                101,
+                &suspended_signature,
+            ),
+            Err(NetworkControlError::InvalidSignature)
+        );
+
+        assert_eq!(control.sequence(), 0);
+        assert!(control.topology().centres.is_empty());
+        let founder_id = founder.public.awe_id.to_hex();
+        assert_eq!(control.last_actor_awe_id(), Some(founder_id.as_str()));
     }
 
     #[test]
