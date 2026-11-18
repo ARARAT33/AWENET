@@ -170,8 +170,9 @@ impl AweHost {
         };
 
         // Recover objects staged before a crash or left by an interrupted
-        // publish/unpublish. Invalid manifests make collection fail closed;
-        // the node remains available and exposes the pending state.
+        // publish/unpublish. Startup cleanup is best-effort: invalid manifests
+        // or transient storage errors must not prevent the node from serving.
+        // The pending state is exposed and later lifecycle operations retry.
         let _ = host.collect_garbage();
         Ok(host)
     }
