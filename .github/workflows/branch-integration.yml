@@ -52,4 +52,4 @@ jobs:
 
           gh pr create --repo "$GH_REPO" --base "$DEFAULT_BRANCH" --head "$SOURCE_BRANCH" \
             --title "Review branch integration: $SOURCE_BRANCH" \
-            --body "Manual integration proposal for `$SOURCE_BRANCH`. Review the diff, resolve conflicts, and require successful checks before merging. This workflow does not merge the PR or delete the source branch."
+            --body "Manual integration proposal for branch: $SOURCE_BRANCH. Review the diff, resolve conflicts, and require successful checks before merging. This workflow does not merge the PR or delete the source branch."
