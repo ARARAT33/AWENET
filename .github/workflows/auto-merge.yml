@@ -2,7 +2,7 @@ name: Review-gated PR merge
 
 # This workflow is deliberately manual. It never merges an unreviewed PR and
 # never deletes source branches. The selected PR must target the default branch,
-# have an independent approval, be mergeable, and have every check run green.
+# have a human approval for its exact head commit, be mergeable, and have every check run green.
 
 on:
   workflow_dispatch:
@@ -36,39 +36,37 @@ jobs:
           [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] || { echo "Invalid PR number"; exit 1; }
           REPO="$GITHUB_REPOSITORY"
 
-          pr="$(gh pr view "$PR_NUMBER" --repo "$REPO" --json state,isDraft,baseRefName,headRefOid,author,reviewDecision,mergeable,mergeStateStatus)"
+          pr="$(gh pr view "$PR_NUMBER" --repo "$REPO" --json state,isDraft,baseRefName,headRefOid,author,mergeable,mergeStateStatus)"
           state="$(jq -r '.state' <<<"$pr")"
           draft="$(jq -r '.isDraft' <<<"$pr")"
           base="$(jq -r '.baseRefName' <<<"$pr")"
           head="$(jq -r '.headRefOid' <<<"$pr")"
           author="$(jq -r '.author.login' <<<"$pr")"
-          decision="$(jq -r '.reviewDecision // "NOT_REQUIRED"' <<<"$pr")"
           mergeable="$(jq -r '.mergeable' <<<"$pr")"
           merge_state="$(jq -r '.mergeStateStatus' <<<"$pr")"
 
           [[ "$state" == "OPEN" ]] || { echo "PR is not open"; exit 1; }
           [[ "$draft" == "false" ]] || { echo "Draft PRs cannot be merged"; exit 1; }
           [[ "$base" == "$DEFAULT_BRANCH" ]] || { echo "PR must target $DEFAULT_BRANCH"; exit 1; }
-          [[ "$decision" != "CHANGES_REQUESTED" ]] || { echo "GitHub reports outstanding change requests"; exit 1; }
           [[ "$mergeable" == "MERGEABLE" && "$merge_state" == "CLEAN" ]] || {
             echo "PR is not cleanly mergeable (mergeable=$mergeable, state=$merge_state)"
             exit 1
           }
 
-          reviews="$(gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/reviews" | jq -s 'add')"
-          review_summary="$(jq --arg author "$author" '
+          reviews="$(gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/reviews?per_page=100" | jq -s 'add')"
+          review_summary="$(jq --arg author "$author" --arg head "$head" '
             map(select(.submitted_at != null)) |
             sort_by(.user.login) |
             group_by(.user.login) |
             map(sort_by(.submitted_at) | last) |
             {
-              independent_approvals: ([.[] | select(.user.login != $author and .state == "APPROVED")] | length),
-              changes_requested: ([.[] | select(.state == "CHANGES_REQUESTED")] | length)
+              independent_approvals: ([.[] | select(.user.login != $author and .user.type == "User" and .state == "APPROVED" and .commit_id == $head)] | length),
+              changes_requested: ([.[] | select(.user.login != $author and .state == "CHANGES_REQUESTED")] | length)
             }' <<<"$reviews")"
           independent_approvals="$(jq -r '.independent_approvals' <<<"$review_summary")"
           changes_requested="$(jq -r '.changes_requested' <<<"$review_summary")"
           [[ "$independent_approvals" -ge 1 ]] || {
-            echo "At least one current approval from someone other than the PR author is required"
+            echo "At least one latest human approval from someone other than the PR author, on the exact current head commit, is required"
             exit 1
           }
           [[ "$changes_requested" -eq 0 ]] || {
@@ -85,6 +83,6 @@ jobs:
             exit 1
           }
 
-          echo "PR #$PR_NUMBER has an independent approval and $check_count successful check runs."
+          echo "PR #$PR_NUMBER has an independent human approval for exact head $head and $check_count successful check runs."
           echo "Merging the reviewed PR without deleting its source branch."
           gh pr merge "$PR_NUMBER" --repo "$REPO" --squash --match-head-commit "$head"
