@@ -347,6 +347,7 @@ impl AweHost {
         Ok(manifest)
     }
     pub fn list_manifests(&self) -> io::Result<Vec<SiteManifest>> {
+        const MANIFEST_SUFFIX: &str = ".manifest.json";
         let mut manifests = Vec::new();
         for entry in fs::read_dir(&self.root)? {
             let entry = entry?;
@@ -355,8 +356,24 @@ impl AweHost {
             // the prefix contains invalid UTF-8. Such a path must be rejected
             // as an invalid manifest name, not silently omitted from GC.
             let filename = filename.to_string_lossy();
-            let Some(domain) = filename.strip_suffix(".manifest.json") else {
+            let Some(domain_end) = filename.len().checked_sub(MANIFEST_SUFFIX.len()) else {
                 continue;
+            };
+            let Some(suffix) = filename.get(domain_end..) else {
+                continue;
+            };
+            // Windows paths are case-insensitive, but directory enumeration
+            // preserves the spelling used when a file was renamed. Recognize
+            // a case-variant manifest suffix so GC never skips a live manifest
+            // and deletes the objects it references.
+            if !suffix.eq_ignore_ascii_case(MANIFEST_SUFFIX) {
+                continue;
+            }
+            let Some(domain) = filename.get(..domain_end) else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "invalid site manifest filename",
+                ));
             };
             if !crate::registry::valid_name(domain) {
                 return Err(io::Error::new(
@@ -805,6 +822,67 @@ mod tests {
             host.store.get(&orphan.object_id).unwrap(),
             b"must remain while an invalid manifest path exists"
         );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn garbage_collection_recognizes_manifest_suffix_case_insensitively() {
+        let root =
+            std::env::temp_dir().join(format!("awe-host-gc-case-suffix-{}", std::process::id()));
+        let mut host = AweHost::open(&root, 10_000_000, HostPolicy::default()).unwrap();
+        let owner =
+            Identity::generate(crate::identity::Username::new("gc-case-suffix-owner").unwrap());
+        let live = host
+            .publish_file("/live.html", b"must remain live", "text/html")
+            .unwrap();
+        let manifest = host
+            .publish_manifest("case-gc.awe", 1, &owner, vec![live.clone()])
+            .unwrap();
+        host.save_manifest(&manifest).unwrap();
+        let orphan = host
+            .publish_file(
+                "/orphan.bin",
+                b"must remain unless the manifest is safely loaded",
+                "application/octet-stream",
+            )
+            .unwrap();
+
+        // Rename through a distinct path so this also works on case-insensitive
+        // filesystems, where a case-only rename may be treated as a no-op.
+        let canonical = host.manifest_path("case-gc.awe");
+        let intermediate = root.join("case-gc.awe.manifest.rename");
+        let renamed = root.join("case-gc.awe.MANIFEST.JSON");
+        fs::rename(&canonical, &intermediate).unwrap();
+        fs::rename(&intermediate, &renamed).unwrap();
+
+        let result = host.collect_garbage();
+        #[cfg(windows)]
+        {
+            assert_eq!(result.unwrap(), 1);
+            assert!(!host.cleanup_pending());
+            assert_eq!(
+                host.store.get(&live.object_id).unwrap(),
+                b"must remain live"
+            );
+            assert_eq!(
+                host.store.get(&orphan.object_id).unwrap_err().kind(),
+                io::ErrorKind::NotFound
+            );
+        }
+        #[cfg(not(windows))]
+        {
+            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::NotFound);
+            assert!(host.cleanup_pending());
+            assert_eq!(
+                host.store.get(&live.object_id).unwrap(),
+                b"must remain live"
+            );
+            assert_eq!(
+                host.store.get(&orphan.object_id).unwrap(),
+                b"must remain unless the manifest is safely loaded"
+            );
+        }
 
         let _ = fs::remove_dir_all(root);
     }
