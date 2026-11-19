@@ -856,32 +856,35 @@ mod tests {
         fs::rename(&canonical, &intermediate).unwrap();
         fs::rename(&intermediate, &renamed).unwrap();
 
-        let result = host.collect_garbage();
-        #[cfg(windows)]
-        {
-            assert_eq!(result.unwrap(), 1);
-            assert!(!host.cleanup_pending());
-            assert_eq!(
-                host.store.get(&live.object_id).unwrap(),
-                b"must remain live"
-            );
-            assert_eq!(
-                host.store.get(&orphan.object_id).unwrap_err().kind(),
-                io::ErrorKind::NotFound
-            );
-        }
-        #[cfg(not(windows))]
-        {
-            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::NotFound);
-            assert!(host.cleanup_pending());
-            assert_eq!(
-                host.store.get(&live.object_id).unwrap(),
-                b"must remain live"
-            );
-            assert_eq!(
-                host.store.get(&orphan.object_id).unwrap(),
-                b"must remain unless the manifest is safely loaded"
-            );
+        match host.collect_garbage() {
+            Ok(removed) => {
+                // Case-insensitive filesystems can load the case-variant name
+                // through the canonical path and safely reclaim only the orphan.
+                assert_eq!(removed, 1);
+                assert!(!host.cleanup_pending());
+                assert_eq!(
+                    host.store.get(&live.object_id).unwrap(),
+                    b"must remain live"
+                );
+                assert_eq!(
+                    host.store.get(&orphan.object_id).unwrap_err().kind(),
+                    io::ErrorKind::NotFound
+                );
+            }
+            Err(error) => {
+                // Case-sensitive filesystems cannot resolve the renamed path
+                // through its canonical spelling, so collection must fail closed.
+                assert_eq!(error.kind(), io::ErrorKind::NotFound);
+                assert!(host.cleanup_pending());
+                assert_eq!(
+                    host.store.get(&live.object_id).unwrap(),
+                    b"must remain live"
+                );
+                assert_eq!(
+                    host.store.get(&orphan.object_id).unwrap(),
+                    b"must remain unless the manifest is safely loaded"
+                );
+            }
         }
 
         let _ = fs::remove_dir_all(root);
