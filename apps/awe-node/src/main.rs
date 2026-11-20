@@ -29,6 +29,7 @@ use awep2p_core::reputation::NodeReputation;
 use awep2p_core::storage::{encode_shards, recover_shards, LocalNodeStore, StoragePolicy};
 use awep2p_core::store::{AppCapability, Store};
 use awep2p_core::supervisor::{PeerSupervisor, SupervisorConfig};
+use awep2p_core::user_auth::{user_login_message, UserLogin, UserLoginError};
 use awep2p_core::user_registry::{
     self, UserAccount, UserRegistry, UserRegistryError, UserRole, UserStatus,
 };
@@ -83,6 +84,7 @@ type OnecoinLedgerState = Arc<Mutex<OnecoinLedger>>;
 type ContributionState = Arc<Mutex<ResourceContribution>>;
 type FounderGuardState = Arc<Mutex<FounderGuard>>;
 type UserRegistryState = Arc<Mutex<UserRegistry>>;
+type UserLoginState = Arc<Mutex<UserLogin>>;
 type NetworkControlState = Arc<Mutex<NetworkControlPlane>>;
 type HostState = Arc<Mutex<AweHost>>;
 
@@ -105,6 +107,7 @@ struct UiState {
     founder_guard: FounderGuardState,
     user_registry: UserRegistryState,
     user_registry_path: PathBuf,
+    user_login: UserLoginState,
     network_control: NetworkControlState,
     network_control_path: PathBuf,
     economy: economy_api::EconomyState,
@@ -535,6 +538,39 @@ fn parse_hex_array<const N: usize>(value: &str, field: &str) -> Result<[u8; N], 
     bytes
         .try_into()
         .map_err(|_| format!("{field} must contain exactly {N} bytes"))
+}
+
+fn parse_bearer_token(request: &str) -> Result<[u8; 32], String> {
+    let value = request
+        .lines()
+        .skip(1)
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("authorization")
+                .then_some(value.trim())
+        })
+        .ok_or_else(|| "authorization bearer token is required".to_string())?;
+    let mut parts = value.split_whitespace();
+    let scheme = parts.next().unwrap_or("");
+    let token = parts.next().unwrap_or("");
+    if !scheme.eq_ignore_ascii_case("bearer") || parts.next().is_some() {
+        return Err("authorization must use one Bearer token".into());
+    }
+    parse_hex_array::<32>(token, "bearer token")
+}
+
+fn user_login_error_status(error: &UserLoginError) -> &'static str {
+    match error {
+        UserLoginError::UnknownOrInactive => "404 Not Found",
+        UserLoginError::InvalidChallenge
+        | UserLoginError::InvalidSignature
+        | UserLoginError::InvalidToken => "401 Unauthorized",
+        UserLoginError::ChallengeCapacity | UserLoginError::SessionCapacity => {
+            "429 Too Many Requests"
+        }
+        UserLoginError::TimestampOverflow => "400 Bad Request",
+        UserLoginError::RandomnessUnavailable => "503 Service Unavailable",
+    }
 }
 
 fn user_account_json(account: &UserAccount) -> serde_json::Value {
@@ -1055,6 +1091,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
         founder_guard,
         user_registry,
         user_registry_path,
+        user_login,
         network_control,
         network_control_path,
         economy,
@@ -1455,6 +1492,181 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
             };
             drop(registry_guard);
             response
+        },
+        "/api/auth/challenge" if method == "POST" => {
+            let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+            let parsed: serde_json::Value = match serde_json::from_str(body) {
+                Ok(value) => value,
+                Err(error) => return write_json_error(&mut stream, "400 Bad Request", &format!("invalid_json: {error}")).await,
+            };
+            let awe_id = match parsed.get("awe_id").and_then(|value| value.as_str()) {
+                Some(value) if !value.trim().is_empty() => value,
+                _ => return write_json_error(&mut stream, "400 Bad Request", "awe_id must be a non-empty string").await,
+            };
+            let ttl_secs = match parsed.get("ttl_secs") {
+                None => 120,
+                Some(value) => match value.as_u64() {
+                    Some(value) => value,
+                    None => return write_json_error(&mut stream, "400 Bad Request", "ttl_secs must be a non-negative integer").await,
+                },
+            };
+            let locked_result = match user_registry.lock() {
+                Ok(registry) => match user_login.lock() {
+                    Ok(mut login) => Ok(login.request_challenge(&registry, awe_id, now_unix(), ttl_secs)),
+                    Err(_) => Err("user_login_lock_failed"),
+                },
+                Err(_) => Err("user_registry_lock_failed"),
+            };
+            let result = match locked_result {
+                Ok(result) => result,
+                Err(error) => {
+                    return write_json_error(&mut stream, "500 Internal Server Error", error).await;
+                }
+            };
+            match result {
+                Ok(challenge) => {
+                    let message = user_login_message(&challenge);
+                    (
+                        "201 Created",
+                        "application/json; charset=utf-8",
+                        serde_json::json!({
+                            "status": "challenge_issued",
+                            "challenge_id": hex::encode(challenge.challenge_id),
+                            "awe_id": challenge.awe_id,
+                            "nonce": hex::encode(challenge.nonce),
+                            "issued_at_unix": challenge.issued_at_unix,
+                            "expires_at_unix": challenge.expires_at_unix,
+                            "account_sequence": challenge.account_sequence,
+                            "message": hex::encode(message)
+                        }).to_string()
+                    )
+                }
+                Err(error) => (
+                    user_login_error_status(&error),
+                    "application/json; charset=utf-8",
+                    serde_json::json!({"status":"error","error":error.to_string()}).to_string()
+                )
+            }
+        },
+        "/api/auth/login" if method == "POST" => {
+            let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+            let parsed: serde_json::Value = match serde_json::from_str(body) {
+                Ok(value) => value,
+                Err(error) => return write_json_error(&mut stream, "400 Bad Request", &format!("invalid_json: {error}")).await,
+            };
+            let challenge_id = match parse_hex_array::<32>(
+                parsed.get("challenge_id").and_then(|value| value.as_str()).unwrap_or(""),
+                "challenge_id",
+            ) {
+                Ok(value) => value,
+                Err(error) => return write_json_error(&mut stream, "400 Bad Request", &error).await,
+            };
+            let signature = match parse_hex_array::<64>(
+                parsed.get("signature").and_then(|value| value.as_str()).unwrap_or(""),
+                "signature",
+            ) {
+                Ok(value) => value,
+                Err(error) => return write_json_error(&mut stream, "400 Bad Request", &error).await,
+            };
+            let session_ttl_secs = match parsed.get("session_ttl_secs") {
+                None => 3600,
+                Some(value) => match value.as_u64() {
+                    Some(value) => value,
+                    None => return write_json_error(&mut stream, "400 Bad Request", "session_ttl_secs must be a non-negative integer").await,
+                },
+            };
+            let locked_result = match user_registry.lock() {
+                Ok(registry) => match user_login.lock() {
+                    Ok(mut login) => Ok(login.complete_login(
+                        &registry,
+                        &challenge_id,
+                        &signature,
+                        now_unix(),
+                        session_ttl_secs,
+                    )),
+                    Err(_) => Err("user_login_lock_failed"),
+                },
+                Err(_) => Err("user_registry_lock_failed"),
+            };
+            let result = match locked_result {
+                Ok(result) => result,
+                Err(error) => {
+                    return write_json_error(&mut stream, "500 Internal Server Error", error).await;
+                }
+            };
+            match result {
+                Ok(session) => (
+                    "200 OK",
+                    "application/json; charset=utf-8",
+                    serde_json::json!({
+                        "status": "authenticated",
+                        "awe_id": session.awe_id.clone(),
+                        "token": hex::encode(session.token),
+                        "expires_at_unix": session.expires_at_unix,
+                        "token_type": "Bearer"
+                    }).to_string()
+                ),
+                Err(error) => (
+                    user_login_error_status(&error),
+                    "application/json; charset=utf-8",
+                    serde_json::json!({"status":"error","error":error.to_string()}).to_string()
+                )
+            }
+        },
+        "/api/auth/session" if method == "GET" => {
+            let token = match parse_bearer_token(&request) {
+                Ok(value) => value,
+                Err(error) => return write_json_error(&mut stream, "401 Unauthorized", &error).await,
+            };
+            let locked_result = match user_registry.lock() {
+                Ok(registry) => match user_login.lock() {
+                    Ok(mut login) => Ok(login.validate_session(&registry, &token, now_unix())),
+                    Err(_) => Err("user_login_lock_failed"),
+                },
+                Err(_) => Err("user_registry_lock_failed"),
+            };
+            let result = match locked_result {
+                Ok(result) => result,
+                Err(error) => {
+                    return write_json_error(&mut stream, "500 Internal Server Error", error).await;
+                }
+            };
+            match result {
+                Ok(account) => (
+                    "200 OK",
+                    "application/json; charset=utf-8",
+                    serde_json::json!({
+                        "status": "ok",
+                        "user": user_account_json(&account)
+                    }).to_string()
+                ),
+                Err(error) => (
+                    user_login_error_status(&error),
+                    "application/json; charset=utf-8",
+                    serde_json::json!({"status":"error","error":error.to_string()}).to_string()
+                )
+            }
+        },
+        "/api/auth/logout" if method == "POST" => {
+            let token = match parse_bearer_token(&request) {
+                Ok(value) => value,
+                Err(error) => return write_json_error(&mut stream, "401 Unauthorized", &error).await,
+            };
+            match user_login.lock() {
+                Ok(mut login) => (
+                    "200 OK",
+                    "application/json; charset=utf-8",
+                    serde_json::json!({
+                        "status": "logged_out",
+                        "revoked": login.revoke_session(&token)
+                    }).to_string()
+                ),
+                Err(_) => (
+                    "500 Internal Server Error",
+                    "application/json; charset=utf-8",
+                    serde_json::json!({"status":"error","error":"user_login_lock_failed"}).to_string()
+                )
+            }
         },
         "/api/users" if method == "GET" => {
             match user_registry.lock() {
@@ -3288,6 +3500,7 @@ async fn run_product() -> Result<()> {
         user_registry::load_or_create(&user_registry_path, &identity, now_unix())
             .map_err(anyhow::Error::msg)?,
     ));
+    let user_login_state: UserLoginState = Arc::new(Mutex::new(UserLogin::default()));
     let network_control_path = data_dir.join("network-control.json");
     let network_control_state: NetworkControlState = Arc::new(Mutex::new(
         network_control::load_or_create(&network_control_path, &identity, now_unix())
@@ -4214,6 +4427,7 @@ async fn run_product() -> Result<()> {
             let api_founder_guard = founder_guard.clone();
             let api_user_registry = user_registry_state.clone();
             let api_user_registry_path = user_registry_path.clone();
+            let api_user_login = user_login_state.clone();
             let api_network_control = network_control_state.clone();
             let api_network_control_path = network_control_path.clone();
             let api_economy = economy_state.clone();
@@ -4244,6 +4458,7 @@ async fn run_product() -> Result<()> {
                         founder_guard: api_founder_guard,
                         user_registry: api_user_registry,
                         user_registry_path: api_user_registry_path,
+                        user_login: api_user_login,
                         network_control: api_network_control,
                         network_control_path: api_network_control_path,
                         economy: api_economy,
