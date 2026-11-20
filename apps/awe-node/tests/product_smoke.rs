@@ -745,6 +745,21 @@ fn three_node_product_smoke() {
             "valid AWEID session was not accepted: {authenticated}"
         );
 
+        let peer_user_registration = post(
+            "127.0.0.1:46202",
+            "/api/users/register",
+            &serde_json::json!({
+                "username": "managed-user",
+                "public_key": hex::encode(managed_user.public.public_key),
+                "signature": hex::encode(managed_registration_signature)
+            })
+            .to_string(),
+        );
+        assert!(
+            peer_user_registration.contains(r#""status":"created""#),
+            "the same AWEID could not be registered on a second node: {peer_user_registration}"
+        );
+
         let cross_node_session = get_bearer_raw(
             "127.0.0.1:46202",
             "/api/auth/session",
