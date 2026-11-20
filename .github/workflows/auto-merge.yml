@@ -1,14 +1,16 @@
-name: Auto-merge green PRs
+name: Review-gated PR merge
 
-# Automatically squash-merges open, non-draft PRs into main once every
-# required check run on their head commit has succeeded and nothing failed.
-# Draft PRs and PRs with failing, pending or conflicting state are skipped
-# and picked up on a later cycle.
+# This workflow is deliberately manual. It never merges an unreviewed PR and
+# never deletes source branches. The selected PR must target the default branch,
+# have a human approval for its exact head commit, be mergeable, and have every required check green.
 
 on:
-  schedule:
-    - cron: '*/15 * * * *'
   workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Open pull request number to verify and merge
+        required: true
+        type: number
 
 permissions:
   contents: write
@@ -16,33 +18,95 @@ permissions:
   checks: read
 
 concurrency:
-  group: auto-merge
+  group: review-gated-merge
   cancel-in-progress: false
 
 jobs:
-  automerge:
+  merge:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
-      - name: Merge PRs with all checks green
+      - name: Verify review and checks before merging
         env:
           GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] || { echo "Invalid PR number"; exit 1; }
           REPO="$GITHUB_REPOSITORY"
-          prs=$(gh pr list --repo "$REPO" --state open --limit 50 --json number,isDraft --jq '.[] | select(.isDraft==false) | .number' || true)
-          [ -z "$prs" ] && { echo "No open non-draft PRs"; exit 0; }
-          for n in $prs; do
-            state=$(gh pr view "$n" --repo "$REPO" --json mergeStateStatus --jq .mergeStateStatus)
-            echo "PR #$n mergeStateStatus=$state"
-            case "$state" in
-              DIRTY|DRAFT) echo "skip #$n (conflict/draft)"; continue;;
-            esac
-            sha=$(gh pr view "$n" --repo "$REPO" --json headRefOid --jq .headRefOid)
-            summary=$(gh api "repos/$REPO/commits/$sha/check-runs")
-            failed=$(echo "$summary" | jq '[.check_runs[] | select(.conclusion=="failure" or .conclusion=="cancelled" or .conclusion=="timed_out" or .conclusion=="action_required")] | length')
-            pending=$(echo "$summary" | jq '[.check_runs[] | select(.status!="completed")] | length')
-            if [ "$failed" -gt 0 ]; then echo "skip #$n ($failed failed checks)"; continue; fi
-            if [ "$pending" -gt 0 ]; then echo "skip #$n ($pending pending checks)"; continue; fi
-            echo "Merging PR #$n (squash)"
-            gh pr merge "$n" --repo "$REPO" --squash --delete-branch || echo "merge of #$n did not complete, will retry next cycle"
+
+          pr="$(gh pr view "$PR_NUMBER" --repo "$REPO" --json state,isDraft,baseRefName,headRefOid,author,mergeable,mergeStateStatus)"
+          state="$(jq -r '.state' <<<"$pr")"
+          draft="$(jq -r '.isDraft' <<<"$pr")"
+          base="$(jq -r '.baseRefName' <<<"$pr")"
+          head="$(jq -r '.headRefOid' <<<"$pr")"
+          author="$(jq -r '.author.login' <<<"$pr")"
+          mergeable="$(jq -r '.mergeable' <<<"$pr")"
+          merge_state="$(jq -r '.mergeStateStatus' <<<"$pr")"
+
+          [[ "$state" == "OPEN" ]] || { echo "PR is not open"; exit 1; }
+          [[ "$draft" == "false" ]] || { echo "Draft PRs cannot be merged"; exit 1; }
+          [[ "$base" == "$DEFAULT_BRANCH" ]] || { echo "PR must target $DEFAULT_BRANCH"; exit 1; }
+          [[ "$mergeable" == "MERGEABLE" && "$merge_state" == "CLEAN" ]] || {
+            echo "PR is not cleanly mergeable (mergeable=$mergeable, state=$merge_state)"
+            exit 1
+          }
+
+          reviews="$(gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/reviews?per_page=100" | jq -s 'add')"
+          review_summary="$(jq --arg author "$author" --arg head "$head" '
+            map(select(.submitted_at != null)) |
+            sort_by(.user.login) |
+            group_by(.user.login) |
+            map(sort_by(.submitted_at) | last) |
+            {
+              independent_approvals: ([.[] | select(.user.login != $author and .user.type == "User" and .state == "APPROVED" and .commit_id == $head)] | length),
+              changes_requested: ([.[] | select(.user.login != $author and .state == "CHANGES_REQUESTED")] | length)
+            }' <<<"$reviews")"
+          independent_approvals="$(jq -r '.independent_approvals' <<<"$review_summary")"
+          changes_requested="$(jq -r '.changes_requested' <<<"$review_summary")"
+          [[ "$independent_approvals" -ge 1 ]] || {
+            echo "At least one latest human approval from someone other than the PR author, on the exact current head commit, is required"
+            exit 1
+          }
+          [[ "$changes_requested" -eq 0 ]] || {
+            echo "A reviewer still has an outstanding change request"
+            exit 1
+          }
+
+          changed_files="$(gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/files?per_page=100" --jq '.[].filename')"
+          needs_rust_validation=false
+          if grep -Eq '^(Cargo\.toml|Cargo\.lock|core/|apps/|platforms/|\.github/workflows/core\.yml$)' <<<"$changed_files"; then
+            needs_rust_validation=true
+          fi
+          needs_rust_format=false
+          if grep -Eq '(\.rs$|^Cargo\.toml$|^Cargo\.lock$|^\.github/workflows/format\.yml$)' <<<"$changed_files"; then
+            needs_rust_format=true
+          fi
+
+          check_runs="$(gh api --paginate "repos/$REPO/commits/$head/check-runs?per_page=100" | jq -s '[.[].check_runs[]]')"
+          check_count="$(jq 'length' <<<"$check_runs")"
+          non_green="$(jq '[.[] | select(.status != "completed" or .conclusion != "success")] | length' <<<"$check_runs")"
+          [[ "$check_count" -gt 0 ]] || { echo "No check runs found; refusing to merge"; exit 1; }
+          [[ "$non_green" -eq 0 ]] || {
+            echo "$non_green of $check_count check runs are pending or not successful"
+            exit 1
+          }
+
+          required_checks=("audit")
+          if [[ "$needs_rust_validation" == "true" ]]; then
+            required_checks+=("Rust validation (ubuntu-24.04)" "Rust validation (windows-latest)" "Architecture integrity checks")
+          fi
+          if [[ "$needs_rust_format" == "true" ]]; then
+            required_checks+=("rustfmt")
+          fi
+          for required in "${required_checks[@]}"; do
+            matches="$(jq --arg name "$required" '[.[] | select(.name == $name)] | length' <<<"$check_runs")"
+            [[ "$matches" -gt 0 ]] || { echo "Missing required check: $required"; exit 1; }
+            pending="$(jq --arg name "$required" '[.[] | select(.name == $name) | select(.status != "completed" or .conclusion != "success")] | length' <<<"$check_runs")"
+            [[ "$pending" -eq 0 ]] || { echo "Required check is not successful: $required"; exit 1; }
           done
+
+          echo "PR #$PR_NUMBER has an independent human approval for exact head $head and all required checks passed."
+          echo "Merging the reviewed PR without deleting its source branch."
+          gh pr merge "$PR_NUMBER" --repo "$REPO" --squash --match-head-commit "$head"
