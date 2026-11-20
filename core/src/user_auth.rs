@@ -10,10 +10,7 @@ use crate::{
 };
 use rand::{rngs::OsRng, RngCore};
 use sha2::{Digest, Sha256};
-use std::{
-    collections::BTreeMap,
-    fmt,
-};
+use std::{collections::BTreeMap, fmt};
 use thiserror::Error;
 use zeroize::Zeroize;
 
@@ -39,9 +36,8 @@ pub struct UserLoginChallenge {
 
 /// Domain-separated, unambiguous login proof message.
 pub fn user_login_message(challenge: &UserLoginChallenge) -> Vec<u8> {
-    let mut message = Vec::with_capacity(
-        LOGIN_CONTEXT.len() + 32 + 8 + challenge.awe_id.len() + 32 + 24,
-    );
+    let mut message =
+        Vec::with_capacity(LOGIN_CONTEXT.len() + 32 + 8 + challenge.awe_id.len() + 32 + 24);
     message.extend_from_slice(LOGIN_CONTEXT);
     message.extend_from_slice(&challenge.challenge_id);
     message.extend_from_slice(&(challenge.awe_id.len() as u64).to_be_bytes());
@@ -500,13 +496,7 @@ mod tests {
         );
         let second_signature = user.sign(&user_login_message(&second));
         manager
-            .complete_login(
-                &registry,
-                &second.challenge_id,
-                &second_signature,
-                12,
-                600,
-            )
+            .complete_login(&registry, &second.challenge_id, &second_signature, 12, 600)
             .expect("replacement challenge succeeds");
     }
 
@@ -571,7 +561,9 @@ mod tests {
         let session = login(&mut manager, &registry, &user, 10, 600);
 
         register(&mut registry, &other, 20);
-        assert!(manager.validate_session(&registry, &session.token, 21).is_ok());
+        assert!(manager
+            .validate_session(&registry, &session.token, 21)
+            .is_ok());
     }
 
     #[test]
@@ -582,7 +574,9 @@ mod tests {
         register(&mut registry, &user, 2);
         let mut manager = UserLogin::default();
         let session = login(&mut manager, &registry, &user, 10, 10);
-        assert!(manager.validate_session(&registry, &session.token, 19).is_ok());
+        assert!(manager
+            .validate_session(&registry, &session.token, 19)
+            .is_ok());
         assert_eq!(
             manager.validate_session(&registry, &session.token, 20),
             Err(UserLoginError::InvalidToken)
