@@ -96,6 +96,57 @@ fn post_raw(addr: &str, path: &str, body: &str) -> String {
     )
 }
 
+fn post_bearer_raw(addr: &str, path: &str, body: &str, token: &str) -> String {
+    request_raw(
+        addr,
+        &format!(
+            "POST {path} HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        ),
+    )
+}
+
+fn post_bearer(addr: &str, path: &str, body: &str, token: &str) -> String {
+    post_bearer_raw(addr, path, body, token)
+        .split("\r\n\r\n")
+        .nth(1)
+        .unwrap_or("")
+        .to_string()
+}
+
+fn login_user(addr: &str, identity: &Identity) -> String {
+    let awe_id = identity.public.awe_id.to_hex();
+    let challenge: serde_json::Value = serde_json::from_str(&post(
+        addr,
+        "/api/auth/challenge",
+        &serde_json::json!({"awe_id": awe_id}).to_string(),
+    ))
+    .expect("AWEID login challenge JSON");
+    assert_eq!(challenge["status"], "challenge_issued");
+    let message = hex::decode(
+        challenge["message"]
+            .as_str()
+            .expect("login challenge message"),
+    )
+    .expect("decode login challenge message");
+    let signature = identity.sign(&message);
+    let login: serde_json::Value = serde_json::from_str(&post(
+        addr,
+        "/api/auth/login",
+        &serde_json::json!({
+            "challenge_id": challenge["challenge_id"],
+            "signature": hex::encode(signature)
+        })
+        .to_string(),
+    ))
+    .expect("AWEID login response JSON");
+    assert_eq!(login["status"], "authenticated");
+    login["token"]
+        .as_str()
+        .expect("opaque bearer session token")
+        .to_string()
+}
+
 fn generated_join_token(response: &str, prefix: &str) -> String {
     let envelope: serde_json::Value =
         serde_json::from_str(response).expect("federation generation response JSON");
@@ -658,6 +709,7 @@ fn three_node_product_smoke() {
             Some(1),
             "fresh node should start with only its founder account"
         );
+        let founder_session_token = login_user("127.0.0.1:46201", &founder);
 
         let new_user = Identity::generate(Username::new("phase2-user".to_string()).unwrap());
         let registration_message =
@@ -827,7 +879,7 @@ fn three_node_product_smoke() {
             .role_change_message(&new_user_id, UserRole::Admin, role_at)
             .expect("founder role-change message");
         let impostor = Identity::generate(Username::new("not-founder".to_string()).unwrap());
-        let rejected_role = post(
+        let rejected_role = post_bearer(
             "127.0.0.1:46201",
             "/api/admin/users/role",
             &serde_json::json!({
@@ -837,6 +889,7 @@ fn three_node_product_smoke() {
                 "signature": hex::encode(impostor.sign(&role_message))
             })
             .to_string(),
+            &founder_session_token,
         );
         assert!(
             rejected_role.contains("identity proof signature is invalid"),
@@ -844,7 +897,8 @@ fn three_node_product_smoke() {
         );
 
         let role_signature = founder.sign(&role_message);
-        let promoted = post(
+
+        let unauthenticated_role = post_raw(
             "127.0.0.1:46201",
             "/api/admin/users/role",
             &serde_json::json!({
@@ -856,9 +910,26 @@ fn three_node_product_smoke() {
             .to_string(),
         );
         assert!(
+            unauthenticated_role.starts_with("HTTP/1.1 401 Unauthorized"),
+            "role changes must require an authenticated Founder session: {unauthenticated_role}"
+        );
+        let promoted = post_bearer(
+            "127.0.0.1:46201",
+            "/api/admin/users/role",
+            &serde_json::json!({
+                "awe_id": new_user_id,
+                "role": "admin",
+                "at_unix": role_at,
+                "signature": hex::encode(role_signature)
+            })
+            .to_string(),
+            &founder_session_token,
+        );
+        assert!(
             promoted.contains(r#""status":"updated""#) && promoted.contains(r#""role":"admin""#),
             "founder-signed promotion failed: {promoted}"
         );
+        let admin_session_token = login_user("127.0.0.1:46201", &new_user);
         expected_registry
             .set_role(&new_user_id, UserRole::Admin, role_at, &role_signature)
             .expect("advance expected registry after promotion");
@@ -884,10 +955,11 @@ fn three_node_product_smoke() {
             "signature": hex::encode(admin_status_signature)
         })
         .to_string();
-        let admin_suspended = post_raw(
+        let admin_suspended = post_bearer_raw(
             "127.0.0.1:46201",
             "/api/admin/users/status",
             &admin_suspended_body,
+            &admin_session_token,
         );
         assert!(
             admin_suspended.starts_with("HTTP/1.1 200 OK")
@@ -916,10 +988,11 @@ fn three_node_product_smoke() {
             )
             .expect("advance expected registry after admin suspension");
 
-        let replayed_admin_status = post_raw(
+        let replayed_admin_status = post_bearer_raw(
             "127.0.0.1:46201",
             "/api/admin/users/status",
             &admin_suspended_body,
+            &admin_session_token,
         );
         assert!(
             replayed_admin_status.starts_with("HTTP/1.1 403 Forbidden"),
@@ -937,7 +1010,7 @@ fn three_node_product_smoke() {
             )
             .expect("admin reactivation message");
         let reactivate_signature = new_user.sign(&reactivate_message);
-        let reactivated = post_raw(
+        let reactivated = post_bearer_raw(
             "127.0.0.1:46201",
             "/api/admin/users/status",
             &serde_json::json!({
@@ -948,6 +1021,7 @@ fn three_node_product_smoke() {
                 "signature": hex::encode(reactivate_signature)
             })
             .to_string(),
+            &admin_session_token,
         );
         assert!(
             reactivated.starts_with("HTTP/1.1 200 OK")
@@ -1031,7 +1105,7 @@ fn three_node_product_smoke() {
         let attempted_promotion_message = expected_registry
             .role_change_message(&managed_user_id, UserRole::Admin, attempted_promotion_at)
             .expect("founder role-change message for admin restriction test");
-        let attempted_promotion = post_raw(
+        let attempted_promotion = post_bearer_raw(
             "127.0.0.1:46201",
             "/api/admin/users/role",
             &serde_json::json!({
@@ -1041,6 +1115,7 @@ fn three_node_product_smoke() {
                 "signature": hex::encode(new_user.sign(&attempted_promotion_message))
             })
             .to_string(),
+            &admin_session_token,
         );
         assert!(
             attempted_promotion.starts_with("HTTP/1.1 403 Forbidden"),
@@ -1048,7 +1123,7 @@ fn three_node_product_smoke() {
         );
 
         // Admins cannot manage the founder or another privileged account.
-        let protected_target = post_raw(
+        let protected_target = post_bearer_raw(
             "127.0.0.1:46201",
             "/api/admin/users/status",
             &serde_json::json!({
@@ -1059,6 +1134,7 @@ fn three_node_product_smoke() {
                 "signature": hex::encode([0u8; 64])
             })
             .to_string(),
+            &admin_session_token,
         );
         assert!(
             protected_target.starts_with("HTTP/1.1 403 Forbidden")
@@ -1073,7 +1149,7 @@ fn three_node_product_smoke() {
             .status_change_message(&new_user_id, UserStatus::Suspended, status_at)
             .expect("founder status-change message");
         let status_signature = founder.sign(&status_message);
-        let suspended = post(
+        let suspended = post_bearer(
             "127.0.0.1:46201",
             "/api/admin/users/status",
             &serde_json::json!({
@@ -1083,6 +1159,7 @@ fn three_node_product_smoke() {
                 "signature": hex::encode(status_signature)
             })
             .to_string(),
+            &founder_session_token,
         );
         assert!(
             suspended.contains(r#""status":"updated""#)
@@ -1098,7 +1175,7 @@ fn three_node_product_smoke() {
             )
             .expect("advance expected registry after founder suspension");
 
-        let suspended_admin_attempt = post_raw(
+        let suspended_admin_attempt = post_bearer_raw(
             "127.0.0.1:46201",
             "/api/admin/users/status",
             &serde_json::json!({
@@ -1109,10 +1186,10 @@ fn three_node_product_smoke() {
                 "signature": hex::encode([0u8; 64])
             })
             .to_string(),
+            &admin_session_token,
         );
         assert!(
-            suspended_admin_attempt.starts_with("HTTP/1.1 403 Forbidden")
-                && suspended_admin_attempt.contains("actor does not have permission"),
+            suspended_admin_attempt.starts_with("HTTP/1.1 401 Unauthorized"),
             "suspended admin retained moderation rights: {suspended_admin_attempt}"
         );
 
@@ -1121,7 +1198,7 @@ fn three_node_product_smoke() {
             .role_change_message(&network_admin_id, UserRole::Admin, network_admin_role_at)
             .expect("network admin founder role-change message");
         let network_admin_role_signature = founder.sign(&network_admin_role_message);
-        let network_admin_promoted = post(
+        let network_admin_promoted = post_bearer(
             "127.0.0.1:46201",
             "/api/admin/users/role",
             &serde_json::json!({
@@ -1131,6 +1208,7 @@ fn three_node_product_smoke() {
                 "signature": hex::encode(network_admin_role_signature)
             })
             .to_string(),
+            &founder_session_token,
         );
         assert!(
             network_admin_promoted.contains(r#""status":"updated""#)
@@ -1506,6 +1584,8 @@ fn three_node_product_smoke() {
         // Exercise the real HTTP network control plane with founder-signed
         // mutations. The test mirrors the signing sequence locally and checks
         // the persisted snapshot after all lifecycle operations.
+        let network_admin_session_token = login_user("127.0.0.1:46201", &network_admin);
+
         let initial_control: serde_json::Value =
             serde_json::from_str(&get("127.0.0.1:46201", "/api/network/control"))
                 .expect("initial network control JSON");
@@ -1546,7 +1626,28 @@ fn three_node_product_smoke() {
             "signature": hex::encode(admin_signature)
         })
         .to_string();
-        let admin_applied = post_raw("127.0.0.1:46201", "/api/network/control", &admin_body);
+        let unauthenticated_network =
+            post_raw("127.0.0.1:46201", "/api/network/control", &admin_body);
+        assert!(
+            unauthenticated_network.starts_with("HTTP/1.1 401 Unauthorized"),
+            "network mutations must require an authenticated session: {unauthenticated_network}"
+        );
+        let mismatched_network_session = post_bearer_raw(
+            "127.0.0.1:46201",
+            "/api/network/control",
+            &admin_body,
+            &founder_session_token,
+        );
+        assert!(
+            mismatched_network_session.starts_with("HTTP/1.1 403 Forbidden"),
+            "the bearer session must match actor_awe_id: {mismatched_network_session}"
+        );
+        let admin_applied = post_bearer_raw(
+            "127.0.0.1:46201",
+            "/api/network/control",
+            &admin_body,
+            &network_admin_session_token,
+        );
         assert!(
             admin_applied.starts_with("HTTP/1.1 200 OK")
                 && admin_applied.contains(r#""actor_awe_id":"#),
@@ -1590,7 +1691,8 @@ fn three_node_product_smoke() {
             )
             .expect("build ordinary user topology message");
         let forbidden_user_signature = managed_user.sign(&forbidden_user_message);
-        let forbidden_user = post_raw(
+        let active_user_session_token = login_user("127.0.0.1:46201", &managed_user);
+        let forbidden_user = post_bearer_raw(
             "127.0.0.1:46201",
             "/api/network/control",
             &serde_json::json!({
@@ -1600,6 +1702,7 @@ fn three_node_product_smoke() {
                 "signature": hex::encode(forbidden_user_signature)
             })
             .to_string(),
+            &active_user_session_token,
         );
         assert!(
             forbidden_user.starts_with("HTTP/1.1 403 Forbidden")
@@ -1621,7 +1724,7 @@ fn three_node_product_smoke() {
             )
             .expect("build protected telemetry message");
         let forbidden_telemetry_signature = network_admin.sign(&forbidden_telemetry_message);
-        let telemetry_denied = post_raw(
+        let telemetry_denied = post_bearer_raw(
             "127.0.0.1:46201",
             "/api/network/control",
             &serde_json::json!({
@@ -1631,6 +1734,7 @@ fn three_node_product_smoke() {
                 "signature": hex::encode(forbidden_telemetry_signature)
             })
             .to_string(),
+            &network_admin_session_token,
         );
         assert!(
             telemetry_denied.starts_with("HTTP/1.1 403 Forbidden")
@@ -1698,7 +1802,12 @@ fn three_node_product_smoke() {
                 "signature": hex::encode(signature)
             })
             .to_string();
-            let raw = post_raw("127.0.0.1:46201", "/api/network/control", &body);
+            let raw = post_bearer_raw(
+                "127.0.0.1:46201",
+                "/api/network/control",
+                &body,
+                &founder_session_token,
+            );
             assert!(
                 raw.starts_with("HTTP/1.1 200 OK"),
                 "network mutation failed: {raw}"
@@ -1720,7 +1829,12 @@ fn three_node_product_smoke() {
             "signature": hex::encode(replay_signature)
         })
         .to_string();
-        let replay = post_raw("127.0.0.1:46201", "/api/network/control", &replay_body);
+        let replay = post_bearer_raw(
+            "127.0.0.1:46201",
+            "/api/network/control",
+            &replay_body,
+            &founder_session_token,
+        );
         assert!(
             replay.starts_with("HTTP/1.1 409 Conflict"),
             "stale replay was not rejected as a conflict: {replay}"
@@ -1741,7 +1855,12 @@ fn three_node_product_smoke() {
             "signature": hex::encode(forged_signature)
         })
         .to_string();
-        let forged = post_raw("127.0.0.1:46201", "/api/network/control", &forged_body);
+        let forged = post_bearer_raw(
+            "127.0.0.1:46201",
+            "/api/network/control",
+            &forged_body,
+            &founder_session_token,
+        );
         assert!(
             forged.starts_with("HTTP/1.1 403 Forbidden"),
             "forged mutation was not rejected: {forged}"
@@ -1761,7 +1880,12 @@ fn three_node_product_smoke() {
             "signature": hex::encode(remove_signature)
         })
         .to_string();
-        let blocked = post_raw("127.0.0.1:46201", "/api/network/control", &remove_body);
+        let blocked = post_bearer_raw(
+            "127.0.0.1:46201",
+            "/api/network/control",
+            &remove_body,
+            &founder_session_token,
+        );
         assert!(
             blocked.starts_with("HTTP/1.1 409 Conflict"),
             "referenced centre removal was not blocked: {blocked}"

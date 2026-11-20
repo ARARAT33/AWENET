@@ -573,6 +573,14 @@ fn user_login_error_status(error: &UserLoginError) -> &'static str {
     }
 }
 
+fn validate_user_bearer_session(
+    registry: &UserRegistry,
+    login: &mut UserLogin,
+    token: &[u8; 32],
+) -> Result<UserAccount, UserLoginError> {
+    login.validate_session(registry, token, now_unix())
+}
+
 fn user_account_json(account: &UserAccount) -> serde_json::Value {
     serde_json::json!({
         "awe_id": account.awe_id,
@@ -1419,78 +1427,105 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                 Ok(value) => value,
                 Err(error) => return write_json_error(&mut stream, "400 Bad Request", &error).await,
             };
-            // Lock order is User Registry -> Network Control. Keep the
-            // registry locked until the topology commit so suspension/revocation
-            // cannot race a previously authorized request. Do not await while a
-            // std::sync::MutexGuard is alive: the request future must remain Send.
-            let registry_guard = if actor_awe_id.is_some() {
-                user_registry.lock().ok()
-            } else {
-                None
+            let token = match parse_bearer_token(&request) {
+                Ok(value) => value,
+                Err(error) => return write_json_error(&mut stream, "401 Unauthorized", &error).await,
             };
-            let registry_lock_failed = actor_awe_id.is_some() && registry_guard.is_none();
-            let response = if registry_lock_failed {
-                (
-                    "500 Internal Server Error",
-                    "application/json; charset=utf-8",
-                    r#"{"status":"error","error":"user_registry_lock_failed"}"#.into(),
-                )
-            } else {
-                match network_control.lock() {
-                    Ok(mut current) => {
-                        let result = if let Some(actor) = actor_awe_id.as_deref() {
-                            match registry_guard.as_ref() {
-                                Some(registry) => current.apply_and_save_authorized(
-                                    &network_control_path,
-                                    &node.identity,
-                                    registry,
-                                    actor,
-                                    &action,
-                                    at_unix,
-                                    now_unix(),
-                                    &signature,
-                                ),
-                                None => Err(NetworkControlError::InvalidState),
-                            }
-                        } else {
-                            current.apply_and_save(
-                                &network_control_path,
-                                &node.identity,
-                                &action,
-                                at_unix,
-                                now_unix(),
-                                &signature,
-                            )
-                        };
-                        match result {
-                            Ok(sequence) => (
-                                "200 OK",
-                                "application/json; charset=utf-8",
-                                serde_json::json!({
-                                    "status": "applied",
-                                    "actor_awe_id": current.last_actor_awe_id(),
-                                    "sequence": sequence,
-                                    "updated_at_unix": current.updated_at_unix()
-                                }).to_string(),
-                            ),
-                            Err(error) => {
-                                let status = network_control_error_status(&error);
-                                (status, "application/json; charset=utf-8", serde_json::json!({
-                                    "status": "error",
-                                    "error": error.to_string(),
-                                    "sequence": current.sequence()
-                                }).to_string())
+
+            // Lock order is User Registry -> User Login -> Network Control.
+            // Keep both authorization guards through the durable topology
+            // commit so logout, suspension, and role changes cannot race it.
+            let response = match user_registry.lock() {
+                Ok(registry_guard) => match user_login.lock() {
+                    Ok(mut login) => match validate_user_bearer_session(&registry_guard, &mut login, &token) {
+                        Err(_) => (
+                            "401 Unauthorized",
+                            "application/json; charset=utf-8",
+                            r#"{"status":"error","error":"invalid_or_expired_session"}"#.into(),
+                        ),
+                        Ok(account) => {
+                            let permitted = match actor_awe_id.as_deref() {
+                                Some(actor) => {
+                                    account.awe_id == actor
+                                        && matches!(account.role, UserRole::Founder | UserRole::Admin)
+                                }
+                                None => {
+                                    account.role == UserRole::Founder
+                                        && account.awe_id == registry_guard.founder_awe_id()
+                                }
+                            };
+                            if !permitted {
+                                (
+                                    "403 Forbidden",
+                                    "application/json; charset=utf-8",
+                                    r#"{"status":"error","error":"session_actor_not_authorized"}"#.into(),
+                                )
+                            } else {
+                                match network_control.lock() {
+                                    Ok(mut current) => {
+                                        let result = if let Some(actor) = actor_awe_id.as_deref() {
+                                            current.apply_and_save_authorized(
+                                                &network_control_path,
+                                                &node.identity,
+                                                &registry_guard,
+                                                actor,
+                                                &action,
+                                                at_unix,
+                                                now_unix(),
+                                                &signature,
+                                            )
+                                        } else {
+                                            current.apply_and_save(
+                                                &network_control_path,
+                                                &node.identity,
+                                                &action,
+                                                at_unix,
+                                                now_unix(),
+                                                &signature,
+                                            )
+                                        };
+                                        match result {
+                                            Ok(sequence) => (
+                                                "200 OK",
+                                                "application/json; charset=utf-8",
+                                                serde_json::json!({
+                                                    "status": "applied",
+                                                    "actor_awe_id": current.last_actor_awe_id(),
+                                                    "sequence": sequence,
+                                                    "updated_at_unix": current.updated_at_unix()
+                                                }).to_string(),
+                                            ),
+                                            Err(error) => {
+                                                let status = network_control_error_status(&error);
+                                                (status, "application/json; charset=utf-8", serde_json::json!({
+                                                    "status": "error",
+                                                    "error": error.to_string(),
+                                                    "sequence": current.sequence()
+                                                }).to_string())
+                                            }
+                                        }
+                                    }
+                                    Err(_) => (
+                                        "500 Internal Server Error",
+                                        "application/json; charset=utf-8",
+                                        r#"{"status":"error","error":"network_control_lock_failed"}"#.into(),
+                                    ),
+                                }
                             }
                         }
-                    }
+                    },
                     Err(_) => (
                         "500 Internal Server Error",
                         "application/json; charset=utf-8",
-                        r#"{"status":"error","error":"network_control_lock_failed"}"#.into(),
+                        r#"{"status":"error","error":"user_login_lock_failed"}"#.into(),
                     ),
-                }
+                },
+                Err(_) => (
+                    "500 Internal Server Error",
+                    "application/json; charset=utf-8",
+                    r#"{"status":"error","error":"user_registry_lock_failed"}"#.into(),
+                ),
             };
-            drop(registry_guard);
             response
         },
         "/api/auth/challenge" if method == "POST" => {
@@ -1751,32 +1786,61 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                 Ok(value) => value,
                 Err(error) => return write_json_error(&mut stream, "400 Bad Request", &error).await,
             };
-            match user_registry.lock() {
-                Ok(mut current) => {
-                    let mut candidate = current.clone();
-                    match candidate.set_role(target, role, at_unix, &signature) {
-                        Ok(account) => {
-                            if candidate.sequence() != current.sequence() {
-                                if let Err(error) = user_registry::save(&user_registry_path, &candidate, &node.identity) {
-                                    ("500 Internal Server Error", "application/json; charset=utf-8",
-                                        serde_json::json!({"status":"error","error":error.to_string()}).to_string())
-                                } else {
-                                    *current = candidate;
-                                    ("200 OK", "application/json; charset=utf-8",
-                                        serde_json::json!({"status":"updated","user":user_account_json(&account),"sequence":current.sequence()}).to_string())
+            let token = match parse_bearer_token(&request) {
+                Ok(value) => value,
+                Err(error) => return write_json_error(&mut stream, "401 Unauthorized", &error).await,
+            };
+            let response = match user_registry.lock() {
+                Ok(mut current) => match user_login.lock() {
+                    Ok(mut login) => match validate_user_bearer_session(&current, &mut login, &token) {
+                        Err(_) => (
+                            "401 Unauthorized",
+                            "application/json; charset=utf-8",
+                            r#"{"status":"error","error":"invalid_or_expired_session"}"#.into(),
+                        ),
+                        Ok(actor)
+                            if actor.role != UserRole::Founder
+                                || actor.awe_id != current.founder_awe_id() =>
+                        {
+                            (
+                                "403 Forbidden",
+                                "application/json; charset=utf-8",
+                                r#"{"status":"error","error":"founder_session_required"}"#.into(),
+                            )
+                        }
+                        Ok(_actor) => {
+                            let mut candidate = current.clone();
+                            match candidate.set_role(target, role, at_unix, &signature) {
+                                Ok(account) => {
+                                    if candidate.sequence() != current.sequence() {
+                                        if let Err(error) = user_registry::save(&user_registry_path, &candidate, &node.identity) {
+                                            ("500 Internal Server Error", "application/json; charset=utf-8",
+                                                serde_json::json!({"status":"error","error":error.to_string()}).to_string())
+                                        } else {
+                                            *current = candidate;
+                                            ("200 OK", "application/json; charset=utf-8",
+                                                serde_json::json!({"status":"updated","user":user_account_json(&account),"sequence":current.sequence()}).to_string())
+                                        }
+                                    } else {
+                                        ("200 OK", "application/json; charset=utf-8",
+                                            serde_json::json!({"status":"unchanged","user":user_account_json(&account),"sequence":current.sequence()}).to_string())
+                                    }
                                 }
-                            } else {
-                                ("200 OK", "application/json; charset=utf-8",
-                                    serde_json::json!({"status":"unchanged","user":user_account_json(&account),"sequence":current.sequence()}).to_string())
+                                Err(error) => (user_registry_error_status(&error), "application/json; charset=utf-8",
+                                    serde_json::json!({"status":"error","error":error.to_string()}).to_string())
                             }
                         }
-                        Err(error) => (user_registry_error_status(&error), "application/json; charset=utf-8",
-                            serde_json::json!({"status":"error","error":error.to_string()}).to_string())
-                    }
-                }
+                    },
+                    Err(_) => (
+                        "500 Internal Server Error",
+                        "application/json; charset=utf-8",
+                        r#"{"status":"error","error":"user_login_lock_failed"}"#.into(),
+                    ),
+                },
                 Err(_) => ("500 Internal Server Error", "application/json; charset=utf-8",
-                    serde_json::json!({"status":"error","error":"user_registry_lock_failed"}).to_string())
-            }
+                    r#"{"status":"error","error":"user_registry_lock_failed"}"#.into())
+            };
+            response
         },
         "/api/admin/users/status" if method == "POST" => {
             let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
@@ -1805,47 +1869,84 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                 Ok(value) => value,
                 Err(error) => return write_json_error(&mut stream, "400 Bad Request", &error).await,
             };
-            match user_registry.lock() {
-                Ok(mut current) => {
-                    let mut candidate = current.clone();
-                    let mutation = if let Some(actor) = actor_awe_id {
-                        candidate.admin_set_status(actor, target, status, at_unix, now_unix(), &signature)
-                    } else {
-                        candidate.set_status(target, status, at_unix, &signature)
-                    };
-                    match mutation {
-                        Ok(account) => {
-                            if candidate.sequence() != current.sequence() {
-                                if let Err(error) = user_registry::save(&user_registry_path, &candidate, &node.identity) {
-                                    ("500 Internal Server Error", "application/json; charset=utf-8",
-                                        serde_json::json!({"status":"error","error":error.to_string()}).to_string())
-                                } else {
-                                    *current = candidate;
-                                    ("200 OK", "application/json; charset=utf-8",
-                                        serde_json::json!({
-                                            "status":"updated",
-                                            "user":user_account_json(&account),
-                                            "actor_awe_id":actor_awe_id.unwrap_or(current.founder_awe_id()),
-                                            "sequence":current.sequence()
-                                        }).to_string())
+            let token = match parse_bearer_token(&request) {
+                Ok(value) => value,
+                Err(error) => return write_json_error(&mut stream, "401 Unauthorized", &error).await,
+            };
+            let response = match user_registry.lock() {
+                Ok(mut current) => match user_login.lock() {
+                    Ok(mut login) => match validate_user_bearer_session(&current, &mut login, &token) {
+                        Err(_) => (
+                            "401 Unauthorized",
+                            "application/json; charset=utf-8",
+                            r#"{"status":"error","error":"invalid_or_expired_session"}"#.into(),
+                        ),
+                        Ok(actor) => {
+                            let permitted = match actor_awe_id {
+                                Some(expected_actor) => {
+                                    actor.awe_id == expected_actor
+                                        && matches!(actor.role, UserRole::Founder | UserRole::Admin)
                                 }
+                                None => {
+                                    actor.role == UserRole::Founder
+                                        && actor.awe_id == current.founder_awe_id()
+                                }
+                            };
+                            if !permitted {
+                                (
+                                    "403 Forbidden",
+                                    "application/json; charset=utf-8",
+                                    r#"{"status":"error","error":"session_actor_not_authorized"}"#.into(),
+                                )
                             } else {
-                                ("200 OK", "application/json; charset=utf-8",
-                                    serde_json::json!({
-                                        "status":"unchanged",
-                                        "user":user_account_json(&account),
-                                        "actor_awe_id":actor_awe_id.unwrap_or(current.founder_awe_id()),
-                                        "sequence":current.sequence()
-                                    }).to_string())
+                                let mut candidate = current.clone();
+                                let mutation = if let Some(actor_id) = actor_awe_id {
+                                    candidate.admin_set_status(actor_id, target, status, at_unix, now_unix(), &signature)
+                                } else {
+                                    candidate.set_status(target, status, at_unix, &signature)
+                                };
+                                match mutation {
+                                    Ok(account) => {
+                                        if candidate.sequence() != current.sequence() {
+                                            if let Err(error) = user_registry::save(&user_registry_path, &candidate, &node.identity) {
+                                                ("500 Internal Server Error", "application/json; charset=utf-8",
+                                                    serde_json::json!({"status":"error","error":error.to_string()}).to_string())
+                                            } else {
+                                                *current = candidate;
+                                                ("200 OK", "application/json; charset=utf-8",
+                                                    serde_json::json!({
+                                                        "status":"updated",
+                                                        "user":user_account_json(&account),
+                                                        "actor_awe_id":actor_awe_id.unwrap_or(current.founder_awe_id()),
+                                                        "sequence":current.sequence()
+                                                    }).to_string())
+                                            }
+                                        } else {
+                                            ("200 OK", "application/json; charset=utf-8",
+                                                serde_json::json!({
+                                                    "status":"unchanged",
+                                                    "user":user_account_json(&account),
+                                                    "actor_awe_id":actor_awe_id.unwrap_or(current.founder_awe_id()),
+                                                    "sequence":current.sequence()
+                                                }).to_string())
+                                        }
+                                    }
+                                    Err(error) => (user_registry_error_status(&error), "application/json; charset=utf-8",
+                                        serde_json::json!({"status":"error","error":error.to_string()}).to_string())
+                                }
                             }
                         }
-                        Err(error) => (user_registry_error_status(&error), "application/json; charset=utf-8",
-                            serde_json::json!({"status":"error","error":error.to_string()}).to_string())
-                    }
-                }
+                    },
+                    Err(_) => (
+                        "500 Internal Server Error",
+                        "application/json; charset=utf-8",
+                        r#"{"status":"error","error":"user_login_lock_failed"}"#.into(),
+                    ),
+                },
                 Err(_) => ("500 Internal Server Error", "application/json; charset=utf-8",
-                    serde_json::json!({"status":"error","error":"user_registry_lock_failed"}).to_string())
-            }
+                    r#"{"status":"error","error":"user_registry_lock_failed"}"#.into())
+            };
+            response
         },
         _ if path.starts_with("/api/users/") && method == "GET" => {
             let requested = path.strip_prefix("/api/users/").unwrap_or("");
