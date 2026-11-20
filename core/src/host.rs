@@ -326,12 +326,24 @@ impl AweHost {
                 "invalid site domain",
             ));
         }
-        let bytes = fs::read(self.manifest_path(domain))?;
+        self.load_manifest_from_path(&self.manifest_path(domain), domain)
+    }
+
+    /// Load and verify the manifest at the exact path discovered by directory
+    /// enumeration. Do not reconstruct a canonical filename here: on
+    /// case-sensitive filesystems, distinct case-variant suffixes can refer
+    /// to distinct files with different object references.
+    fn load_manifest_from_path(
+        &self,
+        path: &Path,
+        expected_domain: &str,
+    ) -> io::Result<SiteManifest> {
+        let bytes = fs::read(path)?;
         let manifest: SiteManifest = serde_json::from_slice(&bytes)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid host manifest"))?;
         if !crate::registry::valid_name(&manifest.domain)
             || manifest.version == 0
-            || !manifest.domain.eq_ignore_ascii_case(domain)
+            || !manifest.domain.eq_ignore_ascii_case(expected_domain)
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -391,7 +403,7 @@ impl AweHost {
                     "site manifest is not a regular file",
                 ));
             }
-            manifests.push(self.load_manifest(domain)?);
+            manifests.push(self.load_manifest_from_path(&entry.path(), domain)?);
         }
         manifests.sort_by(|a, b| a.domain.cmp(&b.domain));
         Ok(manifests)
@@ -856,36 +868,83 @@ mod tests {
         fs::rename(&canonical, &intermediate).unwrap();
         fs::rename(&intermediate, &renamed).unwrap();
 
-        match host.collect_garbage() {
-            Ok(removed) => {
-                // Case-insensitive filesystems can load the case-variant name
-                // through the canonical path and safely reclaim only the orphan.
-                assert_eq!(removed, 1);
-                assert!(!host.cleanup_pending());
-                assert_eq!(
-                    host.store.get(&live.object_id).unwrap(),
-                    b"must remain live"
-                );
-                assert_eq!(
-                    host.store.get(&orphan.object_id).unwrap_err().kind(),
-                    io::ErrorKind::NotFound
-                );
-            }
-            Err(error) => {
-                // Case-sensitive filesystems cannot resolve the renamed path
-                // through its canonical spelling, so collection must fail closed.
-                assert_eq!(error.kind(), io::ErrorKind::NotFound);
-                assert!(host.cleanup_pending());
-                assert_eq!(
-                    host.store.get(&live.object_id).unwrap(),
-                    b"must remain live"
-                );
-                assert_eq!(
-                    host.store.get(&orphan.object_id).unwrap(),
-                    b"must remain unless the manifest is safely loaded"
-                );
-            }
+        // Collection reads the enumerated path, so this is safe on both
+        // case-sensitive and case-insensitive filesystems.
+        assert_eq!(host.collect_garbage().unwrap(), 1);
+        assert!(!host.cleanup_pending());
+        assert_eq!(
+            host.store.get(&live.object_id).unwrap(),
+            b"must remain live"
+        );
+        assert_eq!(
+            host.store.get(&orphan.object_id).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn garbage_collection_reads_each_distinct_case_variant_manifest_path() {
+        let root = std::env::temp_dir().join(format!(
+            "awe-host-gc-distinct-case-manifests-{}",
+            std::process::id()
+        ));
+        let mut host = AweHost::open(&root, 10_000_000, HostPolicy::default()).unwrap();
+        let owner =
+            Identity::generate(crate::identity::Username::new("gc-case-duplicate-owner").unwrap());
+
+        let first_file = host
+            .publish_file("/first.html", b"first manifest object", "text/html")
+            .unwrap();
+        let first = host
+            .publish_manifest("case-duplicate.awe", 1, &owner, vec![first_file.clone()])
+            .unwrap();
+        host.save_manifest(&first).unwrap();
+
+        let second_file = host
+            .publish_file("/second.html", b"second manifest object", "text/html")
+            .unwrap();
+        let second = host
+            .publish_manifest("case-duplicate.awe", 2, &owner, vec![second_file.clone()])
+            .unwrap();
+
+        let canonical = host.manifest_path("case-duplicate.awe");
+        let variant = root.join("case-duplicate.awe.MANIFEST.JSON");
+        fs::write(&variant, serde_json::to_vec_pretty(&second).unwrap()).unwrap();
+
+        // On a case-insensitive filesystem these two spellings address the
+        // same file, so the distinct-entry regression is not applicable there.
+        if fs::canonicalize(&canonical).unwrap() == fs::canonicalize(&variant).unwrap() {
+            let _ = fs::remove_dir_all(root);
+            return;
         }
+
+        let orphan = host
+            .publish_file(
+                "/orphan.bin",
+                b"must be reclaimed",
+                "application/octet-stream",
+            )
+            .unwrap();
+
+        // The canonical and case-variant directory entries contain different
+        // valid manifests for the same logical domain. GC must read both
+        // enumerated paths and retain the union of their object references.
+        assert_eq!(host.collect_garbage().unwrap(), 1);
+        assert!(!host.cleanup_pending());
+        assert_eq!(
+            host.store.get(&first_file.object_id).unwrap(),
+            b"first manifest object"
+        );
+        assert_eq!(
+            host.store.get(&second_file.object_id).unwrap(),
+            b"second manifest object"
+        );
+        assert_eq!(
+            host.store.get(&orphan.object_id).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
 
         let _ = fs::remove_dir_all(root);
     }
