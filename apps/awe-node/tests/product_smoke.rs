@@ -2,6 +2,7 @@ use awep2p_core::{
     identity::{AweSecret, Identity, Username},
     network_control::{self, NetworkAction, NetworkControlPlane},
     network_topology::CentreLinkMode,
+    user_auth::user_login_message,
     user_registry::{self, UserRegistry, UserRole, UserStatus},
 };
 use std::{
@@ -64,6 +65,15 @@ fn get(addr: &str, path: &str) -> String {
     request(
         addr,
         &format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n"),
+    )
+}
+
+fn get_bearer_raw(addr: &str, path: &str, token: &str) -> String {
+    request_raw(
+        addr,
+        &format!(
+            "GET {path} HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {token}\r\nConnection: close\r\n\r\n"
+        ),
     )
 }
 
@@ -691,6 +701,51 @@ fn three_node_product_smoke() {
         );
         let managed_user_id = managed_user.public.awe_id.to_hex();
 
+        let session_challenge: serde_json::Value = serde_json::from_str(&post(
+            "127.0.0.1:46201",
+            "/api/auth/challenge",
+            &serde_json::json!({"awe_id": managed_user_id, "ttl_secs": 120}).to_string(),
+        ))
+        .expect("AWEID login challenge JSON");
+        assert_eq!(session_challenge["status"], "challenge_issued");
+        let challenge_id = session_challenge["challenge_id"]
+            .as_str()
+            .expect("challenge id")
+            .to_string();
+        let challenge_message = hex::decode(
+            session_challenge["message"]
+                .as_str()
+                .expect("domain-separated challenge message"),
+        )
+        .expect("decode login challenge message");
+        let login_signature = managed_user.sign(&challenge_message);
+        let login_response: serde_json::Value = serde_json::from_str(&post(
+            "127.0.0.1:46201",
+            "/api/auth/login",
+            &serde_json::json!({
+                "challenge_id": challenge_id,
+                "signature": hex::encode(login_signature),
+                "session_ttl_secs": 3600
+            })
+            .to_string(),
+        ))
+        .expect("AWEID login response JSON");
+        assert_eq!(login_response["status"], "authenticated");
+        let managed_session_token = login_response["token"]
+            .as_str()
+            .expect("opaque bearer session token")
+            .to_string();
+        let authenticated = get_bearer_raw(
+            "127.0.0.1:46201",
+            "/api/auth/session",
+            &managed_session_token,
+        );
+        assert!(
+            authenticated.starts_with("HTTP/1.1 200 OK")
+                && authenticated.contains(&managed_user_id),
+            "valid AWEID session was not accepted: {authenticated}"
+        );
+
         let network_admin =
             Identity::generate(Username::new("network-admin-key".to_string()).unwrap());
         let network_admin_registration_message =
@@ -816,6 +871,16 @@ fn three_node_product_smoke() {
                 && admin_suspended.contains(&format!(r#""actor_awe_id":"{new_user_id}""#)),
             "active admin could not suspend a regular user: {admin_suspended}"
         );
+        let suspended_session = get_bearer_raw(
+            "127.0.0.1:46201",
+            "/api/auth/session",
+            &managed_session_token,
+        );
+        assert!(
+            suspended_session.starts_with("HTTP/1.1 401 Unauthorized"),
+            "suspending an account must revoke its existing session: {suspended_session}"
+        );
+
         expected_registry
             .admin_set_status(
                 &new_user_id,
@@ -865,6 +930,16 @@ fn three_node_product_smoke() {
                 && reactivated.contains(r#""status":"active""#),
             "active admin could not reactivate a regular user: {reactivated}"
         );
+        let reactivated_old_session = get_bearer_raw(
+            "127.0.0.1:46201",
+            "/api/auth/session",
+            &managed_session_token,
+        );
+        assert!(
+            reactivated_old_session.starts_with("HTTP/1.1 401 Unauthorized"),
+            "reactivation must not revive a session from the previous account sequence: {reactivated_old_session}"
+        );
+
         expected_registry
             .admin_set_status(
                 &new_user_id,
@@ -875,6 +950,17 @@ fn three_node_product_smoke() {
                 &reactivate_signature,
             )
             .expect("advance expected registry after admin reactivation");
+
+        let logout = request_raw(
+            "127.0.0.1:46201",
+            &format!(
+                "POST /api/auth/logout HTTP/1.1\r\nHost: 127.0.0.1:46201\r\nAuthorization: Bearer {managed_session_token}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            ),
+        );
+        assert!(
+            logout.starts_with("HTTP/1.1 200 OK") && logout.contains(r#""revoked":true"#),
+            "explicit logout did not revoke the active session: {logout}"
+        );
 
         // Admins cannot promote accounts; role assignment remains founder-only.
         let attempted_promotion_at = reactivate_at + 1;
