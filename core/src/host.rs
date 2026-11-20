@@ -361,6 +361,7 @@ impl AweHost {
     pub fn list_manifests(&self) -> io::Result<Vec<SiteManifest>> {
         const MANIFEST_SUFFIX: &str = ".manifest.json";
         let mut manifests = Vec::new();
+        let mut domains = BTreeSet::new();
         for entry in fs::read_dir(&self.root)? {
             let entry = entry?;
             let filename = entry.file_name();
@@ -401,6 +402,15 @@ impl AweHost {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "site manifest is not a regular file",
+                ));
+            }
+            // A case-variant filename is the same logical DNS domain. If
+            // both spellings exist as distinct files, their authority is
+            // ambiguous; fail closed so GC preserves every referenced object.
+            if !domains.insert(domain.to_ascii_lowercase()) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "duplicate site manifest domain",
                 ));
             }
             manifests.push(self.load_manifest_from_path(&entry.path(), domain)?);
@@ -885,9 +895,9 @@ mod tests {
     }
 
     #[test]
-    fn garbage_collection_reads_each_distinct_case_variant_manifest_path() {
+    fn garbage_collection_fails_closed_when_case_variant_manifests_duplicate_a_domain() {
         let root = std::env::temp_dir().join(format!(
-            "awe-host-gc-distinct-case-manifests-{}",
+            "awe-host-gc-duplicate-case-manifests-{}",
             std::process::id()
         ));
         let mut host = AweHost::open(&root, 10_000_000, HostPolicy::default()).unwrap();
@@ -923,16 +933,17 @@ mod tests {
         let orphan = host
             .publish_file(
                 "/orphan.bin",
-                b"must be reclaimed",
+                b"must remain while duplicate manifests are unresolved",
                 "application/octet-stream",
             )
             .unwrap();
 
-        // The canonical and case-variant directory entries contain different
-        // valid manifests for the same logical domain. GC must read both
-        // enumerated paths and retain the union of their object references.
-        assert_eq!(host.collect_garbage().unwrap(), 1);
-        assert!(!host.cleanup_pending());
+        // The two directory entries claim the same logical domain but contain
+        // different valid manifests. Do not choose one or union an ambiguous
+        // authority set: fail closed and preserve every object until repaired.
+        let error = host.collect_garbage().unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(host.cleanup_pending());
         assert_eq!(
             host.store.get(&first_file.object_id).unwrap(),
             b"first manifest object"
@@ -942,8 +953,8 @@ mod tests {
             b"second manifest object"
         );
         assert_eq!(
-            host.store.get(&orphan.object_id).unwrap_err().kind(),
-            io::ErrorKind::NotFound
+            host.store.get(&orphan.object_id).unwrap(),
+            b"must remain while duplicate manifests are unresolved"
         );
 
         let _ = fs::remove_dir_all(root);
