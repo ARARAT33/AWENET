@@ -1596,7 +1596,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                     "application/json; charset=utf-8",
                     serde_json::json!({
                         "status": "authenticated",
-                        "awe_id": session.awe_id,
+                        "awe_id": session.awe_id.clone(),
                         "token": hex::encode(session.token),
                         "expires_at_unix": session.expires_at_unix,
                         "token_type": "Bearer"
