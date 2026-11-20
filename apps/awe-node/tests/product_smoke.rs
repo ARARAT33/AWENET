@@ -907,7 +907,6 @@ fn three_node_product_smoke() {
                 "signature": hex::encode(role_signature)
             })
             .to_string(),
-            &founder_session_token,
         );
         assert!(
             unauthenticated_role.starts_with("HTTP/1.1 401 Unauthorized"),
@@ -923,6 +922,7 @@ fn three_node_product_smoke() {
                 "signature": hex::encode(role_signature)
             })
             .to_string(),
+            &founder_session_token,
         );
         assert!(
             promoted.contains(r#""status":"updated""#) && promoted.contains(r#""role":"admin""#),
