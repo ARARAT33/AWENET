@@ -156,16 +156,25 @@ pub struct AweHost {
     store: LocalNodeStore,
     policy: HostPolicy,
     cache: BTreeMap<([u8; 32], String), Vec<u8>>,
+    cleanup_pending: bool,
 }
 impl AweHost {
     pub fn open(root: impl AsRef<Path>, quota: u64, policy: HostPolicy) -> io::Result<Self> {
         fs::create_dir_all(root.as_ref())?;
-        Ok(Self {
+        let mut host = Self {
             root: root.as_ref().to_path_buf(),
             store: LocalNodeStore::open(root.as_ref().join("objects"), quota)?,
             policy,
             cache: BTreeMap::new(),
-        })
+            cleanup_pending: false,
+        };
+
+        // Recover objects staged before a crash or left by an interrupted
+        // publish/unpublish. Startup cleanup is best-effort: invalid manifests
+        // or transient storage errors must not prevent the node from serving.
+        // The pending state is exposed and later lifecycle operations retry.
+        let _ = host.collect_garbage();
+        Ok(host)
     }
     pub fn publish_file(
         &mut self,
@@ -338,23 +347,48 @@ impl AweHost {
         Ok(manifest)
     }
     pub fn list_manifests(&self) -> io::Result<Vec<SiteManifest>> {
+        const MANIFEST_SUFFIX: &str = ".manifest.json";
         let mut manifests = Vec::new();
         for entry in fs::read_dir(&self.root)? {
             let entry = entry?;
-            if !entry.file_type()?.is_file() {
-                continue;
-            }
             let filename = entry.file_name();
-            let Some(filename) = filename.to_str() else {
+            // Lossy conversion preserves an ASCII manifest suffix even when
+            // the prefix contains invalid UTF-8. Such a path must be rejected
+            // as an invalid manifest name, not silently omitted from GC.
+            let filename = filename.to_string_lossy();
+            let Some(domain_end) = filename.len().checked_sub(MANIFEST_SUFFIX.len()) else {
                 continue;
             };
-            let Some(domain) = filename.strip_suffix(".manifest.json") else {
+            let Some(suffix) = filename.get(domain_end..) else {
                 continue;
+            };
+            // Windows paths are case-insensitive, but directory enumeration
+            // preserves the spelling used when a file was renamed. Recognize
+            // a case-variant manifest suffix so GC never skips a live manifest
+            // and deletes the objects it references.
+            if !suffix.eq_ignore_ascii_case(MANIFEST_SUFFIX) {
+                continue;
+            }
+            let Some(domain) = filename.get(..domain_end) else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "invalid site manifest filename",
+                ));
             };
             if !crate::registry::valid_name(domain) {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "invalid site manifest filename",
+                ));
+            }
+            // A manifest-shaped directory or symlink is not safe to ignore:
+            // it may be a damaged/replaced manifest whose references are
+            // unknown. Garbage collection must fail closed rather than
+            // treating the incomplete manifest set as authoritative.
+            if !entry.file_type()?.is_file() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "site manifest is not a regular file",
                 ));
             }
             manifests.push(self.load_manifest(domain)?);
@@ -416,7 +450,13 @@ impl AweHost {
     /// Callers must serialize this with publish/unpublish operations. The node
     /// HTTP layer does so by holding the shared host mutex for the whole flow.
     pub fn collect_garbage(&mut self) -> io::Result<u64> {
-        let manifests = self.list_manifests()?;
+        let manifests = match self.list_manifests() {
+            Ok(manifests) => manifests,
+            Err(error) => {
+                self.cleanup_pending = true;
+                return Err(error);
+            }
+        };
         let mut live = BTreeMap::new();
         for manifest in manifests {
             for file in manifest.files {
@@ -424,10 +464,22 @@ impl AweHost {
             }
         }
 
-        let removed = self.store.gc(&live)?;
+        let removed = match self.store.gc(&live) {
+            Ok(removed) => removed,
+            Err(error) => {
+                self.cleanup_pending = true;
+                return Err(error);
+            }
+        };
         self.cache
             .retain(|(object_id, _), _| live.contains_key(object_id));
+        self.cleanup_pending = false;
         Ok(removed)
+    }
+
+    /// Whether startup or a later collection pass could not safely finish.
+    pub fn cleanup_pending(&self) -> bool {
+        self.cleanup_pending
     }
 
     pub fn manifest_path(&self, domain: &str) -> PathBuf {
@@ -568,6 +620,30 @@ mod tests {
     }
 
     #[test]
+    fn startup_collection_reclaims_objects_staged_before_manifest_commit() {
+        let root = std::env::temp_dir().join(format!("awe-host-gc-startup-{}", std::process::id()));
+        let orphan_id = {
+            let mut host = AweHost::open(&root, 10_000_000, HostPolicy::default()).unwrap();
+            host.publish_file(
+                "/staged.bin",
+                b"staged before manifest",
+                "application/octet-stream",
+            )
+            .unwrap()
+            .object_id
+        };
+
+        let reopened = AweHost::open(&root, 10_000_000, HostPolicy::default()).unwrap();
+        assert!(!reopened.cleanup_pending());
+        assert_eq!(
+            reopened.store.get(&orphan_id).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn garbage_collection_removes_orphans_and_preserves_shared_objects() {
         let root = std::env::temp_dir().join(format!("awe-host-gc-shared-{}", std::process::id()));
         let mut host = AweHost::open(&root, 10_000_000, HostPolicy::default()).unwrap();
@@ -636,11 +712,180 @@ mod tests {
 
         let error = host.collect_garbage().unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(host.cleanup_pending());
         assert_eq!(host.store.get(&live.object_id).unwrap(), b"live object");
         assert_eq!(
             host.store.get(&orphan.object_id).unwrap(),
             b"keep until safe"
         );
+
+        fs::remove_file(host.manifest_path("broken-gc.awe")).unwrap();
+        assert_eq!(host.collect_garbage().unwrap(), 1);
+        assert!(!host.cleanup_pending());
+        assert_eq!(
+            host.store.get(&orphan.object_id).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn garbage_collection_fails_closed_when_manifest_entry_is_not_a_regular_file() {
+        let root =
+            std::env::temp_dir().join(format!("awe-host-gc-non-file-{}", std::process::id()));
+        let mut host = AweHost::open(&root, 10_000_000, HostPolicy::default()).unwrap();
+        let owner =
+            Identity::generate(crate::identity::Username::new("gc-non-file-owner").unwrap());
+        let live = host
+            .publish_file("/live.html", b"must remain live", "text/html")
+            .unwrap();
+        let manifest = host
+            .publish_manifest("hidden-gc.awe", 1, &owner, vec![live.clone()])
+            .unwrap();
+        host.save_manifest(&manifest).unwrap();
+        let orphan = host
+            .publish_file(
+                "/orphan.bin",
+                b"must remain until the manifest set is trustworthy",
+                "application/octet-stream",
+            )
+            .unwrap();
+
+        // Simulate a damaged manifest path replaced by a directory. Ignoring
+        // this entry would make the collector believe the live object is
+        // orphaned and delete it.
+        let manifest_path = host.manifest_path("hidden-gc.awe");
+        fs::remove_file(&manifest_path).unwrap();
+        fs::create_dir(&manifest_path).unwrap();
+
+        let error = host.collect_garbage().unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(host.cleanup_pending());
+        assert_eq!(
+            host.store.get(&live.object_id).unwrap(),
+            b"must remain live"
+        );
+        assert_eq!(
+            host.store.get(&orphan.object_id).unwrap(),
+            b"must remain until the manifest set is trustworthy"
+        );
+
+        fs::remove_dir(&manifest_path).unwrap();
+        assert_eq!(host.collect_garbage().unwrap(), 2);
+        assert!(!host.cleanup_pending());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn garbage_collection_fails_closed_on_non_utf8_manifest_filename() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let root =
+            std::env::temp_dir().join(format!("awe-host-gc-non-utf8-{}", std::process::id()));
+        let mut host = AweHost::open(&root, 10_000_000, HostPolicy::default()).unwrap();
+        let owner =
+            Identity::generate(crate::identity::Username::new("gc-non-utf8-owner").unwrap());
+        let live = host
+            .publish_file("/live.html", b"must remain live", "text/html")
+            .unwrap();
+        let manifest = host
+            .publish_manifest("valid-gc.awe", 1, &owner, vec![live.clone()])
+            .unwrap();
+        host.save_manifest(&manifest).unwrap();
+        let orphan = host
+            .publish_file(
+                "/orphan.bin",
+                b"must remain while an invalid manifest path exists",
+                "application/octet-stream",
+            )
+            .unwrap();
+
+        let mut invalid_name = vec![0xff];
+        invalid_name.extend_from_slice(b".manifest.json");
+        fs::write(
+            root.join(std::ffi::OsString::from_vec(invalid_name)),
+            b"invalid manifest path",
+        )
+        .unwrap();
+
+        let error = host.collect_garbage().unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(host.cleanup_pending());
+        assert_eq!(
+            host.store.get(&live.object_id).unwrap(),
+            b"must remain live"
+        );
+        assert_eq!(
+            host.store.get(&orphan.object_id).unwrap(),
+            b"must remain while an invalid manifest path exists"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn garbage_collection_recognizes_manifest_suffix_case_insensitively() {
+        let root =
+            std::env::temp_dir().join(format!("awe-host-gc-case-suffix-{}", std::process::id()));
+        let mut host = AweHost::open(&root, 10_000_000, HostPolicy::default()).unwrap();
+        let owner =
+            Identity::generate(crate::identity::Username::new("gc-case-suffix-owner").unwrap());
+        let live = host
+            .publish_file("/live.html", b"must remain live", "text/html")
+            .unwrap();
+        let manifest = host
+            .publish_manifest("case-gc.awe", 1, &owner, vec![live.clone()])
+            .unwrap();
+        host.save_manifest(&manifest).unwrap();
+        let orphan = host
+            .publish_file(
+                "/orphan.bin",
+                b"must remain unless the manifest is safely loaded",
+                "application/octet-stream",
+            )
+            .unwrap();
+
+        // Rename through a distinct path so this also works on case-insensitive
+        // filesystems, where a case-only rename may be treated as a no-op.
+        let canonical = host.manifest_path("case-gc.awe");
+        let intermediate = root.join("case-gc.awe.manifest.rename");
+        let renamed = root.join("case-gc.awe.MANIFEST.JSON");
+        fs::rename(&canonical, &intermediate).unwrap();
+        fs::rename(&intermediate, &renamed).unwrap();
+
+        match host.collect_garbage() {
+            Ok(removed) => {
+                // Case-insensitive filesystems can load the case-variant name
+                // through the canonical path and safely reclaim only the orphan.
+                assert_eq!(removed, 1);
+                assert!(!host.cleanup_pending());
+                assert_eq!(
+                    host.store.get(&live.object_id).unwrap(),
+                    b"must remain live"
+                );
+                assert_eq!(
+                    host.store.get(&orphan.object_id).unwrap_err().kind(),
+                    io::ErrorKind::NotFound
+                );
+            }
+            Err(error) => {
+                // Case-sensitive filesystems cannot resolve the renamed path
+                // through its canonical spelling, so collection must fail closed.
+                assert_eq!(error.kind(), io::ErrorKind::NotFound);
+                assert!(host.cleanup_pending());
+                assert_eq!(
+                    host.store.get(&live.object_id).unwrap(),
+                    b"must remain live"
+                );
+                assert_eq!(
+                    host.store.get(&orphan.object_id).unwrap(),
+                    b"must remain unless the manifest is safely loaded"
+                );
+            }
+        }
 
         let _ = fs::remove_dir_all(root);
     }
