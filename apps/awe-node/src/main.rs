@@ -1510,15 +1510,17 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                     None => return write_json_error(&mut stream, "400 Bad Request", "ttl_secs must be a non-negative integer").await,
                 },
             };
-            let result = match user_registry.lock() {
+            let locked_result = match user_registry.lock() {
                 Ok(registry) => match user_login.lock() {
-                    Ok(mut login) => login.request_challenge(&registry, awe_id, now_unix(), ttl_secs),
-                    Err(_) => {
-                        return write_json_error(&mut stream, "500 Internal Server Error", "user_login_lock_failed").await;
-                    }
+                    Ok(mut login) => Ok(login.request_challenge(&registry, awe_id, now_unix(), ttl_secs)),
+                    Err(_) => Err("user_login_lock_failed"),
                 },
-                Err(_) => {
-                    return write_json_error(&mut stream, "500 Internal Server Error", "user_registry_lock_failed").await;
+                Err(_) => Err("user_registry_lock_failed"),
+            };
+            let result = match locked_result {
+                Ok(result) => result,
+                Err(error) => {
+                    return write_json_error(&mut stream, "500 Internal Server Error", error).await;
                 }
             };
             match result {
@@ -1573,21 +1575,23 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                     None => return write_json_error(&mut stream, "400 Bad Request", "session_ttl_secs must be a non-negative integer").await,
                 },
             };
-            let result = match user_registry.lock() {
+            let locked_result = match user_registry.lock() {
                 Ok(registry) => match user_login.lock() {
-                    Ok(mut login) => login.complete_login(
+                    Ok(mut login) => Ok(login.complete_login(
                         &registry,
                         &challenge_id,
                         &signature,
                         now_unix(),
                         session_ttl_secs,
-                    ),
-                    Err(_) => {
-                        return write_json_error(&mut stream, "500 Internal Server Error", "user_login_lock_failed").await;
-                    }
+                    )),
+                    Err(_) => Err("user_login_lock_failed"),
                 },
-                Err(_) => {
-                    return write_json_error(&mut stream, "500 Internal Server Error", "user_registry_lock_failed").await;
+                Err(_) => Err("user_registry_lock_failed"),
+            };
+            let result = match locked_result {
+                Ok(result) => result,
+                Err(error) => {
+                    return write_json_error(&mut stream, "500 Internal Server Error", error).await;
                 }
             };
             match result {
@@ -1614,15 +1618,17 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                 Ok(value) => value,
                 Err(error) => return write_json_error(&mut stream, "401 Unauthorized", &error).await,
             };
-            let result = match user_registry.lock() {
+            let locked_result = match user_registry.lock() {
                 Ok(registry) => match user_login.lock() {
-                    Ok(mut login) => login.validate_session(&registry, &token, now_unix()),
-                    Err(_) => {
-                        return write_json_error(&mut stream, "500 Internal Server Error", "user_login_lock_failed").await;
-                    }
+                    Ok(mut login) => Ok(login.validate_session(&registry, &token, now_unix())),
+                    Err(_) => Err("user_login_lock_failed"),
                 },
-                Err(_) => {
-                    return write_json_error(&mut stream, "500 Internal Server Error", "user_registry_lock_failed").await;
+                Err(_) => Err("user_registry_lock_failed"),
+            };
+            let result = match locked_result {
+                Ok(result) => result,
+                Err(error) => {
+                    return write_json_error(&mut stream, "500 Internal Server Error", error).await;
                 }
             };
             match result {
