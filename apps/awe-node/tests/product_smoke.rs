@@ -745,6 +745,16 @@ fn three_node_product_smoke() {
             "valid AWEID session was not accepted: {authenticated}"
         );
 
+        let cross_node_session = get_bearer_raw(
+            "127.0.0.1:46202",
+            "/api/auth/session",
+            &managed_session_token,
+        );
+        assert!(
+            cross_node_session.starts_with("HTTP/1.1 401 Unauthorized"),
+            "a node-local bearer token must not authenticate on another node: {cross_node_session}"
+        );
+
         let network_admin =
             Identity::generate(Username::new("network-admin-key".to_string()).unwrap());
         let network_admin_registration_message =
