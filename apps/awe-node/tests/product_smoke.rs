@@ -2,7 +2,6 @@ use awep2p_core::{
     identity::{AweSecret, Identity, Username},
     network_control::{self, NetworkAction, NetworkControlPlane},
     network_topology::CentreLinkMode,
-    user_auth::user_login_message,
     user_registry::{self, UserRegistry, UserRole, UserStatus},
 };
 use std::{
