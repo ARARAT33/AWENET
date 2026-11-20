@@ -124,7 +124,9 @@ fn login_user(addr: &str, identity: &Identity) -> String {
     .expect("AWEID login challenge JSON");
     assert_eq!(challenge["status"], "challenge_issued");
     let message = hex::decode(
-        challenge["message"].as_str().expect("login challenge message"),
+        challenge["message"]
+            .as_str()
+            .expect("login challenge message"),
     )
     .expect("decode login challenge message");
     let signature = identity.sign(&message);
@@ -708,7 +710,6 @@ fn three_node_product_smoke() {
             "fresh node should start with only its founder account"
         );
         let founder_session_token = login_user("127.0.0.1:46201", &founder);
-
 
         let new_user = Identity::generate(Username::new("phase2-user".to_string()).unwrap());
         let registration_message =
@@ -1625,7 +1626,8 @@ fn three_node_product_smoke() {
             "signature": hex::encode(admin_signature)
         })
         .to_string();
-        let unauthenticated_network = post_raw("127.0.0.1:46201", "/api/network/control", &admin_body);
+        let unauthenticated_network =
+            post_raw("127.0.0.1:46201", "/api/network/control", &admin_body);
         assert!(
             unauthenticated_network.starts_with("HTTP/1.1 401 Unauthorized"),
             "network mutations must require an authenticated session: {unauthenticated_network}"
@@ -1640,7 +1642,12 @@ fn three_node_product_smoke() {
             mismatched_network_session.starts_with("HTTP/1.1 403 Forbidden"),
             "the bearer session must match actor_awe_id: {mismatched_network_session}"
         );
-        let admin_applied = post_bearer_raw("127.0.0.1:46201", "/api/network/control", &admin_body, &network_admin_session_token);
+        let admin_applied = post_bearer_raw(
+            "127.0.0.1:46201",
+            "/api/network/control",
+            &admin_body,
+            &network_admin_session_token,
+        );
         assert!(
             admin_applied.starts_with("HTTP/1.1 200 OK")
                 && admin_applied.contains(r#""actor_awe_id":"#),
@@ -1795,7 +1802,12 @@ fn three_node_product_smoke() {
                 "signature": hex::encode(signature)
             })
             .to_string();
-            let raw = post_bearer_raw("127.0.0.1:46201", "/api/network/control", &body, &founder_session_token);
+            let raw = post_bearer_raw(
+                "127.0.0.1:46201",
+                "/api/network/control",
+                &body,
+                &founder_session_token,
+            );
             assert!(
                 raw.starts_with("HTTP/1.1 200 OK"),
                 "network mutation failed: {raw}"
@@ -1817,7 +1829,12 @@ fn three_node_product_smoke() {
             "signature": hex::encode(replay_signature)
         })
         .to_string();
-        let replay = post_bearer_raw("127.0.0.1:46201", "/api/network/control", &replay_body, &founder_session_token);
+        let replay = post_bearer_raw(
+            "127.0.0.1:46201",
+            "/api/network/control",
+            &replay_body,
+            &founder_session_token,
+        );
         assert!(
             replay.starts_with("HTTP/1.1 409 Conflict"),
             "stale replay was not rejected as a conflict: {replay}"
@@ -1838,7 +1855,12 @@ fn three_node_product_smoke() {
             "signature": hex::encode(forged_signature)
         })
         .to_string();
-        let forged = post_bearer_raw("127.0.0.1:46201", "/api/network/control", &forged_body, &founder_session_token);
+        let forged = post_bearer_raw(
+            "127.0.0.1:46201",
+            "/api/network/control",
+            &forged_body,
+            &founder_session_token,
+        );
         assert!(
             forged.starts_with("HTTP/1.1 403 Forbidden"),
             "forged mutation was not rejected: {forged}"
@@ -1858,7 +1880,12 @@ fn three_node_product_smoke() {
             "signature": hex::encode(remove_signature)
         })
         .to_string();
-        let blocked = post_bearer_raw("127.0.0.1:46201", "/api/network/control", &remove_body, &founder_session_token);
+        let blocked = post_bearer_raw(
+            "127.0.0.1:46201",
+            "/api/network/control",
+            &remove_body,
+            &founder_session_token,
+        );
         assert!(
             blocked.starts_with("HTTP/1.1 409 Conflict"),
             "referenced centre removal was not blocked: {blocked}"
