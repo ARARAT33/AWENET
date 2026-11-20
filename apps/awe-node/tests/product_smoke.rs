@@ -940,6 +940,36 @@ fn three_node_product_smoke() {
             "reactivation must not revive a session from the previous account sequence: {reactivated_old_session}"
         );
 
+        let renewed_challenge: serde_json::Value = serde_json::from_str(&post(
+            "127.0.0.1:46201",
+            "/api/auth/challenge",
+            &serde_json::json!({"awe_id": managed_user_id, "ttl_secs": 120}).to_string(),
+        ))
+        .expect("renewed AWEID login challenge JSON");
+        let renewed_challenge_message = hex::decode(
+            renewed_challenge["message"]
+                .as_str()
+                .expect("renewed challenge message"),
+        )
+        .expect("decode renewed challenge message");
+        let renewed_signature = managed_user.sign(&renewed_challenge_message);
+        let renewed_login: serde_json::Value = serde_json::from_str(&post(
+            "127.0.0.1:46201",
+            "/api/auth/login",
+            &serde_json::json!({
+                "challenge_id": renewed_challenge["challenge_id"],
+                "signature": hex::encode(renewed_signature),
+                "session_ttl_secs": 3600
+            })
+            .to_string(),
+        ))
+        .expect("renewed AWEID login response JSON");
+        assert_eq!(renewed_login["status"], "authenticated");
+        let renewed_session_token = renewed_login["token"]
+            .as_str()
+            .expect("renewed bearer session token")
+            .to_string();
+
         expected_registry
             .admin_set_status(
                 &new_user_id,
@@ -954,12 +984,22 @@ fn three_node_product_smoke() {
         let logout = request_raw(
             "127.0.0.1:46201",
             &format!(
-                "POST /api/auth/logout HTTP/1.1\r\nHost: 127.0.0.1:46201\r\nAuthorization: Bearer {managed_session_token}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                "POST /api/auth/logout HTTP/1.1\r\nHost: 127.0.0.1:46201\r\nAuthorization: Bearer {renewed_session_token}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
             ),
         );
         assert!(
             logout.starts_with("HTTP/1.1 200 OK") && logout.contains(r#""revoked":true"#),
             "explicit logout did not revoke the active session: {logout}"
+        );
+
+        let logged_out_session = get_bearer_raw(
+            "127.0.0.1:46201",
+            "/api/auth/session",
+            &renewed_session_token,
+        );
+        assert!(
+            logged_out_session.starts_with("HTTP/1.1 401 Unauthorized"),
+            "a logged-out bearer token remained valid: {logged_out_session}"
         );
 
         // Admins cannot promote accounts; role assignment remains founder-only.
