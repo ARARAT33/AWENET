@@ -183,6 +183,29 @@ impl UserRegistry {
         self.accounts.values().cloned().collect()
     }
 
+    /// Returns a bounded, AWE-ID-sorted page strictly after the optional
+    /// exclusive cursor. The ordered map lets administrators page through a
+    /// large registry without cloning every account for each request.
+    pub fn accounts_after(&self, after: Option<&str>, limit: usize) -> Vec<UserAccount> {
+        match after {
+            Some(cursor) => self
+                .accounts
+                .range::<str, _>((
+                    std::ops::Bound::Excluded(cursor),
+                    std::ops::Bound::Unbounded,
+                ))
+                .take(limit)
+                .map(|(_, account)| account.clone())
+                .collect(),
+            None => self
+                .accounts
+                .iter()
+                .take(limit)
+                .map(|(_, account)| account.clone())
+                .collect(),
+        }
+    }
+
     /// Resolves active account roles to product capabilities. Suspended accounts
     /// receive no capabilities; each API still enforces its own action scope.
     pub fn capabilities_for(&self, awe_id: &str) -> Option<CapabilitySet> {
@@ -1197,6 +1220,41 @@ mod tests {
         assert_eq!(registry.sequence(), u64::MAX);
         assert_eq!(registry.len(), 1);
         assert!(registry.get(&alice.public.awe_id.to_hex()).is_none());
+    }
+
+    #[test]
+    fn account_pages_are_sorted_exclusive_and_bounded() {
+        let founder = identity("founder");
+        let alice = identity("alice-key");
+        let bob = identity("bob-key");
+        let carol = identity("carol-key");
+        let mut registry = UserRegistry::new(&founder, 1);
+        register(&mut registry, &alice, "alice", 2);
+        register(&mut registry, &bob, "bob", 3);
+        register(&mut registry, &carol, "carol", 4);
+
+        let first = registry.accounts_after(None, 2);
+        assert_eq!(first.len(), 2);
+        assert!(first[0].awe_id < first[1].awe_id);
+
+        let cursor = first.last().unwrap().awe_id.clone();
+        let second = registry.accounts_after(Some(&cursor), 2);
+        assert_eq!(second.len(), 2);
+        assert!(cursor < second[0].awe_id);
+        assert!(second[0].awe_id < second[1].awe_id);
+
+        let mut all = first
+            .into_iter()
+            .chain(second)
+            .map(|account| account.awe_id)
+            .collect::<Vec<_>>();
+        all.sort();
+        all.dedup();
+        assert_eq!(all.len(), 4);
+        assert!(registry
+            .accounts_after(Some(all.last().unwrap()), 2)
+            .is_empty());
+        assert!(registry.accounts_after(None, 0).is_empty());
     }
 
     #[test]
