@@ -620,9 +620,7 @@ fn parse_admin_user_page(request: &str) -> Result<(Option<String>, usize), &'sta
                     return Err("duplicate_limit");
                 }
                 limit_seen = true;
-                limit = value
-                    .parse::<usize>()
-                    .map_err(|_| "invalid_limit")?;
+                limit = value.parse::<usize>().map_err(|_| "invalid_limit")?;
                 if !(1..=100).contains(&limit) {
                     return Err("limit_out_of_range");
                 }

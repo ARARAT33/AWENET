@@ -897,10 +897,9 @@ fn three_node_product_smoke() {
             first_page_raw.starts_with("HTTP/1.1 200 OK"),
             "Founder could not read the first account page: {first_page_raw}"
         );
-        let first_page: serde_json::Value = serde_json::from_str(
-            first_page_raw.split("\r\n\r\n").nth(1).unwrap_or(""),
-        )
-        .expect("first admin user page JSON");
+        let first_page: serde_json::Value =
+            serde_json::from_str(first_page_raw.split("\r\n\r\n").nth(1).unwrap_or(""))
+                .expect("first admin user page JSON");
         assert_eq!(first_page["total"].as_u64(), Some(4));
         assert_eq!(first_page["limit"].as_u64(), Some(2));
         assert_eq!(first_page["users"].as_array().map(Vec::len), Some(2));
@@ -926,10 +925,9 @@ fn three_node_product_smoke() {
             second_page_raw.starts_with("HTTP/1.1 200 OK"),
             "Founder could not read the next account page: {second_page_raw}"
         );
-        let second_page: serde_json::Value = serde_json::from_str(
-            second_page_raw.split("\r\n\r\n").nth(1).unwrap_or(""),
-        )
-        .expect("second admin user page JSON");
+        let second_page: serde_json::Value =
+            serde_json::from_str(second_page_raw.split("\r\n\r\n").nth(1).unwrap_or(""))
+                .expect("second admin user page JSON");
         assert_eq!(second_page["users"].as_array().map(Vec::len), Some(2));
         assert!(second_page["next_cursor"].is_null());
 
@@ -942,7 +940,11 @@ fn three_node_product_smoke() {
             .collect::<Vec<_>>();
         page_ids.sort();
         page_ids.dedup();
-        assert_eq!(page_ids.len(), 4, "cursor pages must not repeat or skip users");
+        assert_eq!(
+            page_ids.len(),
+            4,
+            "cursor pages must not repeat or skip users"
+        );
 
         let invalid_limit = get_bearer_raw(
             "127.0.0.1:46201",

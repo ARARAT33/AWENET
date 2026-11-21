@@ -1251,7 +1251,9 @@ mod tests {
         all.sort();
         all.dedup();
         assert_eq!(all.len(), 4);
-        assert!(registry.accounts_after(Some(all.last().unwrap()), 2).is_empty());
+        assert!(registry
+            .accounts_after(Some(all.last().unwrap()), 2)
+            .is_empty());
         assert!(registry.accounts_after(None, 0).is_empty());
     }
 
