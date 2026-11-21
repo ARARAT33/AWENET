@@ -872,7 +872,7 @@ fn three_node_product_smoke() {
 
         let unauthenticated_directory = request_raw(
             "127.0.0.1:46201",
-            "GET /api/admin/users HTTP/1.1\\r\\nHost: 127.0.0.1:46201\\r\\nConnection: close\\r\\n\\r\\n",
+            "GET /api/admin/users HTTP/1.1\r\nHost: 127.0.0.1:46201\r\nConnection: close\r\n\r\n",
         );
         assert!(
             unauthenticated_directory.starts_with("HTTP/1.1 401 Unauthorized"),
@@ -898,7 +898,7 @@ fn three_node_product_smoke() {
             "Founder could not read the first account page: {first_page_raw}"
         );
         let first_page: serde_json::Value = serde_json::from_str(
-            first_page_raw.split("\\r\\n\\r\\n").nth(1).unwrap_or(""),
+            first_page_raw.split("\r\n\r\n").nth(1).unwrap_or(""),
         )
         .expect("first admin user page JSON");
         assert_eq!(first_page["total"].as_u64(), Some(4));
@@ -927,7 +927,7 @@ fn three_node_product_smoke() {
             "Founder could not read the next account page: {second_page_raw}"
         );
         let second_page: serde_json::Value = serde_json::from_str(
-            second_page_raw.split("\\r\\n\\r\\n").nth(1).unwrap_or(""),
+            second_page_raw.split("\r\n\r\n").nth(1).unwrap_or(""),
         )
         .expect("second admin user page JSON");
         assert_eq!(second_page["users"].as_array().map(Vec::len), Some(2));
