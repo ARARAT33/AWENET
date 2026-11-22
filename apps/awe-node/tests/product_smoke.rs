@@ -870,6 +870,148 @@ fn three_node_product_smoke() {
             )
             .expect("build expected network admin registry sequence");
 
+        let unauthenticated_directory = request_raw(
+            "127.0.0.1:46201",
+            "GET /api/admin/users HTTP/1.1\r\nHost: 127.0.0.1:46201\r\nConnection: close\r\n\r\n",
+        );
+        assert!(
+            unauthenticated_directory.starts_with("HTTP/1.1 401 Unauthorized"),
+            "the account directory must require a bearer session: {unauthenticated_directory}"
+        );
+        let regular_user_directory = get_bearer_raw(
+            "127.0.0.1:46201",
+            "/api/admin/users",
+            &managed_session_token,
+        );
+        assert!(
+            regular_user_directory.starts_with("HTTP/1.1 403 Forbidden"),
+            "a regular user must not enumerate the private account directory: {regular_user_directory}"
+        );
+
+        let first_page_raw = get_bearer_raw(
+            "127.0.0.1:46201",
+            "/api/admin/users?limit=2",
+            &founder_session_token,
+        );
+        assert!(
+            first_page_raw.starts_with("HTTP/1.1 200 OK"),
+            "Founder could not read the first account page: {first_page_raw}"
+        );
+        let first_page: serde_json::Value =
+            serde_json::from_str(first_page_raw.split("\r\n\r\n").nth(1).unwrap_or(""))
+                .expect("first admin user page JSON");
+        assert_eq!(first_page["total"].as_u64(), Some(4));
+        assert_eq!(first_page["limit"].as_u64(), Some(2));
+        assert_eq!(first_page["users"].as_array().map(Vec::len), Some(2));
+        let cursor = first_page["next_cursor"]
+            .as_str()
+            .expect("next page cursor")
+            .to_string();
+        assert!(
+            first_page["users"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|account| account.get("private_key").is_none()),
+            "the account directory must never expose private keys"
+        );
+
+        let second_page_raw = get_bearer_raw(
+            "127.0.0.1:46201",
+            &format!("/api/admin/users?after={cursor}&limit=2"),
+            &founder_session_token,
+        );
+        assert!(
+            second_page_raw.starts_with("HTTP/1.1 200 OK"),
+            "Founder could not read the next account page: {second_page_raw}"
+        );
+        let second_page: serde_json::Value =
+            serde_json::from_str(second_page_raw.split("\r\n\r\n").nth(1).unwrap_or(""))
+                .expect("second admin user page JSON");
+        assert_eq!(second_page["users"].as_array().map(Vec::len), Some(2));
+        assert!(second_page["next_cursor"].is_null());
+
+        let mut page_ids = first_page["users"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .chain(second_page["users"].as_array().unwrap())
+            .map(|account| account["awe_id"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>();
+        page_ids.sort();
+        page_ids.dedup();
+        assert_eq!(
+            page_ids.len(),
+            4,
+            "cursor pages must not repeat or skip users"
+        );
+
+        let invalid_limit = get_bearer_raw(
+            "127.0.0.1:46201",
+            "/api/admin/users?limit=101",
+            &founder_session_token,
+        );
+        assert!(
+            invalid_limit.starts_with("HTTP/1.1 400 Bad Request"),
+            "the account directory must reject oversized pages: {invalid_limit}"
+        );
+        let invalid_cursor = get_bearer_raw(
+            "127.0.0.1:46201",
+            "/api/admin/users?after=not-an-awe-id",
+            &founder_session_token,
+        );
+        assert!(
+            invalid_cursor.starts_with("HTTP/1.1 400 Bad Request"),
+            "the account directory must reject malformed cursors: {invalid_cursor}"
+        );
+
+        let zero_limit = get_bearer_raw(
+            "127.0.0.1:46201",
+            "/api/admin/users?limit=0",
+            &founder_session_token,
+        );
+        assert!(
+            zero_limit.starts_with("HTTP/1.1 400 Bad Request"),
+            "the account directory must reject an empty page size: {zero_limit}"
+        );
+        let duplicate_limit = get_bearer_raw(
+            "127.0.0.1:46201",
+            "/api/admin/users?limit=2&limit=3",
+            &founder_session_token,
+        );
+        assert!(
+            duplicate_limit.starts_with("HTTP/1.1 400 Bad Request"),
+            "the account directory must reject duplicate limits: {duplicate_limit}"
+        );
+        let duplicate_cursor = get_bearer_raw(
+            "127.0.0.1:46201",
+            &format!("/api/admin/users?after={cursor}&after={cursor}"),
+            &founder_session_token,
+        );
+        assert!(
+            duplicate_cursor.starts_with("HTTP/1.1 400 Bad Request"),
+            "the account directory must reject duplicate cursors: {duplicate_cursor}"
+        );
+        let unsupported_query = get_bearer_raw(
+            "127.0.0.1:46201",
+            "/api/admin/users?sort=role",
+            &founder_session_token,
+        );
+        assert!(
+            unsupported_query.starts_with("HTTP/1.1 400 Bad Request"),
+            "the account directory must reject unsupported query keys: {unsupported_query}"
+        );
+        let invalid_session_token = "00".repeat(32);
+        let invalid_session = get_bearer_raw(
+            "127.0.0.1:46201",
+            "/api/admin/users",
+            &invalid_session_token,
+        );
+        assert!(
+            invalid_session.starts_with("HTTP/1.1 401 Unauthorized"),
+            "the account directory must reject unknown bearer sessions: {invalid_session}"
+        );
+
         let server_time = initial_users
             .get("server_time_unix")
             .and_then(|value| value.as_u64())
@@ -930,6 +1072,15 @@ fn three_node_product_smoke() {
             "founder-signed promotion failed: {promoted}"
         );
         let admin_session_token = login_user("127.0.0.1:46201", &new_user);
+        let admin_directory = get_bearer_raw(
+            "127.0.0.1:46201",
+            "/api/admin/users?limit=1",
+            &admin_session_token,
+        );
+        assert!(
+            admin_directory.starts_with("HTTP/1.1 200 OK"),
+            "an active Admin must be able to read the account directory: {admin_directory}"
+        );
         expected_registry
             .set_role(&new_user_id, UserRole::Admin, role_at, &role_signature)
             .expect("advance expected registry after promotion");

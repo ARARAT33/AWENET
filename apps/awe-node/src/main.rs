@@ -594,6 +594,44 @@ fn user_account_json(account: &UserAccount) -> serde_json::Value {
     })
 }
 
+fn parse_admin_user_page(request: &str) -> Result<(Option<String>, usize), &'static str> {
+    let target = request
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .unwrap_or("/");
+    let query = target.split_once('?').map(|(_, query)| query).unwrap_or("");
+    let mut after = None;
+    let mut limit = 50usize;
+    let mut limit_seen = false;
+
+    for pair in query.split('&').filter(|part| !part.is_empty()) {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        match key {
+            "after" => {
+                if after.is_some() {
+                    return Err("duplicate_after_cursor");
+                }
+                let id = AweId::from_hex(value).map_err(|_| "invalid_after_cursor")?;
+                after = Some(id.to_hex());
+            }
+            "limit" => {
+                if limit_seen {
+                    return Err("duplicate_limit");
+                }
+                limit_seen = true;
+                limit = value.parse::<usize>().map_err(|_| "invalid_limit")?;
+                if !(1..=100).contains(&limit) {
+                    return Err("limit_out_of_range");
+                }
+            }
+            _ => return Err("unsupported_query_parameter"),
+        }
+    }
+
+    Ok((after, limit))
+}
+
 fn user_registry_error_status(error: &UserRegistryError) -> &'static str {
     match error {
         UserRegistryError::InvalidSignature
@@ -1947,6 +1985,80 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                     r#"{"status":"error","error":"user_registry_lock_failed"}"#.into())
             };
             response
+        },
+        "/api/admin/users" if method == "GET" => {
+            let token = match parse_bearer_token(&request) {
+                Ok(value) => value,
+                Err(error) => {
+                    return write_json_error(&mut stream, "401 Unauthorized", &error).await;
+                }
+            };
+            let (after, limit) = match parse_admin_user_page(&request) {
+                Ok(value) => value,
+                Err(error) => {
+                    return write_json_error(&mut stream, "400 Bad Request", error).await;
+                }
+            };
+
+            // Keep the registry and login locks in the same order used by
+            // privileged mutations. Expired or revoked sessions are removed
+            // while validating, and only active Founder/Admin accounts can
+            // enumerate the private account directory.
+            match user_registry.lock() {
+                Ok(registry) => match user_login.lock() {
+                    Ok(mut login) => {
+                        match validate_user_bearer_session(&registry, &mut login, &token) {
+                            Ok(actor)
+                                if matches!(actor.role, UserRole::Founder | UserRole::Admin) =>
+                            {
+                                let page = registry.accounts_after(
+                                    after.as_deref(),
+                                    limit.saturating_add(1),
+                                );
+                                let has_more = page.len() > limit;
+                                let users = page.into_iter().take(limit).collect::<Vec<_>>();
+                                let next_cursor = if has_more {
+                                    users.last().map(|account| account.awe_id.clone())
+                                } else {
+                                    None
+                                };
+                                (
+                                    "200 OK",
+                                    "application/json; charset=utf-8",
+                                    serde_json::json!({
+                                        "status": "ok",
+                                        "users": users.iter().map(user_account_json).collect::<Vec<_>>(),
+                                        "total": registry.len(),
+                                        "limit": limit,
+                                        "next_cursor": next_cursor,
+                                        "sequence": registry.sequence()
+                                    }).to_string(),
+                                )
+                            }
+                            Ok(_) => (
+                                "403 Forbidden",
+                                "application/json; charset=utf-8",
+                                r#"{"status":"error","error":"admin_session_required"}"#.into(),
+                            ),
+                            Err(_) => (
+                                "401 Unauthorized",
+                                "application/json; charset=utf-8",
+                                r#"{"status":"error","error":"invalid_or_expired_session"}"#.into(),
+                            ),
+                        }
+                    }
+                    Err(_) => (
+                        "500 Internal Server Error",
+                        "application/json; charset=utf-8",
+                        r#"{"status":"error","error":"user_login_lock_failed"}"#.into(),
+                    ),
+                },
+                Err(_) => (
+                    "500 Internal Server Error",
+                    "application/json; charset=utf-8",
+                    r#"{"status":"error","error":"user_registry_lock_failed"}"#.into(),
+                ),
+            }
         },
         _ if path.starts_with("/api/users/") && method == "GET" => {
             let requested = path.strip_prefix("/api/users/").unwrap_or("");
