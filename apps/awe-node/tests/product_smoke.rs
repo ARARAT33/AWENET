@@ -965,6 +965,53 @@ fn three_node_product_smoke() {
             "the account directory must reject malformed cursors: {invalid_cursor}"
         );
 
+        let zero_limit = get_bearer_raw(
+            "127.0.0.1:46201",
+            "/api/admin/users?limit=0",
+            &founder_session_token,
+        );
+        assert!(
+            zero_limit.starts_with("HTTP/1.1 400 Bad Request"),
+            "the account directory must reject an empty page size: {zero_limit}"
+        );
+        let duplicate_limit = get_bearer_raw(
+            "127.0.0.1:46201",
+            "/api/admin/users?limit=2&limit=3",
+            &founder_session_token,
+        );
+        assert!(
+            duplicate_limit.starts_with("HTTP/1.1 400 Bad Request"),
+            "the account directory must reject duplicate limits: {duplicate_limit}"
+        );
+        let duplicate_cursor = get_bearer_raw(
+            "127.0.0.1:46201",
+            &format!("/api/admin/users?after={cursor}&after={cursor}"),
+            &founder_session_token,
+        );
+        assert!(
+            duplicate_cursor.starts_with("HTTP/1.1 400 Bad Request"),
+            "the account directory must reject duplicate cursors: {duplicate_cursor}"
+        );
+        let unsupported_query = get_bearer_raw(
+            "127.0.0.1:46201",
+            "/api/admin/users?sort=role",
+            &founder_session_token,
+        );
+        assert!(
+            unsupported_query.starts_with("HTTP/1.1 400 Bad Request"),
+            "the account directory must reject unsupported query keys: {unsupported_query}"
+        );
+        let invalid_session_token = "00".repeat(32);
+        let invalid_session = get_bearer_raw(
+            "127.0.0.1:46201",
+            "/api/admin/users",
+            &invalid_session_token,
+        );
+        assert!(
+            invalid_session.starts_with("HTTP/1.1 401 Unauthorized"),
+            "the account directory must reject unknown bearer sessions: {invalid_session}"
+        );
+
         let server_time = initial_users
             .get("server_time_unix")
             .and_then(|value| value.as_u64())
