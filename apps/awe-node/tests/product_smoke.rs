@@ -1810,7 +1810,7 @@ fn three_node_product_smoke() {
         );
         assert!(
             forbidden_user.starts_with("HTTP/1.1 403 Forbidden")
-                && forbidden_user.contains("does not have permission"),
+                && forbidden_user.contains("session_actor_not_authorized"),
             "ordinary user changed network topology: {forbidden_user}"
         );
 
