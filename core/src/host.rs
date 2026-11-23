@@ -941,10 +941,7 @@ mod tests {
 
     #[test]
     fn user_owned_manifest_binds_aweid_and_keeps_legacy_signatures_valid() {
-        let root = std::env::temp_dir().join(format!(
-            "awe-host-user-owner-{}",
-            std::process::id()
-        ));
+        let root = std::env::temp_dir().join(format!("awe-host-user-owner-{}", std::process::id()));
         let mut host = AweHost::open(&root, 10_000_000, HostPolicy::default()).unwrap();
         let publisher =
             Identity::generate(crate::identity::Username::new("site-publisher").unwrap());
@@ -984,7 +981,10 @@ mod tests {
         let decoded: SiteManifest = serde_json::from_value(legacy_json).unwrap();
         assert!(decoded.owner_awe_id.is_empty());
         assert!(decoded.owner_public_key.is_none());
-        assert!(decoded.verify(), "legacy manifest signature must remain valid");
+        assert!(
+            decoded.verify(),
+            "legacy manifest signature must remain valid"
+        );
 
         let _ = fs::remove_dir_all(root);
     }

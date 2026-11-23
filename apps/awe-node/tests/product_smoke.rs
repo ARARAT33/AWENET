@@ -342,15 +342,16 @@ fn three_node_product_smoke() {
         wait_for_health("127.0.0.1:46203");
 
         let site_owner_session_token = login_user("127.0.0.1:46201", &founder_identity);
-        let unauthenticated_site_list =
-            request_raw("127.0.0.1:46201", "GET /api/sites HTTP/1.1\r\nHost: 127.0.0.1:46201\r\nConnection: close\r\n\r\n");
+        let unauthenticated_site_list = request_raw(
+            "127.0.0.1:46201",
+            "GET /api/sites HTTP/1.1\r\nHost: 127.0.0.1:46201\r\nConnection: close\r\n\r\n",
+        );
         assert!(
             unauthenticated_site_list.starts_with("HTTP/1.1 401 Unauthorized"),
             "site management listing must require an AWEID session: {unauthenticated_site_list}"
         );
         let body=serde_json::json!({"domain":"smoke-site","version":1,"files":[{"path":"/index.html","content_type":"text/html; charset=utf-8","content":"<h1>site v1</h1>"},{"path":"/style.css","content_type":"text/css","content":"h1{}"}]}).to_string();
-        let unauthenticated_publish =
-            post_raw("127.0.0.1:46201", "/api/sites/publish", &body);
+        let unauthenticated_publish = post_raw("127.0.0.1:46201", "/api/sites/publish", &body);
         assert!(
             unauthenticated_publish.starts_with("HTTP/1.1 401 Unauthorized"),
             "site publishing must require an AWEID session: {unauthenticated_publish}"
@@ -369,7 +370,10 @@ fn three_node_product_smoke() {
             serde_json::from_str(published.split("\r\n\r\n").nth(1).unwrap_or("")).unwrap();
         let id = parsed["site_id"].as_str().unwrap().to_string();
         assert_eq!(parsed["cleanup_pending"], false);
-        assert_eq!(parsed["owner_awe_id"], founder_identity.public.awe_id.to_hex());
+        assert_eq!(
+            parsed["owner_awe_id"],
+            founder_identity.public.awe_id.to_hex()
+        );
         assert_eq!(parsed["garbage_collected_objects"].as_u64(), Some(0));
         let host_objects = dirs[0].join("host/objects/objects");
         assert_eq!(
@@ -398,7 +402,10 @@ fn three_node_product_smoke() {
         ))
         .unwrap();
         assert_eq!(detail["version"].as_u64(), Some(1));
-        assert_eq!(detail["owner_awe_id"], founder_identity.public.awe_id.to_hex());
+        assert_eq!(
+            detail["owner_awe_id"],
+            founder_identity.public.awe_id.to_hex()
+        );
         let redirect=request_raw("127.0.0.1:46201",&format!("GET /site/{id}/index.html HTTP/1.1\r\nHost: 127.0.0.1:46201\r\nConnection: close\r\n\r\n"));
         assert!(
             redirect.starts_with("HTTP/1.1 302 Found")
@@ -857,7 +864,8 @@ fn three_node_product_smoke() {
                 "content_type": "text/html; charset=utf-8",
                 "content": "<h1>managed user site</h1>"
             }]
-        }).to_string();
+        })
+        .to_string();
         let managed_site_publish = post_bearer_raw(
             "127.0.0.1:46201",
             "/api/sites/publish",
