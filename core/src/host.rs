@@ -52,6 +52,13 @@ pub struct SiteManifest {
     pub access: AccessDescriptor,
     #[serde(default)]
     pub signature: Vec<u8>,
+    // The authenticated AWEID account that owns this site. Empty/None is the
+    // legacy node-owned format; these fields are appended and omitted when
+    // empty so old manifest signatures remain verifiable.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub owner_awe_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_public_key: Option<[u8; 32]>,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HostHealth {
@@ -81,7 +88,22 @@ impl SiteManifest {
         unsigned.signature.clear();
         serde_json::to_vec(&unsigned)
     }
+    fn owner_identity_is_valid(&self) -> bool {
+        match (self.owner_awe_id.as_str(), self.owner_public_key.as_ref()) {
+            ("", None) => true,
+            (awe_id, Some(public_key)) if !awe_id.is_empty() => {
+                crate::identity::AweId::from_public_key(public_key).to_hex() == awe_id
+            }
+            _ => false,
+        }
+    }
     pub fn sign(&mut self, owner: &Identity) -> io::Result<()> {
+        if !self.owner_identity_is_valid() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "site AWEID owner does not match its public key",
+            ));
+        }
         if self.owner_key.as_slice() != owner.public.public_key.as_slice() {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
@@ -103,6 +125,7 @@ impl SiteManifest {
             || self.version == 0
             || self.files.is_empty()
             || self.root_hash != self.calculate_root_hash()
+            || !self.owner_identity_is_valid()
         {
             return false;
         }
@@ -245,16 +268,50 @@ impl AweHost {
             policy: self.policy.clone(),
             access: AccessDescriptor::open(),
             signature: Vec::new(),
+            owner_awe_id: String::new(),
+            owner_public_key: None,
         };
         manifest.sign(owner)?;
+        Ok(manifest)
+    }
+    /// Publishes a site for an authenticated AWEID while retaining the local
+    /// node identity as the manifest publisher/signing key.
+    pub fn publish_manifest_for_user(
+        &self,
+        domain: &str,
+        version: u64,
+        publisher: &Identity,
+        owner_awe_id: &str,
+        owner_public_key: &[u8; 32],
+        files: Vec<HostedFile>,
+    ) -> io::Result<SiteManifest> {
+        let expected_awe_id = crate::identity::AweId::from_public_key(owner_public_key).to_hex();
+        if owner_awe_id != expected_awe_id {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "site AWEID owner does not match its public key",
+            ));
+        }
+        let mut manifest = self.publish_manifest(domain, version, publisher, files)?;
+        manifest.owner_awe_id = owner_awe_id.to_string();
+        manifest.owner_public_key = Some(*owner_public_key);
+        manifest.sign(publisher)?;
         Ok(manifest)
     }
     pub fn policy(&self) -> &HostPolicy {
         &self.policy
     }
     pub fn authorize_domain(manifest: &SiteManifest, registry: &Registry) -> bool {
+        let owner_key = manifest
+            .owner_public_key
+            .as_ref()
+            .map(|key| key.as_slice())
+            .unwrap_or(manifest.owner_key.as_slice());
         namespace::resolve(registry, &manifest.domain)
-            .map(|r| r.status == RegistryStatus::Active && r.owner_public_key == manifest.owner_key)
+            .map(|record| {
+                record.status == RegistryStatus::Active
+                    && record.owner_public_key.as_slice() == owner_key
+            })
             .unwrap_or(false)
     }
     pub fn get_authorized(
@@ -886,6 +943,56 @@ mod tests {
                 );
             }
         }
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn user_owned_manifest_binds_aweid_and_keeps_legacy_signatures_valid() {
+        let root = std::env::temp_dir().join(format!("awe-host-user-owner-{}", std::process::id()));
+        let mut host = AweHost::open(&root, 10_000_000, HostPolicy::default()).unwrap();
+        let publisher =
+            Identity::generate(crate::identity::Username::new("site-publisher").unwrap());
+        let user = Identity::generate(crate::identity::Username::new("site-user").unwrap());
+        let file = host
+            .publish_file("/index.html", b"user-owned site", "text/html")
+            .unwrap();
+        let manifest = host
+            .publish_manifest_for_user(
+                "user-owned.awe",
+                1,
+                &publisher,
+                &user.public.awe_id.to_hex(),
+                &user.public.public_key,
+                vec![file],
+            )
+            .unwrap();
+
+        assert!(manifest.verify());
+        assert_eq!(manifest.owner_awe_id, user.public.awe_id.to_hex());
+        assert_eq!(manifest.owner_public_key, Some(user.public.public_key));
+
+        let mut changed_owner = manifest.clone();
+        changed_owner.owner_awe_id = publisher.public.awe_id.to_hex();
+        assert!(!changed_owner.verify());
+
+        let legacy_file = host
+            .publish_file("/index.html", b"legacy site", "text/html")
+            .unwrap();
+        let legacy = host
+            .publish_manifest("legacy-owned.awe", 1, &publisher, vec![legacy_file])
+            .unwrap();
+        let mut legacy_json = serde_json::to_value(&legacy).unwrap();
+        let object = legacy_json.as_object_mut().unwrap();
+        object.remove("owner_awe_id");
+        object.remove("owner_public_key");
+        let decoded: SiteManifest = serde_json::from_value(legacy_json).unwrap();
+        assert!(decoded.owner_awe_id.is_empty());
+        assert!(decoded.owner_public_key.is_none());
+        assert!(
+            decoded.verify(),
+            "legacy manifest signature must remain valid"
+        );
 
         let _ = fs::remove_dir_all(root);
     }
