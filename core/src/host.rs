@@ -302,8 +302,16 @@ impl AweHost {
         &self.policy
     }
     pub fn authorize_domain(manifest: &SiteManifest, registry: &Registry) -> bool {
+        let owner_key = manifest
+            .owner_public_key
+            .as_ref()
+            .map(|key| key.as_slice())
+            .unwrap_or(manifest.owner_key.as_slice());
         namespace::resolve(registry, &manifest.domain)
-            .map(|r| r.status == RegistryStatus::Active && r.owner_public_key == manifest.owner_key)
+            .map(|record| {
+                record.status == RegistryStatus::Active
+                    && record.owner_public_key.as_slice() == owner_key
+            })
             .unwrap_or(false)
     }
     pub fn get_authorized(
