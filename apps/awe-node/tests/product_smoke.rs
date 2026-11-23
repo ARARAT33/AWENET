@@ -76,6 +76,14 @@ fn get_bearer_raw(addr: &str, path: &str, token: &str) -> String {
     )
 }
 
+fn get_bearer(addr: &str, path: &str, token: &str) -> String {
+    get_bearer_raw(addr, path, token)
+        .split("\r\n\r\n")
+        .nth(1)
+        .unwrap_or("")
+        .to_string()
+}
+
 fn post(addr: &str, path: &str, body: &str) -> String {
     request(
         addr,
@@ -112,6 +120,15 @@ fn post_bearer(addr: &str, path: &str, body: &str, token: &str) -> String {
         .nth(1)
         .unwrap_or("")
         .to_string()
+}
+
+fn delete_bearer_raw(addr: &str, path: &str, token: &str) -> String {
+    request_raw(
+        addr,
+        &format!(
+            "DELETE {path} HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {token}\r\nConnection: close\r\n\r\n"
+        ),
+    )
 }
 
 fn login_user(addr: &str, identity: &Identity) -> String {
@@ -324,8 +341,26 @@ fn three_node_product_smoke() {
         wait_for_health("127.0.0.1:46202");
         wait_for_health("127.0.0.1:46203");
 
+        let site_owner_session_token = login_user("127.0.0.1:46201", &founder_identity);
+        let unauthenticated_site_list =
+            request_raw("127.0.0.1:46201", "GET /api/sites HTTP/1.1\r\nHost: 127.0.0.1:46201\r\nConnection: close\r\n\r\n");
+        assert!(
+            unauthenticated_site_list.starts_with("HTTP/1.1 401 Unauthorized"),
+            "site management listing must require an AWEID session: {unauthenticated_site_list}"
+        );
         let body=serde_json::json!({"domain":"smoke-site","version":1,"files":[{"path":"/index.html","content_type":"text/html; charset=utf-8","content":"<h1>site v1</h1>"},{"path":"/style.css","content_type":"text/css","content":"h1{}"}]}).to_string();
-        let published = post_raw("127.0.0.1:46201", "/api/sites/publish", &body);
+        let unauthenticated_publish =
+            post_raw("127.0.0.1:46201", "/api/sites/publish", &body);
+        assert!(
+            unauthenticated_publish.starts_with("HTTP/1.1 401 Unauthorized"),
+            "site publishing must require an AWEID session: {unauthenticated_publish}"
+        );
+        let published = post_bearer_raw(
+            "127.0.0.1:46201",
+            "/api/sites/publish",
+            &body,
+            &site_owner_session_token,
+        );
         assert!(
             published.starts_with("HTTP/1.1 201 Created"),
             "site publish: {published}"
@@ -334,6 +369,7 @@ fn three_node_product_smoke() {
             serde_json::from_str(published.split("\r\n\r\n").nth(1).unwrap_or("")).unwrap();
         let id = parsed["site_id"].as_str().unwrap().to_string();
         assert_eq!(parsed["cleanup_pending"], false);
+        assert_eq!(parsed["owner_awe_id"], founder_identity.public.awe_id.to_hex());
         assert_eq!(parsed["garbage_collected_objects"].as_u64(), Some(0));
         let host_objects = dirs[0].join("host/objects/objects");
         assert_eq!(
@@ -343,17 +379,26 @@ fn three_node_product_smoke() {
         );
         let expected = format!("awe://site-{id}");
         assert_eq!(parsed["url"].as_str(), Some(expected.as_str()));
-        let list: serde_json::Value =
-            serde_json::from_str(&get("127.0.0.1:46201", "/api/sites")).unwrap();
+        let list: serde_json::Value = serde_json::from_str(&get_bearer(
+            "127.0.0.1:46201",
+            "/api/sites",
+            &site_owner_session_token,
+        ))
+        .unwrap();
         assert_eq!(list["cleanup_pending"], false);
         assert!(list["sites"]
             .as_array()
             .unwrap()
             .iter()
             .any(|v| v["site_id"] == id));
-        let detail: serde_json::Value =
-            serde_json::from_str(&get("127.0.0.1:46201", "/api/sites/smoke-site")).unwrap();
+        let detail: serde_json::Value = serde_json::from_str(&get_bearer(
+            "127.0.0.1:46201",
+            "/api/sites/smoke-site",
+            &site_owner_session_token,
+        ))
+        .unwrap();
         assert_eq!(detail["version"].as_u64(), Some(1));
+        assert_eq!(detail["owner_awe_id"], founder_identity.public.awe_id.to_hex());
         let redirect=request_raw("127.0.0.1:46201",&format!("GET /site/{id}/index.html HTTP/1.1\r\nHost: 127.0.0.1:46201\r\nConnection: close\r\n\r\n"));
         assert!(
             redirect.starts_with("HTTP/1.1 302 Found")
@@ -397,7 +442,12 @@ fn three_node_product_smoke() {
             cross.starts_with("HTTP/1.1 403 Forbidden"),
             "cross site: {cross}"
         );
-        let same = post_raw("127.0.0.1:46201", "/api/sites/publish", &body);
+        let same = post_bearer_raw(
+            "127.0.0.1:46201",
+            "/api/sites/publish",
+            &body,
+            &site_owner_session_token,
+        );
         assert!(
             same.starts_with("HTTP/1.1 409 Conflict"),
             "same version accepted: {same}"
@@ -405,7 +455,12 @@ fn three_node_product_smoke() {
         let mut v2 = serde_json::from_str::<serde_json::Value>(&body).unwrap();
         v2["version"] = serde_json::json!(2);
         v2["files"][0]["content"] = serde_json::json!("<h1>site v2</h1>");
-        let updated = post_raw("127.0.0.1:46201", "/api/sites/publish", &v2.to_string());
+        let updated = post_bearer_raw(
+            "127.0.0.1:46201",
+            "/api/sites/publish",
+            &v2.to_string(),
+            &site_owner_session_token,
+        );
         assert!(
             updated.starts_with("HTTP/1.1 201 Created"),
             "update: {updated}"
@@ -426,7 +481,11 @@ fn three_node_product_smoke() {
             old.starts_with("HTTP/1.1 404 Not Found"),
             "old ID still resolves: {old}"
         );
-        let removed=request_raw("127.0.0.1:46201","DELETE /api/sites/smoke-site HTTP/1.1\r\nHost: 127.0.0.1:46201\r\nConnection: close\r\n\r\n");
+        let removed = delete_bearer_raw(
+            "127.0.0.1:46201",
+            "/api/sites/smoke-site",
+            &site_owner_session_token,
+        );
         assert!(
             removed.starts_with("HTTP/1.1 200 OK") && removed.contains("unpublished"),
             "unpublish: {removed}"
@@ -786,6 +845,66 @@ fn three_node_product_smoke() {
             .as_str()
             .expect("opaque bearer session token")
             .to_string();
+
+        // A site belongs to the authenticated AWEID, not to the node that
+        // stores and signs its manifest. A second user may publish on this
+        // node but cannot read or remove another user's management record.
+        let managed_site_body = serde_json::json!({
+            "domain": "managed-user-site",
+            "version": 1,
+            "files": [{
+                "path": "/index.html",
+                "content_type": "text/html; charset=utf-8",
+                "content": "<h1>managed user site</h1>"
+            }]
+        }).to_string();
+        let managed_site_publish = post_bearer_raw(
+            "127.0.0.1:46201",
+            "/api/sites/publish",
+            &managed_site_body,
+            &managed_session_token,
+        );
+        assert!(
+            managed_site_publish.starts_with("HTTP/1.1 201 Created"),
+            "managed user site publish failed: {managed_site_publish}"
+        );
+        let managed_site_detail = get_bearer_raw(
+            "127.0.0.1:46201",
+            "/api/sites/managed-user-site",
+            &managed_session_token,
+        );
+        assert!(
+            managed_site_detail.starts_with("HTTP/1.1 200 OK")
+                && managed_site_detail.contains(&managed_user_id),
+            "site owner could not read their site: {managed_site_detail}"
+        );
+        let founder_cross_read = get_bearer_raw(
+            "127.0.0.1:46201",
+            "/api/sites/managed-user-site",
+            &site_owner_session_token,
+        );
+        assert!(
+            founder_cross_read.starts_with("HTTP/1.1 403 Forbidden"),
+            "a different AWEID must not read the user's management record: {founder_cross_read}"
+        );
+        let founder_cross_delete = delete_bearer_raw(
+            "127.0.0.1:46201",
+            "/api/sites/managed-user-site",
+            &site_owner_session_token,
+        );
+        assert!(
+            founder_cross_delete.starts_with("HTTP/1.1 403 Forbidden"),
+            "a different AWEID must not unpublish the user's site: {founder_cross_delete}"
+        );
+        let managed_site_removed = delete_bearer_raw(
+            "127.0.0.1:46201",
+            "/api/sites/managed-user-site",
+            &managed_session_token,
+        );
+        assert!(
+            managed_site_removed.starts_with("HTTP/1.1 200 OK"),
+            "site owner could not unpublish their site: {managed_site_removed}"
+        );
         let authenticated = get_bearer_raw(
             "127.0.0.1:46201",
             "/api/auth/session",
