@@ -65,3 +65,28 @@ node restart.
 - Three-node product smoke now verifies unauthenticated management rejection,
   authenticated publish/list/get/update/unpublish, a second AWEID publishing
   on the same node, and cross-account read/delete rejection.
+
+## Example
+
+After completing the AWEID challenge/login flow, send the issued token only to
+the same node that issued it:
+
+```http
+GET /api/sites HTTP/1.1
+Host: 127.0.0.1:41800
+Authorization: Bearer <node-local-session-token>
+```
+
+A successful publish response includes the authenticated `owner_awe_id`.
+The request body intentionally has no owner field; ownership is never accepted
+from client-supplied JSON.
+
+| Condition | Management API result |
+|---|---|
+| Missing or malformed Bearer header | `401 Unauthorized` |
+| Unknown, expired, revoked, or inactive session | `401 Unauthorized` |
+| Authenticated account does not own the site | `403 Forbidden` |
+| Unknown site | `404 Not Found` |
+| Re-publish with a non-increasing version | `409 Conflict` |
+
+The token is node-local; using it against a peer node is expected to fail.
