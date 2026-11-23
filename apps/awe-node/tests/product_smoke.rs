@@ -506,8 +506,12 @@ fn three_node_product_smoke() {
             0,
             "unpublish should reclaim all site objects that no other manifest references"
         );
-        let after: serde_json::Value =
-            serde_json::from_str(&get("127.0.0.1:46201", "/api/sites")).unwrap();
+        let after: serde_json::Value = serde_json::from_str(&get_bearer(
+            "127.0.0.1:46201",
+            "/api/sites",
+            &site_owner_session_token,
+        ))
+        .unwrap();
         assert_eq!(after["count"].as_u64(), Some(0));
         assert_eq!(after["cleanup_pending"], false);
         let same_origin = request_raw(
