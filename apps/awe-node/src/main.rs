@@ -5185,7 +5185,7 @@ mod tests {
 
 #[cfg(test)]
 mod site_cleanup_pending_tests {
-    use super::{site_api_list, AweHost, HostPolicy, HostState, Identity, Username};
+    use super::{site_api_list, AweHost, HostPolicy, HostState, Identity, UserRegistry, Username};
     use std::sync::{Arc, Mutex};
 
     #[test]
@@ -5207,7 +5207,12 @@ mod site_cleanup_pending_tests {
         let reopened = AweHost::open(&root, 10_000_000, HostPolicy::default()).unwrap();
         assert!(reopened.cleanup_pending());
         let state: HostState = Arc::new(Mutex::new(reopened));
-        let (status, _, body) = site_api_list(&state, &owner);
+        let registry = UserRegistry::new(&owner, 1);
+        let account = registry
+            .get(&owner.public.awe_id.to_hex())
+            .expect("founder account")
+            .clone();
+        let (status, _, body) = site_api_list(&state, &owner, &account);
         assert_eq!(status, "500 Internal Server Error");
         let response: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(response["cleanup_pending"], true);
