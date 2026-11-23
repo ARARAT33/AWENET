@@ -581,6 +581,54 @@ fn validate_user_bearer_session(
     login.validate_session(registry, token, now_unix())
 }
 
+/// Runs one site-management operation under an active AWEID session.
+/// The lock order is User Registry -> User Login -> Site Host, matching the
+/// privileged control-plane routes and preventing suspension/logout from
+/// racing a site ownership mutation.
+fn site_api_with_session<F>(
+    request: &str,
+    user_registry: &UserRegistryState,
+    user_login: &UserLoginState,
+    operation: F,
+) -> (&'static str, &'static str, String)
+where
+    F: FnOnce(&UserAccount) -> (&'static str, &'static str, String),
+{
+    let token = match parse_bearer_token(request) {
+        Ok(token) => token,
+        Err(error) => {
+            return (
+                "401 Unauthorized",
+                "application/json; charset=utf-8",
+                serde_json::json!({"status":"error","error":error}).to_string(),
+            )
+        }
+    };
+
+    match user_registry.lock() {
+        Ok(registry) => match user_login.lock() {
+            Ok(mut login) => match validate_user_bearer_session(&registry, &mut login, &token) {
+                Ok(account) => operation(&account),
+                Err(_) => (
+                    "401 Unauthorized",
+                    "application/json; charset=utf-8",
+                    r#"{"status":"error","error":"invalid_or_expired_session"}"#.into(),
+                ),
+            },
+            Err(_) => (
+                "500 Internal Server Error",
+                "application/json; charset=utf-8",
+                r#"{"status":"error","error":"user_login_lock_failed"}"#.into(),
+            ),
+        },
+        Err(_) => (
+            "500 Internal Server Error",
+            "application/json; charset=utf-8",
+            r#"{"status":"error","error":"user_registry_lock_failed"}"#.into(),
+        ),
+    }
+}
+
 fn user_account_json(account: &UserAccount) -> serde_json::Value {
     serde_json::json!({
         "awe_id": account.awe_id,
@@ -671,7 +719,27 @@ fn network_control_error_status(error: &NetworkControlError) -> &'static str {
     }
 }
 
-fn site_api_list(host: &HostState, identity: &Identity) -> (&'static str, &'static str, String) {
+fn site_manifest_owned_by(
+    manifest: &awep2p_core::host::SiteManifest,
+    account: &UserAccount,
+    node_identity: &Identity,
+) -> bool {
+    if manifest.owner_awe_id.is_empty() {
+        // Backward compatibility: old manifests had only the node publisher
+        // key. They remain manageable by the matching local founder AWEID.
+        account.awe_id == node_identity.public.awe_id.to_hex()
+            && manifest.owner_key.as_slice() == node_identity.public.public_key.as_slice()
+    } else {
+        manifest.owner_awe_id == account.awe_id
+            && manifest.owner_public_key == Some(account.public_key)
+    }
+}
+
+fn site_api_list(
+    host: &HostState,
+    identity: &Identity,
+    account: &UserAccount,
+) -> (&'static str, &'static str, String) {
     let guard = match host.lock() {
         Ok(g) => g,
         Err(_) => {
@@ -682,18 +750,60 @@ fn site_api_list(host: &HostState, identity: &Identity) -> (&'static str, &'stat
             )
         }
     };
-    match guard.list_manifests(){Ok(manifests)=>{
-  let sites=manifests.into_iter().filter(|m|m.owner_key.as_slice()==identity.public.public_key.as_slice()).map(|m|{
-   let bytes=m.files.iter().fold(0u64,|n,f|n.saturating_add(f.size));let id=hex::encode(m.root_hash);let open=m.open();
-   serde_json::json!({"site_id":id,"name":m.domain,"version":m.version,"files":m.files.len(),"bytes":bytes,"open":open,"url":format!("awe://site-{id}")})
-  }).collect::<Vec<_>>();let count=sites.len();
-  ("200 OK","application/json; charset=utf-8",serde_json::json!({"status":"ok","sites":sites,"count":count,"cleanup_pending":guard.cleanup_pending()}).to_string())
- },Err(e)=>("500 Internal Server Error","application/json; charset=utf-8",serde_json::json!({"status":"error","error":format!("cannot list site manifests: {e}"),"cleanup_pending":guard.cleanup_pending()}).to_string())}
+    match guard.list_manifests() {
+        Ok(manifests) => {
+            let sites = manifests
+                .into_iter()
+                .filter(|manifest| site_manifest_owned_by(manifest, account, identity))
+                .map(|manifest| {
+                    let bytes = manifest
+                        .files
+                        .iter()
+                        .fold(0u64, |total, file| total.saturating_add(file.size));
+                    let id = hex::encode(manifest.root_hash);
+                    let open = manifest.open();
+                    serde_json::json!({
+                        "site_id": id,
+                        "name": manifest.domain,
+                        "version": manifest.version,
+                        "files": manifest.files.len(),
+                        "bytes": bytes,
+                        "open": open,
+                        "owner_awe_id": account.awe_id,
+                        "url": format!("awe://site-{id}")
+                    })
+                })
+                .collect::<Vec<_>>();
+            let count = sites.len();
+            (
+                "200 OK",
+                "application/json; charset=utf-8",
+                serde_json::json!({
+                    "status":"ok",
+                    "sites":sites,
+                    "count":count,
+                    "cleanup_pending":guard.cleanup_pending()
+                })
+                .to_string(),
+            )
+        }
+        Err(error) => (
+            "500 Internal Server Error",
+            "application/json; charset=utf-8",
+            serde_json::json!({
+                "status":"error",
+                "error":format!("cannot list site manifests: {error}"),
+                "cleanup_pending":guard.cleanup_pending()
+            })
+            .to_string(),
+        ),
+    }
 }
 fn site_api_get(
     domain: &str,
     host: &HostState,
     identity: &Identity,
+    account: &UserAccount,
 ) -> (&'static str, &'static str, String) {
     let domain = domain.trim().to_ascii_lowercase();
     if !awep2p_core::registry::valid_name(&domain) {
@@ -714,30 +824,45 @@ fn site_api_get(
         }
     };
     match guard.load_manifest(&domain) {
-        Ok(m) if m.owner_key.as_slice() == identity.public.public_key.as_slice() => {
-            let id = hex::encode(m.root_hash);
-            let name = m.domain.clone();
-            let version = m.version;
-            let files = m.files.clone();
-            let open = m.open();
-            ("200 OK","application/json; charset=utf-8",serde_json::json!({"status":"ok","site_id":id,"name":name,"version":version,"files":files,"open":open}).to_string())
+        Ok(manifest) if site_manifest_owned_by(&manifest, account, identity) => {
+            let id = hex::encode(manifest.root_hash);
+            let name = manifest.domain.clone();
+            let version = manifest.version;
+            let files = manifest.files.clone();
+            let open = manifest.open();
+            (
+                "200 OK",
+                "application/json; charset=utf-8",
+                serde_json::json!({
+                    "status":"ok",
+                    "site_id":id,
+                    "name":name,
+                    "version":version,
+                    "files":files,
+                    "open":open,
+                    "owner_awe_id":account.awe_id
+                })
+                .to_string(),
+            )
         }
         Ok(_) => (
             "403 Forbidden",
             "application/json; charset=utf-8",
-            serde_json::json!({"status":"error","error":"site is not owned by this node identity"})
-                .to_string(),
+            r#"{"status":"error","error":"site_owner_mismatch"}"#.into(),
         ),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (
             "404 Not Found",
             "application/json; charset=utf-8",
-            serde_json::json!({"status":"error","error":"site_not_found"}).to_string(),
+            r#"{"status":"error","error":"site_not_found"}"#.into(),
         ),
-        Err(e) => (
+        Err(error) => (
             "500 Internal Server Error",
             "application/json; charset=utf-8",
-            serde_json::json!({"status":"error","error":format!("cannot load site manifest: {e}")})
-                .to_string(),
+            serde_json::json!({
+                "status":"error",
+                "error":format!("cannot load site manifest: {error}")
+            })
+            .to_string(),
         ),
     }
 }
@@ -745,6 +870,7 @@ fn site_api_publish(
     body: &str,
     host: &HostState,
     identity: &Identity,
+    account: &UserAccount,
 ) -> (&'static str, &'static str, String) {
     let payload = match serde_json::from_str::<serde_json::Value>(body) {
         Ok(v) => v,
@@ -898,12 +1024,11 @@ fn site_api_publish(
     };
     match g.load_manifest(&domain) {
         Ok(old) => {
-            if old.owner_key.as_slice() != identity.public.public_key.as_slice() {
+            if !site_manifest_owned_by(&old, account, identity) {
                 return (
                     "403 Forbidden",
                     "application/json; charset=utf-8",
-                    serde_json::json!({"status":"error","error":"site belongs to another owner"})
-                        .to_string(),
+                    r#"{"status":"error","error":"site_owner_mismatch"}"#.into(),
                 );
             }
             if version <= old.version {
@@ -947,7 +1072,14 @@ fn site_api_publish(
             }
         }
     }
-    let manifest = match g.publish_manifest(&domain, version, identity, hosted) {
+    let manifest = match g.publish_manifest_for_user(
+        &domain,
+        version,
+        identity,
+        &account.awe_id,
+        &account.public_key,
+        hosted,
+    ) {
         Ok(v) => v,
         Err(e) => {
             let _ = g.collect_garbage();
@@ -979,6 +1111,7 @@ fn site_api_publish(
             "name": manifest.domain,
             "version": manifest.version,
             "site_id": id,
+            "owner_awe_id": account.awe_id,
             "files": manifest.files.len(),
             "url": format!("awe://site-{id}"),
             "garbage_collected_objects": garbage_collected_objects,
@@ -991,6 +1124,7 @@ fn site_api_unpublish(
     domain: &str,
     host: &HostState,
     identity: &Identity,
+    account: &UserAccount,
 ) -> (&'static str, &'static str, String) {
     let domain = domain.trim().to_ascii_lowercase();
     if !awep2p_core::registry::valid_name(&domain) {
@@ -1026,12 +1160,11 @@ fn site_api_unpublish(
                 .to_string(),
         ),
     };
-    if manifest.owner_key.as_slice() != identity.public.public_key.as_slice() {
+    if !site_manifest_owned_by(&manifest, account, identity) {
         return (
             "403 Forbidden",
             "application/json; charset=utf-8",
-            serde_json::json!({"status":"error","error":"site belongs to another owner"})
-                .to_string(),
+            r#"{"status":"error","error":"site_owner_mismatch"}"#.into(),
         );
     }
     if let Err(error) = g.remove_manifest(&domain) {
@@ -1057,6 +1190,7 @@ fn site_api_unpublish(
             "status": "unpublished",
             "name": domain,
             "site_id": hex::encode(manifest.root_hash),
+            "owner_awe_id": account.awe_id,
             "garbage_collected_objects": garbage_collected_objects,
             "cleanup_pending": cleanup_pending
         })
@@ -2077,15 +2211,39 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                     serde_json::json!({"status":"error","error":"invalid_awe_id"}).to_string())
             }
         },
-        "/api/sites" if method == "GET" => site_api_list(&host, &node.identity),
+        "/api/sites" if method == "GET" => site_api_with_session(
+            &request,
+            &user_registry,
+            &user_login,
+            |account| site_api_list(&host, &node.identity, account),
+        ),
         "/api/sites/publish" if method == "POST" => {
-            let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
-            site_api_publish(body, &host, &node.identity)
+            let body = request.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
+            site_api_with_session(
+                &request,
+                &user_registry,
+                &user_login,
+                |account| site_api_publish(&body, &host, &node.identity, account),
+            )
         },
-        _ if path.starts_with("/api/sites/") && method == "GET" && path != "/api/sites/publish" =>
-            site_api_get(path.strip_prefix("/api/sites/").unwrap_or(""), &host, &node.identity),
-        _ if path.starts_with("/api/sites/") && method == "DELETE" && path != "/api/sites/publish" =>
-            site_api_unpublish(path.strip_prefix("/api/sites/").unwrap_or(""), &host, &node.identity),
+        _ if path.starts_with("/api/sites/") && method == "GET" && path != "/api/sites/publish" => {
+            let domain = path.strip_prefix("/api/sites/").unwrap_or("").to_string();
+            site_api_with_session(
+                &request,
+                &user_registry,
+                &user_login,
+                |account| site_api_get(&domain, &host, &node.identity, account),
+            )
+        },
+        _ if path.starts_with("/api/sites/") && method == "DELETE" && path != "/api/sites/publish" => {
+            let domain = path.strip_prefix("/api/sites/").unwrap_or("").to_string();
+            site_api_with_session(
+                &request,
+                &user_registry,
+                &user_login,
+                |account| site_api_unpublish(&domain, &host, &node.identity, account),
+            )
+        },
         "/api/node" => ("200 OK", "application/json; charset=utf-8", serde_json::json!({
             "id": format_uid(node.identity.public.awe_id.as_bytes()),
             "descriptor": node.node_descriptor(),
