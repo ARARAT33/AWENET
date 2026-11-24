@@ -5161,7 +5161,9 @@ mod tests {
             1_795_520_000,
         )
         .unwrap_err();
-        assert!(error.to_string().contains("next_sequence must be greater than zero"));
+        assert!(error
+            .to_string()
+            .contains("next_sequence must be greater than zero"));
     }
 
     #[test]
