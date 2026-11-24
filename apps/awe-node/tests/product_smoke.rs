@@ -2002,13 +2002,14 @@ fn three_node_product_smoke() {
             "Admin inserted a node without admission proof: {unverified_response}"
         );
 
+        let next_sequence = signing_state
+            .next_sequence()
+            .expect("next node admission sequence");
         let proof_message = node_admission_message(
             signing_state.founder_awe_id(),
             "dc-admin-temporary",
             &admitted_node_identity.public.public_key,
-            signing_state
-                .next_sequence()
-                .expect("next node admission sequence"),
+            next_sequence,
             admission_at,
         )
         .expect("build node admission proof message");
@@ -2044,11 +2045,38 @@ fn three_node_product_smoke() {
             "node admission accepted a proof from the wrong key: {invalid_admission_response}"
         );
 
-        let admit_node = NetworkAction::AdmitNode {
-            centre_id: "dc-admin-temporary".into(),
-            public_key: admitted_node_identity.public.public_key,
-            proof_signature: admitted_node_identity.sign(&proof_message),
+        let proof_output = Command::new(&bin)
+            .arg("admission-proof")
+            .arg(dirs[1].join("node.awesecret"))
+            .arg(signing_state.founder_awe_id())
+            .arg("dc-admin-temporary")
+            .arg(next_sequence.to_string())
+            .arg(admission_at.to_string())
+            .output()
+            .expect("run joining-node admission proof CLI");
+        assert!(
+            proof_output.status.success(),
+            "admission proof CLI failed: {}",
+            String::from_utf8_lossy(&proof_output.stderr)
+        );
+        let proof_json: serde_json::Value =
+            serde_json::from_slice(&proof_output.stdout).expect("admission proof CLI JSON");
+        assert_eq!(
+            proof_json["node_awe_id"],
+            admitted_node_identity.public.awe_id.to_hex()
+        );
+        let admit_node: NetworkAction =
+            serde_json::from_value(proof_json["action"].clone()).expect("CLI AdmitNode action");
+        let NetworkAction::AdmitNode {
+            public_key,
+            proof_signature,
+            ..
+        } = &admit_node
+        else {
+            panic!("admission proof CLI must emit an AdmitNode action");
         };
+        assert_eq!(*public_key, admitted_node_identity.public.public_key);
+        assert!(Identity::verify(public_key, &proof_message, proof_signature));
         let admit_admin_message = signing_state
             .admin_signing_message(
                 expected_registry.sequence(),
