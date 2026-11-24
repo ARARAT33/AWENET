@@ -976,7 +976,7 @@ impl Node {
             .map(|policy| {
                 policy
                     .as_ref()
-                    .is_none_or(|authorize| authorize(&c.remote_id, &c.remote_public_key))
+                    .map_or(true, |authorize| authorize(&c.remote_id, &c.remote_public_key))
             })
             .unwrap_or(false);
         if !authorized {
@@ -1025,7 +1025,7 @@ impl Node {
                 .map(|policy| {
                     policy
                         .as_ref()
-                        .is_none_or(|authorize| authorize(&c.remote_id, &c.remote_public_key))
+                        .map_or(true, |authorize| authorize(&c.remote_id, &c.remote_public_key))
                 })
                 .unwrap_or(false);
             if !still_authorized {
@@ -1033,6 +1033,17 @@ impl Node {
             }
             match timeout(HEARTBEAT, c.recv()).await {
                 Ok(Ok(message)) => {
+                    let authorized_after_receive = peer_authorizer
+                        .lock()
+                        .map(|policy| {
+                            policy.map_or(true, |authorize| {
+                                authorize(&c.remote_id, &c.remote_public_key)
+                            })
+                        })
+                        .unwrap_or(false);
+                    if !authorized_after_receive {
+                        return;
+                    }
                     let cost = match &message {
                         Control::Ping { .. } | Control::Pong { .. } => 1,
                         Control::FindNode { .. } => 4,
