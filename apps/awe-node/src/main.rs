@@ -5090,22 +5090,20 @@ mod policy_lock_tests {
 
 #[cfg(test)]
 mod tests {
+    use super::build_node_admission_proof;
     use super::{
         http_response, is_loopback_host, local_peer_allowed, local_request_allowed, parse_json_u16,
         parse_json_u32, site_path_matches, site_request_file_path, split_storage_quotas,
     };
-    use super::build_node_admission_proof;
     use awep2p_core::identity::{AweSecret, Identity, Username};
     use awep2p_core::network_control::{self, NetworkAction};
-    use std::fs;
     use serde_json::json;
+    use std::fs;
 
     #[test]
     fn admission_proof_cli_output_is_verifiable_by_the_joining_node_key() {
-        let node_identity =
-            Identity::generate(Username::new("admission-cli-node").unwrap());
-        let founder_identity =
-            Identity::generate(Username::new("admission-cli-founder").unwrap());
+        let node_identity = Identity::generate(Username::new("admission-cli-node").unwrap());
+        let founder_identity = Identity::generate(Username::new("admission-cli-founder").unwrap());
         let secret_path = std::env::temp_dir().join(format!(
             "awenet-admission-proof-{}.awesecret",
             std::process::id()
@@ -5117,20 +5115,17 @@ mod tests {
         .unwrap();
 
         let founder_awe_id = founder_identity.public.awe_id.to_hex();
-        let proof = build_node_admission_proof(
-            &secret_path,
-            &founder_awe_id,
-            "dc-cli",
-            7,
-            1_795_520_000,
-        )
-        .unwrap();
+        let proof =
+            build_node_admission_proof(&secret_path, &founder_awe_id, "dc-cli", 7, 1_795_520_000)
+                .unwrap();
         let _ = fs::remove_file(&secret_path);
 
         assert_eq!(proof["node_awe_id"], node_identity.public.awe_id.to_hex());
-        assert_eq!(proof["public_key"], hex::encode(node_identity.public.public_key));
-        let action: NetworkAction =
-            serde_json::from_value(proof["action"].clone()).unwrap();
+        assert_eq!(
+            proof["public_key"],
+            hex::encode(node_identity.public.public_key)
+        );
+        let action: NetworkAction = serde_json::from_value(proof["action"].clone()).unwrap();
         let NetworkAction::AdmitNode {
             centre_id,
             public_key,
