@@ -16,6 +16,21 @@ AWE_REQUIRE_ADMITTED_PEERS=1
 
 The value is case-insensitive and also accepts `true` or `yes`. When unset or false, the existing open-peer behavior remains for backward compatibility.
 
+PowerShell on Windows:
+
+```powershell
+$env:AWE_REQUIRE_ADMITTED_PEERS = "1"
+.\awe-node.exe run .\identity.vault "<vault-password>" 0.0.0.0:41000
+```
+
+POSIX shells:
+
+```sh
+AWE_REQUIRE_ADMITTED_PEERS=1 awe-node run ~/.awep2p/identity.vault "<vault-password>" 0.0.0.0:41000
+```
+
+Remove the environment variable (or set it to `0`) to restore the legacy open-peer mode.
+
 The product runtime uses its already-loaded `network-control.json`. The `awe-node run` command loads or initializes the same file beside the supplied identity vault. An existing snapshot signed by a different Founder identity is rejected; it is never silently replaced.
 
 The local status response includes `peer_admission_enforced` so an operator can verify whether this mode is active.
