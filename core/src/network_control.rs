@@ -239,7 +239,7 @@ impl NetworkControlPlane {
 
         self.topology.centres.values().any(|centre| {
             centre.nodes.get(node_awe_id).is_some_and(|node| {
-                node.id == node_awe_id
+                node.id.as_str() == node_awe_id
                     && node.public_key == Some(*public_key)
                     && node.admitted_at_unix.is_some()
                     && node.alive
@@ -1890,6 +1890,20 @@ mod tests {
             &founder,
             NetworkAction::RemoveNode { node_id: node_id.clone() },
             105,
+        )
+        .unwrap();
+        assert!(!control.is_node_admitted(&node_id, &joining_node.public.public_key));
+
+        // A legacy AddNode record with the same ID is not proof of possession
+        // and must never satisfy transport admission.
+        apply(
+            &mut control,
+            &founder,
+            NetworkAction::AddNode {
+                centre_id: "dc-admission-lookup".into(),
+                node_id: node_id.clone(),
+            },
+            106,
         )
         .unwrap();
         assert!(!control.is_node_admitted(&node_id, &joining_node.public.public_key));
