@@ -1036,7 +1036,7 @@ impl Node {
                     let authorized_after_receive = peer_authorizer
                         .lock()
                         .map(|policy| {
-                            policy.map_or(true, |authorize| {
+                            policy.as_ref().map_or(true, |authorize| {
                                 authorize(&c.remote_id, &c.remote_public_key)
                             })
                         })
