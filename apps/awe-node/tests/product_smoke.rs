@@ -1968,7 +1968,6 @@ fn three_node_product_smoke() {
             Some(network_admin_id.as_str())
         );
 
-
         // An Admin may not insert an arbitrary, unverified node ID. The new
         // admission action requires proof from the key that will own the Node ID.
         let admission_at = signing_state.updated_at_unix() + 1;
@@ -2007,7 +2006,9 @@ fn three_node_product_smoke() {
             signing_state.founder_awe_id(),
             "dc-admin-temporary",
             &admitted_node_identity.public.public_key,
-            signing_state.next_sequence().expect("next node admission sequence"),
+            signing_state
+                .next_sequence()
+                .expect("next node admission sequence"),
             admission_at,
         )
         .expect("build node admission proof message");
@@ -2087,7 +2088,8 @@ fn three_node_product_smoke() {
         let admitted_topology: serde_json::Value =
             serde_json::from_str(&get("127.0.0.1:46201", "/api/network/control"))
                 .expect("admitted topology JSON");
-        let admitted_record = &admitted_topology["topology"]["centres"]["dc-admin-temporary"]["nodes"][admitted_id.as_str()];
+        let admitted_record = &admitted_topology["topology"]["centres"]["dc-admin-temporary"]
+            ["nodes"][admitted_id.as_str()];
         assert_eq!(
             admitted_record["public_key"],
             serde_json::json!(admitted_node_identity.public.public_key)
@@ -2100,7 +2102,8 @@ fn three_node_product_smoke() {
             network_control::load(&dirs[0].join("network-control.json"), &founder_identity)
                 .expect("durable node admission snapshot");
         assert_eq!(
-            durable_admission.topology().centres["dc-admin-temporary"].nodes[&admitted_id].public_key,
+            durable_admission.topology().centres["dc-admin-temporary"].nodes[&admitted_id]
+                .public_key,
             Some(admitted_node_identity.public.public_key)
         );
 

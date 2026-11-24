@@ -735,7 +735,9 @@ impl AweNet {
                     _ => false,
                 };
                 if !admission_metadata_valid {
-                    return Err(format!("node {node_id} has inconsistent admission metadata"));
+                    return Err(format!(
+                        "node {node_id} has inconsistent admission metadata"
+                    ));
                 }
                 if !global_node_ids.insert(node_id.clone()) {
                     return Err(format!(
@@ -1296,5 +1298,4 @@ mod tests {
         assert_eq!(restored, network);
         assert!(restored.validate().is_ok());
     }
-
 }

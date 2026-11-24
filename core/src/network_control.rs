@@ -524,10 +524,15 @@ pub fn node_admission_message(
         u16::try_from(node_awe_id.len()).map_err(|_| NetworkControlError::InvalidIdentifier)?;
     let mut message = Vec::with_capacity(
         NODE_ADMISSION_CONTEXT.len()
-            + 2 + founder_awe_id.len()
-            + 2 + centre_id.len()
-            + 2 + node_awe_id.len()
-            + 32 + 8 + 8,
+            + 2
+            + founder_awe_id.len()
+            + 2
+            + centre_id.len()
+            + 2
+            + node_awe_id.len()
+            + 32
+            + 8
+            + 8,
     );
     message.extend_from_slice(NODE_ADMISSION_CONTEXT);
     message.extend_from_slice(&founder_len.to_be_bytes());
@@ -1023,7 +1028,12 @@ mod tests {
             node_id: "unverified-node".into(),
         };
         let unverified_message = control
-            .admin_signing_message(registry.sequence(), &admin_account.awe_id, &unverified_add, 101)
+            .admin_signing_message(
+                registry.sequence(),
+                &admin_account.awe_id,
+                &unverified_add,
+                101,
+            )
             .unwrap();
         let unverified_signature = admin.sign(&unverified_message);
         assert_eq!(
@@ -1238,7 +1248,6 @@ mod tests {
         assert_eq!(control.topology().data_groups.len(), 1);
         control.topology().validate().unwrap();
     }
-
 
     #[test]
     fn node_admission_proof_is_required_and_bound_to_the_next_sequence() {
