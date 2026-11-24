@@ -1397,6 +1397,7 @@ mod tests {
         assert!(control.validate().is_ok());
 
         let node_id = joining_node.public.awe_id.to_hex();
+        let future_admission_time = control.updated_at_unix + 1;
         control
             .topology
             .centres
@@ -1405,7 +1406,7 @@ mod tests {
             .nodes
             .get_mut(&node_id)
             .unwrap()
-            .admitted_at_unix = Some(control.updated_at_unix + 1);
+            .admitted_at_unix = Some(future_admission_time);
 
         assert_eq!(control.validate(), Err(NetworkControlError::InvalidState));
     }
