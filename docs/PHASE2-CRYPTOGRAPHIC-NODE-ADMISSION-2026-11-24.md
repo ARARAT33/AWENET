@@ -52,3 +52,29 @@ Admitted topology nodes persist their public key and admission timestamp. The No
 ## Scope boundary
 
 This is cryptographic identity admission into the local signed topology control plane. It does not by itself prove that the remote process is currently reachable, establish a peer transport session, authorize resource contribution, or replicate topology to other nodes. Those remain separate Phase 2 tasks.
+
+## HTTP wire encoding
+
+The JSON request uses byte arrays for both public-key fields:
+
+- `public_key`: 32 integer values in the range 0–255.
+- `proof_signature`: 64 integer values in the range 0–255.
+- The outer Admin/Founder `signature` remains the existing 128-character hexadecimal string accepted by the HTTP endpoint.
+- `at_unix` is Unix time in seconds. The joining node signs the exact value submitted in the mutation.
+- The node reads `next_sequence` from the current network-control response and signs that exact sequence. If any topology mutation commits first, it must fetch the new sequence and sign again.
+
+Example outer request shape:
+
+```json
+{
+  "actor_awe_id": "ADMIN_AWEID",
+  "action": {
+    "action": "admit_node",
+    "centre_id": "dc-west",
+    "public_key": [/* 32 bytes */],
+    "proof_signature": [/* 64 bytes */]
+  },
+  "at_unix": 1795520000,
+  "signature": "128_HEX_CHARACTERS"
+}
+```
