@@ -1916,17 +1916,23 @@ async fn routine_short_lived_connections_do_not_quarantine_the_peer() {
         let address = reservation.local_addr().unwrap();
         drop(reservation);
 
+        use std::sync::atomic::{AtomicBool, Ordering};
+
         let admitted_identity =
             Identity::generate(Username::new("admitted-transport-peer").unwrap());
         let admitted_id = *admitted_identity.public.awe_id.as_bytes();
         let admitted_public_key = admitted_identity.public.public_key;
+        let allow_admitted_peer = Arc::new(AtomicBool::new(true));
+        let allow_policy = Arc::clone(&allow_admitted_peer);
         let server = Node::new(
             Identity::generate(Username::new("admission-policy-server").unwrap()),
             address,
         );
         server
             .set_peer_authorizer(move |remote_id, remote_public_key| {
-                *remote_id == admitted_id && *remote_public_key == admitted_public_key
+                allow_policy.load(Ordering::SeqCst)
+                    && *remote_id == admitted_id
+                    && *remote_public_key == admitted_public_key
             })
             .unwrap();
 
@@ -1973,6 +1979,20 @@ async fn routine_short_lived_connections_do_not_quarantine_the_peer() {
         .await
         .expect("admitted peer heartbeat timed out");
         assert!(admitted_ping.is_ok(), "admitted peer was rejected");
+
+        // The same live connection is revoked by the shared policy. The
+        // receiver checks admission after receiving the next frame and does
+        // not process or acknowledge that frame.
+        allow_admitted_peer.store(false, Ordering::SeqCst);
+        let revoked_ping = timeout(
+            Duration::from_secs(2),
+            admitted_connection.ping_roundtrip(3),
+        )
+        .await;
+        assert!(
+            !matches!(revoked_ping, Ok(Ok(_))),
+            "revoked peer continued to receive successful heartbeats"
+        );
 
         listener_task.abort();
     }
