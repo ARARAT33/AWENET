@@ -70,6 +70,10 @@ pub enum NetworkError {
     FrameTooLarge,
     #[error("node is under backpressure")]
     Backpressure,
+    #[error("peer is not admitted by this node's network control plane")]
+    PeerNotAdmitted,
+    #[error("peer admission policy is unavailable")]
+    PeerAdmissionPolicyUnavailable,
 }
 
 impl NetworkError {
@@ -854,6 +858,7 @@ fn xor_distance(a: &[u8; 32], b: &[u8; 32]) -> [u8; 32] {
 
 type ActiveConnections = Arc<RwLock<HashMap<[u8; 32], Arc<tokio::sync::Mutex<SecureConnection>>>>>;
 type InboxQueue = Arc<Mutex<Vec<([u8; 32], u32, Vec<u8>)>>>;
+type PeerAuthorizer = Arc<dyn Fn(&[u8; 32], &[u8; 32]) -> bool + Send + Sync>;
 
 #[derive(Clone)]
 #[allow(clippy::type_complexity)]
@@ -869,6 +874,7 @@ pub struct Node {
     inbox: InboxQueue,
     inbox_bytes: Arc<Mutex<usize>>,
     outbound_limit: Arc<tokio::sync::Semaphore>,
+    peer_authorizer: Arc<Mutex<Option<PeerAuthorizer>>>,
 }
 impl Node {
     pub fn new(identity: Identity, listen_addr: SocketAddr) -> Self {
@@ -892,10 +898,62 @@ impl Node {
             inbox: Arc::new(Mutex::new(Vec::new())),
             inbox_bytes: Arc::new(Mutex::new(0)),
             outbound_limit: Arc::new(tokio::sync::Semaphore::new(MAX_OUTBOUND_CONCURRENCY)),
+            peer_authorizer: Arc::new(Mutex::new(None)),
         }
     }
     pub fn node_descriptor(&self) -> String {
         format_node_descriptor(self.identity.public.awe_id.as_bytes())
+    }
+
+    /// Installs a local topology-backed peer admission policy. Set this before
+    /// starting listen(); the closure may read shared state to reflect later
+    /// admissions, health changes, and removals without replacing the policy.
+    pub fn set_peer_authorizer<F>(&self, authorizer: F) -> Result<(), NetworkError>
+    where
+        F: Fn(&[u8; 32], &[u8; 32]) -> bool + Send + Sync + 'static,
+    {
+        let mut policy = self
+            .peer_authorizer
+            .lock()
+            .map_err(|_| NetworkError::PeerAdmissionPolicyUnavailable)?;
+        *policy = Some(Arc::new(authorizer));
+        Ok(())
+    }
+
+    /// Restores the legacy open-peer behavior. Callers should use this only
+    /// when intentionally disabling topology admission.
+    pub fn clear_peer_authorizer(&self) -> Result<(), NetworkError> {
+        let mut policy = self
+            .peer_authorizer
+            .lock()
+            .map_err(|_| NetworkError::PeerAdmissionPolicyUnavailable)?;
+        *policy = None;
+        Ok(())
+    }
+
+    pub fn peer_admission_enforced(&self) -> bool {
+        self.peer_authorizer
+            .lock()
+            .map(|policy| policy.is_some())
+            .unwrap_or(true)
+    }
+
+    fn authorize_peer(
+        &self,
+        remote_id: &[u8; 32],
+        remote_public_key: &[u8; 32],
+    ) -> Result<(), NetworkError> {
+        let policy = self
+            .peer_authorizer
+            .lock()
+            .map_err(|_| NetworkError::PeerAdmissionPolicyUnavailable)?;
+        if policy
+            .as_ref()
+            .is_some_and(|authorize| !authorize(remote_id, remote_public_key))
+        {
+            return Err(NetworkError::PeerNotAdmitted);
+        }
+        Ok(())
     }
     async fn handle(
         stream: TcpStream,
@@ -906,12 +964,24 @@ impl Node {
         peers: Arc<RwLock<HashMap<[u8; 32], PeerRecord>>>,
         admission: Arc<Mutex<PeerAdmission>>,
         defense: Arc<Mutex<PeerDefense>>,
+        peer_authorizer: Arc<Mutex<Option<PeerAuthorizer>>>,
         inbox: InboxQueue,
         inbox_bytes: Arc<Mutex<usize>>,
     ) {
         let Ok(mut c) = handshake(stream, identity, listen_addr, false).await else {
             return;
         };
+        let authorized = peer_authorizer
+            .lock()
+            .map(|policy| {
+                policy
+                    .as_ref()
+                    .is_none_or(|authorize| authorize(&c.remote_id, &c.remote_public_key))
+            })
+            .unwrap_or(false);
+        if !authorized {
+            return;
+        }
         if !admission
             .lock()
             .expect("admission lock poisoned")
@@ -950,6 +1020,17 @@ impl Node {
         }
         let mut seq = 0u64;
         loop {
+            let still_authorized = peer_authorizer
+                .lock()
+                .map(|policy| {
+                    policy
+                        .as_ref()
+                        .is_none_or(|authorize| authorize(&c.remote_id, &c.remote_public_key))
+                })
+                .unwrap_or(false);
+            if !still_authorized {
+                return;
+            }
             match timeout(HEARTBEAT, c.recv()).await {
                 Ok(Ok(message)) => {
                     let cost = match &message {
@@ -1090,6 +1171,7 @@ impl Node {
             let peers = Arc::clone(&self.peers);
             let admission = Arc::clone(&self.admission);
             let defense = Arc::clone(&self.defense);
+            let peer_authorizer = Arc::clone(&self.peer_authorizer);
             let inbox = Arc::clone(&self.inbox);
             let inbox_bytes = Arc::clone(&self.inbox_bytes);
             let listen_addr = self.listen_addr;
@@ -1103,6 +1185,7 @@ impl Node {
                     peers,
                     admission,
                     defense,
+                    peer_authorizer,
                     inbox,
                     inbox_bytes,
                 )
@@ -1116,7 +1199,9 @@ impl Node {
             .await
             .map_err(|_| NetworkError::Timeout)??;
         let _ = s.set_nodelay(true);
-        handshake(s, Arc::clone(&self.identity), self.listen_addr, true).await
+        let connection = handshake(s, Arc::clone(&self.identity), self.listen_addr, true).await?;
+        self.authorize_peer(&connection.remote_id, &connection.remote_public_key)?;
+        Ok(connection)
     }
     pub async fn bootstrap(&self, addresses: &[SocketAddr]) -> Result<usize, NetworkError> {
         // Multi-source bootstrap: no single seed is a dependency.
@@ -1263,6 +1348,13 @@ impl Node {
             connection
         };
         let mut connection = connection.lock().await;
+        if let Err(error) =
+            self.authorize_peer(&connection.remote_id, &connection.remote_public_key)
+        {
+            drop(connection);
+            self.active.write().await.remove(peer_id);
+            return Err(error);
+        }
         let started = Instant::now();
         let result = connection
             .send_data(stream, payload)
@@ -1328,6 +1420,13 @@ impl Node {
             .cloned()
             .ok_or_else(|| NetworkError::Protocol("peer is not actively connected".into()))?;
         let mut connection = connection.lock().await;
+        if let Err(error) =
+            self.authorize_peer(&connection.remote_id, &connection.remote_public_key)
+        {
+            drop(connection);
+            self.active.write().await.remove(peer_id);
+            return Err(error);
+        }
         connection.ping_roundtrip(now()).await
     }
 
@@ -1800,4 +1899,96 @@ async fn routine_short_lived_connections_do_not_quarantine_the_peer() {
             .await
             .unwrap_or_else(|error| panic!("confirmed send {attempt} failed: {error}"));
     }
+    #[tokio::test]
+    async fn listener_accepts_only_the_exact_admitted_peer_identity() {
+        let reservation = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = reservation.local_addr().unwrap();
+        drop(reservation);
+
+        let admitted_identity =
+            Identity::generate(Username::new("admitted-transport-peer").unwrap());
+        let admitted_id = *admitted_identity.public.awe_id.as_bytes();
+        let admitted_public_key = admitted_identity.public.public_key;
+        let server = Node::new(
+            Identity::generate(Username::new("admission-policy-server").unwrap()),
+            address,
+        );
+        server
+            .set_peer_authorizer(move |remote_id, remote_public_key| {
+                *remote_id == admitted_id && *remote_public_key == admitted_public_key
+            })
+            .unwrap();
+
+        let listener_node = server.clone();
+        let listener_task = tokio::spawn(async move {
+            listener_node.listen().await.unwrap();
+        });
+        let mut listening = false;
+        for _ in 0..100 {
+            if let Ok(stream) = TcpStream::connect(address).await {
+                drop(stream);
+                listening = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(listening, "node listener did not start");
+
+        // A cryptographically valid but unadmitted peer completes the HELLO
+        // exchange, then is closed before it can exchange application data.
+        let denied_node = Node::new(
+            Identity::generate(Username::new("denied-transport-peer").unwrap()),
+            "127.0.0.1:0".parse().unwrap(),
+        );
+        let mut denied_connection = denied_node.connect(address).await.unwrap();
+        let denied_ping = timeout(
+            Duration::from_secs(2),
+            denied_connection.ping_roundtrip(1),
+        )
+        .await;
+        assert!(
+            !matches!(denied_ping, Ok(Ok(_))),
+            "unadmitted peer received a successful heartbeat"
+        );
+
+        // The exact admitted AWEID/public-key pair is allowed through the
+        // same listener and receives a real heartbeat response.
+        let admitted_node = Node::new(admitted_identity, "127.0.0.1:0".parse().unwrap());
+        let mut admitted_connection = admitted_node.connect(address).await.unwrap();
+        let admitted_ping = timeout(
+            Duration::from_secs(2),
+            admitted_connection.ping_roundtrip(2),
+        )
+        .await
+        .expect("admitted peer heartbeat timed out");
+        assert!(admitted_ping.is_ok(), "admitted peer was rejected");
+
+        listener_task.abort();
+    }
+
+    #[tokio::test]
+    async fn outbound_connect_rejects_a_remote_peer_not_in_local_admission() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let remote_identity =
+            Identity::generate(Username::new("outbound-unadmitted-server").unwrap());
+        let server_task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            handshake(stream, Arc::new(remote_identity), address, false)
+                .await
+                .unwrap();
+        });
+
+        let local = Node::new(
+            Identity::generate(Username::new("outbound-admission-client").unwrap()),
+            "127.0.0.1:0".parse().unwrap(),
+        );
+        local.set_peer_authorizer(|_, _| false).unwrap();
+        assert!(matches!(
+            local.connect(address).await,
+            Err(NetworkError::PeerNotAdmitted)
+        ));
+        server_task.await.unwrap();
+    }
+
 }
