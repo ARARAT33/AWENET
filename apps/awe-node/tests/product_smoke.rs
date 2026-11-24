@@ -2076,7 +2076,11 @@ fn three_node_product_smoke() {
             panic!("admission proof CLI must emit an AdmitNode action");
         };
         assert_eq!(*public_key, admitted_node_identity.public.public_key);
-        assert!(Identity::verify(public_key, &proof_message, proof_signature));
+        assert!(Identity::verify(
+            public_key,
+            &proof_message,
+            proof_signature
+        ));
         let admit_admin_message = signing_state
             .admin_signing_message(
                 expected_registry.sequence(),
