@@ -1392,13 +1392,7 @@ mod tests {
         let message = control.signing_message(&action, admitted_at).unwrap();
         let signature = founder.sign(&message);
         control
-            .apply_signed(
-                &founder,
-                &action,
-                admitted_at,
-                admitted_at,
-                &signature,
-            )
+            .apply_signed(&founder, &action, admitted_at, admitted_at, &signature)
             .unwrap();
         assert!(control.validate().is_ok());
 
