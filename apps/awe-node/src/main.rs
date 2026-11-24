@@ -698,6 +698,7 @@ fn network_control_error_status(error: &NetworkControlError) -> &'static str {
     match error {
         NetworkControlError::NotFounder
         | NetworkControlError::InvalidSignature
+        | NetworkControlError::InvalidNodeProof
         | NetworkControlError::WrongFounder
         | NetworkControlError::RegistryMismatch
         | NetworkControlError::InsufficientPrivileges

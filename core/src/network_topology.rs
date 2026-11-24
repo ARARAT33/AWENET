@@ -1,3 +1,4 @@
+use crate::identity::AweId;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -39,6 +40,12 @@ impl PeerMetrics {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Node {
     pub id: NodeId,
+    /// Present only for nodes admitted with a verified proof of possession.
+    /// Legacy/manual topology entries keep both admission fields absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_key: Option<[u8; 32]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admitted_at_unix: Option<u64>,
     pub peers: HashSet<NodeId>,
     pub alive: bool,
     pub metrics: PeerMetrics,
@@ -48,11 +55,27 @@ impl Node {
     pub fn new(id: impl Into<String>) -> Self {
         Self {
             id: id.into(),
+            public_key: None,
+            admitted_at_unix: None,
             peers: HashSet::new(),
             alive: true,
             metrics: PeerMetrics::default(),
         }
     }
+
+    /// Creates a topology record whose ID is derived from the admitted
+    /// node's Ed25519 public key. The caller must verify the node proof first.
+    pub(crate) fn admitted(public_key: [u8; 32], at_unix: u64) -> Self {
+        Self {
+            id: AweId::from_public_key(&public_key).to_hex(),
+            public_key: Some(public_key),
+            admitted_at_unix: Some(at_unix),
+            peers: HashSet::new(),
+            alive: true,
+            metrics: PeerMetrics::default(),
+        }
+    }
+
     pub fn set_health(&mut self, alive: bool) {
         self.alive = alive;
     }
@@ -704,6 +727,16 @@ impl AweNet {
                 if node_id.trim().is_empty() || node.id != *node_id {
                     return Err("node map key does not match its ID".into());
                 }
+                let admission_metadata_valid = match (&node.public_key, node.admitted_at_unix) {
+                    (None, None) => true,
+                    (Some(public_key), Some(_)) => {
+                        AweId::from_public_key(public_key).to_hex() == *node_id
+                    }
+                    _ => false,
+                };
+                if !admission_metadata_valid {
+                    return Err(format!("node {node_id} has inconsistent admission metadata"));
+                }
                 if !global_node_ids.insert(node_id.clone()) {
                     return Err(format!(
                         "node ID {node_id} is duplicated across data centres"
@@ -1230,4 +1263,38 @@ mod tests {
             .update_node_metrics("missing", PeerMetrics::default())
             .is_err());
     }
+    #[test]
+    fn admitted_node_metadata_is_bound_to_its_public_key() {
+        use crate::identity::{Identity, Username};
+
+        let identity = Identity::generate(Username::new("admitted-node").unwrap());
+        let id = identity.public.awe_id.to_hex();
+        let node = Node::admitted(identity.public.public_key, 123);
+        assert_eq!(node.id, id);
+        assert_eq!(node.public_key, Some(identity.public.public_key));
+        assert_eq!(node.admitted_at_unix, Some(123));
+
+        let mut centre = DataCentre::new("dc-admission");
+        centre.add_node(node).unwrap();
+        let mut network = AweNet::default();
+        network.add_centre(centre).unwrap();
+        network.validate().unwrap();
+
+        let mut corrupted = network.clone();
+        corrupted
+            .centres
+            .get_mut("dc-admission")
+            .unwrap()
+            .nodes
+            .get_mut(&id)
+            .unwrap()
+            .admitted_at_unix = None;
+        assert!(corrupted.validate().is_err());
+
+        let bytes = serde_json::to_vec(&network).unwrap();
+        let restored: AweNet = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(restored, network);
+        assert!(restored.validate().is_ok());
+    }
+
 }
