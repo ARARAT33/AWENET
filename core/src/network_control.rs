@@ -259,7 +259,18 @@ impl NetworkControlPlane {
         }
         self.topology
             .validate()
-            .map_err(NetworkControlError::Topology)
+            .map_err(NetworkControlError::Topology)?;
+        // Admission is part of this signed snapshot's history. A node cannot
+        // claim it was admitted after the snapshot's latest committed mutation.
+        if self.topology.centres.values().any(|centre| {
+            centre.nodes.values().any(|node| {
+                node.admitted_at_unix
+                    .is_some_and(|admitted_at| admitted_at > self.updated_at_unix)
+            })
+        }) {
+            return Err(NetworkControlError::InvalidState);
+        }
+        Ok(())
     }
 
     /// Returns the exact domain-separated bytes that a founder must sign for
@@ -1347,6 +1358,62 @@ mod tests {
             Err(NetworkControlError::InvalidNodeProof)
         );
         assert_eq!(control, before_replay);
+    }
+
+    #[test]
+    fn admitted_node_timestamp_cannot_exceed_control_plane_timestamp() {
+        let founder = identity("founder");
+        let joining_node = identity("joining-node");
+        let mut control = NetworkControlPlane::new(&founder, 100);
+        apply(
+            &mut control,
+            &founder,
+            NetworkAction::CreateCentre {
+                centre_id: "dc-time-bound".into(),
+            },
+            101,
+        )
+        .unwrap();
+
+        let admitted_at = 102;
+        let proof_message = node_admission_message(
+            control.founder_awe_id(),
+            "dc-time-bound",
+            &joining_node.public.public_key,
+            control.next_sequence().unwrap(),
+            admitted_at,
+        )
+        .unwrap();
+        let action = NetworkAction::AdmitNode {
+            centre_id: "dc-time-bound".into(),
+            public_key: joining_node.public.public_key,
+            proof_signature: joining_node.sign(&proof_message),
+        };
+        let message = control.signing_message(&action, admitted_at).unwrap();
+        let signature = founder.sign(&message);
+        control
+            .apply_signed(
+                &founder,
+                &action,
+                admitted_at,
+                admitted_at,
+                &signature,
+            )
+            .unwrap();
+        assert!(control.validate().is_ok());
+
+        let node_id = joining_node.public.awe_id.to_hex();
+        control
+            .topology
+            .centres
+            .get_mut("dc-time-bound")
+            .unwrap()
+            .nodes
+            .get_mut(&node_id)
+            .unwrap()
+            .admitted_at_unix = Some(control.updated_at_unix + 1);
+
+        assert_eq!(control.validate(), Err(NetworkControlError::InvalidState));
     }
 
     #[test]
