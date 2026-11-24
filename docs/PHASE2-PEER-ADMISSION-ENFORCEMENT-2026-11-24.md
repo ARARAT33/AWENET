@@ -42,7 +42,7 @@ A remote peer is admitted only when the local Founder-signed topology contains a
 1. Is keyed by the exact AWEID derived from the peer's authenticated Ed25519 public key.
 2. Contains that exact public key.
 3. Contains a proof-backed `admitted_at_unix` timestamp.
-4. Is currently marked alive.
+4. Has not been removed from the topology.
 
 Legacy `AddNode` placeholders do not satisfy this rule. The new `AdmitNode` action is required.
 
@@ -64,7 +64,7 @@ This is **local topology enforcement**, not yet a replicated network-wide admiss
 
 Every node uses its own local Founder-signed `network-control.json`. For a bidirectional mesh, each endpoint must admit the other endpoint in its own local topology. The joining node proof is bound to that local control plane's Founder AWEID, target Data Centre, next sequence and timestamp.
 
-Removing a node or marking it unhealthy blocks new connections and subsequent operations. An already-open inbound connection is closed when the peer policy is next checked (on a message or heartbeat cycle); this is not an instantaneous distributed revocation protocol.
+Removing a node blocks new connections and subsequent operations. Operational health is deliberately separate from membership: a temporarily unhealthy node remains admitted so it can reconnect and recover. An already-open inbound connection is closed when the peer policy is next checked (on a message or heartbeat cycle); this is not an instantaneous distributed revocation protocol.
 
 This change does not yet replicate topology snapshots, User Registry state or trust roots between nodes, and it does not implement remote domain/site consensus or resource-contribution authorization.
 
