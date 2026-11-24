@@ -154,7 +154,7 @@ fn default_vault() -> PathBuf {
 }
 
 fn usage() -> ! {
-    eprintln!("AWEp2P\n\nUsage:\n  awe-node                 Start the complete local product\n  awe-node app             Start UI + local node\n  awe-node secret <username> [out-file]\n  awe-node init <username> [vault-file]\n  awe-node run <vault-file> <password> <listen-addr> [bootstrap-addr ...]\n  awe-node id <vault-file> <password> <username>\n  awe-node status [vault-file]\n  awe-node diagnostics\n  awe-node mesh <listen-port>\n  awe-node health\n  awe-node probe <address>");
+    eprintln!("AWEp2P\n\nUsage:\n  awe-node                 Start the complete local product\n  awe-node app             Start UI + local node\n  awe-node secret <username> [out-file]\n  awe-node init <username> [vault-file]\n  awe-node run <vault-file> <password> <listen-addr> [bootstrap-addr ...]\n  awe-node id <vault-file> <password> <username>\n  awe-node status [vault-file]\n  awe-node diagnostics\n  awe-node mesh <listen-port>\n  awe-node health\n  awe-node probe <address>\n  awe-node admission-proof <secret-file> <founder-awe-id> <centre-id> <next-sequence> <at-unix>");
     std::process::exit(2)
 }
 
@@ -212,6 +212,46 @@ fn load_identity(path: &PathBuf, password: &str, username: &str) -> Result<Ident
         password,
     )
     .map_err(anyhow::Error::msg)
+}
+
+fn build_node_admission_proof(
+    secret_path: &PathBuf,
+    founder_awe_id: &str,
+    centre_id: &str,
+    next_sequence: u64,
+    at_unix: u64,
+) -> Result<serde_json::Value> {
+    if next_sequence == 0 {
+        anyhow::bail!("next_sequence must be greater than zero");
+    }
+    let secret_bytes = fs::read(secret_path)
+        .with_context(|| format!("failed to read node secret: {}", secret_path.display()))?;
+    let identity = AweSecret::from_bytes(&secret_bytes)
+        .map_err(anyhow::Error::msg)?
+        .authenticate()
+        .map_err(anyhow::Error::msg)?;
+    let message = network_control::node_admission_message(
+        founder_awe_id,
+        centre_id,
+        &identity.public.public_key,
+        next_sequence,
+        at_unix,
+    )
+    .map_err(anyhow::Error::msg)?;
+    let action = NetworkAction::AdmitNode {
+        centre_id: centre_id.to_owned(),
+        public_key: identity.public.public_key,
+        proof_signature: identity.sign(&message),
+    };
+    Ok(serde_json::json!({
+        "node_awe_id": identity.public.awe_id.to_hex(),
+        "public_key": hex::encode(identity.public.public_key),
+        "founder_awe_id": founder_awe_id,
+        "centre_id": centre_id,
+        "next_sequence": next_sequence,
+        "at_unix": at_unix,
+        "action": action
+    }))
 }
 
 fn http_response(status: &str, content_type: &str, body: &str) -> Vec<u8> {
@@ -698,6 +738,7 @@ fn network_control_error_status(error: &NetworkControlError) -> &'static str {
     match error {
         NetworkControlError::NotFounder
         | NetworkControlError::InvalidSignature
+        | NetworkControlError::InvalidNodeProof
         | NetworkControlError::WrongFounder
         | NetworkControlError::RegistryMismatch
         | NetworkControlError::InsufficientPrivileges
@@ -4978,6 +5019,33 @@ async fn main() -> Result<()> {
                 .collect::<Result<Vec<SocketAddr>>>()?;
             run_node(path, password, username, listen, bootstrap).await
         }
+        Some("admission-proof") => {
+            let secret_path = args.next().map(PathBuf::from).unwrap_or_else(|| usage());
+            let founder_awe_id = args.next().unwrap_or_else(|| usage());
+            let centre_id = args.next().unwrap_or_else(|| usage());
+            let next_sequence = args
+                .next()
+                .unwrap_or_else(|| usage())
+                .parse()
+                .context("invalid next sequence")?;
+            let at_unix = args
+                .next()
+                .unwrap_or_else(|| usage())
+                .parse()
+                .context("invalid admission timestamp")?;
+            if args.next().is_some() {
+                usage();
+            }
+            let proof = build_node_admission_proof(
+                &secret_path,
+                &founder_awe_id,
+                &centre_id,
+                next_sequence,
+                at_unix,
+            )?;
+            println!("{}", serde_json::to_string_pretty(&proof)?);
+            Ok(())
+        }
         Some("id") => print_id(
             args.next().map(PathBuf::from).unwrap_or_else(|| usage()),
             args.next().unwrap_or_else(|| usage()),
@@ -5022,11 +5090,81 @@ mod policy_lock_tests {
 
 #[cfg(test)]
 mod tests {
+    use super::build_node_admission_proof;
     use super::{
         http_response, is_loopback_host, local_peer_allowed, local_request_allowed, parse_json_u16,
         parse_json_u32, site_path_matches, site_request_file_path, split_storage_quotas,
     };
+    use awep2p_core::identity::{AweSecret, Identity, Username};
+    use awep2p_core::network_control::{self, NetworkAction};
     use serde_json::json;
+    use std::fs;
+
+    #[test]
+    fn admission_proof_cli_output_is_verifiable_by_the_joining_node_key() {
+        let node_identity = Identity::generate(Username::new("admission-cli-node").unwrap());
+        let founder_identity = Identity::generate(Username::new("admission-cli-founder").unwrap());
+        let secret_path = std::env::temp_dir().join(format!(
+            "awenet-admission-proof-{}.awesecret",
+            std::process::id()
+        ));
+        fs::write(
+            &secret_path,
+            AweSecret::generate(&node_identity).to_bytes().unwrap(),
+        )
+        .unwrap();
+
+        let founder_awe_id = founder_identity.public.awe_id.to_hex();
+        let proof =
+            build_node_admission_proof(&secret_path, &founder_awe_id, "dc-cli", 7, 1_795_520_000)
+                .unwrap();
+        let _ = fs::remove_file(&secret_path);
+
+        assert_eq!(proof["node_awe_id"], node_identity.public.awe_id.to_hex());
+        assert_eq!(
+            proof["public_key"],
+            hex::encode(node_identity.public.public_key)
+        );
+        let action: NetworkAction = serde_json::from_value(proof["action"].clone()).unwrap();
+        let NetworkAction::AdmitNode {
+            centre_id,
+            public_key,
+            proof_signature,
+        } = action
+        else {
+            panic!("CLI must produce an AdmitNode action");
+        };
+        assert_eq!(centre_id, "dc-cli");
+        let message = network_control::node_admission_message(
+            &founder_awe_id,
+            &centre_id,
+            &public_key,
+            7,
+            1_795_520_000,
+        )
+        .unwrap();
+        assert!(Identity::verify(&public_key, &message, &proof_signature));
+    }
+
+    #[test]
+    fn admission_proof_cli_rejects_zero_sequence() {
+        let founder = Identity::generate(Username::new("admission-cli-founder-zero").unwrap());
+        let missing_path = std::env::temp_dir().join(format!(
+            "awenet-admission-proof-missing-{}.awesecret",
+            std::process::id()
+        ));
+        let error = build_node_admission_proof(
+            &missing_path,
+            &founder.public.awe_id.to_hex(),
+            "dc-zero",
+            0,
+            1_795_520_000,
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("next_sequence must be greater than zero"));
+    }
 
     #[test]
     fn ui_listener_rejects_remote_peers_even_if_they_spoof_a_loopback_host() {

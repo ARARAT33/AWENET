@@ -1,6 +1,6 @@
 use awep2p_core::{
     identity::{AweSecret, Identity, Username},
-    network_control::{self, NetworkAction, NetworkControlPlane},
+    network_control::{self, node_admission_message, NetworkAction, NetworkControlPlane},
     network_topology::CentreLinkMode,
     user_registry::{self, UserRegistry, UserRole, UserStatus},
 };
@@ -1867,6 +1867,14 @@ fn three_node_product_smoke() {
         // mutations. The test mirrors the signing sequence locally and checks
         // the persisted snapshot after all lifecycle operations.
         let network_admin_session_token = login_user("127.0.0.1:46201", &network_admin);
+        // Admit the identity of the already-running second smoke-test node,
+        // not a synthetic key unrelated to a live Node process.
+        let admitted_node_identity = AweSecret::from_bytes(
+            &fs::read(dirs[1].join("node.awesecret")).expect("read second node identity"),
+        )
+        .expect("decode second node identity")
+        .authenticate()
+        .expect("authenticate second node identity");
 
         let initial_control: serde_json::Value =
             serde_json::from_str(&get("127.0.0.1:46201", "/api/network/control"))
@@ -1958,6 +1966,177 @@ fn three_node_product_smoke() {
         assert_eq!(
             admin_snapshot.last_actor_awe_id(),
             Some(network_admin_id.as_str())
+        );
+
+        // An Admin may not insert an arbitrary, unverified node ID. The new
+        // admission action requires proof from the key that will own the Node ID.
+        let admission_at = signing_state.updated_at_unix() + 1;
+        let unverified_add = NetworkAction::AddNode {
+            centre_id: "dc-admin-temporary".into(),
+            node_id: "unverified-node".into(),
+        };
+        let unverified_message = signing_state
+            .admin_signing_message(
+                expected_registry.sequence(),
+                &network_admin_id,
+                &unverified_add,
+                admission_at,
+            )
+            .expect("build unverified node mutation");
+        let unverified_signature = network_admin.sign(&unverified_message);
+        let unverified_response = post_bearer_raw(
+            "127.0.0.1:46201",
+            "/api/network/control",
+            &serde_json::json!({
+                "actor_awe_id": network_admin_id,
+                "action": unverified_add,
+                "at_unix": admission_at,
+                "signature": hex::encode(unverified_signature)
+            })
+            .to_string(),
+            &network_admin_session_token,
+        );
+        assert!(
+            unverified_response.starts_with("HTTP/1.1 403 Forbidden")
+                && unverified_response.contains("reserved for the founder or runtime telemetry"),
+            "Admin inserted a node without admission proof: {unverified_response}"
+        );
+
+        let next_sequence = signing_state
+            .next_sequence()
+            .expect("next node admission sequence");
+        let proof_message = node_admission_message(
+            signing_state.founder_awe_id(),
+            "dc-admin-temporary",
+            &admitted_node_identity.public.public_key,
+            next_sequence,
+            admission_at,
+        )
+        .expect("build node admission proof message");
+        let invalid_admission = NetworkAction::AdmitNode {
+            centre_id: "dc-admin-temporary".into(),
+            public_key: admitted_node_identity.public.public_key,
+            proof_signature: managed_user.sign(&proof_message),
+        };
+        let invalid_admin_message = signing_state
+            .admin_signing_message(
+                expected_registry.sequence(),
+                &network_admin_id,
+                &invalid_admission,
+                admission_at,
+            )
+            .expect("build invalid admission admin message");
+        let invalid_admin_signature = network_admin.sign(&invalid_admin_message);
+        let invalid_admission_response = post_bearer_raw(
+            "127.0.0.1:46201",
+            "/api/network/control",
+            &serde_json::json!({
+                "actor_awe_id": network_admin_id,
+                "action": invalid_admission,
+                "at_unix": admission_at,
+                "signature": hex::encode(invalid_admin_signature)
+            })
+            .to_string(),
+            &network_admin_session_token,
+        );
+        assert!(
+            invalid_admission_response.starts_with("HTTP/1.1 403 Forbidden")
+                && invalid_admission_response.contains("proof-of-possession signature is invalid"),
+            "node admission accepted a proof from the wrong key: {invalid_admission_response}"
+        );
+
+        let proof_output = Command::new(&bin)
+            .arg("admission-proof")
+            .arg(dirs[1].join("node.awesecret"))
+            .arg(signing_state.founder_awe_id())
+            .arg("dc-admin-temporary")
+            .arg(next_sequence.to_string())
+            .arg(admission_at.to_string())
+            .output()
+            .expect("run joining-node admission proof CLI");
+        assert!(
+            proof_output.status.success(),
+            "admission proof CLI failed: {}",
+            String::from_utf8_lossy(&proof_output.stderr)
+        );
+        let proof_json: serde_json::Value =
+            serde_json::from_slice(&proof_output.stdout).expect("admission proof CLI JSON");
+        assert_eq!(
+            proof_json["node_awe_id"],
+            admitted_node_identity.public.awe_id.to_hex()
+        );
+        let admit_node: NetworkAction =
+            serde_json::from_value(proof_json["action"].clone()).expect("CLI AdmitNode action");
+        let NetworkAction::AdmitNode {
+            public_key,
+            proof_signature,
+            ..
+        } = &admit_node
+        else {
+            panic!("admission proof CLI must emit an AdmitNode action");
+        };
+        assert_eq!(*public_key, admitted_node_identity.public.public_key);
+        assert!(Identity::verify(
+            public_key,
+            &proof_message,
+            proof_signature
+        ));
+        let admit_admin_message = signing_state
+            .admin_signing_message(
+                expected_registry.sequence(),
+                &network_admin_id,
+                &admit_node,
+                admission_at,
+            )
+            .expect("build node admission admin message");
+        let admit_admin_signature = network_admin.sign(&admit_admin_message);
+        let admitted_response = post_bearer_raw(
+            "127.0.0.1:46201",
+            "/api/network/control",
+            &serde_json::json!({
+                "actor_awe_id": network_admin_id,
+                "action": admit_node,
+                "at_unix": admission_at,
+                "signature": hex::encode(admit_admin_signature)
+            })
+            .to_string(),
+            &network_admin_session_token,
+        );
+        assert!(
+            admitted_response.starts_with("HTTP/1.1 200 OK"),
+            "Admin could not admit a node with valid node proof: {admitted_response}"
+        );
+        signing_state
+            .apply_authorized(
+                &expected_registry,
+                &network_admin_id,
+                &admit_node,
+                admission_at,
+                admission_at,
+                &admit_admin_signature,
+            )
+            .expect("mirror the authenticated node admission");
+        let admitted_id = admitted_node_identity.public.awe_id.to_hex();
+        let admitted_topology: serde_json::Value =
+            serde_json::from_str(&get("127.0.0.1:46201", "/api/network/control"))
+                .expect("admitted topology JSON");
+        let admitted_record = &admitted_topology["topology"]["centres"]["dc-admin-temporary"]
+            ["nodes"][admitted_id.as_str()];
+        assert_eq!(
+            admitted_record["public_key"],
+            serde_json::json!(admitted_node_identity.public.public_key)
+        );
+        assert_eq!(
+            admitted_record["admitted_at_unix"].as_u64(),
+            Some(admission_at)
+        );
+        let durable_admission =
+            network_control::load(&dirs[0].join("network-control.json"), &founder_identity)
+                .expect("durable node admission snapshot");
+        assert_eq!(
+            durable_admission.topology().centres["dc-admin-temporary"].nodes[&admitted_id]
+                .public_key,
+            Some(admitted_node_identity.public.public_key)
         );
 
         let forbidden_user_action = NetworkAction::CreateCentre {

@@ -29,6 +29,7 @@ pub const MAX_CLOCK_SKEW_SECS: u64 = 300;
 const MUTATION_CONTEXT: &[u8] = b"AWENET-NETWORK-CONTROL-MUTATION/v1\0";
 const ADMIN_MUTATION_CONTEXT: &[u8] = b"AWENET-NETWORK-CONTROL-ADMIN-MUTATION/v1\0";
 const STORE_CONTEXT: &[u8] = b"AWENET-NETWORK-CONTROL-STORE/v1\0";
+const NODE_ADMISSION_CONTEXT: &[u8] = b"AWENET-NODE-ADMISSION/v1\0";
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "action", rename_all = "snake_case")]
@@ -39,6 +40,12 @@ pub enum NetworkAction {
     AddNode {
         centre_id: String,
         node_id: String,
+    },
+    AdmitNode {
+        centre_id: String,
+        public_key: [u8; 32],
+        #[serde(with = "crate::serde_bytes_64")]
+        proof_signature: [u8; 64],
     },
     SetNodeHealth {
         node_id: String,
@@ -89,6 +96,8 @@ pub enum NetworkControlError {
     NotFounder,
     #[error("the founder mutation signature is invalid")]
     InvalidSignature,
+    #[error("the joining node's proof-of-possession signature is invalid")]
+    InvalidNodeProof,
     #[error("the account registry does not belong to this network founder")]
     RegistryMismatch,
     #[error("the requested actor account was not found")]
@@ -177,6 +186,35 @@ impl NetworkControlPlane {
         self.sequence.checked_add(1)
     }
 
+    fn verify_node_admission(
+        &self,
+        action: &NetworkAction,
+        at_unix: u64,
+    ) -> Result<(), NetworkControlError> {
+        if let NetworkAction::AdmitNode {
+            centre_id,
+            public_key,
+            proof_signature,
+        } = action
+        {
+            let next_sequence = self
+                .sequence
+                .checked_add(1)
+                .ok_or(NetworkControlError::SequenceExhausted)?;
+            let message = node_admission_message(
+                &self.founder_awe_id,
+                centre_id,
+                public_key,
+                next_sequence,
+                at_unix,
+            )?;
+            if !Identity::verify(public_key, &message, proof_signature) {
+                return Err(NetworkControlError::InvalidNodeProof);
+            }
+        }
+        Ok(())
+    }
+
     pub fn updated_at_unix(&self) -> u64 {
         self.updated_at_unix
     }
@@ -221,7 +259,18 @@ impl NetworkControlPlane {
         }
         self.topology
             .validate()
-            .map_err(NetworkControlError::Topology)
+            .map_err(NetworkControlError::Topology)?;
+        // Admission is part of this signed snapshot's history. A node cannot
+        // claim it was admitted after the snapshot's latest committed mutation.
+        if self.topology.centres.values().any(|centre| {
+            centre.nodes.values().any(|node| {
+                node.admitted_at_unix
+                    .is_some_and(|admitted_at| admitted_at > self.updated_at_unix)
+            })
+        }) {
+            return Err(NetworkControlError::InvalidState);
+        }
+        Ok(())
     }
 
     /// Returns the exact domain-separated bytes that a founder must sign for
@@ -355,6 +404,7 @@ impl NetworkControlPlane {
         if !Identity::verify(&account.public_key, &message, signature) {
             return Err(NetworkControlError::InvalidSignature);
         }
+        self.verify_node_admission(action, at_unix)?;
 
         let mut candidate = self.topology.clone();
         apply_action(&mut candidate, action, at_unix)?;
@@ -398,6 +448,7 @@ impl NetworkControlPlane {
         if !Identity::verify(&self.founder_public_key, &message, signature) {
             return Err(NetworkControlError::InvalidSignature);
         }
+        self.verify_node_admission(action, at_unix)?;
 
         let mut candidate = self.topology.clone();
         apply_action(&mut candidate, action, at_unix)?;
@@ -463,11 +514,55 @@ impl NetworkControlPlane {
     }
 }
 
+/// Returns the exact message a joining node must sign before an Admin or
+/// Founder can add it to the topology. The next control-plane sequence and
+/// timestamp prevent a proof from being replayed after another mutation.
+pub fn node_admission_message(
+    founder_awe_id: &str,
+    centre_id: &str,
+    public_key: &[u8; 32],
+    next_sequence: u64,
+    at_unix: u64,
+) -> Result<Vec<u8>, NetworkControlError> {
+    validate_id(founder_awe_id)?;
+    validate_id(centre_id)?;
+    let node_awe_id = AweId::from_public_key(public_key).to_hex();
+    let founder_len =
+        u16::try_from(founder_awe_id.len()).map_err(|_| NetworkControlError::InvalidIdentifier)?;
+    let centre_len =
+        u16::try_from(centre_id.len()).map_err(|_| NetworkControlError::InvalidIdentifier)?;
+    let node_len =
+        u16::try_from(node_awe_id.len()).map_err(|_| NetworkControlError::InvalidIdentifier)?;
+    let mut message = Vec::with_capacity(
+        NODE_ADMISSION_CONTEXT.len()
+            + 2
+            + founder_awe_id.len()
+            + 2
+            + centre_id.len()
+            + 2
+            + node_awe_id.len()
+            + 32
+            + 8
+            + 8,
+    );
+    message.extend_from_slice(NODE_ADMISSION_CONTEXT);
+    message.extend_from_slice(&founder_len.to_be_bytes());
+    message.extend_from_slice(founder_awe_id.as_bytes());
+    message.extend_from_slice(&centre_len.to_be_bytes());
+    message.extend_from_slice(centre_id.as_bytes());
+    message.extend_from_slice(&node_len.to_be_bytes());
+    message.extend_from_slice(node_awe_id.as_bytes());
+    message.extend_from_slice(public_key);
+    message.extend_from_slice(&next_sequence.to_be_bytes());
+    message.extend_from_slice(&at_unix.to_be_bytes());
+    Ok(message)
+}
+
 fn admin_topology_action_allowed(action: &NetworkAction) -> bool {
     matches!(
         action,
         NetworkAction::CreateCentre { .. }
-            | NetworkAction::AddNode { .. }
+            | NetworkAction::AdmitNode { .. }
             | NetworkAction::CreateDataGroup { .. }
             | NetworkAction::CreateCentreGroup { .. }
             | NetworkAction::ConnectCentres { .. }
@@ -512,6 +607,20 @@ fn apply_action(
                 .get_mut(centre_id)
                 .ok_or_else(|| NetworkControlError::Topology("data centre not found".into()))?
                 .add_node(Node::new(node_id.clone()))
+                .map_err(NetworkControlError::Topology)?;
+        }
+        NetworkAction::AdmitNode {
+            centre_id,
+            public_key,
+            ..
+        } => {
+            validate_id(centre_id)?;
+            let node = Node::admitted(*public_key, at_unix);
+            topology
+                .centres
+                .get_mut(centre_id)
+                .ok_or_else(|| NetworkControlError::Topology("data centre not found".into()))?
+                .add_node(node)
                 .map_err(NetworkControlError::Topology)?;
         }
         NetworkAction::SetNodeHealth { node_id, alive } => {
@@ -829,6 +938,43 @@ mod tests {
             ),
             Ok(1)
         );
+        let joining_node = identity("durable-joining-node");
+        let admission_at = 102;
+        let proof_message = node_admission_message(
+            control.founder_awe_id(),
+            "dc-admin",
+            &joining_node.public.public_key,
+            control.next_sequence().unwrap(),
+            admission_at,
+        )
+        .unwrap();
+        let admit = NetworkAction::AdmitNode {
+            centre_id: "dc-admin".into(),
+            public_key: joining_node.public.public_key,
+            proof_signature: joining_node.sign(&proof_message),
+        };
+        let admit_message = control
+            .admin_signing_message(registry.sequence(), &account.awe_id, &admit, admission_at)
+            .unwrap();
+        let admit_signature = admin.sign(&admit_message);
+        assert_eq!(
+            control.apply_and_save_authorized(
+                &path,
+                &founder,
+                &registry,
+                &account.awe_id,
+                &admit,
+                admission_at,
+                admission_at,
+                &admit_signature,
+            ),
+            Ok(2)
+        );
+        let joining_id = joining_node.public.awe_id.to_hex();
+        assert_eq!(
+            control.topology().centres["dc-admin"].nodes[&joining_id].public_key,
+            Some(joining_node.public.public_key)
+        );
         assert_eq!(control.last_actor_awe_id(), Some(account.awe_id.as_str()));
         assert!(control.topology().centres.contains_key("dc-admin"));
 
@@ -886,6 +1032,31 @@ mod tests {
                 &regular_signature,
             ),
             Err(NetworkControlError::InsufficientPrivileges)
+        );
+
+        let unverified_add = NetworkAction::AddNode {
+            centre_id: "dc-protected".into(),
+            node_id: "unverified-node".into(),
+        };
+        let unverified_message = control
+            .admin_signing_message(
+                registry.sequence(),
+                &admin_account.awe_id,
+                &unverified_add,
+                101,
+            )
+            .unwrap();
+        let unverified_signature = admin.sign(&unverified_message);
+        assert_eq!(
+            control.apply_authorized(
+                &registry,
+                &admin_account.awe_id,
+                &unverified_add,
+                101,
+                101,
+                &unverified_signature,
+            ),
+            Err(NetworkControlError::ProtectedAction)
         );
 
         let telemetry = NetworkAction::SetNodeHealth {
@@ -1087,6 +1258,157 @@ mod tests {
         );
         assert_eq!(control.topology().data_groups.len(), 1);
         control.topology().validate().unwrap();
+    }
+
+    #[test]
+    fn node_admission_proof_is_required_and_bound_to_the_next_sequence() {
+        let founder = identity("founder");
+        let joining_node = identity("joining-node");
+        let attacker = identity("attacker");
+        let mut control = NetworkControlPlane::new(&founder, 100);
+        apply(
+            &mut control,
+            &founder,
+            NetworkAction::CreateCentre {
+                centre_id: "dc-admission".into(),
+            },
+            101,
+        )
+        .unwrap();
+
+        let at_unix = 102;
+        let next_sequence = control.next_sequence().unwrap();
+        let proof_message = node_admission_message(
+            control.founder_awe_id(),
+            "dc-admission",
+            &joining_node.public.public_key,
+            next_sequence,
+            at_unix,
+        )
+        .unwrap();
+        let invalid_action = NetworkAction::AdmitNode {
+            centre_id: "dc-admission".into(),
+            public_key: joining_node.public.public_key,
+            proof_signature: attacker.sign(&proof_message),
+        };
+        let invalid_message = control.signing_message(&invalid_action, at_unix).unwrap();
+        let invalid_admin_signature = founder.sign(&invalid_message);
+        let before_invalid = control.clone();
+        assert_eq!(
+            control.apply_signed(
+                &founder,
+                &invalid_action,
+                at_unix,
+                at_unix,
+                &invalid_admin_signature,
+            ),
+            Err(NetworkControlError::InvalidNodeProof)
+        );
+        assert_eq!(control, before_invalid);
+
+        let valid_proof = joining_node.sign(&proof_message);
+        let valid_action = NetworkAction::AdmitNode {
+            centre_id: "dc-admission".into(),
+            public_key: joining_node.public.public_key,
+            proof_signature: valid_proof,
+        };
+        let valid_message = control.signing_message(&valid_action, at_unix).unwrap();
+        let valid_admin_signature = founder.sign(&valid_message);
+        assert_eq!(
+            control.apply_signed(
+                &founder,
+                &valid_action,
+                at_unix,
+                at_unix,
+                &valid_admin_signature,
+            ),
+            Ok(2)
+        );
+        let node_id = joining_node.public.awe_id.to_hex();
+        let admitted = &control.topology().centres["dc-admission"].nodes[&node_id];
+        assert_eq!(admitted.public_key, Some(joining_node.public.public_key));
+        assert_eq!(admitted.admitted_at_unix, Some(at_unix));
+
+        apply(
+            &mut control,
+            &founder,
+            NetworkAction::CreateCentre {
+                centre_id: "dc-replay".into(),
+            },
+            103,
+        )
+        .unwrap();
+        let replay_action = NetworkAction::AdmitNode {
+            centre_id: "dc-replay".into(),
+            public_key: joining_node.public.public_key,
+            proof_signature: valid_proof,
+        };
+        let replay_at = 104;
+        let replay_message = control.signing_message(&replay_action, replay_at).unwrap();
+        let replay_admin_signature = founder.sign(&replay_message);
+        let before_replay = control.clone();
+        assert_eq!(
+            control.apply_signed(
+                &founder,
+                &replay_action,
+                replay_at,
+                replay_at,
+                &replay_admin_signature,
+            ),
+            Err(NetworkControlError::InvalidNodeProof)
+        );
+        assert_eq!(control, before_replay);
+    }
+
+    #[test]
+    fn admitted_node_timestamp_cannot_exceed_control_plane_timestamp() {
+        let founder = identity("founder");
+        let joining_node = identity("joining-node");
+        let mut control = NetworkControlPlane::new(&founder, 100);
+        apply(
+            &mut control,
+            &founder,
+            NetworkAction::CreateCentre {
+                centre_id: "dc-time-bound".into(),
+            },
+            101,
+        )
+        .unwrap();
+
+        let admitted_at = 102;
+        let proof_message = node_admission_message(
+            control.founder_awe_id(),
+            "dc-time-bound",
+            &joining_node.public.public_key,
+            control.next_sequence().unwrap(),
+            admitted_at,
+        )
+        .unwrap();
+        let action = NetworkAction::AdmitNode {
+            centre_id: "dc-time-bound".into(),
+            public_key: joining_node.public.public_key,
+            proof_signature: joining_node.sign(&proof_message),
+        };
+        let message = control.signing_message(&action, admitted_at).unwrap();
+        let signature = founder.sign(&message);
+        control
+            .apply_signed(&founder, &action, admitted_at, admitted_at, &signature)
+            .unwrap();
+        assert!(control.validate().is_ok());
+
+        let node_id = joining_node.public.awe_id.to_hex();
+        let future_admission_time = control.updated_at_unix + 1;
+        control
+            .topology
+            .centres
+            .get_mut("dc-time-bound")
+            .unwrap()
+            .nodes
+            .get_mut(&node_id)
+            .unwrap()
+            .admitted_at_unix = Some(future_admission_time);
+
+        assert_eq!(control.validate(), Err(NetworkControlError::InvalidState));
     }
 
     #[test]
