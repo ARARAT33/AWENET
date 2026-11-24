@@ -242,7 +242,6 @@ impl NetworkControlPlane {
                 node.id.as_str() == node_awe_id
                     && node.public_key == Some(*public_key)
                     && node.admitted_at_unix.is_some()
-                    && node.alive
             })
         })
     }
@@ -1871,7 +1870,9 @@ mod tests {
             103,
         )
         .unwrap();
-        assert!(!control.is_node_admitted(&node_id, &joining_node.public.public_key));
+        // Operational health is not membership revocation: an unhealthy
+        // admitted node must be able to reconnect and recover.
+        assert!(control.is_node_admitted(&node_id, &joining_node.public.public_key));
 
         apply(
             &mut control,
