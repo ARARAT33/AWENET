@@ -5097,6 +5097,7 @@ mod tests {
     use super::build_node_admission_proof;
     use awep2p_core::identity::{AweSecret, Identity, Username};
     use awep2p_core::network_control::{self, NetworkAction};
+    use std::fs;
     use serde_json::json;
 
     #[test]
