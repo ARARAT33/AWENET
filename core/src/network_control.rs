@@ -227,6 +227,25 @@ impl NetworkControlPlane {
         &self.topology
     }
 
+    /// Returns true only for a proof-backed, active node record whose AWEID
+    /// and public key match the authenticated transport peer.
+    ///
+    /// Legacy AddNode placeholders are intentionally not sufficient for
+    /// transport admission.
+    pub fn is_node_admitted(&self, node_awe_id: &str, public_key: &[u8; 32]) -> bool {
+        if AweId::from_public_key(public_key).to_hex() != node_awe_id {
+            return false;
+        }
+
+        self.topology.centres.values().any(|centre| {
+            centre.nodes.get(node_awe_id).is_some_and(|node| {
+                node.id.as_str() == node_awe_id
+                    && node.public_key == Some(*public_key)
+                    && node.admitted_at_unix.is_some()
+            })
+        })
+    }
+
     /// Validates the complete restored state before it is trusted or served.
     pub fn validate(&self) -> Result<(), NetworkControlError> {
         if self.version != NETWORK_CONTROL_VERSION
@@ -1804,5 +1823,92 @@ mod tests {
             Err(NetworkControlError::SequenceExhausted)
         );
         assert!(control.topology().centres.is_empty());
+    }
+    #[test]
+    fn admitted_node_lookup_requires_live_matching_proof_backed_record() {
+        let founder = identity("admission-lookup-founder");
+        let joining_node = identity("admission-lookup-node");
+        let mut control = NetworkControlPlane::new(&founder, 100);
+        apply(
+            &mut control,
+            &founder,
+            NetworkAction::CreateCentre {
+                centre_id: "dc-admission-lookup".into(),
+            },
+            101,
+        )
+        .unwrap();
+
+        let at_unix = 102;
+        let proof_message = node_admission_message(
+            control.founder_awe_id(),
+            "dc-admission-lookup",
+            &joining_node.public.public_key,
+            control.next_sequence().unwrap(),
+            at_unix,
+        )
+        .unwrap();
+        let admission = NetworkAction::AdmitNode {
+            centre_id: "dc-admission-lookup".into(),
+            public_key: joining_node.public.public_key,
+            proof_signature: joining_node.sign(&proof_message),
+        };
+        apply(&mut control, &founder, admission, at_unix).unwrap();
+
+        let node_id = joining_node.public.awe_id.to_hex();
+        assert!(control.is_node_admitted(&node_id, &joining_node.public.public_key));
+        assert!(!control.is_node_admitted(&node_id, &[0u8; 32]));
+        assert!(!control.is_node_admitted("non-canonical-id", &joining_node.public.public_key));
+
+        apply(
+            &mut control,
+            &founder,
+            NetworkAction::SetNodeHealth {
+                node_id: node_id.clone(),
+                alive: false,
+            },
+            103,
+        )
+        .unwrap();
+        // Operational health is not membership revocation: an unhealthy
+        // admitted node must be able to reconnect and recover.
+        assert!(control.is_node_admitted(&node_id, &joining_node.public.public_key));
+
+        apply(
+            &mut control,
+            &founder,
+            NetworkAction::SetNodeHealth {
+                node_id: node_id.clone(),
+                alive: true,
+            },
+            104,
+        )
+        .unwrap();
+        assert!(control.is_node_admitted(&node_id, &joining_node.public.public_key));
+
+        apply(
+            &mut control,
+            &founder,
+            NetworkAction::RemoveNode {
+                node_id: node_id.clone(),
+            },
+            105,
+        )
+        .unwrap();
+        assert!(!control.is_node_admitted(&node_id, &joining_node.public.public_key));
+
+        // A legacy AddNode record with the same ID is not proof of possession
+        // and must never satisfy transport admission.
+        apply(
+            &mut control,
+            &founder,
+            NetworkAction::AddNode {
+                centre_id: "dc-admission-lookup".into(),
+                node_id: node_id.clone(),
+            },
+            106,
+        )
+        .unwrap();
+        assert!(!control.is_node_admitted(&node_id, &joining_node.public.public_key));
     }
 }

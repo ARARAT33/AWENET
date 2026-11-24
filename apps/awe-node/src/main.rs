@@ -88,6 +88,29 @@ type UserLoginState = Arc<Mutex<UserLogin>>;
 type NetworkControlState = Arc<Mutex<NetworkControlPlane>>;
 type HostState = Arc<Mutex<AweHost>>;
 
+fn peer_admission_enforcement_enabled() -> bool {
+    env::var("AWE_REQUIRE_ADMITTED_PEERS")
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn install_network_peer_admission(node: &Node, control: NetworkControlState) -> Result<()> {
+    node.set_peer_authorizer(move |remote_id, remote_public_key| {
+        let remote_awe_id = hex::encode(remote_id);
+        control
+            .lock()
+            .map(|state| state.is_node_admitted(&remote_awe_id, remote_public_key))
+            .unwrap_or(false)
+    })
+    .map_err(anyhow::Error::msg)?;
+    Ok(())
+}
+
 #[derive(Clone)]
 struct UiState {
     node: Node,
@@ -2309,7 +2332,8 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                 "product": "AWEp2P", "status": "online",
                 "node_id": format_uid(node.identity.public.awe_id.as_bytes()),
                 "node_address": node.listen_addr.to_string(),
-                "transport": "AWE encrypted TCP", "ui": "connected", "peers": peer_json, "discovered_peers": peer_json.len(), "active_connections": node.active_peer_count().await
+                "transport": "AWE encrypted TCP", "ui": "connected", "peers": peer_json, "discovered_peers": peer_json.len(), "active_connections": node.active_peer_count().await,
+                "peer_admission_enforced": node.peer_admission_enforced()
             }).to_string())
         },
         "/api/security/passkeys" if method == "GET" => {
@@ -3928,6 +3952,9 @@ async fn run_product() -> Result<()> {
         .parse()
         .context("invalid AWE_LISTEN_ADDR")?;
     let node = Node::new(identity, listen);
+    if peer_admission_enforcement_enabled() {
+        install_network_peer_admission(&node, network_control_state.clone())?;
+    }
     let storage_root = data_dir.join("storage");
     let host_root = data_dir.join("host");
     fs::create_dir_all(&storage_root)?;
@@ -4909,6 +4936,16 @@ async fn run_node(
 ) -> Result<()> {
     let identity = load_identity(&path, &password, &username)?;
     let node = Node::new(identity, listen);
+    if peer_admission_enforcement_enabled() {
+        let control_path = path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join("network-control.json");
+        let control =
+            network_control::load_or_create(&control_path, node.identity.as_ref(), now_unix())
+                .map_err(anyhow::Error::msg)?;
+        install_network_peer_admission(&node, Arc::new(Mutex::new(control)))?;
+    }
     if !bootstrap.is_empty() {
         node.bootstrap(&bootstrap)
             .await
