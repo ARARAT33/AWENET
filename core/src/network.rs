@@ -974,9 +974,9 @@ impl Node {
         let authorized = peer_authorizer
             .lock()
             .map(|policy| {
-                policy
-                    .as_ref()
-                    .map_or(true, |authorize| authorize(&c.remote_id, &c.remote_public_key))
+                policy.as_ref().map_or(true, |authorize| {
+                    authorize(&c.remote_id, &c.remote_public_key)
+                })
             })
             .unwrap_or(false);
         if !authorized {
@@ -1023,9 +1023,9 @@ impl Node {
             let still_authorized = peer_authorizer
                 .lock()
                 .map(|policy| {
-                    policy
-                        .as_ref()
-                        .map_or(true, |authorize| authorize(&c.remote_id, &c.remote_public_key))
+                    policy.as_ref().map_or(true, |authorize| {
+                        authorize(&c.remote_id, &c.remote_public_key)
+                    })
                 })
                 .unwrap_or(false);
             if !still_authorized {
@@ -1958,11 +1958,8 @@ async fn routine_short_lived_connections_do_not_quarantine_the_peer() {
             "127.0.0.1:0".parse().unwrap(),
         );
         let mut denied_connection = denied_node.connect(address).await.unwrap();
-        let denied_ping = timeout(
-            Duration::from_secs(2),
-            denied_connection.ping_roundtrip(1),
-        )
-        .await;
+        let denied_ping =
+            timeout(Duration::from_secs(2), denied_connection.ping_roundtrip(1)).await;
         assert!(
             !matches!(denied_ping, Ok(Ok(_))),
             "unadmitted peer received a successful heartbeat"
@@ -2021,5 +2018,4 @@ async fn routine_short_lived_connections_do_not_quarantine_the_peer() {
         ));
         server_task.await.unwrap();
     }
-
 }

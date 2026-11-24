@@ -4941,12 +4941,9 @@ async fn run_node(
             .parent()
             .unwrap_or_else(|| std::path::Path::new("."))
             .join("network-control.json");
-        let control = network_control::load_or_create(
-            &control_path,
-            node.identity.as_ref(),
-            now_unix(),
-        )
-        .map_err(anyhow::Error::msg)?;
+        let control =
+            network_control::load_or_create(&control_path, node.identity.as_ref(), now_unix())
+                .map_err(anyhow::Error::msg)?;
         install_network_peer_admission(&node, Arc::new(Mutex::new(control)))?;
     }
     if !bootstrap.is_empty() {

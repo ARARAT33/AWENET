@@ -1888,7 +1888,9 @@ mod tests {
         apply(
             &mut control,
             &founder,
-            NetworkAction::RemoveNode { node_id: node_id.clone() },
+            NetworkAction::RemoveNode {
+                node_id: node_id.clone(),
+            },
             105,
         )
         .unwrap();
@@ -1908,5 +1910,4 @@ mod tests {
         .unwrap();
         assert!(!control.is_node_admitted(&node_id, &joining_node.public.public_key));
     }
-
 }
