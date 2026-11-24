@@ -51,7 +51,25 @@ Admitted topology nodes persist their public key and admission timestamp. The No
 
 ## Scope boundary
 
-This is cryptographic identity admission into the local signed topology control plane. It does not by itself prove that the remote process is currently reachable, establish a peer transport session, authorize resource contribution, or replicate topology to other nodes. Those remain separate Phase 2 tasks.
+This is cryptographic identity admission into the local signed topology control plane. The repository already has an authenticated encrypted TCP peer handshake in `core/src/network.rs`; this admission action does not yet bind that transport's peer acceptance/routing to topology membership. It also does not prove ongoing reachability, authorize resource contribution, or replicate the control-plane/User Registry trust root to other nodes. Those remain separate Phase 2 tasks.
+
+## Joining-node CLI proof
+
+The joining Node can create the proof without exposing its private key:
+
+```sh
+awe-node admission-proof <secret-file> <founder-awe-id> <centre-id> <next-sequence> <at-unix>
+```
+
+Example:
+
+```sh
+awe-node admission-proof ~/.awep2p/node.awesecret FOUNDER_AWEID dc-west 12 1795520000
+```
+
+The command reads the local `.awesecret`, derives the Node AWEID/public key, signs the exact admission message, and prints JSON containing an `action` object ready to include in the Admin-signed `POST /api/network/control` request. It never prints the private key. The Admin/Founder still has to sign the complete action; the node proof alone cannot authorize a topology mutation.
+
+Fetch the current `next_sequence` from the network-control response and use the exact same `at_unix` value in the outer mutation. If another mutation commits first, generate a fresh proof.
 
 ## HTTP wire encoding
 
