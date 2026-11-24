@@ -5147,6 +5147,24 @@ mod tests {
     }
 
     #[test]
+    fn admission_proof_cli_rejects_zero_sequence() {
+        let founder = Identity::generate(Username::new("admission-cli-founder-zero").unwrap());
+        let missing_path = std::env::temp_dir().join(format!(
+            "awenet-admission-proof-missing-{}.awesecret",
+            std::process::id()
+        ));
+        let error = build_node_admission_proof(
+            &missing_path,
+            &founder.public.awe_id.to_hex(),
+            "dc-zero",
+            0,
+            1_795_520_000,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("next_sequence must be greater than zero"));
+    }
+
+    #[test]
     fn ui_listener_rejects_remote_peers_even_if_they_spoof_a_loopback_host() {
         assert!(local_peer_allowed("127.0.0.1:41800".parse().unwrap()));
         assert!(local_peer_allowed("[::1]:41800".parse().unwrap()));
