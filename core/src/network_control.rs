@@ -804,7 +804,7 @@ pub fn save(
         .map_err(|error| NetworkControlError::Io(error.to_string()))
 }
 
-/// Loads a founder-authenticated snapshot using the installer's private identity.
+/// Loads a founder-authenticated snapshot using the installer's Founder identity.
 pub fn load(path: &Path, founder: &Identity) -> Result<NetworkControlPlane, NetworkControlError> {
     let control = load_verified(path, &founder.public.public_key)?;
     if control.founder_awe_id != founder.public.awe_id.to_hex() {
