@@ -974,7 +974,7 @@ impl Node {
         let authorized = peer_authorizer
             .lock()
             .map(|policy| {
-                policy.as_ref().map_or(true, |authorize| {
+                policy.as_ref().is_none_or(|authorize| {
                     authorize(&c.remote_id, &c.remote_public_key)
                 })
             })
@@ -1023,7 +1023,7 @@ impl Node {
             let still_authorized = peer_authorizer
                 .lock()
                 .map(|policy| {
-                    policy.as_ref().map_or(true, |authorize| {
+                    policy.as_ref().is_none_or(|authorize| {
                         authorize(&c.remote_id, &c.remote_public_key)
                     })
                 })
@@ -1036,7 +1036,7 @@ impl Node {
                     let authorized_after_receive = peer_authorizer
                         .lock()
                         .map(|policy| {
-                            policy.as_ref().map_or(true, |authorize| {
+                            policy.as_ref().is_none_or(|authorize| {
                                 authorize(&c.remote_id, &c.remote_public_key)
                             })
                         })
@@ -1822,7 +1822,6 @@ mod tests {
         assert_eq!(egress_res.service_y, target_service);
         assert_eq!(egress_res.request_payload, req_data);
     }
-}
 #[test]
 fn peer_store_is_bounded_and_evicts_oldest() {
     let mut peers = HashMap::new();
@@ -1910,8 +1909,10 @@ async fn routine_short_lived_connections_do_not_quarantine_the_peer() {
             .await
             .unwrap_or_else(|error| panic!("confirmed send {attempt} failed: {error}"));
     }
-    #[tokio::test]
-    async fn listener_accepts_only_the_exact_admitted_peer_identity() {
+}
+
+#[tokio::test]
+async fn listener_accepts_only_the_exact_admitted_peer_identity() {
         let reservation = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = reservation.local_addr().unwrap();
         drop(reservation);
