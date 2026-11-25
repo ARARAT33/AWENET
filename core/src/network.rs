@@ -1911,6 +1911,20 @@ mod tests {
         }
     }
 
+    #[test]
+    fn peer_admission_policy_state_reflects_configuration() {
+        let node = Node::new(
+            Identity::generate(Username::new("peer-admission-policy-state").unwrap()),
+            "127.0.0.1:0".parse().unwrap(),
+        );
+
+        assert!(!node.peer_admission_enforced());
+        node.set_peer_authorizer(|_, _| false).unwrap();
+        assert!(node.peer_admission_enforced());
+        node.clear_peer_authorizer().unwrap();
+        assert!(!node.peer_admission_enforced());
+    }
+
     #[tokio::test]
     async fn listener_accepts_only_the_exact_admitted_peer_identity() {
         let reservation = TcpListener::bind("127.0.0.1:0").await.unwrap();
