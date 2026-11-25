@@ -974,9 +974,9 @@ impl Node {
         let authorized = peer_authorizer
             .lock()
             .map(|policy| {
-                policy.as_ref().is_none_or(|authorize| {
-                    authorize(&c.remote_id, &c.remote_public_key)
-                })
+                policy
+                    .as_ref()
+                    .is_none_or(|authorize| authorize(&c.remote_id, &c.remote_public_key))
             })
             .unwrap_or(false);
         if !authorized {
@@ -1023,9 +1023,9 @@ impl Node {
             let still_authorized = peer_authorizer
                 .lock()
                 .map(|policy| {
-                    policy.as_ref().is_none_or(|authorize| {
-                        authorize(&c.remote_id, &c.remote_public_key)
-                    })
+                    policy
+                        .as_ref()
+                        .is_none_or(|authorize| authorize(&c.remote_id, &c.remote_public_key))
                 })
                 .unwrap_or(false);
             if !still_authorized {
@@ -1822,97 +1822,97 @@ mod tests {
         assert_eq!(egress_res.service_y, target_service);
         assert_eq!(egress_res.request_payload, req_data);
     }
-#[test]
-fn peer_store_is_bounded_and_evicts_oldest() {
-    let mut peers = HashMap::new();
-    for i in 0..=MAX_PEER_RECORDS {
-        let mut id = [0u8; 32];
-        id[..8].copy_from_slice(&(i as u64).to_be_bytes());
-        insert_peer_bounded(
-            &mut peers,
-            PeerRecord {
-                awe_id: id,
-                public_key: id,
-                addresses: vec![],
-                protocol_version: VERSION,
-                last_seen_unix: i as u64,
-            },
+    #[test]
+    fn peer_store_is_bounded_and_evicts_oldest() {
+        let mut peers = HashMap::new();
+        for i in 0..=MAX_PEER_RECORDS {
+            let mut id = [0u8; 32];
+            id[..8].copy_from_slice(&(i as u64).to_be_bytes());
+            insert_peer_bounded(
+                &mut peers,
+                PeerRecord {
+                    awe_id: id,
+                    public_key: id,
+                    addresses: vec![],
+                    protocol_version: VERSION,
+                    last_seen_unix: i as u64,
+                },
+            );
+        }
+        assert_eq!(peers.len(), MAX_PEER_RECORDS);
+        let mut oldest = [0u8; 32];
+        oldest[..8].copy_from_slice(&0u64.to_be_bytes());
+        assert!(!peers.contains_key(&oldest));
+    }
+
+    #[test]
+    fn inbox_limits_are_finite() {
+        const {
+            assert!(MAX_INBOX_MESSAGES < 10_000);
+            assert!(MAX_INBOX_BYTES <= 64 * 1024 * 1024);
+        }
+    }
+
+    #[test]
+    fn only_connection_loss_is_a_clean_disconnect() {
+        use std::io::ErrorKind;
+        assert!(
+            NetworkError::Io(ErrorKind::UnexpectedEof.into()).is_disconnect(),
+            "EOF is the peer closing the socket"
         );
+        assert!(NetworkError::Io(ErrorKind::ConnectionReset.into()).is_disconnect());
+        assert!(NetworkError::Io(ErrorKind::ConnectionAborted.into()).is_disconnect());
+        assert!(NetworkError::Io(ErrorKind::BrokenPipe.into()).is_disconnect());
+        assert!(!NetworkError::Protocol("replayed frame".into()).is_disconnect());
+        assert!(!NetworkError::Authentication.is_disconnect());
+        assert!(!NetworkError::FrameTooLarge.is_disconnect());
+        assert!(!NetworkError::Timeout.is_disconnect());
     }
-    assert_eq!(peers.len(), MAX_PEER_RECORDS);
-    let mut oldest = [0u8; 32];
-    oldest[..8].copy_from_slice(&0u64.to_be_bytes());
-    assert!(!peers.contains_key(&oldest));
-}
 
-#[test]
-fn inbox_limits_are_finite() {
-    const {
-        assert!(MAX_INBOX_MESSAGES < 10_000);
-        assert!(MAX_INBOX_BYTES <= 64 * 1024 * 1024);
+    #[tokio::test]
+    async fn routine_short_lived_connections_do_not_quarantine_the_peer() {
+        use crate::defense::DEFAULT_MAX_STRIKES;
+        use crate::identity::Username;
+        // Reserve an ephemeral port for the server node, then release it for
+        // the real listener.
+        let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let server_addr: SocketAddr = format!("127.0.0.1:{}", probe.local_addr().unwrap().port())
+            .parse()
+            .unwrap();
+        drop(probe);
+
+        let server = Node::new(
+            Identity::generate(Username::new("defense-server").unwrap()),
+            server_addr,
+        );
+        let server_for_listener = server.clone();
+        tokio::spawn(async move {
+            let _ = server_for_listener.listen().await;
+        });
+
+        let client = Node::new(
+            Identity::generate(Username::new("defense-client").unwrap()),
+            "127.0.0.1:0".parse().unwrap(),
+        );
+        client.bootstrap(&[server_addr]).await.unwrap();
+        let server_id = *server.identity.public.awe_id.as_bytes();
+
+        // Every confirmed send opens a fresh connection and drops it after the
+        // authenticated acknowledgement, exactly like messenger delivery and
+        // verifier report delivery do. Two full strike budgets of these used to
+        // quarantine the client on the server, after which every later
+        // confirmed send failed with a broken pipe because the server closed
+        // the quarantined peer's connections right after the handshake.
+        for attempt in 0..(DEFAULT_MAX_STRIKES as usize * 2) {
+            client
+                .send_to_peer_confirmed(&server_id, 100, b"routine".to_vec())
+                .await
+                .unwrap_or_else(|error| panic!("confirmed send {attempt} failed: {error}"));
+        }
     }
-}
 
-#[test]
-fn only_connection_loss_is_a_clean_disconnect() {
-    use std::io::ErrorKind;
-    assert!(
-        NetworkError::Io(ErrorKind::UnexpectedEof.into()).is_disconnect(),
-        "EOF is the peer closing the socket"
-    );
-    assert!(NetworkError::Io(ErrorKind::ConnectionReset.into()).is_disconnect());
-    assert!(NetworkError::Io(ErrorKind::ConnectionAborted.into()).is_disconnect());
-    assert!(NetworkError::Io(ErrorKind::BrokenPipe.into()).is_disconnect());
-    assert!(!NetworkError::Protocol("replayed frame".into()).is_disconnect());
-    assert!(!NetworkError::Authentication.is_disconnect());
-    assert!(!NetworkError::FrameTooLarge.is_disconnect());
-    assert!(!NetworkError::Timeout.is_disconnect());
-}
-
-#[tokio::test]
-async fn routine_short_lived_connections_do_not_quarantine_the_peer() {
-    use crate::defense::DEFAULT_MAX_STRIKES;
-    use crate::identity::Username;
-    // Reserve an ephemeral port for the server node, then release it for
-    // the real listener.
-    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let server_addr: SocketAddr = format!("127.0.0.1:{}", probe.local_addr().unwrap().port())
-        .parse()
-        .unwrap();
-    drop(probe);
-
-    let server = Node::new(
-        Identity::generate(Username::new("defense-server").unwrap()),
-        server_addr,
-    );
-    let server_for_listener = server.clone();
-    tokio::spawn(async move {
-        let _ = server_for_listener.listen().await;
-    });
-
-    let client = Node::new(
-        Identity::generate(Username::new("defense-client").unwrap()),
-        "127.0.0.1:0".parse().unwrap(),
-    );
-    client.bootstrap(&[server_addr]).await.unwrap();
-    let server_id = *server.identity.public.awe_id.as_bytes();
-
-    // Every confirmed send opens a fresh connection and drops it after the
-    // authenticated acknowledgement, exactly like messenger delivery and
-    // verifier report delivery do. Two full strike budgets of these used to
-    // quarantine the client on the server, after which every later
-    // confirmed send failed with a broken pipe because the server closed
-    // the quarantined peer's connections right after the handshake.
-    for attempt in 0..(DEFAULT_MAX_STRIKES as usize * 2) {
-        client
-            .send_to_peer_confirmed(&server_id, 100, b"routine".to_vec())
-            .await
-            .unwrap_or_else(|error| panic!("confirmed send {attempt} failed: {error}"));
-    }
-}
-
-#[tokio::test]
-async fn listener_accepts_only_the_exact_admitted_peer_identity() {
+    #[tokio::test]
+    async fn listener_accepts_only_the_exact_admitted_peer_identity() {
         let reservation = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = reservation.local_addr().unwrap();
         drop(reservation);
