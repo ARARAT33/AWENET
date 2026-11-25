@@ -135,7 +135,7 @@ fn refresh_network_control_once(
     trusted_founder_public_key: &[u8; 32],
     control: &NetworkControlState,
 ) -> Result<bool> {
-    let candidate = network_control::load_verified(path, trusted_founder_public_key)
+    let candidate = network_control::load_verified_snapshot(path, trusted_founder_public_key)
         .map_err(anyhow::Error::msg)?;
     let mut active = control
         .lock()
