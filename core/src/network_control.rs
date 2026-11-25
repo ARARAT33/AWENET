@@ -124,6 +124,10 @@ pub enum NetworkControlError {
     InvalidState,
     #[error("network control store belongs to another founder")]
     WrongFounder,
+    #[error("network control snapshot is older than the active snapshot")]
+    StaleSnapshot,
+    #[error("different network control snapshots share the same sequence")]
+    SnapshotEquivocation,
     #[error("network control store version is unsupported")]
     InvalidStoreVersion,
     #[error("network control snapshot exceeds the maximum file size")]
@@ -154,6 +158,13 @@ struct SignedNetworkControlFile {
     snapshot: String,
     #[serde(with = "crate::serde_bytes_64")]
     signature: [u8; 64],
+}
+
+/// An opaque snapshot that has passed signature, Founder, size and topology validation.
+/// Its private field prevents callers from constructing one from untrusted JSON.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VerifiedNetworkControlSnapshot {
+    control: NetworkControlPlane,
 }
 
 impl NetworkControlPlane {
@@ -244,6 +255,40 @@ impl NetworkControlPlane {
                     && node.admitted_at_unix.is_some()
             })
         })
+    }
+
+    /// Applies a candidate snapshot that has already passed load_verified.
+    ///
+    /// A follower never rolls its active control plane backwards. Exact
+    /// duplicates are harmless, while two different founder-signed snapshots
+    /// with the same sequence are treated as equivocation and rejected.
+    pub fn replace_with_verified_snapshot(
+        &mut self,
+        candidate: VerifiedNetworkControlSnapshot,
+    ) -> Result<bool, NetworkControlError> {
+        let candidate = candidate.control;
+        candidate.validate()?;
+        if candidate.founder_awe_id != self.founder_awe_id
+            || candidate.founder_public_key != self.founder_public_key
+        {
+            return Err(NetworkControlError::WrongFounder);
+        }
+        if candidate.sequence < self.sequence {
+            return Err(NetworkControlError::StaleSnapshot);
+        }
+        if candidate.sequence == self.sequence {
+            return if candidate == *self {
+                Ok(false)
+            } else {
+                Err(NetworkControlError::SnapshotEquivocation)
+            };
+        }
+        if candidate.updated_at_unix < self.updated_at_unix {
+            return Err(NetworkControlError::TimestampWentBackwards);
+        }
+
+        *self = candidate;
+        Ok(true)
     }
 
     /// Validates the complete restored state before it is trusted or served.
@@ -874,6 +919,16 @@ pub fn load_verified(
     Ok(control)
 }
 
+/// Loads a signed snapshot and returns an opaque value that can safely be
+/// passed to replace_with_verified_snapshot without relying on caller discipline.
+pub fn load_verified_snapshot(
+    path: &Path,
+    trusted_founder_public_key: &[u8; 32],
+) -> Result<VerifiedNetworkControlSnapshot, NetworkControlError> {
+    let control = load_verified(path, trusted_founder_public_key)?;
+    Ok(VerifiedNetworkControlSnapshot { control })
+}
+
 /// Creates the first snapshot only when the path is absent. Existing corrupt
 /// or differently-owned state fails closed and is never reset to an empty net.
 pub fn load_or_create(
@@ -1075,6 +1130,135 @@ mod tests {
             Err(NetworkControlError::WrongFounder)
         ));
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn verified_snapshot_replacement_is_monotonic_and_idempotent() {
+        let founder = identity("snapshot-refresh-founder");
+        let initial_path = temporary_path("snapshot-refresh-initial");
+        let updated_path = temporary_path("snapshot-refresh-updated");
+
+        let initial = NetworkControlPlane::new(&founder, 100);
+        save(&initial_path, &initial, &founder).unwrap();
+        let mut follower = load_verified(&initial_path, &founder.public.public_key).unwrap();
+        assert!(!follower
+            .replace_with_verified_snapshot(
+                load_verified_snapshot(&initial_path, &founder.public.public_key).unwrap()
+            )
+            .unwrap());
+
+        let mut updated = initial;
+        let action = NetworkAction::CreateCentre {
+            centre_id: "dc-refreshed".into(),
+        };
+        let message = updated.signing_message(&action, 101).unwrap();
+        updated
+            .apply_signed(&founder, &action, 101, 101, &founder.sign(&message))
+            .unwrap();
+        save(&updated_path, &updated, &founder).unwrap();
+
+        let candidate = load_verified_snapshot(&updated_path, &founder.public.public_key).unwrap();
+        assert!(follower
+            .replace_with_verified_snapshot(candidate.clone())
+            .unwrap());
+        assert_eq!(follower.sequence(), 1);
+        assert!(follower.topology().centres.contains_key("dc-refreshed"));
+        assert!(!follower.replace_with_verified_snapshot(candidate).unwrap());
+
+        let _ = fs::remove_file(initial_path);
+        let _ = fs::remove_file(updated_path);
+    }
+
+    #[test]
+    fn verified_snapshot_replacement_rejects_rollback_equivocation_and_other_founders() {
+        let founder = identity("snapshot-rejection-founder");
+        let other_founder = identity("snapshot-rejection-other");
+        let stale_path = temporary_path("snapshot-rejection-stale");
+        let equivocation_path = temporary_path("snapshot-rejection-equivocation");
+        let backwards_path = temporary_path("snapshot-rejection-backwards");
+        let other_path = temporary_path("snapshot-rejection-other");
+
+        let stale = NetworkControlPlane::new(&founder, 100);
+        save(&stale_path, &stale, &founder).unwrap();
+
+        let mut active = NetworkControlPlane::new(&founder, 100);
+        let active_action = NetworkAction::CreateCentre {
+            centre_id: "dc-active".into(),
+        };
+        let active_message = active.signing_message(&active_action, 101).unwrap();
+        active
+            .apply_signed(
+                &founder,
+                &active_action,
+                101,
+                101,
+                &founder.sign(&active_message),
+            )
+            .unwrap();
+
+        let mut conflicting = NetworkControlPlane::new(&founder, 100);
+        let conflicting_action = NetworkAction::CreateCentre {
+            centre_id: "dc-conflicting".into(),
+        };
+        let conflicting_message = conflicting
+            .signing_message(&conflicting_action, 101)
+            .unwrap();
+        conflicting
+            .apply_signed(
+                &founder,
+                &conflicting_action,
+                101,
+                101,
+                &founder.sign(&conflicting_message),
+            )
+            .unwrap();
+        save(&equivocation_path, &conflicting, &founder).unwrap();
+
+        let mut backwards = active.clone();
+        backwards.sequence += 1;
+        backwards.updated_at_unix = 100;
+        save(&backwards_path, &backwards, &founder).unwrap();
+
+        let other = NetworkControlPlane::new(&other_founder, 100);
+        save(&other_path, &other, &other_founder).unwrap();
+
+        let before = active.clone();
+        assert!(matches!(
+            active.replace_with_verified_snapshot(
+                load_verified_snapshot(&stale_path, &founder.public.public_key).unwrap()
+            ),
+            Err(NetworkControlError::StaleSnapshot)
+        ));
+        assert_eq!(active, before);
+
+        assert!(matches!(
+            active.replace_with_verified_snapshot(
+                load_verified_snapshot(&equivocation_path, &founder.public.public_key).unwrap()
+            ),
+            Err(NetworkControlError::SnapshotEquivocation)
+        ));
+        assert_eq!(active, before);
+
+        assert!(matches!(
+            active.replace_with_verified_snapshot(
+                load_verified_snapshot(&backwards_path, &founder.public.public_key).unwrap()
+            ),
+            Err(NetworkControlError::TimestampWentBackwards)
+        ));
+        assert_eq!(active, before);
+
+        assert!(matches!(
+            active.replace_with_verified_snapshot(
+                load_verified_snapshot(&other_path, &other_founder.public.public_key).unwrap()
+            ),
+            Err(NetworkControlError::WrongFounder)
+        ));
+        assert_eq!(active, before);
+
+        let _ = fs::remove_file(stale_path);
+        let _ = fs::remove_file(equivocation_path);
+        let _ = fs::remove_file(backwards_path);
+        let _ = fs::remove_file(other_path);
     }
 
     #[test]
