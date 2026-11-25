@@ -4046,10 +4046,15 @@ async fn run_product() -> Result<()> {
     ));
     let user_login_state: UserLoginState = Arc::new(Mutex::new(UserLogin::default()));
     let network_control_path = data_dir.join("network-control.json");
-    let network_control_state: NetworkControlState = Arc::new(Mutex::new(
-        network_control::load_or_create(&network_control_path, &identity, now_unix())
-            .map_err(anyhow::Error::msg)?,
-    ));
+    let enforce_peer_admission = peer_admission_enforcement_enabled();
+    let (network_control, trusted_founder_public_key) = if enforce_peer_admission {
+        load_node_network_control(&network_control_path, &identity)?
+    } else {
+        let control = network_control::load_or_create(&network_control_path, &identity, now_unix())
+            .map_err(anyhow::Error::msg)?;
+        (control, identity.public.public_key)
+    };
+    let network_control_state: NetworkControlState = Arc::new(Mutex::new(network_control));
     let founder_guard_path = data_dir.join("founder-passkeys.json");
     let founder_guard = Arc::new(Mutex::new(
         passkey_store::load_or_install(&founder_guard_path, &identity, now_unix())
@@ -4060,8 +4065,13 @@ async fn run_product() -> Result<()> {
         .parse()
         .context("invalid AWE_LISTEN_ADDR")?;
     let node = Node::new(identity, listen);
-    if peer_admission_enforcement_enabled() {
+    if enforce_peer_admission {
         install_network_peer_admission(&node, network_control_state.clone())?;
+        spawn_network_control_refresh_loop(
+            network_control_path.clone(),
+            trusted_founder_public_key,
+            network_control_state.clone(),
+        );
     }
     let storage_root = data_dir.join("storage");
     let host_root = data_dir.join("host");
