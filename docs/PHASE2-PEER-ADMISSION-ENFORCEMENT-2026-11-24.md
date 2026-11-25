@@ -99,6 +99,12 @@ The update is applied to the shared control-plane state only after all checks pa
 A malformed, incomplete or stale file never replaces the last known-good state.
 A failed read is retried on the next poll.
 
+Rollback protection currently lasts for the lifetime of the running process.
+After a restart, the Node validates the snapshot file that is present at startup; without
+an external monotonic counter or separately protected durable high-water record, an
+older but correctly signed snapshot could be replayed. Keep the latest Founder-signed
+file and its backups access-controlled. Durable anti-rollback state is still required.
+
 This is operator-assisted snapshot distribution with automatic local reload, not
 automatic network replication, delta synchronization, quorum consensus or a live
 Founder-to-follower push protocol. Those remain separate work.
