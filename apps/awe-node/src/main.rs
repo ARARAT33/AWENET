@@ -110,20 +110,98 @@ fn parse_network_founder_public_key(value: &str) -> Result<[u8; 32]> {
 fn load_node_network_control(
     path: &std::path::Path,
     local_identity: &Identity,
-) -> Result<NetworkControlPlane> {
+) -> Result<(NetworkControlPlane, [u8; 32])> {
     match env::var("AWE_NETWORK_FOUNDER_PUBLIC_KEY") {
         Ok(value) => {
             let trusted_key = parse_network_founder_public_key(&value)?;
-            network_control::load_verified(path, &trusted_key).map_err(anyhow::Error::msg)
+            let control =
+                network_control::load_verified(path, &trusted_key).map_err(anyhow::Error::msg)?;
+            Ok((control, trusted_key))
         }
         Err(env::VarError::NotPresent) => {
-            network_control::load_or_create(path, local_identity, now_unix())
-                .map_err(anyhow::Error::msg)
+            let trusted_key = local_identity.public.public_key;
+            let control = network_control::load_or_create(path, local_identity, now_unix())
+                .map_err(anyhow::Error::msg)?;
+            Ok((control, trusted_key))
         }
         Err(env::VarError::NotUnicode(_)) => {
             anyhow::bail!("AWE_NETWORK_FOUNDER_PUBLIC_KEY must be valid UTF-8")
         }
     }
+}
+
+fn refresh_network_control_once(
+    path: &std::path::Path,
+    trusted_founder_public_key: &[u8; 32],
+    control: &NetworkControlState,
+) -> Result<bool> {
+    let candidate = network_control::load_verified(path, trusted_founder_public_key)
+        .map_err(anyhow::Error::msg)?;
+    let mut active = control
+        .lock()
+        .map_err(|_| anyhow::anyhow!("network control state lock is poisoned"))?;
+    active
+        .replace_with_verified_snapshot(candidate)
+        .map_err(anyhow::Error::msg)
+}
+
+fn spawn_network_control_refresh_loop(
+    path: PathBuf,
+    trusted_founder_public_key: [u8; 32],
+    control: NetworkControlState,
+) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+        // interval's first tick is immediate; the startup snapshot was already
+        // verified, so wait one full interval before reading it again.
+        interval.tick().await;
+        let mut last_error: Option<String> = None;
+
+        loop {
+            interval.tick().await;
+            let refresh_path = path.clone();
+            let refresh_state = Arc::clone(&control);
+            let trusted_key = trusted_founder_public_key;
+            let result = tokio::task::spawn_blocking(move || {
+                refresh_network_control_once(&refresh_path, &trusted_key, &refresh_state)
+            })
+            .await;
+
+            match result {
+                Ok(Ok(true)) => {
+                    let sequence = control
+                        .lock()
+                        .map(|state| state.sequence())
+                        .unwrap_or_default();
+                    eprintln!(
+                        "AWENET applied newer Founder-signed network snapshot (sequence {sequence})"
+                    );
+                    last_error = None;
+                }
+                Ok(Ok(false)) => {
+                    last_error = None;
+                }
+                Ok(Err(error)) => {
+                    let message = error.to_string();
+                    if last_error.as_deref() != Some(message.as_str()) {
+                        eprintln!(
+                            "AWENET rejected network snapshot update; retaining last verified state: {message}"
+                        );
+                    }
+                    last_error = Some(message);
+                }
+                Err(error) => {
+                    let message = format!("snapshot refresh worker failed: {error}");
+                    if last_error.as_deref() != Some(message.as_str()) {
+                        eprintln!(
+                            "AWENET rejected network snapshot update; retaining last verified state: {message}"
+                        );
+                    }
+                    last_error = Some(message);
+                }
+            }
+        }
+    });
 }
 
 fn install_network_peer_admission(node: &Node, control: NetworkControlState) -> Result<()> {
@@ -4968,8 +5046,15 @@ async fn run_node(
             .parent()
             .unwrap_or_else(|| std::path::Path::new("."))
             .join("network-control.json");
-        let control = load_node_network_control(&control_path, node.identity.as_ref())?;
-        install_network_peer_admission(&node, Arc::new(Mutex::new(control)))?;
+        let (control, trusted_founder_public_key) =
+            load_node_network_control(&control_path, node.identity.as_ref())?;
+        let control_state = Arc::new(Mutex::new(control));
+        install_network_peer_admission(&node, Arc::clone(&control_state))?;
+        spawn_network_control_refresh_loop(
+            control_path,
+            trusted_founder_public_key,
+            control_state,
+        );
     }
     if !bootstrap.is_empty() {
         node.bootstrap(&bootstrap)
@@ -5155,13 +5240,16 @@ mod tests {
     use super::build_node_admission_proof;
     use super::{
         http_response, is_loopback_host, local_peer_allowed, local_request_allowed, parse_json_u16,
-        parse_json_u32, parse_network_founder_public_key, site_path_matches,
-        site_request_file_path, split_storage_quotas,
+        parse_json_u32, parse_network_founder_public_key, refresh_network_control_once,
+        site_path_matches, site_request_file_path, split_storage_quotas, NetworkControlState,
     };
     use awep2p_core::identity::{AweSecret, Identity, Username};
-    use awep2p_core::network_control::{self, NetworkAction};
+    use awep2p_core::network_control::{self, NetworkAction, NetworkControlPlane};
     use serde_json::json;
-    use std::fs;
+    use std::{
+        fs,
+        sync::{Arc, Mutex},
+    };
 
     #[test]
     fn admission_proof_cli_output_is_verifiable_by_the_joining_node_key() {
@@ -5239,6 +5327,49 @@ mod tests {
         assert!(parse_network_founder_public_key("not-hex").is_err());
         assert!(parse_network_founder_public_key(&hex::encode([0u8; 31])).is_err());
         assert!(parse_network_founder_public_key(&hex::encode([0u8; 33])).is_err());
+    }
+
+    #[test]
+    fn follower_snapshot_refresh_applies_verified_updates_and_keeps_last_good_state() {
+        let founder = Identity::generate(Username::new("snapshot-refresh-runtime").unwrap());
+        let path = std::env::temp_dir().join(format!(
+            "awenet-network-refresh-{}.json",
+            std::process::id()
+        ));
+        let initial = NetworkControlPlane::new(&founder, 100);
+        network_control::save(&path, &initial, &founder).unwrap();
+        let state: NetworkControlState = Arc::new(Mutex::new(initial.clone()));
+
+        let mut updated = initial;
+        let action = NetworkAction::CreateCentre {
+            centre_id: "dc-runtime-refresh".into(),
+        };
+        let message = updated.signing_message(&action, 101).unwrap();
+        updated
+            .apply_signed(&founder, &action, 101, 101, &founder.sign(&message))
+            .unwrap();
+        network_control::save(&path, &updated, &founder).unwrap();
+
+        assert!(refresh_network_control_once(&path, &founder.public.public_key, &state).unwrap());
+        assert_eq!(state.lock().unwrap().sequence(), 1);
+        assert!(!refresh_network_control_once(&path, &founder.public.public_key, &state).unwrap());
+
+        // A stale but correctly signed snapshot must not roll the follower back.
+        network_control::save(
+            &path,
+            &NetworkControlPlane::new(&founder, 100),
+            &founder,
+        )
+        .unwrap();
+        assert!(refresh_network_control_once(&path, &founder.public.public_key, &state).is_err());
+        assert_eq!(state.lock().unwrap().sequence(), 1);
+
+        // A partial or corrupt file is ignored; the last verified state stays active.
+        fs::write(&path, b"{invalid").unwrap();
+        assert!(refresh_network_control_once(&path, &founder.public.public_key, &state).is_err());
+        assert_eq!(state.lock().unwrap().sequence(), 1);
+
+        let _ = fs::remove_file(path);
     }
 
     #[test]
