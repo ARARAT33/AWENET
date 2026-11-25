@@ -2797,9 +2797,10 @@ fn product_runtime_follower_uses_pinned_founder_snapshot_and_hot_reloads() {
             serde_json::from_str(&get(&ui_addr, "/api/network/control"))
                 .expect("initial follower control JSON");
         assert_eq!(initial["status"], "ok");
+        let expected_founder_id = founder.public.awe_id.to_hex();
         assert_eq!(
             initial["founder_awe_id"].as_str(),
-            Some(founder.public.awe_id.to_hex().as_str()),
+            Some(expected_founder_id.as_str()),
             "default product runtime must trust the configured Founder, not its local Node identity"
         );
         assert_eq!(initial["sequence"].as_u64(), Some(0));
@@ -2839,7 +2840,7 @@ fn product_runtime_follower_uses_pinned_founder_snapshot_and_hot_reloads() {
             }
             if Instant::now() >= deadline {
                 panic!(
-                    "product follower did not apply the newer Founder snapshot: {current}\\nnode output:\\n{}",
+                    "product follower did not apply the newer Founder snapshot: {current}\nnode output:\n{}",
                     node_log_tail(&log, 1200)
                 );
             }
