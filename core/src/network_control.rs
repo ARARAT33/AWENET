@@ -160,6 +160,13 @@ struct SignedNetworkControlFile {
     signature: [u8; 64],
 }
 
+/// An opaque snapshot that has passed signature, Founder, size and topology validation.
+/// Its private field prevents callers from constructing one from untrusted JSON.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VerifiedNetworkControlSnapshot {
+    control: NetworkControlPlane,
+}
+
 impl NetworkControlPlane {
     pub fn new(founder: &Identity, at_unix: u64) -> Self {
         let founder_awe_id = founder.public.awe_id.to_hex();
@@ -257,8 +264,9 @@ impl NetworkControlPlane {
     /// with the same sequence are treated as equivocation and rejected.
     pub fn replace_with_verified_snapshot(
         &mut self,
-        candidate: NetworkControlPlane,
+        candidate: VerifiedNetworkControlSnapshot,
     ) -> Result<bool, NetworkControlError> {
+        let candidate = candidate.control;
         candidate.validate()?;
         if candidate.founder_awe_id != self.founder_awe_id
             || candidate.founder_public_key != self.founder_public_key
@@ -911,6 +919,16 @@ pub fn load_verified(
     Ok(control)
 }
 
+/// Loads a signed snapshot and returns an opaque value that can safely be
+/// passed to replace_with_verified_snapshot without relying on caller discipline.
+pub fn load_verified_snapshot(
+    path: &Path,
+    trusted_founder_public_key: &[u8; 32],
+) -> Result<VerifiedNetworkControlSnapshot, NetworkControlError> {
+    let control = load_verified(path, trusted_founder_public_key)?;
+    Ok(VerifiedNetworkControlSnapshot { control })
+}
+
 /// Creates the first snapshot only when the path is absent. Existing corrupt
 /// or differently-owned state fails closed and is never reset to an empty net.
 pub fn load_or_create(
@@ -1125,7 +1143,7 @@ mod tests {
         let mut follower = load_verified(&initial_path, &founder.public.public_key).unwrap();
         assert!(!follower
             .replace_with_verified_snapshot(
-                load_verified(&initial_path, &founder.public.public_key).unwrap()
+                load_verified_snapshot(&initial_path, &founder.public.public_key).unwrap()
             )
             .unwrap());
 
@@ -1139,7 +1157,7 @@ mod tests {
             .unwrap();
         save(&updated_path, &updated, &founder).unwrap();
 
-        let candidate = load_verified(&updated_path, &founder.public.public_key).unwrap();
+        let candidate = load_verified_snapshot(&updated_path, &founder.public.public_key).unwrap();
         assert!(follower
             .replace_with_verified_snapshot(candidate.clone())
             .unwrap());
@@ -1207,7 +1225,7 @@ mod tests {
         let before = active.clone();
         assert!(matches!(
             active.replace_with_verified_snapshot(
-                load_verified(&stale_path, &founder.public.public_key).unwrap()
+                load_verified_snapshot(&stale_path, &founder.public.public_key).unwrap()
             ),
             Err(NetworkControlError::StaleSnapshot)
         ));
@@ -1215,7 +1233,7 @@ mod tests {
 
         assert!(matches!(
             active.replace_with_verified_snapshot(
-                load_verified(&equivocation_path, &founder.public.public_key).unwrap()
+                load_verified_snapshot(&equivocation_path, &founder.public.public_key).unwrap()
             ),
             Err(NetworkControlError::SnapshotEquivocation)
         ));
@@ -1223,7 +1241,7 @@ mod tests {
 
         assert!(matches!(
             active.replace_with_verified_snapshot(
-                load_verified(&backwards_path, &founder.public.public_key).unwrap()
+                load_verified_snapshot(&backwards_path, &founder.public.public_key).unwrap()
             ),
             Err(NetworkControlError::TimestampWentBackwards)
         ));
@@ -1231,7 +1249,7 @@ mod tests {
 
         assert!(matches!(
             active.replace_with_verified_snapshot(
-                load_verified(&other_path, &other_founder.public.public_key).unwrap()
+                load_verified_snapshot(&other_path, &other_founder.public.public_key).unwrap()
             ),
             Err(NetworkControlError::WrongFounder)
         ));
