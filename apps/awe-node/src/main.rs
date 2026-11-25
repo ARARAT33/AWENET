@@ -5050,11 +5050,7 @@ async fn run_node(
             load_node_network_control(&control_path, node.identity.as_ref())?;
         let control_state = Arc::new(Mutex::new(control));
         install_network_peer_admission(&node, Arc::clone(&control_state))?;
-        spawn_network_control_refresh_loop(
-            control_path,
-            trusted_founder_public_key,
-            control_state,
-        );
+        spawn_network_control_refresh_loop(control_path, trusted_founder_public_key, control_state);
     }
     if !bootstrap.is_empty() {
         node.bootstrap(&bootstrap)
@@ -5355,12 +5351,7 @@ mod tests {
         assert!(!refresh_network_control_once(&path, &founder.public.public_key, &state).unwrap());
 
         // A stale but correctly signed snapshot must not roll the follower back.
-        network_control::save(
-            &path,
-            &NetworkControlPlane::new(&founder, 100),
-            &founder,
-        )
-        .unwrap();
+        network_control::save(&path, &NetworkControlPlane::new(&founder, 100), &founder).unwrap();
         assert!(refresh_network_control_once(&path, &founder.public.public_key, &state).is_err());
         assert_eq!(state.lock().unwrap().sequence(), 1);
 
