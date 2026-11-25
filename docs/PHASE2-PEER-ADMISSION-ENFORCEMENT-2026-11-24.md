@@ -63,9 +63,45 @@ as the Founder and loads/creates a local control plane. When the variable is pre
 the Node loads the existing snapshot through public-key verification; a missing,
 corrupt, mismatched or invalidly signed snapshot fails closed and is never replaced.
 
-This is a pinned, read-only follower view. Snapshot replication and automatic refresh
-after Founder mutations are not implemented yet; operators must securely distribute
-a newer signed snapshot until the replication protocol is completed.
+This is a pinned, read-only follower view. The current release does not push snapshots
+over the network: an operator must securely distribute the Founder-signed file. A running
+follower now checks that file every five seconds and applies a newer verified snapshot
+without restarting the Node.
+
+Snapshot replacement is monotonic. Exact duplicates are ignored; a lower sequence,
+a different snapshot with the same sequence, a different Founder, a corrupt file or an
+invalid signature is rejected. Rejected updates leave the last verified in-memory
+control plane active. The follower logs a changed rejection reason and retries on the
+next poll. The shared admission policy observes an accepted update on its next
+connection/message/heartbeat check; revocation is not instantaneous.
+
+When transferring an update, copy it to a temporary file in the follower's data
+directory, verify the transfer completed, then replace network-control.json atomically
+on the same filesystem. Do not expose the Founder private key or accept an unsigned
+topology JSON response as a replacement for the signed snapshot.
+
+## Follower snapshot refresh
+
+The standalone Node refreshes its signed control snapshot every five seconds while
+peer admission enforcement is enabled. The refresh runs outside the async executor's
+worker threads and does not hold the admission-state mutex while reading the file.
+
+Only a snapshot that passes network_control::load_verified against the pinned
+Founder public key is considered. Before publication, the active control plane checks:
+
+- The Founder AWEID and public key are unchanged.
+- The complete topology still passes structural validation.
+- The sequence is strictly newer, unless the snapshot is an exact duplicate.
+- The update timestamp does not move backwards.
+- A different signed state at the same sequence is rejected as equivocation.
+
+The update is applied to the shared control-plane state only after all checks pass.
+A malformed, incomplete or stale file never replaces the last known-good state.
+A failed read is retried on the next poll.
+
+This is operator-assisted snapshot distribution with automatic local reload, not
+automatic network replication, delta synchronization, quorum consensus or a live
+Founder-to-follower push protocol. Those remain separate work.
 
 ## Admission rule
 
