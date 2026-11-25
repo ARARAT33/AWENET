@@ -35,6 +35,38 @@ The product runtime uses its already-loaded `network-control.json`. The `awe-nod
 
 The local status response includes `peer_admission_enforced` so an operator can verify whether this mode is active.
 
+## Follower Node trust root
+
+A standalone follower started with `awe-node run` must verify the same Founder-signed
+`network-control.json` snapshot as the network owner. It must not try to load that
+snapshot as if the follower's own transport identity were the Founder.
+
+1. Copy the current Founder-signed `network-control.json` into the directory beside
+   the follower's identity vault.
+2. Set `AWE_NETWORK_FOUNDER_PUBLIC_KEY` to the Founder's 32-byte Ed25519 public key
+   encoded as exactly 64 hexadecimal characters. The public key is available in the
+   Founder identity's `.awesecret` file as `public_key`; do not copy or disclose
+   `secret_key`.
+3. Start the follower with `AWE_REQUIRE_ADMITTED_PEERS=1` as shown above.
+
+Example PowerShell:
+
+```powershell
+$secret = Get-Content .\founder.awesecret -Raw | ConvertFrom-Json
+$env:AWE_NETWORK_FOUNDER_PUBLIC_KEY = $secret.public_key
+$env:AWE_REQUIRE_ADMITTED_PEERS = "1"
+.\awe-node.exe run .\identity.vault "<vault-password>" 0.0.0.0:41000
+```
+
+When the public-key variable is absent, `awe-node run` uses the local Node identity
+as the Founder and loads/creates a local control plane. When the variable is present,
+the Node loads the existing snapshot through public-key verification; a missing,
+corrupt, mismatched or invalidly signed snapshot fails closed and is never replaced.
+
+This is a pinned, read-only follower view. Snapshot replication and automatic refresh
+after Founder mutations are not implemented yet; operators must securely distribute
+a newer signed snapshot until the replication protocol is completed.
+
 ## Admission rule
 
 A remote peer is admitted only when the local Founder-signed topology contains a node record that:
