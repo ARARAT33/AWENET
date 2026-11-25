@@ -116,12 +116,10 @@ fn load_node_network_control(
             let trusted_key = parse_network_founder_public_key(&value)?;
             network_control::load_verified(path, &trusted_key).map_err(anyhow::Error::msg)
         }
-        Err(env::VarError::NotPresent) => network_control::load_or_create(
-            path,
-            local_identity,
-            now_unix(),
-        )
-        .map_err(anyhow::Error::msg),
+        Err(env::VarError::NotPresent) => {
+            network_control::load_or_create(path, local_identity, now_unix())
+                .map_err(anyhow::Error::msg)
+        }
         Err(env::VarError::NotUnicode(_)) => {
             anyhow::bail!("AWE_NETWORK_FOUNDER_PUBLIC_KEY must be valid UTF-8")
         }
@@ -5156,8 +5154,8 @@ mod policy_lock_tests {
 mod tests {
     use super::build_node_admission_proof;
     use super::{
-        http_response, is_loopback_host, local_peer_allowed, local_request_allowed,
-        parse_network_founder_public_key, parse_json_u16, parse_json_u32, site_path_matches,
+        http_response, is_loopback_host, local_peer_allowed, local_request_allowed, parse_json_u16,
+        parse_json_u32, parse_network_founder_public_key, site_path_matches,
         site_request_file_path, split_storage_quotas,
     };
     use awep2p_core::identity::{AweSecret, Identity, Username};
