@@ -152,6 +152,7 @@ fn spawn_network_control_refresh_loop(
 ) {
     let _refresh_task = tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         // interval's first tick is immediate; the startup snapshot was already
         // verified, so wait one full interval before reading it again.
         interval.tick().await;
