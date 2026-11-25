@@ -804,9 +804,26 @@ pub fn save(
         .map_err(|error| NetworkControlError::Io(error.to_string()))
 }
 
-/// Loads only a founder-authenticated snapshot whose complete topology passes
-/// validation. A corrupt or differently-owned file is never replaced.
+/// Loads a founder-authenticated snapshot using the installer's private identity.
 pub fn load(path: &Path, founder: &Identity) -> Result<NetworkControlPlane, NetworkControlError> {
+    let control = load_verified(path, &founder.public.public_key)?;
+    if control.founder_awe_id != founder.public.awe_id.to_hex() {
+        return Err(NetworkControlError::WrongFounder);
+    }
+    Ok(control)
+}
+
+/// Loads a founder-authenticated snapshot using an explicitly pinned public key.
+///
+/// This is for follower Nodes: they must not possess the Founder private key
+/// merely to verify the network's signed topology. The caller supplies the
+/// trust root out-of-band; the key embedded in the file is never trusted by
+/// itself. The derived AWEID, signature, snapshot identity, bounds and complete
+/// topology are all validated before the state is returned.
+pub fn load_verified(
+    path: &Path,
+    trusted_founder_public_key: &[u8; 32],
+) -> Result<NetworkControlPlane, NetworkControlError> {
     let file = File::open(path).map_err(|error| NetworkControlError::Io(error.to_string()))?;
     let size = file
         .metadata()
@@ -827,8 +844,9 @@ pub fn load(path: &Path, founder: &Identity) -> Result<NetworkControlPlane, Netw
     if envelope.version != NETWORK_CONTROL_VERSION {
         return Err(NetworkControlError::InvalidStoreVersion);
     }
-    if envelope.founder_awe_id != founder.public.awe_id.to_hex()
-        || envelope.founder_public_key != founder.public.public_key
+    let trusted_founder_awe_id = AweId::from_public_key(trusted_founder_public_key).to_hex();
+    if envelope.founder_awe_id != trusted_founder_awe_id
+        || envelope.founder_public_key != *trusted_founder_public_key
     {
         return Err(NetworkControlError::WrongFounder);
     }
@@ -839,7 +857,7 @@ pub fn load(path: &Path, founder: &Identity) -> Result<NetworkControlPlane, Netw
         &envelope.snapshot,
     )?;
     if !Identity::verify(
-        &founder.public.public_key,
+        trusted_founder_public_key,
         &signing_bytes,
         &envelope.signature,
     ) {
@@ -1000,6 +1018,62 @@ mod tests {
         let restored = load(&path, &founder).unwrap();
         assert_eq!(restored, control);
         assert_eq!(restored.last_actor_awe_id(), Some(account.awe_id.as_str()));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn follower_loads_founder_signed_snapshot_with_pinned_public_key() {
+        let founder = identity("snapshot-founder");
+        let follower = identity("snapshot-follower");
+        let admitted_node = identity("snapshot-admitted-node");
+        let path = temporary_path("follower-pinned-key");
+        let mut control = NetworkControlPlane::new(&founder, 100);
+
+        apply(
+            &mut control,
+            &founder,
+            NetworkAction::CreateCentre {
+                centre_id: "dc-follower".into(),
+            },
+            101,
+        )
+        .unwrap();
+        let admitted_at = 102;
+        let proof_message = node_admission_message(
+            control.founder_awe_id(),
+            "dc-follower",
+            &admitted_node.public.public_key,
+            control.next_sequence().unwrap(),
+            admitted_at,
+        )
+        .unwrap();
+        let action = NetworkAction::AdmitNode {
+            centre_id: "dc-follower".into(),
+            public_key: admitted_node.public.public_key,
+            proof_signature: admitted_node.sign(&proof_message),
+        };
+        apply(&mut control, &founder, action, admitted_at).unwrap();
+        save(&path, &control, &founder).unwrap();
+
+        // A follower can validate the Founder-signed state using only the
+        // public trust root; it does not need the Founder's private key.
+        let restored = load_verified(&path, &founder.public.public_key).unwrap();
+        assert_eq!(restored, control);
+        assert!(restored.is_node_admitted(
+            &admitted_node.public.awe_id.to_hex(),
+            &admitted_node.public.public_key
+        ));
+
+        // A different pinned key cannot substitute its own identity or trust
+        // the public key embedded in an attacker-supplied snapshot.
+        assert!(matches!(
+            load_verified(&path, &follower.public.public_key),
+            Err(NetworkControlError::WrongFounder)
+        ));
+        assert!(matches!(
+            load(&path, &follower),
+            Err(NetworkControlError::WrongFounder)
+        ));
         let _ = fs::remove_file(path);
     }
 
