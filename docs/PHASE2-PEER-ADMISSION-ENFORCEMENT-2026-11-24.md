@@ -31,23 +31,26 @@ AWE_REQUIRE_ADMITTED_PEERS=1 awe-node run ~/.awep2p/identity.vault "<vault-passw
 
 Remove the environment variable (or set it to `0`) to restore the legacy open-peer mode.
 
-The product runtime uses its already-loaded `network-control.json`. The `awe-node run` command loads or initializes the same file beside the supplied identity vault. An existing snapshot signed by a different Founder identity is rejected; it is never silently replaced.
+Both the default product runtime (`awe-node` / `awe-node app`) and the standalone `awe-node run` command use a Founder-signed `network-control.json`. When peer admission enforcement is enabled, both paths honor `AWE_NETWORK_FOUNDER_PUBLIC_KEY`; an existing snapshot signed by a different pinned Founder is rejected and is never silently replaced. Without peer admission enforcement, the product runtime keeps its local-Founder bootstrap behavior.
 
 The local status response includes `peer_admission_enforced` so an operator can verify whether this mode is active.
 
 ## Follower Node trust root
 
-A standalone follower started with `awe-node run` must verify the same Founder-signed
+A follower started with either the default product runtime (`awe-node` or
+`awe-node app`) or `awe-node run` must verify the same Founder-signed
 `network-control.json` snapshot as the network owner. It must not try to load that
 snapshot as if the follower's own transport identity were the Founder.
 
-1. Copy the current Founder-signed `network-control.json` into the directory beside
-   the follower's identity vault.
+1. Copy the current Founder-signed `network-control.json` into the follower's
+   `AWE_DATA_DIR` (default product runtime) or the directory beside its identity
+   vault (`awe-node run`).
 2. Set `AWE_NETWORK_FOUNDER_PUBLIC_KEY` to the Founder's 32-byte Ed25519 public key
    encoded as exactly 64 hexadecimal characters. The public key is available in the
    Founder identity's `.awesecret` file as `public_key`; do not copy or disclose
    `secret_key`.
-3. Start the follower with `AWE_REQUIRE_ADMITTED_PEERS=1` as shown above.
+3. Start the follower with `AWE_REQUIRE_ADMITTED_PEERS=1`. For the default product
+   runtime, run `awe-node app`; for the standalone CLI, run `awe-node run ...`.
 
 Example PowerShell:
 
@@ -58,10 +61,12 @@ $env:AWE_REQUIRE_ADMITTED_PEERS = "1"
 .\awe-node.exe run .\identity.vault "<vault-password>" 0.0.0.0:41000
 ```
 
-When the public-key variable is absent, `awe-node run` uses the local Node identity
-as the Founder and loads/creates a local control plane. When the variable is present,
-the Node loads the existing snapshot through public-key verification; a missing,
-corrupt, mismatched or invalidly signed snapshot fails closed and is never replaced.
+When the public-key variable is absent, both runtime paths use the local Node identity
+as the Founder and load/create a local control plane. When peer admission is enabled
+and the variable is present, both paths load the existing snapshot through public-key
+verification; a missing, corrupt, mismatched or invalidly signed snapshot fails closed
+and is never replaced. The default product runtime stores this file under
+`AWE_DATA_DIR`; the standalone CLI stores it beside the supplied identity vault.
 
 This is a pinned, read-only follower view. The current release does not push snapshots
 over the network: an operator must securely distribute the Founder-signed file. A running
@@ -82,8 +87,8 @@ topology JSON response as a replacement for the signed snapshot.
 
 ## Follower snapshot refresh
 
-The standalone Node refreshes its signed control snapshot every five seconds while
-peer admission enforcement is enabled. The refresh runs outside the async executor's
+Both the default product runtime and standalone Node refresh the signed control
+snapshot every five seconds while peer admission enforcement is enabled. The refresh runs outside the async executor's
 worker threads and does not hold the admission-state mutex while reading the file.
 
 Only a snapshot that passes network_control::load_verified against the pinned
