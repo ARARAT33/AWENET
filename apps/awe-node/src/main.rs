@@ -99,6 +99,35 @@ fn peer_admission_enforcement_enabled() -> bool {
         .unwrap_or(false)
 }
 
+fn parse_network_founder_public_key(value: &str) -> Result<[u8; 32]> {
+    let bytes = hex::decode(value.trim())
+        .context("AWE_NETWORK_FOUNDER_PUBLIC_KEY must be a 64-character hexadecimal public key")?;
+    bytes.try_into().map_err(|_| {
+        anyhow::anyhow!("AWE_NETWORK_FOUNDER_PUBLIC_KEY must decode to exactly 32 bytes")
+    })
+}
+
+fn load_node_network_control(
+    path: &std::path::Path,
+    local_identity: &Identity,
+) -> Result<NetworkControlPlane> {
+    match env::var("AWE_NETWORK_FOUNDER_PUBLIC_KEY") {
+        Ok(value) => {
+            let trusted_key = parse_network_founder_public_key(&value)?;
+            network_control::load_verified(path, &trusted_key).map_err(anyhow::Error::msg)
+        }
+        Err(env::VarError::NotPresent) => network_control::load_or_create(
+            path,
+            local_identity,
+            now_unix(),
+        )
+        .map_err(anyhow::Error::msg),
+        Err(env::VarError::NotUnicode(_)) => {
+            anyhow::bail!("AWE_NETWORK_FOUNDER_PUBLIC_KEY must be valid UTF-8")
+        }
+    }
+}
+
 fn install_network_peer_admission(node: &Node, control: NetworkControlState) -> Result<()> {
     node.set_peer_authorizer(move |remote_id, remote_public_key| {
         let remote_awe_id = hex::encode(remote_id);
@@ -4941,9 +4970,7 @@ async fn run_node(
             .parent()
             .unwrap_or_else(|| std::path::Path::new("."))
             .join("network-control.json");
-        let control =
-            network_control::load_or_create(&control_path, node.identity.as_ref(), now_unix())
-                .map_err(anyhow::Error::msg)?;
+        let control = load_node_network_control(&control_path, node.identity.as_ref())?;
         install_network_peer_admission(&node, Arc::new(Mutex::new(control)))?;
     }
     if !bootstrap.is_empty() {
@@ -5129,8 +5156,9 @@ mod policy_lock_tests {
 mod tests {
     use super::build_node_admission_proof;
     use super::{
-        http_response, is_loopback_host, local_peer_allowed, local_request_allowed, parse_json_u16,
-        parse_json_u32, site_path_matches, site_request_file_path, split_storage_quotas,
+        http_response, is_loopback_host, local_peer_allowed, local_request_allowed,
+        parse_network_founder_public_key, parse_json_u16, parse_json_u32, site_path_matches,
+        site_request_file_path, split_storage_quotas,
     };
     use awep2p_core::identity::{AweSecret, Identity, Username};
     use awep2p_core::network_control::{self, NetworkAction};
@@ -5201,6 +5229,18 @@ mod tests {
         assert!(error
             .to_string()
             .contains("next_sequence must be greater than zero"));
+    }
+
+    #[test]
+    fn network_founder_public_key_parser_requires_exactly_32_bytes() {
+        let expected = [0x42; 32];
+        assert_eq!(
+            parse_network_founder_public_key(&hex::encode(expected)).unwrap(),
+            expected
+        );
+        assert!(parse_network_founder_public_key("not-hex").is_err());
+        assert!(parse_network_founder_public_key(&hex::encode([0u8; 31])).is_err());
+        assert!(parse_network_founder_public_key(&hex::encode([0u8; 33])).is_err());
     }
 
     #[test]
