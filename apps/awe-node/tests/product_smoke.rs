@@ -225,12 +225,27 @@ type NodeLog = Arc<Mutex<String>>;
 const NODE_LOG_LIMIT: usize = 64 * 1024;
 
 fn spawn_node(bin: &PathBuf, data: &PathBuf, listen: u16, ui: u16) -> (Child, NodeLog) {
-    let mut child = Command::new(bin)
+    spawn_node_with_env(bin, data, listen, ui, &[])
+}
+
+fn spawn_node_with_env(
+    bin: &PathBuf,
+    data: &PathBuf,
+    listen: u16,
+    ui: u16,
+    extra_env: &[(&str, &str)],
+) -> (Child, NodeLog) {
+    let mut command = Command::new(bin);
+    command
         .env("AWE_DATA_DIR", data)
         .env("AWE_LISTEN_ADDR", format!("127.0.0.1:{listen}"))
         .env("AWE_UI_ADDR", format!("127.0.0.1:{ui}"))
         .env("AWE_NO_BROWSER", "1")
-        .env("AWE_NO_NATIVE_UI", "1")
+        .env("AWE_NO_NATIVE_UI", "1");
+    for (key, value) in extra_env {
+        command.env(*key, *value);
+    }
+    let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -2719,4 +2734,124 @@ fn three_node_product_smoke() {
     }
     let _ = fs::remove_dir_all(&root);
     result.expect("product smoke test failed");
+}
+
+#[test]
+fn product_runtime_follower_uses_pinned_founder_snapshot_and_hot_reloads() {
+    let bin = PathBuf::from(env::var_os("CARGO_BIN_EXE_awe-node").expect("awe-node binary"));
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "awenet-product-follower-refresh-{}-{nonce}",
+        std::process::id()
+    ));
+    let data = root.join("data");
+    fs::create_dir_all(&data).expect("create follower data directory");
+
+    let founder = Identity::generate(Username::new("product-follower-founder").unwrap());
+    let initial_time = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock")
+        .as_secs();
+    let mut control = NetworkControlPlane::new(&founder, initial_time);
+    let control_path = data.join("network-control.json");
+    network_control::save(&control_path, &control, &founder)
+        .expect("write Founder-signed follower snapshot");
+
+    let transport_listener =
+        std::net::TcpListener::bind("127.0.0.1:0").expect("reserve transport port");
+    let ui_listener =
+        std::net::TcpListener::bind("127.0.0.1:0").expect("reserve UI port");
+    let transport_port = transport_listener.local_addr().unwrap().port();
+    let ui_port = ui_listener.local_addr().unwrap().port();
+    drop(transport_listener);
+    drop(ui_listener);
+    let ui_addr = format!("127.0.0.1:{ui_port}");
+    let founder_public_key = hex::encode(founder.public.public_key);
+    let (mut child, log) = spawn_node_with_env(
+        &bin,
+        &data,
+        transport_port,
+        ui_port,
+        &[
+            ("AWE_REQUIRE_ADMITTED_PEERS", "1"),
+            ("AWE_NETWORK_FOUNDER_PUBLIC_KEY", founder_public_key.as_str()),
+        ],
+    );
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        wait_for_health(&ui_addr);
+
+        let status: serde_json::Value =
+            serde_json::from_str(&get(&ui_addr, "/api/status")).expect("follower status JSON");
+        assert_eq!(
+            status["peer_admission_enforced"],
+            true,
+            "product runtime must install the admission policy: {status}"
+        );
+
+        let initial: serde_json::Value = serde_json::from_str(&get(
+            &ui_addr,
+            "/api/network/control",
+        ))
+        .expect("initial follower control JSON");
+        assert_eq!(initial["status"], "ok");
+        assert_eq!(
+            initial["founder_awe_id"].as_str(),
+            Some(founder.public.awe_id.to_hex().as_str()),
+            "default product runtime must trust the configured Founder, not its local Node identity"
+        );
+        assert_eq!(initial["sequence"].as_u64(), Some(0));
+
+        let action = NetworkAction::CreateCentre {
+            centre_id: "dc-product-follower-refresh".into(),
+        };
+        let update_time = initial_time.saturating_add(1);
+        let message = control
+            .signing_message(&action, update_time)
+            .expect("build Founder mutation message");
+        control
+            .apply_signed(
+                &founder,
+                &action,
+                update_time,
+                update_time,
+                &founder.sign(&message),
+            )
+            .expect("apply Founder mutation");
+        network_control::save(&control_path, &control, &founder)
+            .expect("atomically publish updated Founder snapshot");
+
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let current: serde_json::Value = serde_json::from_str(&get(
+                &ui_addr,
+                "/api/network/control",
+            ))
+            .expect("refreshed follower control JSON");
+            if current["sequence"].as_u64() == Some(1) {
+                assert!(
+                    current["topology"]["centres"]
+                        .get("dc-product-follower-refresh")
+                        .is_some(),
+                    "refreshed topology must contain the new Data Centre: {current}"
+                );
+                break;
+            }
+            if Instant::now() >= deadline {
+                panic!(
+                    "product follower did not apply the newer Founder snapshot: {current}\\nnode output:\\n{}",
+                    node_log_tail(&log, 1200)
+                );
+            }
+            thread::sleep(Duration::from_millis(250));
+        }
+    }));
+
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = fs::remove_dir_all(&root);
+    result.expect("product follower runtime refresh smoke test failed");
 }
