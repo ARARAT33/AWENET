@@ -1157,6 +1157,7 @@ mod tests {
         let other_founder = identity("snapshot-rejection-other");
         let stale_path = temporary_path("snapshot-rejection-stale");
         let equivocation_path = temporary_path("snapshot-rejection-equivocation");
+        let backwards_path = temporary_path("snapshot-rejection-backwards");
         let other_path = temporary_path("snapshot-rejection-other");
 
         let stale = NetworkControlPlane::new(&founder, 100);
@@ -1195,6 +1196,11 @@ mod tests {
             .unwrap();
         save(&equivocation_path, &conflicting, &founder).unwrap();
 
+        let mut backwards = active.clone();
+        backwards.sequence += 1;
+        backwards.updated_at_unix = 100;
+        save(&backwards_path, &backwards, &founder).unwrap();
+
         let other = NetworkControlPlane::new(&other_founder, 100);
         save(&other_path, &other, &other_founder).unwrap();
 
@@ -1217,6 +1223,14 @@ mod tests {
 
         assert!(matches!(
             active.replace_with_verified_snapshot(
+                load_verified(&backwards_path, &founder.public.public_key).unwrap()
+            ),
+            Err(NetworkControlError::TimestampWentBackwards)
+        ));
+        assert_eq!(active, before);
+
+        assert!(matches!(
+            active.replace_with_verified_snapshot(
                 load_verified(&other_path, &other_founder.public.public_key).unwrap()
             ),
             Err(NetworkControlError::WrongFounder)
@@ -1225,6 +1239,7 @@ mod tests {
 
         let _ = fs::remove_file(stale_path);
         let _ = fs::remove_file(equivocation_path);
+        let _ = fs::remove_file(backwards_path);
         let _ = fs::remove_file(other_path);
     }
 
