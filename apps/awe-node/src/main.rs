@@ -875,6 +875,8 @@ fn network_control_error_status(error: &NetworkControlError) -> &'static str {
         NetworkControlError::UnknownActor => "404 Not Found",
         NetworkControlError::SequenceExhausted
         | NetworkControlError::TimestampWentBackwards
+        | NetworkControlError::StaleSnapshot
+        | NetworkControlError::SnapshotEquivocation
         | NetworkControlError::Topology(_) => "409 Conflict",
         NetworkControlError::ActionTooLarge | NetworkControlError::StoreTooLarge => {
             "413 Payload Too Large"
