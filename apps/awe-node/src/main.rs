@@ -4054,8 +4054,7 @@ async fn run_product() -> Result<()> {
             .map_err(anyhow::Error::msg)?;
         (control, identity.public.public_key)
     };
-    let network_control_state: NetworkControlState =
-        Arc::new(Mutex::new(network_control));
+    let network_control_state: NetworkControlState = Arc::new(Mutex::new(network_control));
     let founder_guard_path = data_dir.join("founder-passkeys.json");
     let founder_guard = Arc::new(Mutex::new(
         passkey_store::load_or_install(&founder_guard_path, &identity, now_unix())

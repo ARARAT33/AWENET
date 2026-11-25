@@ -2762,8 +2762,7 @@ fn product_runtime_follower_uses_pinned_founder_snapshot_and_hot_reloads() {
 
     let transport_listener =
         std::net::TcpListener::bind("127.0.0.1:0").expect("reserve transport port");
-    let ui_listener =
-        std::net::TcpListener::bind("127.0.0.1:0").expect("reserve UI port");
+    let ui_listener = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve UI port");
     let transport_port = transport_listener.local_addr().unwrap().port();
     let ui_port = ui_listener.local_addr().unwrap().port();
     drop(transport_listener);
@@ -2777,7 +2776,10 @@ fn product_runtime_follower_uses_pinned_founder_snapshot_and_hot_reloads() {
         ui_port,
         &[
             ("AWE_REQUIRE_ADMITTED_PEERS", "1"),
-            ("AWE_NETWORK_FOUNDER_PUBLIC_KEY", founder_public_key.as_str()),
+            (
+                "AWE_NETWORK_FOUNDER_PUBLIC_KEY",
+                founder_public_key.as_str(),
+            ),
         ],
     );
 
@@ -2787,16 +2789,13 @@ fn product_runtime_follower_uses_pinned_founder_snapshot_and_hot_reloads() {
         let status: serde_json::Value =
             serde_json::from_str(&get(&ui_addr, "/api/status")).expect("follower status JSON");
         assert_eq!(
-            status["peer_admission_enforced"],
-            true,
+            status["peer_admission_enforced"], true,
             "product runtime must install the admission policy: {status}"
         );
 
-        let initial: serde_json::Value = serde_json::from_str(&get(
-            &ui_addr,
-            "/api/network/control",
-        ))
-        .expect("initial follower control JSON");
+        let initial: serde_json::Value =
+            serde_json::from_str(&get(&ui_addr, "/api/network/control"))
+                .expect("initial follower control JSON");
         assert_eq!(initial["status"], "ok");
         assert_eq!(
             initial["founder_awe_id"].as_str(),
@@ -2826,11 +2825,9 @@ fn product_runtime_follower_uses_pinned_founder_snapshot_and_hot_reloads() {
 
         let deadline = Instant::now() + Duration::from_secs(20);
         loop {
-            let current: serde_json::Value = serde_json::from_str(&get(
-                &ui_addr,
-                "/api/network/control",
-            ))
-            .expect("refreshed follower control JSON");
+            let current: serde_json::Value =
+                serde_json::from_str(&get(&ui_addr, "/api/network/control"))
+                    .expect("refreshed follower control JSON");
             if current["sequence"].as_u64() == Some(1) {
                 assert!(
                     current["topology"]["centres"]
