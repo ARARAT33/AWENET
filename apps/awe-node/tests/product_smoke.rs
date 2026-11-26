@@ -2756,6 +2756,7 @@ fn product_runtime_follower_uses_pinned_founder_snapshot_and_hot_reloads() {
         .expect("system clock")
         .as_secs();
     let mut control = NetworkControlPlane::new(&founder, initial_time);
+    let initial_control = control.clone();
     let control_path = data.join("network-control.json");
     network_control::save(&control_path, &control, &founder)
         .expect("write Founder-signed follower snapshot");
@@ -2846,10 +2847,67 @@ fn product_runtime_follower_uses_pinned_founder_snapshot_and_hot_reloads() {
             }
             thread::sleep(Duration::from_millis(250));
         }
+
+        let checkpoint_path = data.join("network-control.checkpoint.json");
+        assert!(
+            checkpoint_path.is_file(),
+            "follower must persist its local rollback checkpoint"
+        );
+
+        // Simulate a restart after the follower has accepted sequence 1,
+        // then replay the still-valid Founder-signed sequence-0 snapshot.
+        let _ = child.kill();
+        let _ = child.wait();
+        network_control::save(&control_path, &initial_control, &founder)
+            .expect("restore old but correctly signed Founder snapshot");
+        let (replay_child, replay_log) = spawn_node_with_env(
+            &bin,
+            &data,
+            transport_port,
+            ui_port,
+            &[
+                ("AWE_REQUIRE_ADMITTED_PEERS", "1"),
+                (
+                    "AWE_NETWORK_FOUNDER_PUBLIC_KEY",
+                    founder_public_key.as_str(),
+                ),
+            ],
+        );
+        child = replay_child;
+
+        let replay_deadline = Instant::now() + Duration::from_secs(10);
+        let mut replay_status = None;
+        while Instant::now() < replay_deadline {
+            if let Some(status) = child.try_wait().expect("poll replay follower process") {
+                replay_status = Some(status);
+                break;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        let replay_status =
+            replay_status.expect("restarted follower must fail closed on a stale snapshot");
+        assert!(
+            !replay_status.success(),
+            "restarted follower unexpectedly accepted a stale Founder snapshot"
+        );
+
+        let log_deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < log_deadline
+            && !node_log_tail(&replay_log, 4000)
+                .contains("network control snapshot is older than the active snapshot")
+        {
+            thread::sleep(Duration::from_millis(25));
+        }
+        assert!(
+            node_log_tail(&replay_log, 4000)
+                .contains("network control snapshot is older than the active snapshot"),
+            "follower must report the rollback rejection; output: {}",
+            node_log_tail(&replay_log, 4000)
+        );
     }));
 
     let _ = child.kill();
     let _ = child.wait();
     let _ = fs::remove_dir_all(&root);
-    result.expect("product follower runtime refresh smoke test failed");
+    result.expect("product follower runtime refresh and restart rollback smoke test failed");
 }

@@ -21,7 +21,9 @@ use std::{
 use thiserror::Error;
 
 pub const NETWORK_CONTROL_VERSION: u16 = 1;
+pub const NETWORK_CONTROL_CHECKPOINT_VERSION: u16 = 1;
 pub const MAX_NETWORK_CONTROL_FILE_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_NETWORK_CONTROL_CHECKPOINT_FILE_BYTES: u64 = 4 * 1024;
 pub const MAX_NETWORK_ACTION_BYTES: usize = 64 * 1024;
 pub const MAX_NETWORK_ID_BYTES: usize = 128;
 pub const MAX_CLOCK_SKEW_SECS: u64 = 300;
@@ -30,6 +32,8 @@ const MUTATION_CONTEXT: &[u8] = b"AWENET-NETWORK-CONTROL-MUTATION/v1\0";
 const ADMIN_MUTATION_CONTEXT: &[u8] = b"AWENET-NETWORK-CONTROL-ADMIN-MUTATION/v1\0";
 const STORE_CONTEXT: &[u8] = b"AWENET-NETWORK-CONTROL-STORE/v1\0";
 const NODE_ADMISSION_CONTEXT: &[u8] = b"AWENET-NODE-ADMISSION/v1\0";
+const NETWORK_CONTROL_CHECKPOINT_CONTEXT: &[u8] =
+    b"AWENET-NETWORK-CONTROL-CHECKPOINT/v1\0";
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "action", rename_all = "snake_case")]
@@ -128,6 +132,10 @@ pub enum NetworkControlError {
     StaleSnapshot,
     #[error("different network control snapshots share the same sequence")]
     SnapshotEquivocation,
+    #[error("the follower rollback checkpoint is missing; explicitly bootstrap this follower once")]
+    CheckpointMissing,
+    #[error("the follower rollback checkpoint is inconsistent with this Node or its active snapshot")]
+    InvalidCheckpoint,
     #[error("network control store version is unsupported")]
     InvalidStoreVersion,
     #[error("network control snapshot exceeds the maximum file size")]
@@ -160,11 +168,32 @@ struct SignedNetworkControlFile {
     signature: [u8; 64],
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct NetworkControlCheckpointPayload {
+    version: u16,
+    founder_awe_id: String,
+    founder_public_key: [u8; 32],
+    node_awe_id: String,
+    node_public_key: [u8; 32],
+    sequence: u64,
+    updated_at_unix: u64,
+    snapshot_digest: [u8; 32],
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct SignedNetworkControlCheckpointFile {
+    payload: String,
+    #[serde(with = "crate::serde_bytes_64")]
+    signature: [u8; 64],
+}
+
 /// An opaque snapshot that has passed signature, Founder, size and topology validation.
 /// Its private field prevents callers from constructing one from untrusted JSON.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VerifiedNetworkControlSnapshot {
     control: NetworkControlPlane,
+    /// Digest of the exact snapshot string covered by the Founder signature.
+    digest: [u8; 32],
 }
 
 impl NetworkControlPlane {
@@ -288,6 +317,65 @@ impl NetworkControlPlane {
         }
 
         *self = candidate;
+        Ok(true)
+    }
+
+    /// Applies a verified Founder snapshot and durably advances this follower's
+    /// locally signed rollback checkpoint before publishing the new live state.
+    pub fn replace_with_verified_snapshot_and_checkpoint(
+        &mut self,
+        candidate: VerifiedNetworkControlSnapshot,
+        checkpoint_path: &Path,
+        trusted_founder_public_key: &[u8; 32],
+        local_node_identity: &Identity,
+    ) -> Result<bool, NetworkControlError> {
+        let candidate_control = candidate.control;
+        candidate_control.validate()?;
+        if candidate_control.founder_awe_id != self.founder_awe_id
+            || candidate_control.founder_public_key != self.founder_public_key
+            || self.founder_public_key != *trusted_founder_public_key
+        {
+            return Err(NetworkControlError::WrongFounder);
+        }
+
+        let checkpoint = load_checkpoint(
+            checkpoint_path,
+            trusted_founder_public_key,
+            local_node_identity,
+        )?
+        .ok_or(NetworkControlError::CheckpointMissing)?;
+
+        // The checkpoint is written before a candidate becomes active. A
+        // mismatch here therefore indicates local state rollback or corruption.
+        if checkpoint.sequence != self.sequence
+            || checkpoint.updated_at_unix != self.updated_at_unix
+        {
+            return Err(NetworkControlError::InvalidCheckpoint);
+        }
+
+        if candidate_control.sequence < checkpoint.sequence {
+            return Err(NetworkControlError::StaleSnapshot);
+        }
+        if candidate_control.sequence == checkpoint.sequence {
+            return if candidate.digest == checkpoint.snapshot_digest
+                && candidate_control == *self
+            {
+                Ok(false)
+            } else {
+                Err(NetworkControlError::SnapshotEquivocation)
+            };
+        }
+        if candidate_control.updated_at_unix < self.updated_at_unix {
+            return Err(NetworkControlError::TimestampWentBackwards);
+        }
+
+        save_checkpoint(
+            checkpoint_path,
+            &candidate_control,
+            &candidate.digest,
+            local_node_identity,
+        )?;
+        *self = candidate_control;
         Ok(true)
     }
 
@@ -808,6 +896,104 @@ fn store_signing_bytes(
     Ok(bytes)
 }
 
+fn checkpoint_signing_bytes(payload: &str) -> Result<Vec<u8>, NetworkControlError> {
+    let payload_len =
+        u64::try_from(payload.len()).map_err(|_| NetworkControlError::StoreTooLarge)?;
+    let mut bytes = Vec::with_capacity(NETWORK_CONTROL_CHECKPOINT_CONTEXT.len() + 8 + payload.len());
+    bytes.extend_from_slice(NETWORK_CONTROL_CHECKPOINT_CONTEXT);
+    bytes.extend_from_slice(&payload_len.to_be_bytes());
+    bytes.extend_from_slice(payload.as_bytes());
+    Ok(bytes)
+}
+
+fn save_checkpoint(
+    path: &Path,
+    control: &NetworkControlPlane,
+    snapshot_digest: &[u8; 32],
+    local_node_identity: &Identity,
+) -> Result<(), NetworkControlError> {
+    let payload = NetworkControlCheckpointPayload {
+        version: NETWORK_CONTROL_CHECKPOINT_VERSION,
+        founder_awe_id: control.founder_awe_id.clone(),
+        founder_public_key: control.founder_public_key,
+        node_awe_id: local_node_identity.public.awe_id.to_hex(),
+        node_public_key: local_node_identity.public.public_key,
+        sequence: control.sequence,
+        updated_at_unix: control.updated_at_unix,
+        snapshot_digest: *snapshot_digest,
+    };
+    let payload_json = serde_json::to_string(&payload)
+        .map_err(|error| NetworkControlError::Serialization(error.to_string()))?;
+    let signing_bytes = checkpoint_signing_bytes(&payload_json)?;
+    let envelope = SignedNetworkControlCheckpointFile {
+        payload: payload_json,
+        signature: local_node_identity.sign(&signing_bytes),
+    };
+    let encoded = serde_json::to_vec_pretty(&envelope)
+        .map_err(|error| NetworkControlError::Serialization(error.to_string()))?;
+    if encoded.len() as u64 > MAX_NETWORK_CONTROL_CHECKPOINT_FILE_BYTES {
+        return Err(NetworkControlError::StoreTooLarge);
+    }
+    crate::storage::save_manifest(path, &encoded)
+        .map_err(|error| NetworkControlError::Io(error.to_string()))
+}
+
+fn load_checkpoint(
+    path: &Path,
+    trusted_founder_public_key: &[u8; 32],
+    local_node_identity: &Identity,
+) -> Result<Option<NetworkControlCheckpointPayload>, NetworkControlError> {
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(NetworkControlError::Io(error.to_string())),
+    };
+    let size = file
+        .metadata()
+        .map_err(|error| NetworkControlError::Io(error.to_string()))?
+        .len();
+    if size > MAX_NETWORK_CONTROL_CHECKPOINT_FILE_BYTES {
+        return Err(NetworkControlError::StoreTooLarge);
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_NETWORK_CONTROL_CHECKPOINT_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| NetworkControlError::Io(error.to_string()))?;
+    if bytes.len() as u64 > MAX_NETWORK_CONTROL_CHECKPOINT_FILE_BYTES {
+        return Err(NetworkControlError::StoreTooLarge);
+    }
+
+    let envelope: SignedNetworkControlCheckpointFile = serde_json::from_slice(&bytes)
+        .map_err(|error| NetworkControlError::Serialization(error.to_string()))?;
+    let signing_bytes = checkpoint_signing_bytes(&envelope.payload)?;
+    if !Identity::verify(
+        &local_node_identity.public.public_key,
+        &signing_bytes,
+        &envelope.signature,
+    ) {
+        return Err(NetworkControlError::InvalidCheckpoint);
+    }
+    let payload: NetworkControlCheckpointPayload = serde_json::from_str(&envelope.payload)
+        .map_err(|error| NetworkControlError::Serialization(error.to_string()))?;
+    if payload.version != NETWORK_CONTROL_CHECKPOINT_VERSION {
+        return Err(NetworkControlError::InvalidStoreVersion);
+    }
+
+    let expected_founder_awe_id =
+        AweId::from_public_key(trusted_founder_public_key).to_hex();
+    if payload.founder_awe_id != expected_founder_awe_id
+        || payload.founder_public_key != *trusted_founder_public_key
+    {
+        return Err(NetworkControlError::WrongFounder);
+    }
+    if payload.node_awe_id != local_node_identity.public.awe_id.to_hex()
+        || payload.node_public_key != local_node_identity.public.public_key
+    {
+        return Err(NetworkControlError::InvalidCheckpoint);
+    }
+    Ok(Some(payload))
+}
+
 /// Saves a founder-signed snapshot through the shared atomic manifest writer.
 /// The snapshot is embedded as its exact serialized string, so verification
 /// uses the exact bytes that were signed rather than reserializing HashMaps.
@@ -858,17 +1044,10 @@ pub fn load(path: &Path, founder: &Identity) -> Result<NetworkControlPlane, Netw
     Ok(control)
 }
 
-/// Loads a founder-authenticated snapshot using an explicitly pinned public key.
-///
-/// This is for follower Nodes: they must not possess the Founder private key
-/// merely to verify the network's signed topology. The caller supplies the
-/// trust root out-of-band; the key embedded in the file is never trusted by
-/// itself. The derived AWEID, signature, snapshot identity, bounds and complete
-/// topology are all validated before the state is returned.
-pub fn load_verified(
+fn load_verified_snapshot_data(
     path: &Path,
     trusted_founder_public_key: &[u8; 32],
-) -> Result<NetworkControlPlane, NetworkControlError> {
+) -> Result<(NetworkControlPlane, [u8; 32]), NetworkControlError> {
     let file = File::open(path).map_err(|error| NetworkControlError::Io(error.to_string()))?;
     let size = file
         .metadata()
@@ -908,6 +1087,7 @@ pub fn load_verified(
     ) {
         return Err(NetworkControlError::InvalidSignature);
     }
+    let snapshot_digest = *blake3::hash(envelope.snapshot.as_bytes()).as_bytes();
     let control: NetworkControlPlane = serde_json::from_str(&envelope.snapshot)
         .map_err(|error| NetworkControlError::Serialization(error.to_string()))?;
     control.validate()?;
@@ -916,17 +1096,81 @@ pub fn load_verified(
     {
         return Err(NetworkControlError::WrongFounder);
     }
-    Ok(control)
+    Ok((control, snapshot_digest))
 }
 
-/// Loads a signed snapshot and returns an opaque value that can safely be
-/// passed to replace_with_verified_snapshot without relying on caller discipline.
+/// Loads a founder-authenticated snapshot using an explicitly pinned public key.
+/// The caller supplies the trust root out-of-band; the key embedded in the file
+/// is never trusted by itself.
+pub fn load_verified(
+    path: &Path,
+    trusted_founder_public_key: &[u8; 32],
+) -> Result<NetworkControlPlane, NetworkControlError> {
+    Ok(load_verified_snapshot_data(path, trusted_founder_public_key)?.0)
+}
+
+/// Loads a verified snapshot and preserves the digest of the exact signed bytes.
 pub fn load_verified_snapshot(
     path: &Path,
     trusted_founder_public_key: &[u8; 32],
 ) -> Result<VerifiedNetworkControlSnapshot, NetworkControlError> {
-    let control = load_verified(path, trusted_founder_public_key)?;
-    Ok(VerifiedNetworkControlSnapshot { control })
+    let (control, digest) = load_verified_snapshot_data(path, trusted_founder_public_key)?;
+    Ok(VerifiedNetworkControlSnapshot { control, digest })
+}
+
+/// Loads a Founder snapshot while enforcing a Node-local, signed monotonic checkpoint.
+///
+/// Sequence-zero followers bootstrap automatically. Existing followers whose
+/// snapshot is already nonzero must explicitly opt into a one-time checkpoint
+/// bootstrap after verifying the current snapshot out of band.
+pub fn load_verified_with_checkpoint(
+    path: &Path,
+    checkpoint_path: &Path,
+    trusted_founder_public_key: &[u8; 32],
+    local_node_identity: &Identity,
+    allow_legacy_bootstrap: bool,
+) -> Result<NetworkControlPlane, NetworkControlError> {
+    let candidate = load_verified_snapshot(path, trusted_founder_public_key)?;
+    let control = candidate.control.clone();
+
+    match load_checkpoint(
+        checkpoint_path,
+        trusted_founder_public_key,
+        local_node_identity,
+    )? {
+        Some(checkpoint) => {
+            if control.sequence < checkpoint.sequence {
+                return Err(NetworkControlError::StaleSnapshot);
+            }
+            if control.sequence == checkpoint.sequence {
+                if candidate.digest != checkpoint.snapshot_digest
+                    || control.updated_at_unix != checkpoint.updated_at_unix
+                {
+                    return Err(NetworkControlError::SnapshotEquivocation);
+                }
+            } else {
+                save_checkpoint(
+                    checkpoint_path,
+                    &control,
+                    &candidate.digest,
+                    local_node_identity,
+                )?;
+            }
+        }
+        None => {
+            if control.sequence > 0 && !allow_legacy_bootstrap {
+                return Err(NetworkControlError::CheckpointMissing);
+            }
+            save_checkpoint(
+                checkpoint_path,
+                &control,
+                &candidate.digest,
+                local_node_identity,
+            )?;
+        }
+    }
+
+    Ok(control)
 }
 
 /// Creates the first snapshot only when the path is absent. Existing corrupt
@@ -2169,4 +2413,158 @@ mod tests {
         .unwrap();
         assert!(!control.is_node_admitted(&node_id, &joining_node.public.public_key));
     }
+    #[test]
+    fn follower_checkpoint_survives_restart_and_rejects_signed_rollback_and_equivocation() {
+        let founder = identity("checkpoint-founder");
+        let follower = identity("checkpoint-follower");
+        let other_follower = identity("checkpoint-other-follower");
+        let snapshot_path = temporary_path("checkpoint-snapshot");
+        let checkpoint_path = temporary_path("checkpoint-state");
+
+        let initial = NetworkControlPlane::new(&founder, 100);
+        save(&snapshot_path, &initial, &founder).unwrap();
+        let restored = load_verified_with_checkpoint(
+            &snapshot_path,
+            &checkpoint_path,
+            &founder.public.public_key,
+            &follower,
+            false,
+        )
+        .unwrap();
+        assert_eq!(restored.sequence(), 0);
+        assert!(checkpoint_path.exists());
+
+        let mut updated = restored;
+        apply(
+            &mut updated,
+            &founder,
+            NetworkAction::CreateCentre {
+                centre_id: "dc-checkpoint-current".into(),
+            },
+            101,
+        )
+        .unwrap();
+        save(&snapshot_path, &updated, &founder).unwrap();
+
+        let restarted = load_verified_with_checkpoint(
+            &snapshot_path,
+            &checkpoint_path,
+            &founder.public.public_key,
+            &follower,
+            false,
+        )
+        .unwrap();
+        assert_eq!(restarted.sequence(), 1);
+
+        // A previously valid Founder snapshot cannot roll a restarted
+        // follower back after its local checkpoint has advanced.
+        save(&snapshot_path, &initial, &founder).unwrap();
+        assert!(matches!(
+            load_verified_with_checkpoint(
+                &snapshot_path,
+                &checkpoint_path,
+                &founder.public.public_key,
+                &follower,
+                false,
+            ),
+            Err(NetworkControlError::StaleSnapshot)
+        ));
+
+        // A different, valid Founder snapshot at the same sequence is
+        // rejected as equivocation, even after the process has restarted.
+        let mut conflicting = NetworkControlPlane::new(&founder, 100);
+        apply(
+            &mut conflicting,
+            &founder,
+            NetworkAction::CreateCentre {
+                centre_id: "dc-checkpoint-conflict".into(),
+            },
+            101,
+        )
+        .unwrap();
+        save(&snapshot_path, &conflicting, &founder).unwrap();
+        assert!(matches!(
+            load_verified_with_checkpoint(
+                &snapshot_path,
+                &checkpoint_path,
+                &founder.public.public_key,
+                &follower,
+                false,
+            ),
+            Err(NetworkControlError::SnapshotEquivocation)
+        ));
+
+        assert!(matches!(
+            load_verified_with_checkpoint(
+                &snapshot_path,
+                &checkpoint_path,
+                &founder.public.public_key,
+                &other_follower,
+                false,
+            ),
+            Err(NetworkControlError::InvalidCheckpoint)
+        ));
+
+        fs::write(&checkpoint_path, b"{corrupt").unwrap();
+        assert!(load_verified_with_checkpoint(
+            &snapshot_path,
+            &checkpoint_path,
+            &founder.public.public_key,
+            &follower,
+            false,
+        )
+        .is_err());
+
+        let _ = fs::remove_file(snapshot_path);
+        let _ = fs::remove_file(checkpoint_path);
+    }
+
+    #[test]
+    fn nonzero_legacy_follower_requires_explicit_checkpoint_bootstrap() {
+        let founder = identity("checkpoint-legacy-founder");
+        let follower = identity("checkpoint-legacy-follower");
+        let snapshot_path = temporary_path("checkpoint-legacy-snapshot");
+        let checkpoint_path = temporary_path("checkpoint-legacy-state");
+
+        let mut existing = NetworkControlPlane::new(&founder, 100);
+        apply(
+            &mut existing,
+            &founder,
+            NetworkAction::CreateCentre {
+                centre_id: "dc-existing".into(),
+            },
+            101,
+        )
+        .unwrap();
+        save(&snapshot_path, &existing, &founder).unwrap();
+
+        assert!(matches!(
+            load_verified_with_checkpoint(
+                &snapshot_path,
+                &checkpoint_path,
+                &founder.public.public_key,
+                &follower,
+                false,
+            ),
+            Err(NetworkControlError::CheckpointMissing)
+        ));
+        assert_eq!(
+            load_verified_with_checkpoint(
+                &snapshot_path,
+                &checkpoint_path,
+                &founder.public.public_key,
+                &follower,
+                true,
+            )
+            .unwrap()
+            .sequence(),
+            1
+        );
+        assert!(checkpoint_path.exists());
+
+        let _ = fs::remove_file(snapshot_path);
+        let _ = fs::remove_file(checkpoint_path);
+    }
+
+
 }

@@ -99,6 +99,17 @@ fn peer_admission_enforcement_enabled() -> bool {
         .unwrap_or(false)
 }
 
+fn network_checkpoint_bootstrap_enabled() -> bool {
+    env::var("AWE_NETWORK_ALLOW_CHECKPOINT_BOOTSTRAP")
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes"
+            )
+        })
+        .unwrap_or(false)
+}
+
 fn parse_network_founder_public_key(value: &str) -> Result<[u8; 32]> {
     let bytes = hex::decode(value.trim())
         .context("AWE_NETWORK_FOUNDER_PUBLIC_KEY must be a 64-character hexadecimal public key")?;
@@ -109,13 +120,26 @@ fn parse_network_founder_public_key(value: &str) -> Result<[u8; 32]> {
 
 fn load_node_network_control(
     path: &std::path::Path,
+    checkpoint_path: &std::path::Path,
     local_identity: &Identity,
 ) -> Result<(NetworkControlPlane, [u8; 32])> {
     match env::var("AWE_NETWORK_FOUNDER_PUBLIC_KEY") {
         Ok(value) => {
             let trusted_key = parse_network_founder_public_key(&value)?;
-            let control =
-                network_control::load_verified(path, &trusted_key).map_err(anyhow::Error::msg)?;
+            let allow_legacy_bootstrap = network_checkpoint_bootstrap_enabled();
+            if allow_legacy_bootstrap {
+                eprintln!(
+                    "WARNING: AWE_NETWORK_ALLOW_CHECKPOINT_BOOTSTRAP is enabled; unset it after this verified startup"
+                );
+            }
+            let control = network_control::load_verified_with_checkpoint(
+                path,
+                checkpoint_path,
+                &trusted_key,
+                local_identity,
+                allow_legacy_bootstrap,
+            )
+            .map_err(anyhow::Error::msg)?;
             Ok((control, trusted_key))
         }
         Err(env::VarError::NotPresent) => {
@@ -132,7 +156,9 @@ fn load_node_network_control(
 
 fn refresh_network_control_once(
     path: &std::path::Path,
+    checkpoint_path: &std::path::Path,
     trusted_founder_public_key: &[u8; 32],
+    local_node_identity: &Identity,
     control: &NetworkControlState,
 ) -> Result<bool> {
     let candidate = network_control::load_verified_snapshot(path, trusted_founder_public_key)
@@ -141,13 +167,20 @@ fn refresh_network_control_once(
         .lock()
         .map_err(|_| anyhow::anyhow!("network control state lock is poisoned"))?;
     active
-        .replace_with_verified_snapshot(candidate)
+        .replace_with_verified_snapshot_and_checkpoint(
+            candidate,
+            checkpoint_path,
+            trusted_founder_public_key,
+            local_node_identity,
+        )
         .map_err(anyhow::Error::msg)
 }
 
 fn spawn_network_control_refresh_loop(
     path: PathBuf,
+    checkpoint_path: PathBuf,
     trusted_founder_public_key: [u8; 32],
+    local_node_identity: Arc<Identity>,
     control: NetworkControlState,
 ) {
     let _refresh_task = tokio::spawn(async move {
@@ -161,10 +194,18 @@ fn spawn_network_control_refresh_loop(
         loop {
             interval.tick().await;
             let refresh_path = path.clone();
+            let refresh_checkpoint_path = checkpoint_path.clone();
             let refresh_state = Arc::clone(&control);
+            let refresh_local_identity = Arc::clone(&local_node_identity);
             let trusted_key = trusted_founder_public_key;
             let result = tokio::task::spawn_blocking(move || {
-                refresh_network_control_once(&refresh_path, &trusted_key, &refresh_state)
+                refresh_network_control_once(
+                    &refresh_path,
+                    &refresh_checkpoint_path,
+                    &trusted_key,
+                    refresh_local_identity.as_ref(),
+                    &refresh_state,
+                )
             })
             .await;
 
@@ -4046,9 +4087,14 @@ async fn run_product() -> Result<()> {
     ));
     let user_login_state: UserLoginState = Arc::new(Mutex::new(UserLogin::default()));
     let network_control_path = data_dir.join("network-control.json");
+    let network_control_checkpoint_path = data_dir.join("network-control.checkpoint.json");
     let enforce_peer_admission = peer_admission_enforcement_enabled();
     let (network_control, trusted_founder_public_key) = if enforce_peer_admission {
-        load_node_network_control(&network_control_path, &identity)?
+        load_node_network_control(
+            &network_control_path,
+            &network_control_checkpoint_path,
+            &identity,
+        )?
     } else {
         let control = network_control::load_or_create(&network_control_path, &identity, now_unix())
             .map_err(anyhow::Error::msg)?;
@@ -4069,7 +4115,9 @@ async fn run_product() -> Result<()> {
         install_network_peer_admission(&node, network_control_state.clone())?;
         spawn_network_control_refresh_loop(
             network_control_path.clone(),
+            network_control_checkpoint_path.clone(),
             trusted_founder_public_key,
+            node.identity.clone(),
             network_control_state.clone(),
         );
     }
@@ -5059,11 +5107,24 @@ async fn run_node(
             .parent()
             .unwrap_or_else(|| std::path::Path::new("."))
             .join("network-control.json");
-        let (control, trusted_founder_public_key) =
-            load_node_network_control(&control_path, node.identity.as_ref())?;
+        let checkpoint_path = path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join("network-control.checkpoint.json");
+        let (control, trusted_founder_public_key) = load_node_network_control(
+            &control_path,
+            &checkpoint_path,
+            node.identity.as_ref(),
+        )?;
         let control_state = Arc::new(Mutex::new(control));
         install_network_peer_admission(&node, Arc::clone(&control_state))?;
-        spawn_network_control_refresh_loop(control_path, trusted_founder_public_key, control_state);
+        spawn_network_control_refresh_loop(
+            control_path,
+            checkpoint_path,
+            trusted_founder_public_key,
+            node.identity.clone(),
+            control_state,
+        );
     }
     if !bootstrap.is_empty() {
         node.bootstrap(&bootstrap)
@@ -5345,11 +5406,23 @@ mod tests {
             "awenet-network-refresh-{}.json",
             std::process::id()
         ));
+        let checkpoint_path = path.with_file_name(format!(
+            "awenet-network-refresh-checkpoint-{}.json",
+            std::process::id()
+        ));
         let initial = NetworkControlPlane::new(&founder, 100);
         network_control::save(&path, &initial, &founder).unwrap();
-        let state: NetworkControlState = Arc::new(Mutex::new(initial.clone()));
+        let restored = network_control::load_verified_with_checkpoint(
+            &path,
+            &checkpoint_path,
+            &founder.public.public_key,
+            &founder,
+            false,
+        )
+        .unwrap();
+        let state: NetworkControlState = Arc::new(Mutex::new(restored.clone()));
 
-        let mut updated = initial;
+        let mut updated = restored;
         let action = NetworkAction::CreateCentre {
             centre_id: "dc-runtime-refresh".into(),
         };
@@ -5359,21 +5432,46 @@ mod tests {
             .unwrap();
         network_control::save(&path, &updated, &founder).unwrap();
 
-        assert!(refresh_network_control_once(&path, &founder.public.public_key, &state).unwrap());
+        assert!(refresh_network_control_once(
+                &path,
+                &checkpoint_path,
+                &founder.public.public_key,
+                &founder,
+                &state,
+            ).unwrap());
         assert_eq!(state.lock().unwrap().sequence(), 1);
-        assert!(!refresh_network_control_once(&path, &founder.public.public_key, &state).unwrap());
+        assert!(!refresh_network_control_once(
+                &path,
+                &checkpoint_path,
+                &founder.public.public_key,
+                &founder,
+                &state,
+            ).unwrap());
 
         // A stale but correctly signed snapshot must not roll the follower back.
         network_control::save(&path, &NetworkControlPlane::new(&founder, 100), &founder).unwrap();
-        assert!(refresh_network_control_once(&path, &founder.public.public_key, &state).is_err());
+        assert!(refresh_network_control_once(
+                &path,
+                &checkpoint_path,
+                &founder.public.public_key,
+                &founder,
+                &state,
+            ).is_err());
         assert_eq!(state.lock().unwrap().sequence(), 1);
 
         // A partial or corrupt file is ignored; the last verified state stays active.
         fs::write(&path, b"{invalid").unwrap();
-        assert!(refresh_network_control_once(&path, &founder.public.public_key, &state).is_err());
+        assert!(refresh_network_control_once(
+                &path,
+                &checkpoint_path,
+                &founder.public.public_key,
+                &founder,
+                &state,
+            ).is_err());
         assert_eq!(state.lock().unwrap().sequence(), 1);
 
         let _ = fs::remove_file(path);
+        let _ = fs::remove_file(checkpoint_path);
     }
 
     #[test]
