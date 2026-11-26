@@ -2983,7 +2983,10 @@ fn product_runtime_local_founder_does_not_start_follower_checkpoint_refresh() {
             "local Founder must not run the follower checkpoint refresh loop: {output}"
         );
         assert!(
-            child.try_wait().expect("poll local Founder process").is_none(),
+            child
+                .try_wait()
+                .expect("poll local Founder process")
+                .is_none(),
             "local Founder process must remain alive"
         );
     }));
