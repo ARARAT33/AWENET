@@ -241,7 +241,12 @@ fn spawn_node_with_env(
         .env("AWE_LISTEN_ADDR", format!("127.0.0.1:{listen}"))
         .env("AWE_UI_ADDR", format!("127.0.0.1:{ui}"))
         .env("AWE_NO_BROWSER", "1")
-        .env("AWE_NO_NATIVE_UI", "1");
+        .env("AWE_NO_NATIVE_UI", "1")
+        // Keep smoke tests independent from environment variables inherited
+        // from the runner; each test opts into network admission explicitly.
+        .env_remove("AWE_REQUIRE_ADMITTED_PEERS")
+        .env_remove("AWE_NETWORK_FOUNDER_PUBLIC_KEY")
+        .env_remove("AWE_NETWORK_ALLOW_CHECKPOINT_BOOTSTRAP");
     for (key, value) in extra_env {
         command.env(*key, *value);
     }
@@ -2919,4 +2924,72 @@ fn product_runtime_follower_uses_pinned_founder_snapshot_and_hot_reloads() {
     let _ = child.wait();
     let _ = fs::remove_dir_all(&root);
     result.expect("product follower runtime refresh and restart rollback smoke test failed");
+}
+
+#[test]
+fn product_runtime_local_founder_does_not_start_follower_checkpoint_refresh() {
+    let bin = PathBuf::from(env::var_os("CARGO_BIN_EXE_awe-node").expect("awe-node binary"));
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "awenet-product-local-founder-checkpoint-{}-{nonce}",
+        std::process::id()
+    ));
+    let data = root.join("data");
+    fs::create_dir_all(&data).expect("create Founder data directory");
+
+    let transport_listener =
+        std::net::TcpListener::bind("127.0.0.1:0").expect("reserve transport port");
+    let ui_listener = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve UI port");
+    let transport_port = transport_listener.local_addr().unwrap().port();
+    let ui_port = ui_listener.local_addr().unwrap().port();
+    drop(transport_listener);
+    drop(ui_listener);
+    let ui_addr = format!("127.0.0.1:{ui_port}");
+    let (mut child, log) = spawn_node_with_env(
+        &bin,
+        &data,
+        transport_port,
+        ui_port,
+        &[("AWE_REQUIRE_ADMITTED_PEERS", "1")],
+    );
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        wait_for_health(&ui_addr);
+        let status: serde_json::Value =
+            serde_json::from_str(&get(&ui_addr, "/api/status")).expect("Founder status JSON");
+        assert_eq!(
+            status["peer_admission_enforced"], true,
+            "local Founder must still enforce admitted peers: {status}"
+        );
+
+        // Wait longer than one refresh interval. A local Founder owns and
+        // mutates its in-memory control plane directly; it has no follower
+        // checkpoint to reload, so no checkpoint error should be emitted.
+        thread::sleep(Duration::from_secs(6));
+        assert!(
+            data.join("network-control.json").is_file(),
+            "local Founder must initialize its signed network-control store"
+        );
+        assert!(
+            !data.join("network-control.checkpoint.json").exists(),
+            "local Founder must not enroll a follower rollback checkpoint"
+        );
+        let output = node_log_tail(&log, 4000);
+        assert!(
+            !output.contains("AWENET rejected network snapshot update"),
+            "local Founder must not run the follower checkpoint refresh loop: {output}"
+        );
+        assert!(
+            child.try_wait().expect("poll local Founder process").is_none(),
+            "local Founder process must remain alive"
+        );
+    }));
+
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = fs::remove_dir_all(&root);
+    result.expect("local Founder checkpoint-refresh smoke test failed");
 }
