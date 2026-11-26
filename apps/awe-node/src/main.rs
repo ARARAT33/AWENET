@@ -5414,7 +5414,7 @@ mod tests {
             &checkpoint_path,
             &founder.public.public_key,
             &founder,
-            false,
+            true,
         )
         .unwrap();
         let state: NetworkControlState = Arc::new(Mutex::new(restored.clone()));
