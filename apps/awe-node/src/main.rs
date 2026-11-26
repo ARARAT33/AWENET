@@ -5111,11 +5111,8 @@ async fn run_node(
             .parent()
             .unwrap_or_else(|| std::path::Path::new("."))
             .join("network-control.checkpoint.json");
-        let (control, trusted_founder_public_key) = load_node_network_control(
-            &control_path,
-            &checkpoint_path,
-            node.identity.as_ref(),
-        )?;
+        let (control, trusted_founder_public_key) =
+            load_node_network_control(&control_path, &checkpoint_path, node.identity.as_ref())?;
         let control_state = Arc::new(Mutex::new(control));
         install_network_peer_admission(&node, Arc::clone(&control_state))?;
         spawn_network_control_refresh_loop(
@@ -5433,41 +5430,45 @@ mod tests {
         network_control::save(&path, &updated, &founder).unwrap();
 
         assert!(refresh_network_control_once(
-                &path,
-                &checkpoint_path,
-                &founder.public.public_key,
-                &founder,
-                &state,
-            ).unwrap());
+            &path,
+            &checkpoint_path,
+            &founder.public.public_key,
+            &founder,
+            &state,
+        )
+        .unwrap());
         assert_eq!(state.lock().unwrap().sequence(), 1);
         assert!(!refresh_network_control_once(
-                &path,
-                &checkpoint_path,
-                &founder.public.public_key,
-                &founder,
-                &state,
-            ).unwrap());
+            &path,
+            &checkpoint_path,
+            &founder.public.public_key,
+            &founder,
+            &state,
+        )
+        .unwrap());
 
         // A stale but correctly signed snapshot must not roll the follower back.
         network_control::save(&path, &NetworkControlPlane::new(&founder, 100), &founder).unwrap();
         assert!(refresh_network_control_once(
-                &path,
-                &checkpoint_path,
-                &founder.public.public_key,
-                &founder,
-                &state,
-            ).is_err());
+            &path,
+            &checkpoint_path,
+            &founder.public.public_key,
+            &founder,
+            &state,
+        )
+        .is_err());
         assert_eq!(state.lock().unwrap().sequence(), 1);
 
         // A partial or corrupt file is ignored; the last verified state stays active.
         fs::write(&path, b"{invalid").unwrap();
         assert!(refresh_network_control_once(
-                &path,
-                &checkpoint_path,
-                &founder.public.public_key,
-                &founder,
-                &state,
-            ).is_err());
+            &path,
+            &checkpoint_path,
+            &founder.public.public_key,
+            &founder,
+            &state,
+        )
+        .is_err());
         assert_eq!(state.lock().unwrap().sequence(), 1);
 
         let _ = fs::remove_file(path);

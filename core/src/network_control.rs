@@ -32,8 +32,7 @@ const MUTATION_CONTEXT: &[u8] = b"AWENET-NETWORK-CONTROL-MUTATION/v1\0";
 const ADMIN_MUTATION_CONTEXT: &[u8] = b"AWENET-NETWORK-CONTROL-ADMIN-MUTATION/v1\0";
 const STORE_CONTEXT: &[u8] = b"AWENET-NETWORK-CONTROL-STORE/v1\0";
 const NODE_ADMISSION_CONTEXT: &[u8] = b"AWENET-NODE-ADMISSION/v1\0";
-const NETWORK_CONTROL_CHECKPOINT_CONTEXT: &[u8] =
-    b"AWENET-NETWORK-CONTROL-CHECKPOINT/v1\0";
+const NETWORK_CONTROL_CHECKPOINT_CONTEXT: &[u8] = b"AWENET-NETWORK-CONTROL-CHECKPOINT/v1\0";
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "action", rename_all = "snake_case")]
@@ -132,9 +131,13 @@ pub enum NetworkControlError {
     StaleSnapshot,
     #[error("different network control snapshots share the same sequence")]
     SnapshotEquivocation,
-    #[error("the follower rollback checkpoint is missing; explicitly bootstrap this follower once")]
+    #[error(
+        "the follower rollback checkpoint is missing; explicitly bootstrap this follower once"
+    )]
     CheckpointMissing,
-    #[error("the follower rollback checkpoint is inconsistent with this Node or its active snapshot")]
+    #[error(
+        "the follower rollback checkpoint is inconsistent with this Node or its active snapshot"
+    )]
     InvalidCheckpoint,
     #[error("network control store version is unsupported")]
     InvalidStoreVersion,
@@ -357,9 +360,7 @@ impl NetworkControlPlane {
             return Err(NetworkControlError::StaleSnapshot);
         }
         if candidate_control.sequence == checkpoint.sequence {
-            return if candidate.digest == checkpoint.snapshot_digest
-                && candidate_control == *self
-            {
+            return if candidate.digest == checkpoint.snapshot_digest && candidate_control == *self {
                 Ok(false)
             } else {
                 Err(NetworkControlError::SnapshotEquivocation)
@@ -899,7 +900,8 @@ fn store_signing_bytes(
 fn checkpoint_signing_bytes(payload: &str) -> Result<Vec<u8>, NetworkControlError> {
     let payload_len =
         u64::try_from(payload.len()).map_err(|_| NetworkControlError::StoreTooLarge)?;
-    let mut bytes = Vec::with_capacity(NETWORK_CONTROL_CHECKPOINT_CONTEXT.len() + 8 + payload.len());
+    let mut bytes =
+        Vec::with_capacity(NETWORK_CONTROL_CHECKPOINT_CONTEXT.len() + 8 + payload.len());
     bytes.extend_from_slice(NETWORK_CONTROL_CHECKPOINT_CONTEXT);
     bytes.extend_from_slice(&payload_len.to_be_bytes());
     bytes.extend_from_slice(payload.as_bytes());
@@ -979,8 +981,7 @@ fn load_checkpoint(
         return Err(NetworkControlError::InvalidStoreVersion);
     }
 
-    let expected_founder_awe_id =
-        AweId::from_public_key(trusted_founder_public_key).to_hex();
+    let expected_founder_awe_id = AweId::from_public_key(trusted_founder_public_key).to_hex();
     if payload.founder_awe_id != expected_founder_awe_id
         || payload.founder_public_key != *trusted_founder_public_key
     {
@@ -2577,6 +2578,4 @@ mod tests {
         let _ = fs::remove_file(snapshot_path);
         let _ = fs::remove_file(checkpoint_path);
     }
-
-
 }
