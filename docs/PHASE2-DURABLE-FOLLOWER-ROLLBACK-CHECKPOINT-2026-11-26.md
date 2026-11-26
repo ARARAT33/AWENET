@@ -45,5 +45,10 @@ and checkpoint, can roll the local trust state back. Stronger protection
 requires an OS/hardware-backed monotonic store or an independently replicated
 quorum.
 
+A local Founder Node (no external Founder key configured, or an explicitly
+pinned key equal to its own Node public key) is not a follower: it applies its
+own signed mutations directly to its active control plane and does not run the
+follower checkpoint refresh loop. It does not need a follower checkpoint.
+
 The checkpoint does not implement network snapshot transport. Founder snapshot
 delivery remains operator-managed in this phase.
