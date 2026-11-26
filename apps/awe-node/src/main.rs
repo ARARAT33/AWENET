@@ -126,6 +126,14 @@ fn load_node_network_control(
     match env::var("AWE_NETWORK_FOUNDER_PUBLIC_KEY") {
         Ok(value) => {
             let trusted_key = parse_network_founder_public_key(&value)?;
+            if trusted_key == local_identity.public.public_key {
+                // An explicitly pinned copy of this Node's own key is still
+                // local-Founder mode, not follower mode. Verify/create the
+                // Founder store without enrolling a follower checkpoint.
+                let control = network_control::load_or_create(path, local_identity, now_unix())
+                    .map_err(anyhow::Error::msg)?;
+                return Ok((control, trusted_key));
+            }
             let allow_checkpoint_bootstrap = network_checkpoint_bootstrap_enabled();
             if allow_checkpoint_bootstrap {
                 eprintln!(
