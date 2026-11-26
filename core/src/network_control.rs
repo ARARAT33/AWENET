@@ -1120,15 +1120,15 @@ pub fn load_verified_snapshot(
 
 /// Loads a Founder snapshot while enforcing a Node-local, signed monotonic checkpoint.
 ///
-/// Sequence-zero followers bootstrap automatically. Existing followers whose
-/// snapshot is already nonzero must explicitly opt into a one-time checkpoint
-/// bootstrap after verifying the current snapshot out of band.
+/// Every follower must explicitly opt into its first checkpoint bootstrap,
+/// including sequence-zero installations. Once the checkpoint exists, a
+/// missing checkpoint always fails closed.
 pub fn load_verified_with_checkpoint(
     path: &Path,
     checkpoint_path: &Path,
     trusted_founder_public_key: &[u8; 32],
     local_node_identity: &Identity,
-    allow_legacy_bootstrap: bool,
+    allow_checkpoint_bootstrap: bool,
 ) -> Result<NetworkControlPlane, NetworkControlError> {
     let candidate = load_verified_snapshot(path, trusted_founder_public_key)?;
     let control = candidate.control.clone();
@@ -1158,7 +1158,7 @@ pub fn load_verified_with_checkpoint(
             }
         }
         None => {
-            if control.sequence > 0 && !allow_legacy_bootstrap {
+            if !allow_checkpoint_bootstrap {
                 return Err(NetworkControlError::CheckpointMissing);
             }
             save_checkpoint(
@@ -2428,7 +2428,7 @@ mod tests {
             &checkpoint_path,
             &founder.public.public_key,
             &follower,
-            false,
+            true,
         )
         .unwrap();
         assert_eq!(restored.sequence(), 0);
@@ -2503,6 +2503,18 @@ mod tests {
                 false,
             ),
             Err(NetworkControlError::InvalidCheckpoint)
+        ));
+
+        fs::remove_file(&checkpoint_path).unwrap();
+        assert!(matches!(
+            load_verified_with_checkpoint(
+                &snapshot_path,
+                &checkpoint_path,
+                &founder.public.public_key,
+                &follower,
+                false,
+            ),
+            Err(NetworkControlError::CheckpointMissing)
         ));
 
         fs::write(&checkpoint_path, b"{corrupt").unwrap();

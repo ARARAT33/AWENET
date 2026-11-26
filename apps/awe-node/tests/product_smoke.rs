@@ -2781,6 +2781,7 @@ fn product_runtime_follower_uses_pinned_founder_snapshot_and_hot_reloads() {
                 "AWE_NETWORK_FOUNDER_PUBLIC_KEY",
                 founder_public_key.as_str(),
             ),
+            ("AWE_NETWORK_ALLOW_CHECKPOINT_BOOTSTRAP", "1"),
         ],
     );
 

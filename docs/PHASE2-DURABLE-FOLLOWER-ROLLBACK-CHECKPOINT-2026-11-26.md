@@ -1,7 +1,7 @@
 # Durable follower network-control rollback checkpoint
 
 When a Node is configured with both `AWE_REQUIRE_ADMITTED_PEERS=1` and
-`AWE_NETWORK_FOUNDER_PUBLIC_KEY`, it now keeps a Node-local checkpoint at
+`AWE_NETWORK_FOUNDER_PUBLIC_KEY`, it keeps a Node-local checkpoint at
 `network-control.checkpoint.json` beside `network-control.json`.
 
 The checkpoint binds:
@@ -18,31 +18,32 @@ policy. If persistence fails, the candidate is not applied. On restart, a
 Founder-signed snapshot older than the local checkpoint is rejected; a different
 snapshot at the same sequence is rejected as equivocation. A checkpoint signed
 by another local Node, corrupted, oversized, or bound to another Founder fails
-closed.
+closed. A missing checkpoint also fails closed; it is never silently recreated
+after initial enrollment.
 
 ## First startup and existing followers
 
-A new follower with a sequence-zero snapshot creates its checkpoint
-automatically.
+Every follower requires an explicit one-time checkpoint bootstrap, including
+new sequence-zero followers. After verifying the current Founder-signed
+snapshot out of band, set
+`AWE_NETWORK_ALLOW_CHECKPOINT_BOOTSTRAP=1` for the first controlled startup.
+Unset the variable immediately afterward. The process logs a warning whenever
+this override is enabled. The same one-time procedure applies to existing
+followers whose data directory predates the checkpoint feature.
 
-An existing follower whose snapshot sequence is already greater than zero and
-has no checkpoint must be bootstrapped explicitly. After verifying the current
-Founder-signed snapshot out of band, set
-`AWE_NETWORK_ALLOW_CHECKPOINT_BOOTSTRAP=1` for one controlled startup. Unset
-the variable immediately afterward. The process logs a warning whenever this
-override is enabled. Do not use the override to recover from a stale-snapshot
-rejection: doing so would intentionally reset the local rollback baseline.
-
-A malformed or present-but-invalid checkpoint is never silently replaced.
+Do not use the override to recover from a stale-snapshot rejection: doing so
+would intentionally reset the local rollback baseline. A malformed or
+present-but-invalid checkpoint is never silently replaced.
 
 ## Security boundary
 
 This protects against replaying an older but correctly Founder-signed snapshot
-after an ordinary Node restart, and against accidental checkpoint corruption.
-It is not a hardware monotonic counter: an attacker able to restore or replace
-the entire local data directory, including the Node identity and checkpoint,
-can roll the local trust state back. Stronger protection requires an
-OS/hardware-backed monotonic store or an independently replicated quorum.
+after an ordinary Node restart, and against accidental deletion or corruption
+of the checkpoint. It is not a hardware monotonic counter: an attacker able to
+restore or replace the entire local data directory, including the Node identity
+and checkpoint, can roll the local trust state back. Stronger protection
+requires an OS/hardware-backed monotonic store or an independently replicated
+quorum.
 
 The checkpoint does not implement network snapshot transport. Founder snapshot
 delivery remains operator-managed in this phase.
