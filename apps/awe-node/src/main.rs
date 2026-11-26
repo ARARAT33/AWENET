@@ -4115,13 +4115,18 @@ async fn run_product() -> Result<()> {
     let node = Node::new(identity, listen);
     if enforce_peer_admission {
         install_network_peer_admission(&node, network_control_state.clone())?;
-        spawn_network_control_refresh_loop(
-            network_control_path.clone(),
-            network_control_checkpoint_path.clone(),
-            trusted_founder_public_key,
-            node.identity.clone(),
-            network_control_state.clone(),
-        );
+        // A local Founder applies its own signed mutations directly to this
+        // control plane. The checkpointed refresh loop is only for followers
+        // whose trust root is a different Node identity.
+        if trusted_founder_public_key != node.identity.public.public_key {
+            spawn_network_control_refresh_loop(
+                network_control_path.clone(),
+                network_control_checkpoint_path.clone(),
+                trusted_founder_public_key,
+                node.identity.clone(),
+                network_control_state.clone(),
+            );
+        }
     }
     let storage_root = data_dir.join("storage");
     let host_root = data_dir.join("host");
@@ -5117,13 +5122,18 @@ async fn run_node(
             load_node_network_control(&control_path, &checkpoint_path, node.identity.as_ref())?;
         let control_state = Arc::new(Mutex::new(control));
         install_network_peer_admission(&node, Arc::clone(&control_state))?;
-        spawn_network_control_refresh_loop(
-            control_path,
-            checkpoint_path,
-            trusted_founder_public_key,
-            node.identity.clone(),
-            control_state,
-        );
+        // A local Founder is the source of truth and does not enroll a
+        // follower rollback checkpoint. Only a separately pinned Founder
+        // trust root needs periodic snapshot refresh.
+        if trusted_founder_public_key != node.identity.public.public_key {
+            spawn_network_control_refresh_loop(
+                control_path,
+                checkpoint_path,
+                trusted_founder_public_key,
+                node.identity.clone(),
+                control_state,
+            );
+        }
     }
     if !bootstrap.is_empty() {
         node.bootstrap(&bootstrap)
