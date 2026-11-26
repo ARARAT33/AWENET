@@ -49,6 +49,8 @@ A local Founder Node (no external Founder key configured, or an explicitly
 pinned key equal to its own Node public key) is not a follower: it applies its
 own signed mutations directly to its active control plane and does not run the
 follower checkpoint refresh loop. It does not need a follower checkpoint.
+`AWE_NETWORK_ALLOW_CHECKPOINT_BOOTSTRAP` is ignored in local-Founder mode; it
+is only relevant when the pinned Founder key belongs to another Node.
 
 The checkpoint does not implement network snapshot transport. Founder snapshot
 delivery remains operator-managed in this phase.
