@@ -1150,6 +1150,9 @@ pub fn load_verified_with_checkpoint(
                     return Err(NetworkControlError::SnapshotEquivocation);
                 }
             } else {
+                if control.updated_at_unix < checkpoint.updated_at_unix {
+                    return Err(NetworkControlError::TimestampWentBackwards);
+                }
                 save_checkpoint(
                     checkpoint_path,
                     &control,
@@ -2493,6 +2496,21 @@ mod tests {
                 false,
             ),
             Err(NetworkControlError::SnapshotEquivocation)
+        ));
+
+        let mut backwards = updated.clone();
+        backwards.sequence += 1;
+        backwards.updated_at_unix = 100;
+        save(&snapshot_path, &backwards, &founder).unwrap();
+        assert!(matches!(
+            load_verified_with_checkpoint(
+                &snapshot_path,
+                &checkpoint_path,
+                &founder.public.public_key,
+                &follower,
+                false,
+            ),
+            Err(NetworkControlError::TimestampWentBackwards)
         ));
 
         assert!(matches!(
