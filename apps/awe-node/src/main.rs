@@ -127,7 +127,7 @@ fn load_node_network_control(
         Ok(value) => {
             let trusted_key = parse_network_founder_public_key(&value)?;
             let allow_checkpoint_bootstrap = network_checkpoint_bootstrap_enabled();
-            if allow_legacy_bootstrap {
+            if allow_checkpoint_bootstrap {
                 eprintln!(
                     "WARNING: AWE_NETWORK_ALLOW_CHECKPOINT_BOOTSTRAP is enabled; unset it after this verified startup"
                 );
@@ -918,6 +918,8 @@ fn network_control_error_status(error: &NetworkControlError) -> &'static str {
         | NetworkControlError::TimestampWentBackwards
         | NetworkControlError::StaleSnapshot
         | NetworkControlError::SnapshotEquivocation
+        | NetworkControlError::CheckpointMissing
+        | NetworkControlError::InvalidCheckpoint
         | NetworkControlError::Topology(_) => "409 Conflict",
         NetworkControlError::ActionTooLarge | NetworkControlError::StoreTooLarge => {
             "413 Payload Too Large"
