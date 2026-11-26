@@ -126,7 +126,7 @@ fn load_node_network_control(
     match env::var("AWE_NETWORK_FOUNDER_PUBLIC_KEY") {
         Ok(value) => {
             let trusted_key = parse_network_founder_public_key(&value)?;
-            let allow_legacy_bootstrap = network_checkpoint_bootstrap_enabled();
+            let allow_checkpoint_bootstrap = network_checkpoint_bootstrap_enabled();
             if allow_legacy_bootstrap {
                 eprintln!(
                     "WARNING: AWE_NETWORK_ALLOW_CHECKPOINT_BOOTSTRAP is enabled; unset it after this verified startup"
@@ -137,7 +137,7 @@ fn load_node_network_control(
                 checkpoint_path,
                 &trusted_key,
                 local_identity,
-                allow_legacy_bootstrap,
+                allow_checkpoint_bootstrap,
             )
             .map_err(anyhow::Error::msg)?;
             Ok((control, trusted_key))

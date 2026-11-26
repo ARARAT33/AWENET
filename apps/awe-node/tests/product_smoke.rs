@@ -2861,11 +2861,19 @@ fn product_runtime_follower_uses_pinned_founder_snapshot_and_hot_reloads() {
         let _ = child.wait();
         network_control::save(&control_path, &initial_control, &founder)
             .expect("restore old but correctly signed Founder snapshot");
+        let replay_transport_listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("reserve replay transport port");
+        let replay_ui_listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("reserve replay UI port");
+        let replay_transport_port = replay_transport_listener.local_addr().unwrap().port();
+        let replay_ui_port = replay_ui_listener.local_addr().unwrap().port();
+        drop(replay_transport_listener);
+        drop(replay_ui_listener);
         let (replay_child, replay_log) = spawn_node_with_env(
             &bin,
             &data,
-            transport_port,
-            ui_port,
+            replay_transport_port,
+            replay_ui_port,
             &[
                 ("AWE_REQUIRE_ADMITTED_PEERS", "1"),
                 (
