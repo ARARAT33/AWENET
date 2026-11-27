@@ -1010,9 +1010,8 @@ fn load_bootstrap_marker(
     ) {
         return Err(NetworkControlError::InvalidCheckpoint);
     }
-    let payload: NetworkControlBootstrapMarkerPayload =
-        serde_json::from_str(&envelope.payload)
-            .map_err(|error| NetworkControlError::Serialization(error.to_string()))?;
+    let payload: NetworkControlBootstrapMarkerPayload = serde_json::from_str(&envelope.payload)
+        .map_err(|error| NetworkControlError::Serialization(error.to_string()))?;
     if payload.version != NETWORK_CONTROL_BOOTSTRAP_MARKER_VERSION {
         return Err(NetworkControlError::InvalidStoreVersion);
     }
@@ -2765,13 +2764,7 @@ mod tests {
         let control = NetworkControlPlane::new(&founder, 100);
         save(&snapshot_path, &control, &founder).unwrap();
         let candidate = load_verified_snapshot(&snapshot_path, &founder.public.public_key).unwrap();
-        save_checkpoint(
-            &checkpoint_path,
-            &control,
-            &candidate.digest,
-            &follower,
-        )
-        .unwrap();
+        save_checkpoint(&checkpoint_path, &control, &candidate.digest, &follower).unwrap();
         assert!(!marker_path.exists());
 
         let restored = load_verified_with_checkpoint(
