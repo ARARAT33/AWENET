@@ -20,6 +20,8 @@ checkpoint is later deleted while the marker remains, startup fails with
 `CheckpointBootstrapConsumed` even if
 `AWE_NETWORK_ALLOW_CHECKPOINT_BOOTSTRAP=1` was accidentally left enabled.
 A present but corrupt or mismatched marker also fails closed.
+Do not copy the marker between Nodes: its signature and embedded identity pair
+are specific to the local Node that completed enrollment.
 
 Checkpoint writes use the existing atomic manifest writer. A newer checkpoint is
 persisted before the verified snapshot is published to the live admission
