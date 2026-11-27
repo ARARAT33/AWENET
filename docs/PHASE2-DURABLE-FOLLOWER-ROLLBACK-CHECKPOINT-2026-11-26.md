@@ -12,25 +12,33 @@ The checkpoint binds:
 - a BLAKE3 digest of the exact snapshot string covered by the Founder signature;
 - a signature made by the local Node identity.
 
-A separate `network-control.checkpoint.bootstrap.json` marker records that the
-one-time enrollment has been consumed. It is signed by the local Node and
-bound to the same Founder/Node identity pair. Existing checkpoint installations
-are migrated by creating this marker on their first valid startup. If the
-checkpoint is later deleted while the marker remains, startup fails with
-`CheckpointBootstrapConsumed` even if
-`AWE_NETWORK_ALLOW_CHECKPOINT_BOOTSTRAP=1` was accidentally left enabled.
-A present but corrupt or mismatched marker also fails closed.
+A separate `network-control.checkpoint.bootstrap.json` marker records that
+the one-time enrollment has been consumed and mirrors the accepted high-water
+sequence, timestamp and exact snapshot digest. It is signed by the local Node
+and bound to the same Founder/Node identity pair. Version-1 markers from the
+initial rollout are accepted and upgraded from the separately signed checkpoint
+on the next valid startup.
+
+The marker and checkpoint are independent signed anchors. If only the
+checkpoint is replayed to an older valid copy, the newer marker prevents the
+rollback and the checkpoint is repaired only when the supplied Founder snapshot
+matches the marker's high-water value. If only the marker is replayed, the newer
+checkpoint repairs the marker. If a process stops between the two atomic writes,
+the higher valid anchor is retained and the lagging file is reconciled against
+the currently verified Founder snapshot. Equal-sequence disagreement in
+timestamp or digest fails closed. A consumed marker without a checkpoint still
+returns `CheckpointBootstrapConsumed`; it never silently reopens enrollment.
 Do not copy the marker between Nodes: its signature and embedded identity pair
 are specific to the local Node that completed enrollment.
 
-Checkpoint writes use the existing atomic manifest writer. A newer checkpoint is
-persisted before the verified snapshot is published to the live admission
-policy. If persistence fails, the candidate is not applied. On restart, a
-Founder-signed snapshot older than the local checkpoint is rejected; a different
-snapshot at the same sequence is rejected as equivocation. A checkpoint signed
-by another local Node, corrupted, oversized, or bound to another Founder fails
-closed. A missing checkpoint also fails closed; it is never silently recreated
-after initial enrollment.
+Both files use the existing atomic manifest writer. The marker is persisted
+before the checkpoint whenever the high-water value advances. A Founder-signed
+snapshot older than the higher of the two local anchors is rejected; a
+different snapshot at the same sequence is rejected as equivocation. A checkpoint
+or marker signed by another local Node, corrupted, oversized, or bound to another
+Founder fails closed. A missing checkpoint is never silently recreated after
+initial enrollment.
+
 
 ## First startup and existing followers
 
