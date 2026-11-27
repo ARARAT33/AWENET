@@ -2963,6 +2963,8 @@ mod tests {
             serde_json::from_slice(&bytes).unwrap();
         let mut payload: NetworkControlBootstrapMarkerPayload =
             serde_json::from_str(&envelope.payload).unwrap();
+        assert_eq!(payload.version, NETWORK_CONTROL_BOOTSTRAP_MARKER_VERSION);
+        assert_eq!(payload.sequence, control.sequence);
         payload.snapshot_digest[0] ^= 1;
         envelope.payload = serde_json::to_string(&payload).unwrap();
         envelope.signature =
