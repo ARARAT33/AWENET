@@ -33,6 +33,10 @@ const ADMIN_MUTATION_CONTEXT: &[u8] = b"AWENET-NETWORK-CONTROL-ADMIN-MUTATION/v1
 const STORE_CONTEXT: &[u8] = b"AWENET-NETWORK-CONTROL-STORE/v1\0";
 const NODE_ADMISSION_CONTEXT: &[u8] = b"AWENET-NODE-ADMISSION/v1\0";
 const NETWORK_CONTROL_CHECKPOINT_CONTEXT: &[u8] = b"AWENET-NETWORK-CONTROL-CHECKPOINT/v1\0";
+const NETWORK_CONTROL_BOOTSTRAP_MARKER_CONTEXT: &[u8] =
+    b"AWENET-NETWORK-CONTROL-BOOTSTRAP-MARKER/v1\0";
+const NETWORK_CONTROL_BOOTSTRAP_MARKER_VERSION: u16 = 1;
+const MAX_NETWORK_CONTROL_BOOTSTRAP_MARKER_FILE_BYTES: u64 = 4 * 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "action", rename_all = "snake_case")]
@@ -136,6 +140,10 @@ pub enum NetworkControlError {
     )]
     CheckpointMissing,
     #[error(
+        "the follower checkpoint bootstrap was already consumed; refusing to recreate a missing checkpoint"
+    )]
+    CheckpointBootstrapConsumed,
+    #[error(
         "the follower rollback checkpoint is inconsistent with this Node or its active snapshot"
     )]
     InvalidCheckpoint,
@@ -185,6 +193,22 @@ struct NetworkControlCheckpointPayload {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct SignedNetworkControlCheckpointFile {
+    payload: String,
+    #[serde(with = "crate::serde_bytes_64")]
+    signature: [u8; 64],
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct NetworkControlBootstrapMarkerPayload {
+    version: u16,
+    founder_awe_id: String,
+    founder_public_key: [u8; 32],
+    node_awe_id: String,
+    node_public_key: [u8; 32],
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct SignedNetworkControlBootstrapMarkerFile {
     payload: String,
     #[serde(with = "crate::serde_bytes_64")]
     signature: [u8; 64],
@@ -908,6 +932,103 @@ fn checkpoint_signing_bytes(payload: &str) -> Result<Vec<u8>, NetworkControlErro
     Ok(bytes)
 }
 
+fn bootstrap_marker_signing_bytes(payload: &str) -> Result<Vec<u8>, NetworkControlError> {
+    let payload_len =
+        u64::try_from(payload.len()).map_err(|_| NetworkControlError::StoreTooLarge)?;
+    let mut bytes =
+        Vec::with_capacity(NETWORK_CONTROL_BOOTSTRAP_MARKER_CONTEXT.len() + 8 + payload.len());
+    bytes.extend_from_slice(NETWORK_CONTROL_BOOTSTRAP_MARKER_CONTEXT);
+    bytes.extend_from_slice(&payload_len.to_be_bytes());
+    bytes.extend_from_slice(payload.as_bytes());
+    Ok(bytes)
+}
+
+/// Records that this follower has completed its one-time checkpoint enrollment.
+/// The marker is signed by the local Node and bound to both trust identities.
+fn save_bootstrap_marker(
+    path: &Path,
+    control: &NetworkControlPlane,
+    local_node_identity: &Identity,
+) -> Result<(), NetworkControlError> {
+    let payload = NetworkControlBootstrapMarkerPayload {
+        version: NETWORK_CONTROL_BOOTSTRAP_MARKER_VERSION,
+        founder_awe_id: control.founder_awe_id.clone(),
+        founder_public_key: control.founder_public_key,
+        node_awe_id: local_node_identity.public.awe_id.to_hex(),
+        node_public_key: local_node_identity.public.public_key,
+    };
+    let payload_json = serde_json::to_string(&payload)
+        .map_err(|error| NetworkControlError::Serialization(error.to_string()))?;
+    let signing_bytes = bootstrap_marker_signing_bytes(&payload_json)?;
+    let envelope = SignedNetworkControlBootstrapMarkerFile {
+        payload: payload_json,
+        signature: local_node_identity.sign(&signing_bytes),
+    };
+    let encoded = serde_json::to_vec_pretty(&envelope)
+        .map_err(|error| NetworkControlError::Serialization(error.to_string()))?;
+    if encoded.len() as u64 > MAX_NETWORK_CONTROL_BOOTSTRAP_MARKER_FILE_BYTES {
+        return Err(NetworkControlError::StoreTooLarge);
+    }
+    crate::storage::save_manifest(path, &encoded)
+        .map_err(|error| NetworkControlError::Io(error.to_string()))
+}
+
+/// Returns true only for a valid marker belonging to this exact Founder/Node pair.
+/// A present but invalid marker is a hard error; it is never treated as absent.
+fn load_bootstrap_marker(
+    path: &Path,
+    trusted_founder_public_key: &[u8; 32],
+    local_node_identity: &Identity,
+) -> Result<bool, NetworkControlError> {
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(NetworkControlError::Io(error.to_string())),
+    };
+    let size = file
+        .metadata()
+        .map_err(|error| NetworkControlError::Io(error.to_string()))?
+        .len();
+    if size > MAX_NETWORK_CONTROL_BOOTSTRAP_MARKER_FILE_BYTES {
+        return Err(NetworkControlError::StoreTooLarge);
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_NETWORK_CONTROL_BOOTSTRAP_MARKER_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| NetworkControlError::Io(error.to_string()))?;
+    if bytes.len() as u64 > MAX_NETWORK_CONTROL_BOOTSTRAP_MARKER_FILE_BYTES {
+        return Err(NetworkControlError::StoreTooLarge);
+    }
+
+    let envelope: SignedNetworkControlBootstrapMarkerFile = serde_json::from_slice(&bytes)
+        .map_err(|error| NetworkControlError::Serialization(error.to_string()))?;
+    let signing_bytes = bootstrap_marker_signing_bytes(&envelope.payload)?;
+    if !Identity::verify(
+        &local_node_identity.public.public_key,
+        &signing_bytes,
+        &envelope.signature,
+    ) {
+        return Err(NetworkControlError::InvalidCheckpoint);
+    }
+    let payload: NetworkControlBootstrapMarkerPayload = serde_json::from_str(&envelope.payload)
+        .map_err(|error| NetworkControlError::Serialization(error.to_string()))?;
+    if payload.version != NETWORK_CONTROL_BOOTSTRAP_MARKER_VERSION {
+        return Err(NetworkControlError::InvalidStoreVersion);
+    }
+    let expected_founder_awe_id = AweId::from_public_key(trusted_founder_public_key).to_hex();
+    if payload.founder_awe_id != expected_founder_awe_id
+        || payload.founder_public_key != *trusted_founder_public_key
+    {
+        return Err(NetworkControlError::WrongFounder);
+    }
+    if payload.node_awe_id != local_node_identity.public.awe_id.to_hex()
+        || payload.node_public_key != local_node_identity.public.public_key
+    {
+        return Err(NetworkControlError::InvalidCheckpoint);
+    }
+    Ok(true)
+}
+
 fn save_checkpoint(
     path: &Path,
     control: &NetworkControlPlane,
@@ -1133,6 +1254,12 @@ pub fn load_verified_with_checkpoint(
 ) -> Result<NetworkControlPlane, NetworkControlError> {
     let candidate = load_verified_snapshot(path, trusted_founder_public_key)?;
     let control = candidate.control.clone();
+    let marker_path = checkpoint_path.with_extension("bootstrap.json");
+    let marker_exists = load_bootstrap_marker(
+        &marker_path,
+        trusted_founder_public_key,
+        local_node_identity,
+    )?;
 
     match load_checkpoint(
         checkpoint_path,
@@ -1160,11 +1287,23 @@ pub fn load_verified_with_checkpoint(
                     local_node_identity,
                 )?;
             }
+            // Upgrade existing checkpoint installations in place. A later
+            // accidental checkpoint deletion must not re-enable bootstrap.
+            if !marker_exists {
+                save_bootstrap_marker(&marker_path, &control, local_node_identity)?;
+            }
         }
         None => {
+            if marker_exists {
+                return Err(NetworkControlError::CheckpointBootstrapConsumed);
+            }
             if !allow_checkpoint_bootstrap {
                 return Err(NetworkControlError::CheckpointMissing);
             }
+            // Write the consumed marker first. If checkpoint creation then
+            // fails, the next startup fails closed and requires an operator
+            // to re-verify the snapshot before explicitly clearing the marker.
+            save_bootstrap_marker(&marker_path, &control, local_node_identity)?;
             save_checkpoint(
                 checkpoint_path,
                 &control,
@@ -2437,6 +2576,19 @@ mod tests {
         .unwrap();
         assert_eq!(restored.sequence(), 0);
         assert!(checkpoint_path.exists());
+        let marker_path = checkpoint_path.with_extension("bootstrap.json");
+        assert!(marker_path.exists());
+        let marker_bytes = fs::read(&marker_path).unwrap();
+        fs::write(&marker_path, b"{corrupt").unwrap();
+        assert!(load_verified_with_checkpoint(
+            &snapshot_path,
+            &checkpoint_path,
+            &founder.public.public_key,
+            &follower,
+            false,
+        )
+        .is_err());
+        fs::write(&marker_path, marker_bytes).unwrap();
 
         let mut updated = restored;
         apply(
@@ -2531,9 +2683,9 @@ mod tests {
                 &checkpoint_path,
                 &founder.public.public_key,
                 &follower,
-                false,
+                true,
             ),
-            Err(NetworkControlError::CheckpointMissing)
+            Err(NetworkControlError::CheckpointBootstrapConsumed)
         ));
 
         fs::write(&checkpoint_path, b"{corrupt").unwrap();
@@ -2548,6 +2700,7 @@ mod tests {
 
         let _ = fs::remove_file(snapshot_path);
         let _ = fs::remove_file(checkpoint_path);
+        let _ = fs::remove_file(marker_path);
     }
 
     #[test]
@@ -2592,8 +2745,41 @@ mod tests {
             1
         );
         assert!(checkpoint_path.exists());
+        let marker_path = checkpoint_path.with_extension("bootstrap.json");
+        assert!(marker_path.exists());
 
         let _ = fs::remove_file(snapshot_path);
         let _ = fs::remove_file(checkpoint_path);
+        let _ = fs::remove_file(marker_path);
+    }
+
+    #[test]
+    fn existing_checkpoint_without_marker_is_migrated_on_valid_startup() {
+        let founder = identity("checkpoint-migration-founder");
+        let follower = identity("checkpoint-migration-follower");
+        let snapshot_path = temporary_path("checkpoint-migration-snapshot");
+        let checkpoint_path = temporary_path("checkpoint-migration-state");
+        let marker_path = checkpoint_path.with_extension("bootstrap.json");
+
+        let control = NetworkControlPlane::new(&founder, 100);
+        save(&snapshot_path, &control, &founder).unwrap();
+        let candidate = load_verified_snapshot(&snapshot_path, &founder.public.public_key).unwrap();
+        save_checkpoint(&checkpoint_path, &control, &candidate.digest, &follower).unwrap();
+        assert!(!marker_path.exists());
+
+        let restored = load_verified_with_checkpoint(
+            &snapshot_path,
+            &checkpoint_path,
+            &founder.public.public_key,
+            &follower,
+            false,
+        )
+        .unwrap();
+        assert_eq!(restored, control);
+        assert!(marker_path.exists());
+
+        let _ = fs::remove_file(snapshot_path);
+        let _ = fs::remove_file(checkpoint_path);
+        let _ = fs::remove_file(marker_path);
     }
 }

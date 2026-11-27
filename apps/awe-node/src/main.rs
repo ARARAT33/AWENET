@@ -927,6 +927,7 @@ fn network_control_error_status(error: &NetworkControlError) -> &'static str {
         | NetworkControlError::StaleSnapshot
         | NetworkControlError::SnapshotEquivocation
         | NetworkControlError::CheckpointMissing
+        | NetworkControlError::CheckpointBootstrapConsumed
         | NetworkControlError::InvalidCheckpoint
         | NetworkControlError::Topology(_) => "409 Conflict",
         NetworkControlError::ActionTooLarge | NetworkControlError::StoreTooLarge => {

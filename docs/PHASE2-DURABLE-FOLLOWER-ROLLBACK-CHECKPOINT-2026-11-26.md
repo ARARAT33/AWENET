@@ -12,6 +12,17 @@ The checkpoint binds:
 - a BLAKE3 digest of the exact snapshot string covered by the Founder signature;
 - a signature made by the local Node identity.
 
+A separate `network-control.checkpoint.bootstrap.json` marker records that the
+one-time enrollment has been consumed. It is signed by the local Node and
+bound to the same Founder/Node identity pair. Existing checkpoint installations
+are migrated by creating this marker on their first valid startup. If the
+checkpoint is later deleted while the marker remains, startup fails with
+`CheckpointBootstrapConsumed` even if
+`AWE_NETWORK_ALLOW_CHECKPOINT_BOOTSTRAP=1` was accidentally left enabled.
+A present but corrupt or mismatched marker also fails closed.
+Do not copy the marker between Nodes: its signature and embedded identity pair
+are specific to the local Node that completed enrollment.
+
 Checkpoint writes use the existing atomic manifest writer. A newer checkpoint is
 persisted before the verified snapshot is published to the live admission
 policy. If persistence fails, the candidate is not applied. On restart, a
@@ -33,7 +44,12 @@ followers whose data directory predates the checkpoint feature.
 
 Do not use the override to recover from a stale-snapshot rejection: doing so
 would intentionally reset the local rollback baseline. A malformed or
-present-but-invalid checkpoint is never silently replaced.
+present-but-invalid checkpoint is never silently replaced. The bootstrap marker
+is written before the initial checkpoint so an interrupted enrollment cannot
+silently reopen the bootstrap path. If startup reports
+`CheckpointBootstrapConsumed` before the first checkpoint was created, verify
+the Founder snapshot and local Node identity out of band, then remove only the
+bootstrap marker and repeat the one-time enrollment deliberately.
 
 ## Security boundary
 
