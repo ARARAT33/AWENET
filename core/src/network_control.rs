@@ -1082,9 +1082,9 @@ fn checkpoint_high_water(
     checkpoint: &NetworkControlCheckpointPayload,
     marker: Option<&NetworkControlBootstrapMarkerPayload>,
 ) -> Result<(u64, u64, [u8; 32]), NetworkControlError> {
-    let Some(marker) = marker.filter(|value| {
-        value.version == NETWORK_CONTROL_BOOTSTRAP_MARKER_VERSION
-    }) else {
+    let Some(marker) =
+        marker.filter(|value| value.version == NETWORK_CONTROL_BOOTSTRAP_MARKER_VERSION)
+    else {
         // Version-1 markers did not carry a high-water value.
         return Ok((
             checkpoint.sequence,
@@ -2928,20 +2928,12 @@ mod tests {
             .unwrap());
         assert_eq!(active.sequence(), 1);
 
-        let checkpoint = load_checkpoint(
-            &checkpoint_path,
-            &founder.public.public_key,
-            &follower,
-        )
-        .unwrap()
-        .unwrap();
-        let marker = load_bootstrap_marker(
-            &marker_path,
-            &founder.public.public_key,
-            &follower,
-        )
-        .unwrap()
-        .unwrap();
+        let checkpoint = load_checkpoint(&checkpoint_path, &founder.public.public_key, &follower)
+            .unwrap()
+            .unwrap();
+        let marker = load_bootstrap_marker(&marker_path, &founder.public.public_key, &follower)
+            .unwrap()
+            .unwrap();
         assert_eq!(checkpoint.sequence, 1);
         assert_eq!(marker.version, NETWORK_CONTROL_BOOTSTRAP_MARKER_VERSION);
         assert_eq!(marker.sequence, 1);
