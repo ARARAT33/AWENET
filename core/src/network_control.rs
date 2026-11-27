@@ -2938,6 +2938,57 @@ mod tests {
     }
 
     #[test]
+    fn same_sequence_checkpoint_marker_disagreement_fails_closed() {
+        let founder = identity("checkpoint-anchor-conflict-founder");
+        let follower = identity("checkpoint-anchor-conflict-follower");
+        let snapshot_path = temporary_path("checkpoint-anchor-conflict-snapshot");
+        let checkpoint_path = temporary_path("checkpoint-anchor-conflict-state");
+        let marker_path = checkpoint_path.with_extension("bootstrap.json");
+
+        let control = NetworkControlPlane::new(&founder, 100);
+        save(&snapshot_path, &control, &founder).unwrap();
+        load_verified_with_checkpoint(
+            &snapshot_path,
+            &checkpoint_path,
+            &founder.public.public_key,
+            &follower,
+            true,
+        )
+        .unwrap();
+
+        // Simulate two locally signed files that claim the same sequence but
+        // disagree on the exact Founder-signed snapshot digest.
+        let bytes = fs::read(&marker_path).unwrap();
+        let mut envelope: SignedNetworkControlBootstrapMarkerFile =
+            serde_json::from_slice(&bytes).unwrap();
+        let mut payload: NetworkControlBootstrapMarkerPayload =
+            serde_json::from_str(&envelope.payload).unwrap();
+        payload.snapshot_digest[0] ^= 1;
+        envelope.payload = serde_json::to_string(&payload).unwrap();
+        envelope.signature = follower.sign(&bootstrap_marker_signing_bytes(&envelope.payload).unwrap());
+        crate::storage::save_manifest(
+            &marker_path,
+            &serde_json::to_vec_pretty(&envelope).unwrap(),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            load_verified_with_checkpoint(
+                &snapshot_path,
+                &checkpoint_path,
+                &founder.public.public_key,
+                &follower,
+                false,
+            ),
+            Err(NetworkControlError::InvalidCheckpoint)
+        ));
+
+        let _ = fs::remove_file(snapshot_path);
+        let _ = fs::remove_file(checkpoint_path);
+        let _ = fs::remove_file(marker_path);
+    }
+
+    #[test]
     fn legacy_v1_bootstrap_marker_migrates_from_signed_checkpoint() {
         let founder = identity("checkpoint-v1-founder");
         let follower = identity("checkpoint-v1-follower");
