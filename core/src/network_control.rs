@@ -2965,12 +2965,10 @@ mod tests {
             serde_json::from_str(&envelope.payload).unwrap();
         payload.snapshot_digest[0] ^= 1;
         envelope.payload = serde_json::to_string(&payload).unwrap();
-        envelope.signature = follower.sign(&bootstrap_marker_signing_bytes(&envelope.payload).unwrap());
-        crate::storage::save_manifest(
-            &marker_path,
-            &serde_json::to_vec_pretty(&envelope).unwrap(),
-        )
-        .unwrap();
+        envelope.signature =
+            follower.sign(&bootstrap_marker_signing_bytes(&envelope.payload).unwrap());
+        crate::storage::save_manifest(&marker_path, &serde_json::to_vec_pretty(&envelope).unwrap())
+            .unwrap();
 
         assert!(matches!(
             load_verified_with_checkpoint(
