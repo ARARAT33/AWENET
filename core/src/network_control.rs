@@ -2579,6 +2579,17 @@ mod tests {
         assert!(checkpoint_path.exists());
         let marker_path = checkpoint_path.with_extension("bootstrap.json");
         assert!(marker_path.exists());
+        let marker_bytes = fs::read(&marker_path).unwrap();
+        fs::write(&marker_path, b"{corrupt").unwrap();
+        assert!(load_verified_with_checkpoint(
+            &snapshot_path,
+            &checkpoint_path,
+            &founder.public.public_key,
+            &follower,
+            false,
+        )
+        .is_err());
+        fs::write(&marker_path, marker_bytes).unwrap();
 
         let mut updated = restored;
         apply(
