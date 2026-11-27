@@ -32,9 +32,14 @@ Do not copy the marker between Nodes: its signature and embedded identity pair
 are specific to the local Node that completed enrollment.
 
 Both files use the existing atomic manifest writer. The marker is persisted
-before the checkpoint whenever the high-water value advances. A Founder-signed
-snapshot older than the higher of the two local anchors is rejected; a
-different snapshot at the same sequence is rejected as equivocation. A checkpoint
+before the checkpoint whenever the high-water value advances, including during
+the in-process five-second follower refresh path. If the process stops after the
+marker write but before the checkpoint write, the next startup uses the higher
+valid anchor and repairs the lagging file only after the supplied Founder snapshot
+matches it. A Founder-signed snapshot older than the higher of the two local
+anchors is rejected; a different snapshot at the same sequence is rejected as
+equivocation. If the two anchors disagree on timestamp ordering, startup fails
+closed rather than accepting a sequence increase with a time rollback. A checkpoint
 or marker signed by another local Node, corrupted, oversized, or bound to another
 Founder fails closed. A missing checkpoint is never silently recreated after
 initial enrollment.
