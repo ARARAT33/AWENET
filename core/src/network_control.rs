@@ -1392,7 +1392,6 @@ pub fn load_verified_with_checkpoint(
     Ok(control)
 }
 
-
 /// Creates the first snapshot only when the path is absent. Existing corrupt
 /// or differently-owned state fails closed and is never reset to an empty net.
 pub fn load_or_create(
@@ -2891,14 +2890,10 @@ mod tests {
             1
         );
         assert_eq!(
-            load_checkpoint(
-                &checkpoint_path,
-                &founder.public.public_key,
-                &follower,
-            )
-            .unwrap()
-            .unwrap()
-            .sequence,
+            load_checkpoint(&checkpoint_path, &founder.public.public_key, &follower,)
+                .unwrap()
+                .unwrap()
+                .sequence,
             1
         );
 
@@ -2917,13 +2912,10 @@ mod tests {
             .sequence(),
             1
         );
-        let repaired_marker = load_bootstrap_marker(
-            &marker_path,
-            &founder.public.public_key,
-            &follower,
-        )
-        .unwrap()
-        .unwrap();
+        let repaired_marker =
+            load_bootstrap_marker(&marker_path, &founder.public.public_key, &follower)
+                .unwrap()
+                .unwrap();
         assert_eq!(repaired_marker.sequence, 1);
 
         // Once either file has been repaired, an older Founder-signed snapshot
@@ -2956,13 +2948,7 @@ mod tests {
         let control = NetworkControlPlane::new(&founder, 100);
         save(&snapshot_path, &control, &founder).unwrap();
         let candidate = load_verified_snapshot(&snapshot_path, &founder.public.public_key).unwrap();
-        save_checkpoint(
-            &checkpoint_path,
-            &control,
-            &candidate.digest,
-            &follower,
-        )
-        .unwrap();
+        save_checkpoint(&checkpoint_path, &control, &candidate.digest, &follower).unwrap();
 
         let legacy_payload = serde_json::json!({
             "version": NETWORK_CONTROL_BOOTSTRAP_MARKER_LEGACY_VERSION,
@@ -2976,11 +2962,8 @@ mod tests {
             signature: follower.sign(&bootstrap_marker_signing_bytes(&payload_json).unwrap()),
             payload: payload_json,
         };
-        crate::storage::save_manifest(
-            &marker_path,
-            &serde_json::to_vec_pretty(&envelope).unwrap(),
-        )
-        .unwrap();
+        crate::storage::save_manifest(&marker_path, &serde_json::to_vec_pretty(&envelope).unwrap())
+            .unwrap();
 
         let restored = load_verified_with_checkpoint(
             &snapshot_path,
@@ -2991,13 +2974,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(restored, control);
-        let migrated = load_bootstrap_marker(
-            &marker_path,
-            &founder.public.public_key,
-            &follower,
-        )
-        .unwrap()
-        .unwrap();
+        let migrated = load_bootstrap_marker(&marker_path, &founder.public.public_key, &follower)
+            .unwrap()
+            .unwrap();
         assert_eq!(migrated.version, NETWORK_CONTROL_BOOTSTRAP_MARKER_VERSION);
         assert_eq!(migrated.sequence, control.sequence);
         assert_eq!(migrated.updated_at_unix, control.updated_at_unix);
