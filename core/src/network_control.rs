@@ -35,7 +35,8 @@ const NODE_ADMISSION_CONTEXT: &[u8] = b"AWENET-NODE-ADMISSION/v1\0";
 const NETWORK_CONTROL_CHECKPOINT_CONTEXT: &[u8] = b"AWENET-NETWORK-CONTROL-CHECKPOINT/v1\0";
 const NETWORK_CONTROL_BOOTSTRAP_MARKER_CONTEXT: &[u8] =
     b"AWENET-NETWORK-CONTROL-BOOTSTRAP-MARKER/v1\0";
-const NETWORK_CONTROL_BOOTSTRAP_MARKER_VERSION: u16 = 1;
+const NETWORK_CONTROL_BOOTSTRAP_MARKER_VERSION: u16 = 2;
+const NETWORK_CONTROL_BOOTSTRAP_MARKER_LEGACY_VERSION: u16 = 1;
 const MAX_NETWORK_CONTROL_BOOTSTRAP_MARKER_FILE_BYTES: u64 = 4 * 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -205,8 +206,15 @@ struct NetworkControlBootstrapMarkerPayload {
     founder_public_key: [u8; 32],
     node_awe_id: String,
     node_public_key: [u8; 32],
+    // Version 1 markers did not contain a high-water value. Defaults allow
+    // those installations to migrate from their separately signed checkpoint.
+    #[serde(default)]
+    sequence: u64,
+    #[serde(default)]
+    updated_at_unix: u64,
+    #[serde(default)]
+    snapshot_digest: [u8; 32],
 }
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct SignedNetworkControlBootstrapMarkerFile {
     payload: String,
@@ -948,6 +956,7 @@ fn bootstrap_marker_signing_bytes(payload: &str) -> Result<Vec<u8>, NetworkContr
 fn save_bootstrap_marker(
     path: &Path,
     control: &NetworkControlPlane,
+    snapshot_digest: &[u8; 32],
     local_node_identity: &Identity,
 ) -> Result<(), NetworkControlError> {
     let payload = NetworkControlBootstrapMarkerPayload {
@@ -956,6 +965,9 @@ fn save_bootstrap_marker(
         founder_public_key: control.founder_public_key,
         node_awe_id: local_node_identity.public.awe_id.to_hex(),
         node_public_key: local_node_identity.public.public_key,
+        sequence: control.sequence,
+        updated_at_unix: control.updated_at_unix,
+        snapshot_digest: *snapshot_digest,
     };
     let payload_json = serde_json::to_string(&payload)
         .map_err(|error| NetworkControlError::Serialization(error.to_string()))?;
@@ -973,16 +985,16 @@ fn save_bootstrap_marker(
         .map_err(|error| NetworkControlError::Io(error.to_string()))
 }
 
-/// Returns true only for a valid marker belonging to this exact Founder/Node pair.
+/// Returns a valid marker bound to this exact Founder/Node pair.
 /// A present but invalid marker is a hard error; it is never treated as absent.
 fn load_bootstrap_marker(
     path: &Path,
     trusted_founder_public_key: &[u8; 32],
     local_node_identity: &Identity,
-) -> Result<bool, NetworkControlError> {
+) -> Result<Option<NetworkControlBootstrapMarkerPayload>, NetworkControlError> {
     let file = match File::open(path) {
         Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(NetworkControlError::Io(error.to_string())),
     };
     let size = file
@@ -1012,7 +1024,9 @@ fn load_bootstrap_marker(
     }
     let payload: NetworkControlBootstrapMarkerPayload = serde_json::from_str(&envelope.payload)
         .map_err(|error| NetworkControlError::Serialization(error.to_string()))?;
-    if payload.version != NETWORK_CONTROL_BOOTSTRAP_MARKER_VERSION {
+    if payload.version != NETWORK_CONTROL_BOOTSTRAP_MARKER_VERSION
+        && payload.version != NETWORK_CONTROL_BOOTSTRAP_MARKER_LEGACY_VERSION
+    {
         return Err(NetworkControlError::InvalidStoreVersion);
     }
     let expected_founder_awe_id = AweId::from_public_key(trusted_founder_public_key).to_hex();
@@ -1026,9 +1040,8 @@ fn load_bootstrap_marker(
     {
         return Err(NetworkControlError::InvalidCheckpoint);
     }
-    Ok(true)
+    Ok(Some(payload))
 }
-
 fn save_checkpoint(
     path: &Path,
     control: &NetworkControlPlane,
@@ -1255,66 +1268,130 @@ pub fn load_verified_with_checkpoint(
     let candidate = load_verified_snapshot(path, trusted_founder_public_key)?;
     let control = candidate.control.clone();
     let marker_path = checkpoint_path.with_extension("bootstrap.json");
-    let marker_exists = load_bootstrap_marker(
+    let marker = load_bootstrap_marker(
         &marker_path,
         trusted_founder_public_key,
         local_node_identity,
     )?;
-
-    match load_checkpoint(
+    let checkpoint = load_checkpoint(
         checkpoint_path,
         trusted_founder_public_key,
         local_node_identity,
-    )? {
-        Some(checkpoint) => {
-            if control.sequence < checkpoint.sequence {
-                return Err(NetworkControlError::StaleSnapshot);
-            }
-            if control.sequence == checkpoint.sequence {
-                if candidate.digest != checkpoint.snapshot_digest
-                    || control.updated_at_unix != checkpoint.updated_at_unix
-                {
-                    return Err(NetworkControlError::SnapshotEquivocation);
+    )?;
+
+    // The checkpoint and marker are independent, Node-signed copies of the
+    // accepted high-water value. Updating the marker first means a crash
+    // between the two atomic writes leaves one newer trustworthy anchor.
+    let (high_sequence, high_updated_at, high_digest) = match (&checkpoint, &marker) {
+        (Some(checkpoint), Some(marker))
+            if marker.version == NETWORK_CONTROL_BOOTSTRAP_MARKER_VERSION =>
+        {
+            match marker.sequence.cmp(&checkpoint.sequence) {
+                std::cmp::Ordering::Equal => {
+                    if marker.updated_at_unix != checkpoint.updated_at_unix
+                        || marker.snapshot_digest != checkpoint.snapshot_digest
+                    {
+                        return Err(NetworkControlError::InvalidCheckpoint);
+                    }
+                    (
+                        checkpoint.sequence,
+                        checkpoint.updated_at_unix,
+                        checkpoint.snapshot_digest,
+                    )
                 }
-            } else {
-                if control.updated_at_unix < checkpoint.updated_at_unix {
-                    return Err(NetworkControlError::TimestampWentBackwards);
-                }
-                save_checkpoint(
-                    checkpoint_path,
-                    &control,
-                    &candidate.digest,
-                    local_node_identity,
-                )?;
-            }
-            // Upgrade existing checkpoint installations in place. A later
-            // accidental checkpoint deletion must not re-enable bootstrap.
-            if !marker_exists {
-                save_bootstrap_marker(&marker_path, &control, local_node_identity)?;
+                std::cmp::Ordering::Greater => (
+                    marker.sequence,
+                    marker.updated_at_unix,
+                    marker.snapshot_digest,
+                ),
+                std::cmp::Ordering::Less => (
+                    checkpoint.sequence,
+                    checkpoint.updated_at_unix,
+                    checkpoint.snapshot_digest,
+                ),
             }
         }
-        None => {
-            if marker_exists {
-                return Err(NetworkControlError::CheckpointBootstrapConsumed);
-            }
+        // A v1 marker or absent marker has no high-water value. The separately
+        // signed checkpoint is the migration anchor.
+        (Some(checkpoint), _) => (
+            checkpoint.sequence,
+            checkpoint.updated_at_unix,
+            checkpoint.snapshot_digest,
+        ),
+        (None, Some(_)) => {
+            // Preserve the one-time-enrollment rule: a consumed marker without
+            // its checkpoint is not permission to silently recreate state.
+            return Err(NetworkControlError::CheckpointBootstrapConsumed);
+        }
+        (None, None) => {
             if !allow_checkpoint_bootstrap {
                 return Err(NetworkControlError::CheckpointMissing);
             }
-            // Write the consumed marker first. If checkpoint creation then
-            // fails, the next startup fails closed and requires an operator
-            // to re-verify the snapshot before explicitly clearing the marker.
-            save_bootstrap_marker(&marker_path, &control, local_node_identity)?;
+            // Persist the high-water marker first. If checkpoint creation is
+            // interrupted, the next startup refuses an implicit re-bootstrap.
+            save_bootstrap_marker(
+                &marker_path,
+                &control,
+                &candidate.digest,
+                local_node_identity,
+            )?;
             save_checkpoint(
                 checkpoint_path,
                 &control,
                 &candidate.digest,
                 local_node_identity,
             )?;
+            return Ok(control);
         }
+    };
+
+    if control.sequence < high_sequence {
+        return Err(NetworkControlError::StaleSnapshot);
+    }
+    if control.sequence == high_sequence {
+        if candidate.digest != high_digest || control.updated_at_unix != high_updated_at {
+            return Err(NetworkControlError::SnapshotEquivocation);
+        }
+    } else if control.updated_at_unix < high_updated_at {
+        return Err(NetworkControlError::TimestampWentBackwards);
+    }
+
+    let marker_matches = marker.as_ref().is_some_and(|value| {
+        value.version == NETWORK_CONTROL_BOOTSTRAP_MARKER_VERSION
+            && value.sequence == control.sequence
+            && value.updated_at_unix == control.updated_at_unix
+            && value.snapshot_digest == candidate.digest
+    });
+    let checkpoint_matches = checkpoint.as_ref().is_some_and(|value| {
+        value.sequence == control.sequence
+            && value.updated_at_unix == control.updated_at_unix
+            && value.snapshot_digest == candidate.digest
+    });
+
+    // Always write the marker before advancing the checkpoint. If a previous
+    // process stopped between these writes, the higher of the two signed
+    // anchors above is authoritative and the lagging copy is repaired only
+    // after the current Founder snapshot proves the same sequence/digest.
+    if !marker_matches {
+        save_bootstrap_marker(
+            &marker_path,
+            &control,
+            &candidate.digest,
+            local_node_identity,
+        )?;
+    }
+    if !checkpoint_matches {
+        save_checkpoint(
+            checkpoint_path,
+            &control,
+            &candidate.digest,
+            local_node_identity,
+        )?;
     }
 
     Ok(control)
 }
+
 
 /// Creates the first snapshot only when the path is absent. Existing corrupt
 /// or differently-owned state fails closed and is never reset to an empty net.
@@ -2747,6 +2824,184 @@ mod tests {
         assert!(checkpoint_path.exists());
         let marker_path = checkpoint_path.with_extension("bootstrap.json");
         assert!(marker_path.exists());
+
+        let _ = fs::remove_file(snapshot_path);
+        let _ = fs::remove_file(checkpoint_path);
+        let _ = fs::remove_file(marker_path);
+    }
+
+    #[test]
+    fn checkpoint_and_marker_detect_independent_single_file_rollback() {
+        let founder = identity("checkpoint-dual-founder");
+        let follower = identity("checkpoint-dual-follower");
+        let snapshot_path = temporary_path("checkpoint-dual-snapshot");
+        let checkpoint_path = temporary_path("checkpoint-dual-state");
+        let marker_path = checkpoint_path.with_extension("bootstrap.json");
+
+        let initial = NetworkControlPlane::new(&founder, 100);
+        save(&snapshot_path, &initial, &founder).unwrap();
+        load_verified_with_checkpoint(
+            &snapshot_path,
+            &checkpoint_path,
+            &founder.public.public_key,
+            &follower,
+            true,
+        )
+        .unwrap();
+        let old_checkpoint = fs::read(&checkpoint_path).unwrap();
+        let old_marker = fs::read(&marker_path).unwrap();
+
+        let mut updated = initial.clone();
+        apply(
+            &mut updated,
+            &founder,
+            NetworkAction::CreateCentre {
+                centre_id: "dc-dual-anchor".into(),
+            },
+            101,
+        )
+        .unwrap();
+        save(&snapshot_path, &updated, &founder).unwrap();
+        assert_eq!(
+            load_verified_with_checkpoint(
+                &snapshot_path,
+                &checkpoint_path,
+                &founder.public.public_key,
+                &follower,
+                false,
+            )
+            .unwrap()
+            .sequence(),
+            1
+        );
+
+        // Replaying only the checkpoint must not roll back the marker's newer
+        // high-water value. The current Founder snapshot repairs the checkpoint.
+        fs::write(&checkpoint_path, old_checkpoint).unwrap();
+        assert_eq!(
+            load_verified_with_checkpoint(
+                &snapshot_path,
+                &checkpoint_path,
+                &founder.public.public_key,
+                &follower,
+                false,
+            )
+            .unwrap()
+            .sequence(),
+            1
+        );
+        assert_eq!(
+            load_checkpoint(
+                &checkpoint_path,
+                &founder.public.public_key,
+                &follower,
+            )
+            .unwrap()
+            .unwrap()
+            .sequence,
+            1
+        );
+
+        // Replaying only the marker is detected by the newer checkpoint and
+        // the marker is repaired from the currently verified Founder snapshot.
+        fs::write(&marker_path, old_marker).unwrap();
+        assert_eq!(
+            load_verified_with_checkpoint(
+                &snapshot_path,
+                &checkpoint_path,
+                &founder.public.public_key,
+                &follower,
+                false,
+            )
+            .unwrap()
+            .sequence(),
+            1
+        );
+        let repaired_marker = load_bootstrap_marker(
+            &marker_path,
+            &founder.public.public_key,
+            &follower,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(repaired_marker.sequence, 1);
+
+        // Once either file has been repaired, an older Founder-signed snapshot
+        // is still rejected after a restart-style reload.
+        save(&snapshot_path, &initial, &founder).unwrap();
+        assert!(matches!(
+            load_verified_with_checkpoint(
+                &snapshot_path,
+                &checkpoint_path,
+                &founder.public.public_key,
+                &follower,
+                false,
+            ),
+            Err(NetworkControlError::StaleSnapshot)
+        ));
+
+        let _ = fs::remove_file(snapshot_path);
+        let _ = fs::remove_file(checkpoint_path);
+        let _ = fs::remove_file(marker_path);
+    }
+
+    #[test]
+    fn legacy_v1_bootstrap_marker_migrates_from_signed_checkpoint() {
+        let founder = identity("checkpoint-v1-founder");
+        let follower = identity("checkpoint-v1-follower");
+        let snapshot_path = temporary_path("checkpoint-v1-snapshot");
+        let checkpoint_path = temporary_path("checkpoint-v1-state");
+        let marker_path = checkpoint_path.with_extension("bootstrap.json");
+
+        let control = NetworkControlPlane::new(&founder, 100);
+        save(&snapshot_path, &control, &founder).unwrap();
+        let candidate = load_verified_snapshot(&snapshot_path, &founder.public.public_key).unwrap();
+        save_checkpoint(
+            &checkpoint_path,
+            &control,
+            &candidate.digest,
+            &follower,
+        )
+        .unwrap();
+
+        let legacy_payload = serde_json::json!({
+            "version": NETWORK_CONTROL_BOOTSTRAP_MARKER_LEGACY_VERSION,
+            "founder_awe_id": founder.public.awe_id.to_hex(),
+            "founder_public_key": founder.public.public_key,
+            "node_awe_id": follower.public.awe_id.to_hex(),
+            "node_public_key": follower.public.public_key
+        });
+        let payload_json = serde_json::to_string(&legacy_payload).unwrap();
+        let envelope = SignedNetworkControlBootstrapMarkerFile {
+            signature: follower.sign(&bootstrap_marker_signing_bytes(&payload_json).unwrap()),
+            payload: payload_json,
+        };
+        crate::storage::save_manifest(
+            &marker_path,
+            &serde_json::to_vec_pretty(&envelope).unwrap(),
+        )
+        .unwrap();
+
+        let restored = load_verified_with_checkpoint(
+            &snapshot_path,
+            &checkpoint_path,
+            &founder.public.public_key,
+            &follower,
+            false,
+        )
+        .unwrap();
+        assert_eq!(restored, control);
+        let migrated = load_bootstrap_marker(
+            &marker_path,
+            &founder.public.public_key,
+            &follower,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(migrated.version, NETWORK_CONTROL_BOOTSTRAP_MARKER_VERSION);
+        assert_eq!(migrated.sequence, control.sequence);
+        assert_eq!(migrated.updated_at_unix, control.updated_at_unix);
+        assert_eq!(migrated.snapshot_digest, candidate.digest);
 
         let _ = fs::remove_file(snapshot_path);
         let _ = fs::remove_file(checkpoint_path);
