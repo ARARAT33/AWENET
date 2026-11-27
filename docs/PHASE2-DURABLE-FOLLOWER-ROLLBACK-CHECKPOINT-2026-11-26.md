@@ -44,6 +44,11 @@ or marker signed by another local Node, corrupted, oversized, or bound to anothe
 Founder fails closed. A missing checkpoint is never silently recreated after
 initial enrollment.
 
+The regression suite exercises live refresh itself: after a follower accepts a
+newer snapshot, it replays only the old checkpoint while also presenting an old
+Founder snapshot, then separately replays only the old marker. Both attempts
+must preserve the newer high-water sequence. It also rejects anchor pairs whose
+sequence ordering and timestamp ordering contradict each other.
 
 ## First startup and existing followers
 
