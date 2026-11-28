@@ -333,8 +333,7 @@ fn spawn_network_control_sync_loop(
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         interval.tick().await;
-        let mut last_attempts =
-            BTreeMap::<[u8; 32], (u64, [u8; 32], std::time::Instant)>::new();
+        let mut last_attempts = BTreeMap::<[u8; 32], (u64, [u8; 32], std::time::Instant)>::new();
 
         loop {
             interval.tick().await;
@@ -347,18 +346,18 @@ fn spawn_network_control_sync_loop(
             let founder_public_key = node.identity.public.public_key;
             let loaded = tokio::task::spawn_blocking(move || -> Result<_> {
                 let bytes = fs::read(read_path)?;
-                let snapshot = network_control::load_verified_snapshot_bytes(
-                    &bytes,
-                    &founder_public_key,
-                )
-                .map_err(anyhow::Error::msg)?;
+                let snapshot =
+                    network_control::load_verified_snapshot_bytes(&bytes, &founder_public_key)
+                        .map_err(anyhow::Error::msg)?;
                 Ok((bytes, snapshot))
             })
             .await;
             let (bytes, snapshot) = match loaded {
                 Ok(Ok(value)) => value,
                 Ok(Err(error)) => {
-                    eprintln!("AWENET Founder snapshot sync could not load its signed store: {error}");
+                    eprintln!(
+                        "AWENET Founder snapshot sync could not load its signed store: {error}"
+                    );
                     continue;
                 }
                 Err(error) => {
@@ -384,18 +383,25 @@ fn spawn_network_control_sync_loop(
             let current_control = match control.lock() {
                 Ok(state) => state.clone(),
                 Err(_) => {
-                    eprintln!("AWENET Founder snapshot sync paused: network-control lock is poisoned");
+                    eprintln!(
+                        "AWENET Founder snapshot sync paused: network-control lock is poisoned"
+                    );
                     continue;
                 }
             };
             let peers = node.peers().await;
             let now = std::time::Instant::now();
-            let peer_ids = peers.iter().map(|peer| peer.awe_id).collect::<BTreeSet<_>>();
+            let peer_ids = peers
+                .iter()
+                .map(|peer| peer.awe_id)
+                .collect::<BTreeSet<_>>();
             last_attempts.retain(|peer_id, _| peer_ids.contains(peer_id));
             if let Ok(mut tracker) = acknowledgements.lock() {
                 tracker.retain_peers(&peer_ids);
             } else {
-                eprintln!("AWENET Founder snapshot sync paused: acknowledgement tracker is poisoned");
+                eprintln!(
+                    "AWENET Founder snapshot sync paused: acknowledgement tracker is poisoned"
+                );
                 continue;
             }
 
@@ -439,7 +445,9 @@ fn spawn_network_control_sync_loop(
                     .map(|mut tracker| tracker.begin_transfer(peer.awe_id, sequence, digest))
                     .is_ok();
                 if !registered {
-                    eprintln!("AWENET Founder snapshot sync paused: could not register pending transfer");
+                    eprintln!(
+                        "AWENET Founder snapshot sync paused: could not register pending transfer"
+                    );
                     continue;
                 }
                 last_attempts.insert(peer.awe_id, (sequence, digest, std::time::Instant::now()));
@@ -4424,8 +4432,9 @@ async fn run_product() -> Result<()> {
     let policy_path = data_dir.join("policy.json");
     let initial_policy = policy::load_or_create(&policy_path).map_err(anyhow::Error::msg)?;
     let policy_state: PolicyState = Arc::new(Mutex::new(initial_policy));
-    let network_control_sync_acks: NetworkControlSyncAcks =
-        Arc::new(Mutex::new(network_control_sync::SnapshotAckTracker::default()));
+    let network_control_sync_acks: NetworkControlSyncAcks = Arc::new(Mutex::new(
+        network_control_sync::SnapshotAckTracker::default(),
+    ));
     if enforce_peer_admission && trusted_founder_public_key == node.identity.public.public_key {
         spawn_network_control_sync_loop(
             node.clone(),
@@ -4848,10 +4857,7 @@ async fn run_product() -> Result<()> {
                             let admitted = dispatcher_network_control
                                 .lock()
                                 .map(|control| {
-                                    control.is_node_admitted(
-                                        &hex::encode(sender),
-                                        &peer.public_key,
-                                    )
+                                    control.is_node_admitted(&hex::encode(sender), &peer.public_key)
                                 })
                                 .unwrap_or(false);
                             if !admitted {

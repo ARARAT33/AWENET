@@ -5,7 +5,10 @@
 //! each message and the receiver can bound total reassembly memory.
 
 use serde::{Deserialize, Serialize};
-use std::{collections::{BTreeMap, BTreeSet}, time::{Duration, Instant}};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    time::{Duration, Instant},
+};
 use thiserror::Error;
 
 pub const NETWORK_CONTROL_SYNC_STREAM: u32 = 204;
@@ -142,9 +145,7 @@ pub enum NetworkControlSyncError {
     SnapshotMetadataMismatch,
 }
 
-pub fn encode(
-    message: &NetworkControlSyncMessage,
-) -> Result<Vec<u8>, NetworkControlSyncError> {
+pub fn encode(message: &NetworkControlSyncMessage) -> Result<Vec<u8>, NetworkControlSyncError> {
     match message {
         NetworkControlSyncMessage::SnapshotChunk(chunk)
             if chunk.version != NETWORK_CONTROL_SYNC_VERSION =>
@@ -207,8 +208,8 @@ pub fn chunk_snapshot(
         return Err(NetworkControlSyncError::InvalidChunkMetadata);
     }
     let transfer_digest = *blake3::hash(bytes).as_bytes();
-    let total_bytes = u32::try_from(bytes.len())
-        .map_err(|_| NetworkControlSyncError::SnapshotTooLarge)?;
+    let total_bytes =
+        u32::try_from(bytes.len()).map_err(|_| NetworkControlSyncError::SnapshotTooLarge)?;
     let mut messages = Vec::with_capacity(chunk_count);
 
     for (index, chunk) in bytes.chunks(SYNC_CHUNK_BYTES).enumerate() {
@@ -244,11 +245,9 @@ pub fn verify_snapshot_metadata(
     snapshot_digest: [u8; 32],
     trusted_founder_public_key: &[u8; 32],
 ) -> Result<(), NetworkControlSyncError> {
-    let verified = crate::network_control::load_verified_snapshot_bytes(
-        bytes,
-        trusted_founder_public_key,
-    )
-    .map_err(|error| NetworkControlSyncError::Malformed(error.to_string()))?;
+    let verified =
+        crate::network_control::load_verified_snapshot_bytes(bytes, trusted_founder_public_key)
+            .map_err(|error| NetworkControlSyncError::Malformed(error.to_string()))?;
     if verified.sequence() != sequence || verified.digest() != snapshot_digest {
         return Err(NetworkControlSyncError::SnapshotMetadataMismatch);
     }
@@ -578,7 +577,10 @@ mod tests {
             identity::{Identity, Username},
             network_control::{self, NetworkControlPlane},
         };
-        use std::{fs, time::{SystemTime, UNIX_EPOCH}};
+        use std::{
+            fs,
+            time::{SystemTime, UNIX_EPOCH},
+        };
 
         let founder = Identity::generate(Username::new("sync-metadata-founder").unwrap());
         let control = NetworkControlPlane::new(&founder, 100);
@@ -592,11 +594,9 @@ mod tests {
         ));
         network_control::save(&path, &control, &founder).unwrap();
         let bytes = fs::read(&path).unwrap();
-        let verified = network_control::load_verified_snapshot_bytes(
-            &bytes,
-            &founder.public.public_key,
-        )
-        .unwrap();
+        let verified =
+            network_control::load_verified_snapshot_bytes(&bytes, &founder.public.public_key)
+                .unwrap();
 
         assert!(verify_snapshot_metadata(
             &bytes,
@@ -628,5 +628,4 @@ mod tests {
 
         let _ = fs::remove_file(path);
     }
-
 }

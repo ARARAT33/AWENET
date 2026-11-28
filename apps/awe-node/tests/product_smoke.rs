@@ -2997,7 +2997,6 @@ fn product_runtime_local_founder_does_not_start_follower_checkpoint_refresh() {
     result.expect("local Founder checkpoint-refresh smoke test failed");
 }
 
-
 #[test]
 fn product_runtime_founder_pushes_network_control_over_encrypted_transport() {
     let bin = PathBuf::from(env::var_os("CARGO_BIN_EXE_awe-node").expect("awe-node binary"));
@@ -3121,7 +3120,10 @@ fn product_runtime_founder_pushes_network_control_over_encrypted_transport() {
         follower_ui_port,
         &[
             ("AWE_REQUIRE_ADMITTED_PEERS", "1"),
-            ("AWE_NETWORK_FOUNDER_PUBLIC_KEY", founder_public_key.as_str()),
+            (
+                "AWE_NETWORK_FOUNDER_PUBLIC_KEY",
+                founder_public_key.as_str(),
+            ),
             ("AWE_NETWORK_ALLOW_CHECKPOINT_BOOTSTRAP", "1"),
         ],
     );
@@ -3144,16 +3146,13 @@ fn product_runtime_founder_pushes_network_control_over_encrypted_transport() {
         let follower_id = follower.public.awe_id.to_hex();
         let peer_deadline = Instant::now() + Duration::from_secs(20);
         loop {
-            let status: serde_json::Value =
-                serde_json::from_str(&get(&founder_ui, "/api/status"))
-                    .expect("Founder status JSON");
-            let has_follower = status["peers"]
-                .as_array()
-                .is_some_and(|peers| {
-                    peers.iter().any(|peer| {
-                        peer["awe_id"].as_str() == Some(follower_id.as_str())
-                    })
-                });
+            let status: serde_json::Value = serde_json::from_str(&get(&founder_ui, "/api/status"))
+                .expect("Founder status JSON");
+            let has_follower = status["peers"].as_array().is_some_and(|peers| {
+                peers
+                    .iter()
+                    .any(|peer| peer["awe_id"].as_str() == Some(follower_id.as_str()))
+            });
             if has_follower {
                 break;
             }
@@ -3227,17 +3226,21 @@ fn product_runtime_founder_pushes_network_control_over_encrypted_transport() {
             serde_json::from_slice(&fs::read(&checkpoint_path).expect("read follower checkpoint"))
                 .expect("checkpoint envelope JSON");
         let checkpoint_payload: serde_json::Value = serde_json::from_str(
-            checkpoint["payload"].as_str().expect("checkpoint payload string"),
+            checkpoint["payload"]
+                .as_str()
+                .expect("checkpoint payload string"),
         )
         .expect("checkpoint payload JSON");
         let marker: serde_json::Value =
             serde_json::from_slice(&fs::read(&marker_path).expect("read follower marker"))
                 .expect("marker envelope JSON");
-        let marker_payload: serde_json::Value = serde_json::from_str(
-            marker["payload"].as_str().expect("marker payload string"),
-        )
-        .expect("marker payload JSON");
-        assert_eq!(checkpoint_payload["sequence"].as_u64(), Some(expected_sequence));
+        let marker_payload: serde_json::Value =
+            serde_json::from_str(marker["payload"].as_str().expect("marker payload string"))
+                .expect("marker payload JSON");
+        assert_eq!(
+            checkpoint_payload["sequence"].as_u64(),
+            Some(expected_sequence)
+        );
         assert_eq!(marker_payload["sequence"].as_u64(), Some(expected_sequence));
 
         let ack_deadline = Instant::now() + Duration::from_secs(10);
@@ -3248,8 +3251,7 @@ fn product_runtime_founder_pushes_network_control_over_encrypted_transport() {
             thread::sleep(Duration::from_millis(100));
         }
         assert!(
-            node_log_tail(&founder_log, 4000)
-                .contains("received network snapshot acknowledgement"),
+            node_log_tail(&founder_log, 4000).contains("received network snapshot acknowledgement"),
             "Founder did not observe the follower's application acknowledgement:\n{}",
             node_log_tail(&founder_log, 4000)
         );

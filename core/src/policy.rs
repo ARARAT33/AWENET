@@ -189,11 +189,9 @@ mod tests {
         custom.max_message_bytes /= 2;
         save(&custom, &custom_path).unwrap();
         let preserved = load_or_create(&custom_path).unwrap();
-        assert!(!preserved
-            .allows_stream(crate::network_control_sync::NETWORK_CONTROL_SYNC_STREAM));
+        assert!(!preserved.allows_stream(crate::network_control_sync::NETWORK_CONTROL_SYNC_STREAM));
         assert_eq!(preserved.max_message_bytes, custom.max_message_bytes);
 
         let _ = fs::remove_dir_all(root);
     }
-
 }

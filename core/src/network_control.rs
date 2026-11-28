@@ -270,8 +270,7 @@ impl NetworkControlPlane {
     /// The configured Founder trust root is admitted as the control-plane peer
     /// even before its own Node record appears in the topology.
     pub fn is_trusted_founder(&self, node_id: &[u8; 32], public_key: &[u8; 32]) -> bool {
-        self.founder_public_key == *public_key
-            && self.founder_awe_id == hex::encode(node_id)
+        self.founder_public_key == *public_key && self.founder_awe_id == hex::encode(node_id)
     }
 
     pub fn sequence(&self) -> u64 {
