@@ -3185,6 +3185,12 @@ fn product_runtime_founder_pushes_network_control_over_encrypted_transport() {
             }
             thread::sleep(Duration::from_millis(100));
         }
+        let founder_status: serde_json::Value =
+            serde_json::from_str(&get(&founder_ui, "/api/status")).expect("Founder status JSON");
+        assert!(
+            founder_status["known_peers"].as_u64().is_some_and(|count| count > 0),
+            "Founder routing table knows the follower but its direct peer registry is empty: {founder_status}"
+        );
 
         let action = NetworkAction::CreateCentre {
             centre_id: "dc-auto-sync-target".into(),
