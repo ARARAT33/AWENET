@@ -3169,10 +3169,13 @@ fn product_runtime_founder_pushes_network_control_over_encrypted_transport() {
         let action = NetworkAction::CreateCentre {
             centre_id: "dc-auto-sync-target".into(),
         };
+        // The fixture's initial admission is deliberately timestamped at
+        // initial_time + 2; do not sign a follow-up mutation before that commit.
         let update_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("system clock")
-            .as_secs();
+            .as_secs()
+            .max(control.updated_at_unix());
         let mutation_message = control
             .signing_message(&action, update_at)
             .expect("build live Founder mutation");
