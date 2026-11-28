@@ -2996,3 +2996,276 @@ fn product_runtime_local_founder_does_not_start_follower_checkpoint_refresh() {
     let _ = fs::remove_dir_all(&root);
     result.expect("local Founder checkpoint-refresh smoke test failed");
 }
+
+#[test]
+fn product_runtime_founder_pushes_network_control_over_encrypted_transport() {
+    let bin = PathBuf::from(env::var_os("CARGO_BIN_EXE_awe-node").expect("awe-node binary"));
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "awenet-product-founder-sync-{}-{nonce}",
+        std::process::id()
+    ));
+    let founder_data = root.join("founder");
+    let follower_data = root.join("follower");
+    fs::create_dir_all(&founder_data).expect("create Founder data directory");
+    fs::create_dir_all(&follower_data).expect("create follower data directory");
+
+    let founder = Identity::generate(Username::new("sync-founder").unwrap());
+    let follower = Identity::generate(Username::new("sync-follower").unwrap());
+    fs::write(
+        founder_data.join("node.awesecret"),
+        AweSecret::generate(&founder)
+            .to_bytes()
+            .expect("serialize Founder node secret"),
+    )
+    .expect("persist Founder node identity");
+    fs::write(
+        follower_data.join("node.awesecret"),
+        AweSecret::generate(&follower)
+            .to_bytes()
+            .expect("serialize follower node secret"),
+    )
+    .expect("persist follower node identity");
+
+    let initial_time = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock")
+        .as_secs();
+    let mut control = NetworkControlPlane::new(&founder, initial_time);
+
+    let create_centre = NetworkAction::CreateCentre {
+        centre_id: "dc-sync-primary".into(),
+    };
+    let create_at = initial_time.saturating_add(1);
+    let create_message = control
+        .signing_message(&create_centre, create_at)
+        .expect("build initial Data Centre mutation");
+    control
+        .apply_signed(
+            &founder,
+            &create_centre,
+            create_at,
+            create_at,
+            &founder.sign(&create_message),
+        )
+        .expect("create initial Data Centre");
+
+    let admission_at = initial_time.saturating_add(2);
+    let admission_sequence = control.next_sequence().expect("admission sequence");
+    let proof = node_admission_message(
+        control.founder_awe_id(),
+        "dc-sync-primary",
+        &follower.public.public_key,
+        admission_sequence,
+        admission_at,
+    )
+    .expect("build follower proof of possession");
+    let admit_follower = NetworkAction::AdmitNode {
+        centre_id: "dc-sync-primary".into(),
+        public_key: follower.public.public_key,
+        proof_signature: follower.sign(&proof),
+    };
+    let admission_message = control
+        .signing_message(&admit_follower, admission_at)
+        .expect("build Founder admission mutation");
+    control
+        .apply_signed(
+            &founder,
+            &admit_follower,
+            admission_at,
+            admission_at,
+            &founder.sign(&admission_message),
+        )
+        .expect("admit follower into Founder topology");
+
+    let founder_snapshot_path = founder_data.join("network-control.json");
+    network_control::save(&founder_snapshot_path, &control, &founder)
+        .expect("save initial Founder-signed topology");
+    fs::copy(
+        &founder_snapshot_path,
+        follower_data.join("network-control.json"),
+    )
+    .expect("provision initial pinned Founder snapshot");
+
+    let listeners: Vec<_> = (0..4)
+        .map(|_| std::net::TcpListener::bind("127.0.0.1:0").expect("reserve local port"))
+        .collect();
+    let ports = listeners
+        .iter()
+        .map(|listener| listener.local_addr().expect("reserved address").port())
+        .collect::<Vec<_>>();
+    drop(listeners);
+    let founder_transport = ports[0];
+    let founder_ui_port = ports[1];
+    let follower_transport = ports[2];
+    let follower_ui_port = ports[3];
+    let founder_ui = format!("127.0.0.1:{founder_ui_port}");
+    let follower_ui = format!("127.0.0.1:{follower_ui_port}");
+    let founder_public_key = hex::encode(founder.public.public_key);
+
+    let (mut founder_child, founder_log) = spawn_node_with_env(
+        &bin,
+        &founder_data,
+        founder_transport,
+        founder_ui_port,
+        &[("AWE_REQUIRE_ADMITTED_PEERS", "1")],
+    );
+    let (mut follower_child, follower_log) = spawn_node_with_env(
+        &bin,
+        &follower_data,
+        follower_transport,
+        follower_ui_port,
+        &[
+            ("AWE_REQUIRE_ADMITTED_PEERS", "1"),
+            (
+                "AWE_NETWORK_FOUNDER_PUBLIC_KEY",
+                founder_public_key.as_str(),
+            ),
+            ("AWE_NETWORK_ALLOW_CHECKPOINT_BOOTSTRAP", "1"),
+        ],
+    );
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        wait_for_health(&founder_ui);
+        wait_for_health(&follower_ui);
+        let founder_token = login_user(&founder_ui, &founder);
+
+        let connect_response = post(
+            &follower_ui,
+            "/api/connect",
+            &format!("address=127.0.0.1:{founder_transport}"),
+        );
+        assert!(
+            connect_response.contains("connecting"),
+            "follower could not start the authenticated Founder connection: {connect_response}"
+        );
+
+        let follower_id = follower.public.awe_id.to_hex();
+        let peer_deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let status: serde_json::Value = serde_json::from_str(&get(&founder_ui, "/api/status"))
+                .expect("Founder status JSON");
+            let has_follower = status["peers"].as_array().is_some_and(|peers| {
+                peers
+                    .iter()
+                    .any(|peer| peer["awe_id"].as_str() == Some(follower_id.as_str()))
+            });
+            if has_follower {
+                break;
+            }
+            if Instant::now() >= peer_deadline {
+                panic!(
+                    "Founder did not observe the admitted follower; status={status}\nFounder log:\n{}\nFollower log:\n{}",
+                    node_log_tail(&founder_log, 2000),
+                    node_log_tail(&follower_log, 2000)
+                );
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+
+        let action = NetworkAction::CreateCentre {
+            centre_id: "dc-auto-sync-target".into(),
+        };
+        // The fixture's initial admission is deliberately timestamped at
+        // initial_time + 2; do not sign a follow-up mutation before that commit.
+        let update_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock")
+            .as_secs()
+            .max(control.updated_at_unix());
+        let mutation_message = control
+            .signing_message(&action, update_at)
+            .expect("build live Founder mutation");
+        let response = post_bearer(
+            &founder_ui,
+            "/api/network/control",
+            &serde_json::json!({
+                "action": action,
+                "at_unix": update_at,
+                "signature": hex::encode(founder.sign(&mutation_message))
+            })
+            .to_string(),
+            &founder_token,
+        );
+        let applied: serde_json::Value =
+            serde_json::from_str(&response).expect("Founder mutation response JSON");
+        assert_eq!(
+            applied["status"].as_str(),
+            Some("applied"),
+            "Founder mutation failed: {applied}"
+        );
+        let expected_sequence = applied["sequence"]
+            .as_u64()
+            .expect("Founder mutation sequence");
+
+        let sync_deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let current: serde_json::Value =
+                serde_json::from_str(&get(&follower_ui, "/api/network/control"))
+                    .expect("follower network-control JSON");
+            if current["sequence"].as_u64() == Some(expected_sequence)
+                && current["topology"]["centres"]
+                    .get("dc-auto-sync-target")
+                    .is_some()
+            {
+                break;
+            }
+            if Instant::now() >= sync_deadline {
+                panic!(
+                    "follower did not receive and apply the Founder snapshot: {current}\nFounder log:\n{}\nFollower log:\n{}",
+                    node_log_tail(&founder_log, 4000),
+                    node_log_tail(&follower_log, 4000)
+                );
+            }
+            thread::sleep(Duration::from_millis(150));
+        }
+
+        let checkpoint_path = follower_data.join("network-control.checkpoint.json");
+        let marker_path = checkpoint_path.with_extension("bootstrap.json");
+        let checkpoint: serde_json::Value =
+            serde_json::from_slice(&fs::read(&checkpoint_path).expect("read follower checkpoint"))
+                .expect("checkpoint envelope JSON");
+        let checkpoint_payload: serde_json::Value = serde_json::from_str(
+            checkpoint["payload"]
+                .as_str()
+                .expect("checkpoint payload string"),
+        )
+        .expect("checkpoint payload JSON");
+        let marker: serde_json::Value =
+            serde_json::from_slice(&fs::read(&marker_path).expect("read follower marker"))
+                .expect("marker envelope JSON");
+        let marker_payload: serde_json::Value =
+            serde_json::from_str(marker["payload"].as_str().expect("marker payload string"))
+                .expect("marker payload JSON");
+        assert_eq!(
+            checkpoint_payload["sequence"].as_u64(),
+            Some(expected_sequence)
+        );
+        assert_eq!(marker_payload["sequence"].as_u64(), Some(expected_sequence));
+
+        let ack_deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < ack_deadline
+            && !node_log_tail(&founder_log, 4000)
+                .contains("received network snapshot acknowledgement")
+        {
+            thread::sleep(Duration::from_millis(100));
+        }
+        assert!(
+            node_log_tail(&founder_log, 4000).contains("received network snapshot acknowledgement"),
+            "Founder did not observe the follower's application acknowledgement:\n{}",
+            node_log_tail(&founder_log, 4000)
+        );
+
+        assert_eq!(control.founder_awe_id(), founder.public.awe_id.to_hex());
+    }));
+
+    let _ = founder_child.kill();
+    let _ = founder_child.wait();
+    let _ = follower_child.kill();
+    let _ = follower_child.wait();
+    let _ = fs::remove_dir_all(&root);
+    result.expect("Founder-to-follower encrypted network-control sync smoke test failed");
+}
