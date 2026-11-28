@@ -42,6 +42,7 @@ impl Default for NetworkPolicy {
                 ONECOIN_TRANSFER_STREAM,
                 crate::verifier_transport::VERIFIER_TRANSPORT_STREAM,
                 crate::marketplace_sync::MARKETPLACE_SYNC_STREAM,
+                crate::network_control_sync::NETWORK_CONTROL_SYNC_STREAM,
             ],
         }
     }
@@ -83,9 +84,23 @@ impl NetworkPolicy {
 
 pub fn load_or_create(path: &Path) -> Result<NetworkPolicy, String> {
     if path.exists() {
-        let policy: NetworkPolicy =
+        let mut policy: NetworkPolicy =
             serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?)
                 .map_err(|e| e.to_string())?;
+
+        // Migrate only the exact previous default allowlist. Custom operator
+        // allowlists remain untouched and must explicitly opt into stream 204.
+        let mut legacy_default = NetworkPolicy::default();
+        legacy_default
+            .allowed_streams
+            .retain(|stream| *stream != crate::network_control_sync::NETWORK_CONTROL_SYNC_STREAM);
+        if policy == legacy_default {
+            policy
+                .allowed_streams
+                .push(crate::network_control_sync::NETWORK_CONTROL_SYNC_STREAM);
+            save(&policy, path)?;
+        }
+
         policy.validate()?;
         return Ok(policy);
     }
@@ -136,6 +151,7 @@ mod tests {
         assert!(policy.allows_stream(ONECOIN_TRANSFER_STREAM));
         assert!(policy.allows_stream(crate::verifier_transport::VERIFIER_TRANSPORT_STREAM));
         assert!(policy.allows_stream(crate::marketplace_sync::MARKETPLACE_SYNC_STREAM));
+        assert!(policy.allows_stream(crate::network_control_sync::NETWORK_CONTROL_SYNC_STREAM));
         assert!(!policy.allows_stream(999_999));
     }
 
@@ -146,4 +162,38 @@ mod tests {
         policy.enabled = false;
         assert!(!policy.allows_message(1024));
     }
+
+    #[test]
+    fn load_or_create_migrates_only_the_legacy_default_allowlist() {
+        let root = std::env::temp_dir().join(format!(
+            "awenet-policy-sync-migration-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let legacy_path = root.join("legacy-policy.json");
+        let mut legacy = NetworkPolicy::default();
+        legacy
+            .allowed_streams
+            .retain(|stream| *stream != crate::network_control_sync::NETWORK_CONTROL_SYNC_STREAM);
+        save(&legacy, &legacy_path).unwrap();
+
+        let migrated = load_or_create(&legacy_path).unwrap();
+        assert!(migrated.allows_stream(crate::network_control_sync::NETWORK_CONTROL_SYNC_STREAM));
+
+        let custom_path = root.join("custom-policy.json");
+        let mut custom = legacy;
+        custom.max_message_bytes /= 2;
+        save(&custom, &custom_path).unwrap();
+        let preserved = load_or_create(&custom_path).unwrap();
+        assert!(!preserved
+            .allows_stream(crate::network_control_sync::NETWORK_CONTROL_SYNC_STREAM));
+        assert_eq!(preserved.max_message_bytes, custom.max_message_bytes);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
 }
