@@ -18,6 +18,10 @@ use awep2p_core::marketplace_sync::{
 use awep2p_core::messenger::format_uid;
 use awep2p_core::network::{format_node_descriptor, Node};
 use awep2p_core::network_control::{self, NetworkAction, NetworkControlError, NetworkControlPlane};
+use awep2p_core::network_control_sync::{
+    self as network_control_sync, NetworkControlSyncMessage, SnapshotAck, SnapshotAckStatus,
+    SnapshotAssembler, NETWORK_CONTROL_SYNC_STREAM, NETWORK_CONTROL_SYNC_VERSION,
+};
 use awep2p_core::onebank::{classify_tier, ResourceContribution};
 use awep2p_core::onecoin::{OnecoinLedger, OnecoinTransaction, ATOMS_PER_COIN};
 use awep2p_core::onecoin_consensus_runtime::{
@@ -86,6 +90,7 @@ type FounderGuardState = Arc<Mutex<FounderGuard>>;
 type UserRegistryState = Arc<Mutex<UserRegistry>>;
 type UserLoginState = Arc<Mutex<UserLogin>>;
 type NetworkControlState = Arc<Mutex<NetworkControlPlane>>;
+type NetworkControlSyncAcks = Arc<Mutex<BTreeMap<[u8; 32], (u64, [u8; 32], SnapshotAckStatus)>>>;
 type HostState = Arc<Mutex<AweHost>>;
 
 fn peer_admission_enforcement_enabled() -> bool {
@@ -169,14 +174,39 @@ fn refresh_network_control_once(
     local_node_identity: &Identity,
     control: &NetworkControlState,
 ) -> Result<bool> {
+    // Serialize file reads with the state transition. Otherwise a refresh can
+    // read an old file, wait for a newer network-delivered snapshot to commit,
+    // and then try to apply the stale candidate after the newer state.
+    let mut active = control
+        .lock()
+        .map_err(|_| anyhow::anyhow!("network control state lock is poisoned"))?;
     let candidate = network_control::load_verified_snapshot(path, trusted_founder_public_key)
         .map_err(anyhow::Error::msg)?;
+    active
+        .replace_with_verified_snapshot_and_checkpoint(
+            candidate,
+            checkpoint_path,
+            trusted_founder_public_key,
+            local_node_identity,
+        )
+        .map_err(anyhow::Error::msg)
+}
+
+fn apply_network_control_snapshot_bytes(
+    path: &std::path::Path,
+    checkpoint_path: &std::path::Path,
+    trusted_founder_public_key: &[u8; 32],
+    local_node_identity: &Identity,
+    control: &NetworkControlState,
+    bytes: &[u8],
+) -> Result<bool> {
     let mut active = control
         .lock()
         .map_err(|_| anyhow::anyhow!("network control state lock is poisoned"))?;
     active
-        .replace_with_verified_snapshot_and_checkpoint(
-            candidate,
+        .replace_with_verified_snapshot_and_checkpoint_from_bytes(
+            path,
+            bytes,
             checkpoint_path,
             trusted_founder_public_key,
             local_node_identity,
@@ -254,12 +284,162 @@ fn spawn_network_control_refresh_loop(
     });
 }
 
+fn spawn_network_control_sync_loop(
+    node: Node,
+    snapshot_path: PathBuf,
+    control: NetworkControlState,
+    policy: PolicyState,
+    acknowledgements: NetworkControlSyncAcks,
+) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        interval.tick().await;
+        let mut last_attempts =
+            BTreeMap::<[u8; 32], (u64, [u8; 32], std::time::Instant)>::new();
+
+        loop {
+            interval.tick().await;
+            let runtime_policy = current_policy(&policy);
+            if !runtime_policy.allows_stream(NETWORK_CONTROL_SYNC_STREAM) {
+                continue;
+            }
+
+            let read_path = snapshot_path.clone();
+            let founder_public_key = node.identity.public.public_key;
+            let loaded = tokio::task::spawn_blocking(move || -> Result<_> {
+                let bytes = fs::read(read_path)?;
+                let snapshot = network_control::load_verified_snapshot_bytes(
+                    &bytes,
+                    &founder_public_key,
+                )
+                .map_err(anyhow::Error::msg)?;
+                Ok((bytes, snapshot))
+            })
+            .await;
+            let (bytes, snapshot) = match loaded {
+                Ok(Ok(value)) => value,
+                Ok(Err(error)) => {
+                    eprintln!("AWENET Founder snapshot sync could not load its signed store: {error}");
+                    continue;
+                }
+                Err(error) => {
+                    eprintln!("AWENET Founder snapshot sync worker failed: {error}");
+                    continue;
+                }
+            };
+
+            let local_founder_id = node.identity.public.awe_id.to_hex();
+            if snapshot.control().founder_awe_id() != local_founder_id.as_str() {
+                eprintln!("AWENET snapshot sync refused a store not signed by the local Founder");
+                continue;
+            }
+            let sequence = snapshot.sequence();
+            let digest = snapshot.digest();
+            let messages = match network_control_sync::chunk_snapshot(&bytes, sequence, digest) {
+                Ok(messages) => messages,
+                Err(error) => {
+                    eprintln!("AWENET Founder snapshot is not transferable: {error}");
+                    continue;
+                }
+            };
+            let current_control = match control.lock() {
+                Ok(state) => state.clone(),
+                Err(_) => {
+                    eprintln!("AWENET Founder snapshot sync paused: network-control lock is poisoned");
+                    continue;
+                }
+            };
+            let peers = node.peers().await;
+            let now = std::time::Instant::now();
+
+            for peer in peers {
+                if !current_control.is_node_admitted(&hex::encode(peer.awe_id), &peer.public_key) {
+                    last_attempts.remove(&peer.awe_id);
+                    continue;
+                }
+
+                let acknowledged = acknowledgements
+                    .lock()
+                    .ok()
+                    .and_then(|values| values.get(&peer.awe_id).cloned());
+                if let Some((ack_sequence, ack_digest, status)) = acknowledged {
+                    if ack_sequence == sequence && ack_digest == digest {
+                        match status {
+                            SnapshotAckStatus::Applied | SnapshotAckStatus::AlreadyCurrent => {
+                                last_attempts.remove(&peer.awe_id);
+                                continue;
+                            }
+                            SnapshotAckStatus::Rejected => continue,
+                        }
+                    }
+                }
+
+                if last_attempts.get(&peer.awe_id).is_some_and(
+                    |(attempted_sequence, attempted_digest, attempted_at)| {
+                        *attempted_sequence == sequence
+                            && *attempted_digest == digest
+                            && now.saturating_duration_since(*attempted_at)
+                                < std::time::Duration::from_secs(30)
+                    },
+                ) {
+                    continue;
+                }
+
+                let mut sent_all = true;
+                for message in &messages {
+                    let payload = match network_control_sync::encode(message) {
+                        Ok(payload) => payload,
+                        Err(error) => {
+                            eprintln!("AWENET snapshot chunk encoding failed: {error}");
+                            sent_all = false;
+                            break;
+                        }
+                    };
+                    if !runtime_policy.allows_message(payload.len()) {
+                        eprintln!(
+                            "AWENET snapshot sync paused: chunk size {} exceeds local policy limit {}",
+                            payload.len(),
+                            runtime_policy.max_message_bytes
+                        );
+                        sent_all = false;
+                        break;
+                    }
+                    if let Err(error) = node
+                        .send_to_peer(&peer.awe_id, NETWORK_CONTROL_SYNC_STREAM, payload)
+                        .await
+                    {
+                        eprintln!(
+                            "AWENET Founder snapshot chunk delivery to {} failed: {error}",
+                            hex::encode(peer.awe_id)
+                        );
+                        sent_all = false;
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                }
+
+                if sent_all {
+                    last_attempts.insert(peer.awe_id, (sequence, digest, std::time::Instant::now()));
+                    eprintln!(
+                        "AWENET sent Founder network snapshot sequence {sequence} to admitted Node {}",
+                        hex::encode(peer.awe_id)
+                    );
+                }
+            }
+        }
+    });
+}
+
 fn install_network_peer_admission(node: &Node, control: NetworkControlState) -> Result<()> {
     node.set_peer_authorizer(move |remote_id, remote_public_key| {
         let remote_awe_id = hex::encode(remote_id);
         control
             .lock()
-            .map(|state| state.is_node_admitted(&remote_awe_id, remote_public_key))
+            .map(|state| {
+                state.is_trusted_founder(remote_id, remote_public_key)
+                    || state.is_node_admitted(&remote_awe_id, remote_public_key)
+            })
             .unwrap_or(false)
     })
     .map_err(anyhow::Error::msg)?;
@@ -4185,6 +4365,17 @@ async fn run_product() -> Result<()> {
     let policy_path = data_dir.join("policy.json");
     let initial_policy = policy::load_or_create(&policy_path).map_err(anyhow::Error::msg)?;
     let policy_state: PolicyState = Arc::new(Mutex::new(initial_policy));
+    let network_control_sync_acks: NetworkControlSyncAcks =
+        Arc::new(Mutex::new(BTreeMap::new()));
+    if enforce_peer_admission && trusted_founder_public_key == node.identity.public.public_key {
+        spawn_network_control_sync_loop(
+            node.clone(),
+            network_control_path.clone(),
+            network_control_state.clone(),
+            policy_state.clone(),
+            network_control_sync_acks.clone(),
+        );
+    }
     let federation_state: FederationState = if federation_path.exists() {
         fs::read(&federation_path)
             .ok()
@@ -4468,7 +4659,14 @@ async fn run_product() -> Result<()> {
     let dispatcher_verifier_net_path = verifier_net_path.clone();
     let dispatcher_verifier_side = verifier_side_state.clone();
     let dispatcher_marketplace_catalog = remote_catalog_state.clone();
+    let dispatcher_network_control = network_control_state.clone();
+    let dispatcher_network_control_path = network_control_path.clone();
+    let dispatcher_network_control_checkpoint_path = network_control_checkpoint_path.clone();
+    let dispatcher_trusted_founder_public_key = trusted_founder_public_key;
+    let dispatcher_enforce_peer_admission = enforce_peer_admission;
+    let dispatcher_network_control_sync_acks = network_control_sync_acks.clone();
     tokio::spawn(async move {
+        let mut network_control_sync_assembler = SnapshotAssembler::default();
         loop {
             for (sender, stream, payload) in dispatcher_node.take_inbox() {
                 let runtime_policy = dispatcher_policy
@@ -4486,6 +4684,153 @@ async fn run_product() -> Result<()> {
                     if let Ok(mut side) = dispatcher_verifier_side.lock() {
                         side.record_traffic(&sender, payload.len() as u64, now);
                     }
+                }
+                if stream == NETWORK_CONTROL_SYNC_STREAM {
+                    if !dispatcher_enforce_peer_admission
+                        || !runtime_policy.allows_message(payload.len())
+                    {
+                        continue;
+                    }
+                    match network_control_sync::decode(&payload) {
+                        Ok(NetworkControlSyncMessage::SnapshotChunk(chunk)) => {
+                            // Only a follower with a distinct, pinned Founder accepts
+                            // control snapshots. A local Founder never follows peers.
+                            if dispatcher_trusted_founder_public_key
+                                == dispatcher_node.identity.public.public_key
+                            {
+                                continue;
+                            }
+                            let expected_founder_id =
+                                *AweId::from_public_key(&dispatcher_trusted_founder_public_key)
+                                    .as_bytes();
+                            match network_control_sync_assembler.push_chunk(
+                                &sender,
+                                &expected_founder_id,
+                                &chunk,
+                                std::time::Instant::now(),
+                            ) {
+                                Ok(Some(completed)) => {
+                                    let sequence = completed.sequence;
+                                    let snapshot_digest = completed.snapshot_digest;
+                                    let path = dispatcher_network_control_path.clone();
+                                    let checkpoint_path =
+                                        dispatcher_network_control_checkpoint_path.clone();
+                                    let trusted_key = dispatcher_trusted_founder_public_key;
+                                    let local_identity = dispatcher_node.identity.clone();
+                                    let active_control = dispatcher_network_control.clone();
+                                    let bytes = completed.bytes;
+                                    let applied = tokio::task::spawn_blocking(move || {
+                                        apply_network_control_snapshot_bytes(
+                                            &path,
+                                            &checkpoint_path,
+                                            &trusted_key,
+                                            local_identity.as_ref(),
+                                            &active_control,
+                                            &bytes,
+                                        )
+                                    })
+                                    .await;
+
+                                    let changed = match applied {
+                                        Ok(Ok(changed)) => changed,
+                                        Ok(Err(error)) => {
+                                            eprintln!(
+                                                "AWENET received Founder snapshot sequence {sequence} but did not apply it: {error}"
+                                            );
+                                            continue;
+                                        }
+                                        Err(error) => {
+                                            eprintln!(
+                                                "AWENET Founder snapshot apply worker failed: {error}"
+                                            );
+                                            continue;
+                                        }
+                                    };
+                                    let status = if changed {
+                                        SnapshotAckStatus::Applied
+                                    } else {
+                                        SnapshotAckStatus::AlreadyCurrent
+                                    };
+                                    eprintln!(
+                                        "AWENET follower applied Founder snapshot sequence {sequence} (changed={changed})"
+                                    );
+                                    let acknowledgement =
+                                        NetworkControlSyncMessage::SnapshotAck(SnapshotAck {
+                                            version: NETWORK_CONTROL_SYNC_VERSION,
+                                            sequence,
+                                            snapshot_digest,
+                                            status,
+                                        });
+                                    if let Ok(encoded) = network_control_sync::encode(&acknowledgement) {
+                                        if let Err(error) = dispatcher_node
+                                            .send_to_peer(
+                                                &sender,
+                                                NETWORK_CONTROL_SYNC_STREAM,
+                                                encoded,
+                                            )
+                                            .await
+                                        {
+                                            eprintln!(
+                                                "AWENET snapshot acknowledgement to Founder failed: {error}"
+                                            );
+                                        }
+                                    }
+                                }
+                                Ok(None) => {}
+                                Err(error) => {
+                                    eprintln!("AWENET snapshot chunk rejected: {error}");
+                                }
+                            }
+                        }
+                        Ok(NetworkControlSyncMessage::SnapshotAck(acknowledgement)) => {
+                            // Application acknowledgements are meaningful only on
+                            // the Founder, and only from currently admitted Nodes.
+                            if dispatcher_trusted_founder_public_key
+                                != dispatcher_node.identity.public.public_key
+                            {
+                                continue;
+                            }
+                            let peers = dispatcher_node.peers().await;
+                            let Some(peer) = peers.into_iter().find(|peer| peer.awe_id == sender)
+                            else {
+                                continue;
+                            };
+                            let admitted = dispatcher_network_control
+                                .lock()
+                                .map(|control| {
+                                    control.is_node_admitted(
+                                        &hex::encode(sender),
+                                        &peer.public_key,
+                                    )
+                                })
+                                .unwrap_or(false);
+                            if !admitted {
+                                continue;
+                            }
+                            if let Ok(mut acknowledgements) =
+                                dispatcher_network_control_sync_acks.lock()
+                            {
+                                acknowledgements.insert(
+                                    sender,
+                                    (
+                                        acknowledgement.sequence,
+                                        acknowledgement.snapshot_digest,
+                                        acknowledgement.status.clone(),
+                                    ),
+                                );
+                            }
+                            eprintln!(
+                                "AWENET received network snapshot acknowledgement from {} for sequence {} ({:?})",
+                                hex::encode(sender),
+                                acknowledgement.sequence,
+                                acknowledgement.status
+                            );
+                        }
+                        Err(error) => {
+                            eprintln!("AWENET network-control sync message rejected: {error}");
+                        }
+                    }
+                    continue;
                 }
                 if stream == VERIFIER_TRANSPORT_STREAM {
                     match verifier_transport::decode(&payload) {
