@@ -42,7 +42,7 @@ use awep2p_core::verifier_transport::{
     self as verifier_transport, VerifierSide, VERIFIER_TRANSPORT_STREAM,
 };
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     env, fs,
     net::SocketAddr,
     path::PathBuf,
@@ -90,7 +90,7 @@ type FounderGuardState = Arc<Mutex<FounderGuard>>;
 type UserRegistryState = Arc<Mutex<UserRegistry>>;
 type UserLoginState = Arc<Mutex<UserLogin>>;
 type NetworkControlState = Arc<Mutex<NetworkControlPlane>>;
-type NetworkControlSyncAcks = Arc<Mutex<BTreeMap<[u8; 32], (u64, [u8; 32], SnapshotAckStatus)>>>;
+type NetworkControlSyncAcks = Arc<Mutex<network_control_sync::SnapshotAckTracker>>;
 type HostState = Arc<Mutex<AweHost>>;
 
 fn peer_admission_enforcement_enabled() -> bool {
@@ -198,8 +198,18 @@ fn apply_network_control_snapshot_bytes(
     trusted_founder_public_key: &[u8; 32],
     local_node_identity: &Identity,
     control: &NetworkControlState,
+    expected_sequence: u64,
+    expected_digest: [u8; 32],
     bytes: &[u8],
 ) -> Result<bool> {
+    network_control_sync::verify_snapshot_metadata(
+        bytes,
+        expected_sequence,
+        expected_digest,
+        trusted_founder_public_key,
+    )
+    .map_err(anyhow::Error::msg)?;
+
     let mut active = control
         .lock()
         .map_err(|_| anyhow::anyhow!("network control state lock is poisoned"))?;
@@ -284,6 +294,34 @@ fn spawn_network_control_refresh_loop(
     });
 }
 
+async fn send_network_control_sync_ack(
+    node: &Node,
+    peer_id: &[u8; 32],
+    sequence: u64,
+    snapshot_digest: [u8; 32],
+    status: SnapshotAckStatus,
+) {
+    let acknowledgement = NetworkControlSyncMessage::SnapshotAck(SnapshotAck {
+        version: NETWORK_CONTROL_SYNC_VERSION,
+        sequence,
+        snapshot_digest,
+        status,
+    });
+    match network_control_sync::encode(&acknowledgement) {
+        Ok(encoded) => {
+            if let Err(error) = node
+                .send_to_peer(peer_id, NETWORK_CONTROL_SYNC_STREAM, encoded)
+                .await
+            {
+                eprintln!("AWENET snapshot acknowledgement to Founder failed: {error}");
+            }
+        }
+        Err(error) => {
+            eprintln!("AWENET snapshot acknowledgement encoding failed: {error}");
+        }
+    }
+}
+
 fn spawn_network_control_sync_loop(
     node: Node,
     snapshot_path: PathBuf,
@@ -352,27 +390,37 @@ fn spawn_network_control_sync_loop(
             };
             let peers = node.peers().await;
             let now = std::time::Instant::now();
+            let peer_ids = peers.iter().map(|peer| peer.awe_id).collect::<BTreeSet<_>>();
+            last_attempts.retain(|peer_id, _| peer_ids.contains(peer_id));
+            if let Ok(mut tracker) = acknowledgements.lock() {
+                tracker.retain_peers(&peer_ids);
+            } else {
+                eprintln!("AWENET Founder snapshot sync paused: acknowledgement tracker is poisoned");
+                continue;
+            }
 
             for peer in peers {
                 if !current_control.is_node_admitted(&hex::encode(peer.awe_id), &peer.public_key) {
                     last_attempts.remove(&peer.awe_id);
+                    if let Ok(mut tracker) = acknowledgements.lock() {
+                        tracker.forget_peer(&peer.awe_id);
+                    }
                     continue;
                 }
 
                 let acknowledged = acknowledgements
                     .lock()
                     .ok()
-                    .and_then(|values| values.get(&peer.awe_id).cloned());
-                if let Some((ack_sequence, ack_digest, status)) = acknowledged {
-                    if ack_sequence == sequence && ack_digest == digest {
-                        match status {
-                            SnapshotAckStatus::Applied | SnapshotAckStatus::AlreadyCurrent => {
-                                last_attempts.remove(&peer.awe_id);
-                                continue;
-                            }
-                            SnapshotAckStatus::Rejected => continue,
-                        }
+                    .and_then(|tracker| tracker.status_for(&peer.awe_id, sequence, &digest));
+                match acknowledged {
+                    Some(SnapshotAckStatus::Applied | SnapshotAckStatus::AlreadyCurrent) => {
+                        last_attempts.remove(&peer.awe_id);
+                        continue;
                     }
+                    Some(SnapshotAckStatus::Rejected) => {
+                        // Retry after the same bounded backoff as a missing ACK.
+                    }
+                    None => {}
                 }
 
                 if last_attempts.get(&peer.awe_id).is_some_and(
@@ -385,6 +433,16 @@ fn spawn_network_control_sync_loop(
                 ) {
                     continue;
                 }
+
+                let registered = acknowledgements
+                    .lock()
+                    .map(|mut tracker| tracker.begin_transfer(peer.awe_id, sequence, digest))
+                    .is_ok();
+                if !registered {
+                    eprintln!("AWENET Founder snapshot sync paused: could not register pending transfer");
+                    continue;
+                }
+                last_attempts.insert(peer.awe_id, (sequence, digest, std::time::Instant::now()));
 
                 let mut sent_all = true;
                 for message in &messages {
@@ -420,11 +478,12 @@ fn spawn_network_control_sync_loop(
                 }
 
                 if sent_all {
-                    last_attempts.insert(peer.awe_id, (sequence, digest, std::time::Instant::now()));
                     eprintln!(
                         "AWENET sent Founder network snapshot sequence {sequence} to admitted Node {}",
                         hex::encode(peer.awe_id)
                     );
+                } else if let Ok(mut tracker) = acknowledgements.lock() {
+                    tracker.cancel_transfer(peer.awe_id, sequence, digest);
                 }
             }
         }
@@ -4366,7 +4425,7 @@ async fn run_product() -> Result<()> {
     let initial_policy = policy::load_or_create(&policy_path).map_err(anyhow::Error::msg)?;
     let policy_state: PolicyState = Arc::new(Mutex::new(initial_policy));
     let network_control_sync_acks: NetworkControlSyncAcks =
-        Arc::new(Mutex::new(BTreeMap::new()));
+        Arc::new(Mutex::new(network_control_sync::SnapshotAckTracker::default()));
     if enforce_peer_admission && trusted_founder_public_key == node.identity.public.public_key {
         spawn_network_control_sync_loop(
             node.clone(),
@@ -4726,55 +4785,46 @@ async fn run_product() -> Result<()> {
                                             &trusted_key,
                                             local_identity.as_ref(),
                                             &active_control,
+                                            sequence,
+                                            snapshot_digest,
                                             &bytes,
                                         )
                                     })
                                     .await;
 
-                                    let changed = match applied {
-                                        Ok(Ok(changed)) => changed,
+                                    let status = match applied {
+                                        Ok(Ok(changed)) => {
+                                            let status = if changed {
+                                                SnapshotAckStatus::Applied
+                                            } else {
+                                                SnapshotAckStatus::AlreadyCurrent
+                                            };
+                                            eprintln!(
+                                                "AWENET follower applied Founder snapshot sequence {sequence} (changed={changed})"
+                                            );
+                                            status
+                                        }
                                         Ok(Err(error)) => {
                                             eprintln!(
                                                 "AWENET received Founder snapshot sequence {sequence} but did not apply it: {error}"
                                             );
-                                            continue;
+                                            SnapshotAckStatus::Rejected
                                         }
                                         Err(error) => {
                                             eprintln!(
                                                 "AWENET Founder snapshot apply worker failed: {error}"
                                             );
-                                            continue;
+                                            SnapshotAckStatus::Rejected
                                         }
                                     };
-                                    let status = if changed {
-                                        SnapshotAckStatus::Applied
-                                    } else {
-                                        SnapshotAckStatus::AlreadyCurrent
-                                    };
-                                    eprintln!(
-                                        "AWENET follower applied Founder snapshot sequence {sequence} (changed={changed})"
-                                    );
-                                    let acknowledgement =
-                                        NetworkControlSyncMessage::SnapshotAck(SnapshotAck {
-                                            version: NETWORK_CONTROL_SYNC_VERSION,
-                                            sequence,
-                                            snapshot_digest,
-                                            status,
-                                        });
-                                    if let Ok(encoded) = network_control_sync::encode(&acknowledgement) {
-                                        if let Err(error) = dispatcher_node
-                                            .send_to_peer(
-                                                &sender,
-                                                NETWORK_CONTROL_SYNC_STREAM,
-                                                encoded,
-                                            )
-                                            .await
-                                        {
-                                            eprintln!(
-                                                "AWENET snapshot acknowledgement to Founder failed: {error}"
-                                            );
-                                        }
-                                    }
+                                    send_network_control_sync_ack(
+                                        &dispatcher_node,
+                                        &sender,
+                                        sequence,
+                                        snapshot_digest,
+                                        status,
+                                    )
+                                    .await;
                                 }
                                 Ok(None) => {}
                                 Err(error) => {
@@ -4807,17 +4857,17 @@ async fn run_product() -> Result<()> {
                             if !admitted {
                                 continue;
                             }
-                            if let Ok(mut acknowledgements) =
-                                dispatcher_network_control_sync_acks.lock()
-                            {
-                                acknowledgements.insert(
-                                    sender,
-                                    (
-                                        acknowledgement.sequence,
-                                        acknowledgement.snapshot_digest,
-                                        acknowledgement.status.clone(),
-                                    ),
+                            let accepted = dispatcher_network_control_sync_acks
+                                .lock()
+                                .map(|mut tracker| tracker.accept_ack(sender, &acknowledgement))
+                                .unwrap_or(false);
+                            if !accepted {
+                                eprintln!(
+                                    "AWENET ignored unmatched or stale network snapshot acknowledgement from {} for sequence {}",
+                                    hex::encode(sender),
+                                    acknowledgement.sequence
                                 );
+                                continue;
                             }
                             eprintln!(
                                 "AWENET received network snapshot acknowledgement from {} for sequence {} ({:?})",

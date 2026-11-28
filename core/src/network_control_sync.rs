@@ -5,7 +5,7 @@
 //! each message and the receiver can bound total reassembly memory.
 
 use serde::{Deserialize, Serialize};
-use std::time::{Duration, Instant};
+use std::{collections::{BTreeMap, BTreeSet}, time::{Duration, Instant}};
 use thiserror::Error;
 
 pub const NETWORK_CONTROL_SYNC_STREAM: u32 = 204;
@@ -49,6 +49,64 @@ pub struct SnapshotAck {
     pub status: SnapshotAckStatus,
 }
 
+/// Tracks only acknowledgements for transfers actually sent to an admitted peer.
+/// A peer cannot pre-acknowledge a future snapshot or satisfy a different transfer.
+#[derive(Default)]
+pub struct SnapshotAckTracker {
+    pending: BTreeMap<[u8; 32], (u64, [u8; 32])>,
+    acknowledged: BTreeMap<[u8; 32], (u64, [u8; 32], SnapshotAckStatus)>,
+}
+
+impl SnapshotAckTracker {
+    pub fn begin_transfer(&mut self, peer: [u8; 32], sequence: u64, digest: [u8; 32]) {
+        self.acknowledged.remove(&peer);
+        self.pending.insert(peer, (sequence, digest));
+    }
+
+    pub fn cancel_transfer(&mut self, peer: [u8; 32], sequence: u64, digest: [u8; 32]) {
+        if self.pending.get(&peer) == Some(&(sequence, digest)) {
+            self.pending.remove(&peer);
+        }
+    }
+
+    pub fn accept_ack(&mut self, peer: [u8; 32], ack: &SnapshotAck) -> bool {
+        if ack.version != NETWORK_CONTROL_SYNC_VERSION
+            || self.pending.get(&peer) != Some(&(ack.sequence, ack.snapshot_digest))
+        {
+            return false;
+        }
+        self.pending.remove(&peer);
+        self.acknowledged.insert(
+            peer,
+            (ack.sequence, ack.snapshot_digest, ack.status.clone()),
+        );
+        true
+    }
+
+    pub fn status_for(
+        &self,
+        peer: &[u8; 32],
+        sequence: u64,
+        digest: &[u8; 32],
+    ) -> Option<SnapshotAckStatus> {
+        self.acknowledged
+            .get(peer)
+            .and_then(|(seen_sequence, seen_digest, status)| {
+                (*seen_sequence == sequence && seen_digest == digest).then(|| status.clone())
+            })
+    }
+
+    pub fn forget_peer(&mut self, peer: &[u8; 32]) {
+        self.pending.remove(peer);
+        self.acknowledged.remove(peer);
+    }
+
+    pub fn retain_peers(&mut self, peers: &BTreeSet<[u8; 32]>) {
+        self.pending.retain(|peer, _| peers.contains(peer));
+        self.acknowledged.retain(|peer, _| peers.contains(peer));
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", content = "payload", rename_all = "snake_case")]
 pub enum NetworkControlSyncMessage {
@@ -80,6 +138,8 @@ pub enum NetworkControlSyncError {
     ConflictingChunk,
     #[error("network-control snapshot transfer digest does not match its bytes")]
     TransferDigestMismatch,
+    #[error("network-control snapshot metadata does not match the Founder-signed envelope")]
+    SnapshotMetadataMismatch,
 }
 
 pub fn encode(
@@ -173,6 +233,26 @@ pub struct CompletedSnapshot {
     pub sequence: u64,
     pub snapshot_digest: [u8; 32],
     pub bytes: Vec<u8>,
+}
+
+/// Verify that transfer metadata is bound to the exact Founder-signed envelope.
+/// The transport digest protects reassembly; this check binds sequence and
+/// anti-rollback digest to the signed network-control payload.
+pub fn verify_snapshot_metadata(
+    bytes: &[u8],
+    sequence: u64,
+    snapshot_digest: [u8; 32],
+    trusted_founder_public_key: &[u8; 32],
+) -> Result<(), NetworkControlSyncError> {
+    let verified = crate::network_control::load_verified_snapshot_bytes(
+        bytes,
+        trusted_founder_public_key,
+    )
+    .map_err(|error| NetworkControlSyncError::Malformed(error.to_string()))?;
+    if verified.sequence() != sequence || verified.digest() != snapshot_digest {
+        return Err(NetworkControlSyncError::SnapshotMetadataMismatch);
+    }
+    Ok(())
 }
 
 struct PendingSnapshot {
@@ -439,4 +519,114 @@ mod tests {
             Err(NetworkControlSyncError::MessageTooLarge)
         );
     }
+
+    #[test]
+    fn acknowledgements_must_match_a_pending_transfer() {
+        let peer = [4; 32];
+        let mut tracker = SnapshotAckTracker::default();
+        let ack = SnapshotAck {
+            version: NETWORK_CONTROL_SYNC_VERSION,
+            sequence: 7,
+            snapshot_digest: [9; 32],
+            status: SnapshotAckStatus::Applied,
+        };
+
+        assert!(!tracker.accept_ack(peer, &ack));
+        tracker.begin_transfer(peer, 7, [8; 32]);
+        assert!(!tracker.accept_ack(peer, &ack));
+        tracker.begin_transfer(peer, 7, [9; 32]);
+        assert!(tracker.accept_ack(peer, &ack));
+        assert_eq!(
+            tracker.status_for(&peer, 7, &[9; 32]),
+            Some(SnapshotAckStatus::Applied)
+        );
+        assert!(!tracker.accept_ack(peer, &ack));
+    }
+
+    #[test]
+    fn rejected_ack_can_be_retried_and_old_peer_state_is_pruned() {
+        let peer = [5; 32];
+        let mut tracker = SnapshotAckTracker::default();
+        tracker.begin_transfer(peer, 3, [6; 32]);
+        let rejected = SnapshotAck {
+            version: NETWORK_CONTROL_SYNC_VERSION,
+            sequence: 3,
+            snapshot_digest: [6; 32],
+            status: SnapshotAckStatus::Rejected,
+        };
+        assert!(tracker.accept_ack(peer, &rejected));
+        assert_eq!(
+            tracker.status_for(&peer, 3, &[6; 32]),
+            Some(SnapshotAckStatus::Rejected)
+        );
+
+        tracker.begin_transfer(peer, 3, [6; 32]);
+        assert_eq!(tracker.status_for(&peer, 3, &[6; 32]), None);
+        let applied = SnapshotAck {
+            status: SnapshotAckStatus::Applied,
+            ..rejected
+        };
+        assert!(tracker.accept_ack(peer, &applied));
+
+        tracker.retain_peers(&BTreeSet::new());
+        assert_eq!(tracker.status_for(&peer, 3, &[6; 32]), None);
+    }
+
+    #[test]
+    fn snapshot_metadata_must_match_the_signed_envelope() {
+        use crate::{
+            identity::{Identity, Username},
+            network_control::{self, NetworkControlPlane},
+        };
+        use std::{fs, time::{SystemTime, UNIX_EPOCH}};
+
+        let founder = Identity::generate(Username::new("sync-metadata-founder").unwrap());
+        let control = NetworkControlPlane::new(&founder, 100);
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "awenet-sync-metadata-{}-{nonce}.json",
+            std::process::id()
+        ));
+        network_control::save(&path, &control, &founder).unwrap();
+        let bytes = fs::read(&path).unwrap();
+        let verified = network_control::load_verified_snapshot_bytes(
+            &bytes,
+            &founder.public.public_key,
+        )
+        .unwrap();
+
+        assert!(verify_snapshot_metadata(
+            &bytes,
+            verified.sequence(),
+            verified.digest(),
+            &founder.public.public_key,
+        )
+        .is_ok());
+        assert_eq!(
+            verify_snapshot_metadata(
+                &bytes,
+                verified.sequence().saturating_add(1),
+                verified.digest(),
+                &founder.public.public_key,
+            ),
+            Err(NetworkControlSyncError::SnapshotMetadataMismatch)
+        );
+        let mut wrong_digest = verified.digest();
+        wrong_digest[0] ^= 1;
+        assert_eq!(
+            verify_snapshot_metadata(
+                &bytes,
+                verified.sequence(),
+                wrong_digest,
+                &founder.public.public_key,
+            ),
+            Err(NetworkControlSyncError::SnapshotMetadataMismatch)
+        );
+
+        let _ = fs::remove_file(path);
+    }
+
 }

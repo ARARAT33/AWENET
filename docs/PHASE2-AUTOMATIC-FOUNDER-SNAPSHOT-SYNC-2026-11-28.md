@@ -15,7 +15,12 @@ existing authenticated and encrypted AWE TCP data stream.
 - The receiver independently verifies the Founder-signed envelope and then
   applies the existing Node-local checkpoint and bootstrap-marker rules.
 - The follower returns an application acknowledgement only after the snapshot
-  and both local rollback anchors have been committed.
+  and both local rollback anchors have been committed. A completed transfer that
+  fails verification or durable application returns an explicit `rejected` ACK.
+- The Founder accepts an ACK only when its authenticated sender is currently
+  admitted and the sequence/digest exactly match a transfer pending for that peer.
+- The receiver binds the chunk metadata sequence and anti-rollback digest to the
+  verified Founder-signed envelope before applying it.
 
 The encrypted transport's DataAck only confirms inbox admission. The separate
 stream-204 acknowledgement confirms application of the verified snapshot.
