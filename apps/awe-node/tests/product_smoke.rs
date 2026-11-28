@@ -3131,6 +3131,22 @@ fn product_runtime_founder_pushes_network_control_over_encrypted_transport() {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         wait_for_health(&founder_ui);
         wait_for_health(&follower_ui);
+        let founder_policy: serde_json::Value =
+            serde_json::from_str(&get(&founder_ui, "/api/policy")).expect("Founder policy JSON");
+        assert!(
+            founder_policy["allowed_streams"].as_array().is_some_and(|streams| {
+                streams.iter().any(|stream| stream.as_u64() == Some(204))
+            }),
+            "Founder policy does not allow network-control sync stream 204: {founder_policy}"
+        );
+        let follower_policy: serde_json::Value =
+            serde_json::from_str(&get(&follower_ui, "/api/policy")).expect("follower policy JSON");
+        assert!(
+            follower_policy["allowed_streams"].as_array().is_some_and(|streams| {
+                streams.iter().any(|stream| stream.as_u64() == Some(204))
+            }),
+            "follower policy does not allow network-control sync stream 204: {follower_policy}"
+        );
         let founder_token = login_user(&founder_ui, &founder);
 
         let connect_response = post(
