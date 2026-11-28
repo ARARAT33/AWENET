@@ -329,6 +329,7 @@ fn spawn_network_control_sync_loop(
     policy: PolicyState,
     acknowledgements: NetworkControlSyncAcks,
 ) {
+    eprintln!("AWENET Founder snapshot sync loop started for {}", node.identity.public.awe_id.to_hex());
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -339,6 +340,7 @@ fn spawn_network_control_sync_loop(
             interval.tick().await;
             let runtime_policy = current_policy(&policy);
             if !runtime_policy.allows_stream(NETWORK_CONTROL_SYNC_STREAM) {
+                eprintln!("AWENET Founder snapshot sync paused: stream {NETWORK_CONTROL_SYNC_STREAM} is disabled by policy");
                 continue;
             }
 
@@ -390,6 +392,7 @@ fn spawn_network_control_sync_loop(
                 }
             };
             let peers = node.peers().await;
+            eprintln!("AWENET Founder snapshot sync tick: sequence {sequence}, known peers {}", peers.len());
             let now = std::time::Instant::now();
             let peer_ids = peers
                 .iter()
@@ -407,6 +410,7 @@ fn spawn_network_control_sync_loop(
 
             for peer in peers {
                 if !current_control.is_node_admitted(&hex::encode(peer.awe_id), &peer.public_key) {
+                    eprintln!("AWENET Founder snapshot sync skipped non-admitted peer {}", hex::encode(peer.awe_id));
                     last_attempts.remove(&peer.awe_id);
                     if let Ok(mut tracker) = acknowledgements.lock() {
                         tracker.forget_peer(&peer.awe_id);
@@ -440,6 +444,7 @@ fn spawn_network_control_sync_loop(
                     continue;
                 }
 
+                eprintln!("AWENET Founder snapshot sync sending sequence {sequence} to admitted peer {} at {:?}", hex::encode(peer.awe_id), peer.addresses.first());
                 let registered = acknowledgements
                     .lock()
                     .map(|mut tracker| tracker.begin_transfer(peer.awe_id, sequence, digest))
@@ -4436,6 +4441,7 @@ async fn run_product() -> Result<()> {
         network_control_sync::SnapshotAckTracker::default(),
     ));
     if enforce_peer_admission && trusted_founder_public_key == node.identity.public.public_key {
+        eprintln!("AWENET local Founder mode: enabling encrypted snapshot replication");
         spawn_network_control_sync_loop(
             node.clone(),
             network_control_path.clone(),
@@ -4443,6 +4449,8 @@ async fn run_product() -> Result<()> {
             policy_state.clone(),
             network_control_sync_acks.clone(),
         );
+    } else if enforce_peer_admission {
+        eprintln!("AWENET follower mode: local Founder snapshot sender is disabled");
     }
     let federation_state: FederationState = if federation_path.exists() {
         fs::read(&federation_path)
