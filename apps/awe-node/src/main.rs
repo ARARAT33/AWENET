@@ -2741,6 +2741,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
             ("200 OK", "application/json; charset=utf-8", serde_json::to_string(&policy).unwrap_or_else(|_| "{}".into()))
         },
         "/api/status" => {
+            let known_peer_count = node.peers().await.len();
             let peers = node.closest_peers(node.identity.public.awe_id.as_bytes(), 64).await;
             let peer_json = peers.iter().map(|p| serde_json::json!({
                 "id": format_uid(&p.awe_id),
@@ -2754,7 +2755,7 @@ async fn serve_ui(mut stream: tokio::net::TcpStream, state: UiState) -> Result<(
                 "node_id": format_uid(node.identity.public.awe_id.as_bytes()),
                 "node_address": node.listen_addr.to_string(),
                 "transport": "AWE encrypted TCP", "ui": "connected", "peers": peer_json, "discovered_peers": peer_json.len(), "active_connections": node.active_peer_count().await,
-                "peer_admission_enforced": node.peer_admission_enforced()
+                "known_peers": known_peer_count, "peer_admission_enforced": node.peer_admission_enforced()
             }).to_string())
         },
         "/api/security/passkeys" if method == "GET" => {
