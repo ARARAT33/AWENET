@@ -329,7 +329,10 @@ fn spawn_network_control_sync_loop(
     policy: PolicyState,
     acknowledgements: NetworkControlSyncAcks,
 ) {
-    eprintln!("AWENET Founder snapshot sync loop started for {}", node.identity.public.awe_id.to_hex());
+    eprintln!(
+        "AWENET Founder snapshot sync loop started for {}",
+        node.identity.public.awe_id.to_hex()
+    );
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -392,7 +395,10 @@ fn spawn_network_control_sync_loop(
                 }
             };
             let peers = node.peers().await;
-            eprintln!("AWENET Founder snapshot sync tick: sequence {sequence}, known peers {}", peers.len());
+            eprintln!(
+                "AWENET Founder snapshot sync tick: sequence {sequence}, known peers {}",
+                peers.len()
+            );
             let now = std::time::Instant::now();
             let peer_ids = peers
                 .iter()
@@ -410,7 +416,10 @@ fn spawn_network_control_sync_loop(
 
             for peer in peers {
                 if !current_control.is_node_admitted(&hex::encode(peer.awe_id), &peer.public_key) {
-                    eprintln!("AWENET Founder snapshot sync skipped non-admitted peer {}", hex::encode(peer.awe_id));
+                    eprintln!(
+                        "AWENET Founder snapshot sync skipped non-admitted peer {}",
+                        hex::encode(peer.awe_id)
+                    );
                     last_attempts.remove(&peer.awe_id);
                     if let Ok(mut tracker) = acknowledgements.lock() {
                         tracker.forget_peer(&peer.awe_id);
