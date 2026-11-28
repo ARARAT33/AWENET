@@ -70,3 +70,15 @@ protect against full data-directory rollback or local Node identity compromise,
 and does not yet replicate User Registry sessions or Site manifests. Delivery
 is retried until the follower returns an application ACK; there is no durable
 cross-process sender outbox beyond the persisted Founder snapshot itself.
+
+
+## Application acknowledgement and retry behavior
+
+- The Founder registers a peer/sequence/digest transfer as pending before sending the first chunk, so a fast follower acknowledgement cannot race ahead of registration.
+- A follower sends `applied` or `already_current` only after the signed envelope is verified and the snapshot plus both local rollback anchors have been durably committed.
+- A complete transfer that fails signature, metadata, checkpoint, or storage validation returns `rejected`. Incomplete transfers do not receive an application ACK.
+- The Founder accepts an ACK only from a currently admitted peer and only when it matches that peer's exact pending sequence and snapshot digest. Unsolicited, delayed, or mismatched ACKs are ignored.
+- `applied` and `already_current` suppress retransmission until the Founder snapshot changes. `rejected` and missing ACKs are retried after a 30-second backoff.
+- Pending and acknowledged entries are pruned when a peer disappears from the current peer table or loses topology admission.
+
+The ACK is an authenticated statement from the peer, not Byzantine proof that the peer will retain the data forever. This protocol does not provide consensus, quorum certification, or a durable Founder-side outbox across Founder restarts.
