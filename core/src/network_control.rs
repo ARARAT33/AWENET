@@ -231,6 +231,20 @@ pub struct VerifiedNetworkControlSnapshot {
     digest: [u8; 32],
 }
 
+impl VerifiedNetworkControlSnapshot {
+    pub fn control(&self) -> &NetworkControlPlane {
+        &self.control
+    }
+
+    pub fn sequence(&self) -> u64 {
+        self.control.sequence()
+    }
+
+    pub fn digest(&self) -> [u8; 32] {
+        self.digest
+    }
+}
+
 impl NetworkControlPlane {
     pub fn new(founder: &Identity, at_unix: u64) -> Self {
         let founder_awe_id = founder.public.awe_id.to_hex();
@@ -251,6 +265,13 @@ impl NetworkControlPlane {
 
     pub fn founder_public_key(&self) -> &[u8; 32] {
         &self.founder_public_key
+    }
+
+    /// The configured Founder trust root is admitted as the control-plane peer
+    /// even before its own Node record appears in the topology.
+    pub fn is_trusted_founder(&self, node_id: &[u8; 32], public_key: &[u8; 32]) -> bool {
+        self.founder_public_key == *public_key
+            && self.founder_awe_id == hex::encode(node_id)
     }
 
     pub fn sequence(&self) -> u64 {
@@ -364,7 +385,47 @@ impl NetworkControlPlane {
         trusted_founder_public_key: &[u8; 32],
         local_node_identity: &Identity,
     ) -> Result<bool, NetworkControlError> {
-        let candidate_control = candidate.control;
+        self.replace_with_verified_snapshot_and_checkpoint_inner(
+            candidate,
+            checkpoint_path,
+            trusted_founder_public_key,
+            local_node_identity,
+            None,
+        )
+    }
+
+    /// Verifies and atomically persists a received Founder envelope before
+    /// advancing either local rollback anchor or publishing the live state.
+    pub fn replace_with_verified_snapshot_and_checkpoint_from_bytes(
+        &mut self,
+        snapshot_path: &Path,
+        snapshot_bytes: &[u8],
+        checkpoint_path: &Path,
+        trusted_founder_public_key: &[u8; 32],
+        local_node_identity: &Identity,
+    ) -> Result<bool, NetworkControlError> {
+        let candidate = load_verified_snapshot_bytes(snapshot_bytes, trusted_founder_public_key)?;
+        self.replace_with_verified_snapshot_and_checkpoint_inner(
+            candidate,
+            checkpoint_path,
+            trusted_founder_public_key,
+            local_node_identity,
+            Some((snapshot_path, snapshot_bytes)),
+        )
+    }
+
+    fn replace_with_verified_snapshot_and_checkpoint_inner(
+        &mut self,
+        candidate: VerifiedNetworkControlSnapshot,
+        checkpoint_path: &Path,
+        trusted_founder_public_key: &[u8; 32],
+        local_node_identity: &Identity,
+        snapshot_to_store: Option<(&Path, &[u8])>,
+    ) -> Result<bool, NetworkControlError> {
+        let VerifiedNetworkControlSnapshot {
+            control: candidate_control,
+            digest,
+        } = candidate;
         candidate_control.validate()?;
         if candidate_control.founder_awe_id != self.founder_awe_id
             || candidate_control.founder_public_key != self.founder_public_key
@@ -401,8 +462,7 @@ impl NetworkControlPlane {
             return Err(NetworkControlError::StaleSnapshot);
         }
         if candidate_control.sequence == high_sequence
-            && (candidate.digest != high_digest
-                || candidate_control.updated_at_unix != high_updated_at)
+            && (digest != high_digest || candidate_control.updated_at_unix != high_updated_at)
         {
             return Err(NetworkControlError::SnapshotEquivocation);
         }
@@ -413,15 +473,24 @@ impl NetworkControlPlane {
             return Err(NetworkControlError::SnapshotEquivocation);
         }
 
+        // Persist the exact Founder-signed envelope only after all local
+        // high-water checks pass, but before either Node-signed anchor moves.
+        // If a later anchor write fails, startup can safely reconcile from the
+        // still-valid Founder snapshot and whichever local anchor advanced.
+        if let Some((snapshot_path, snapshot_bytes)) = snapshot_to_store {
+            crate::storage::save_manifest(snapshot_path, snapshot_bytes)
+                .map_err(|error| NetworkControlError::Io(error.to_string()))?;
+        }
+
         let marker_matches = marker.as_ref().is_some_and(|value| {
             value.version == NETWORK_CONTROL_BOOTSTRAP_MARKER_VERSION
                 && value.sequence == candidate_control.sequence
                 && value.updated_at_unix == candidate_control.updated_at_unix
-                && value.snapshot_digest == candidate.digest
+                && value.snapshot_digest == digest
         });
         let checkpoint_matches = checkpoint.sequence == candidate_control.sequence
             && checkpoint.updated_at_unix == candidate_control.updated_at_unix
-            && checkpoint.snapshot_digest == candidate.digest;
+            && checkpoint.snapshot_digest == digest;
 
         // Keep both Node-signed high-water anchors in step during live refresh.
         // Write the marker first: if the checkpoint write is interrupted, the
@@ -430,7 +499,7 @@ impl NetworkControlPlane {
             save_bootstrap_marker(
                 &marker_path,
                 &candidate_control,
-                &candidate.digest,
+                &digest,
                 local_node_identity,
             )?;
         }
@@ -438,7 +507,7 @@ impl NetworkControlPlane {
             save_checkpoint(
                 checkpoint_path,
                 &candidate_control,
-                &candidate.digest,
+                &digest,
                 local_node_identity,
             )?;
         }
@@ -1282,10 +1351,17 @@ fn load_verified_snapshot_data(
     file.take(MAX_NETWORK_CONTROL_FILE_BYTES + 1)
         .read_to_end(&mut bytes)
         .map_err(|error| NetworkControlError::Io(error.to_string()))?;
+    load_verified_snapshot_data_from_bytes(&bytes, trusted_founder_public_key)
+}
+
+fn load_verified_snapshot_data_from_bytes(
+    bytes: &[u8],
+    trusted_founder_public_key: &[u8; 32],
+) -> Result<(NetworkControlPlane, [u8; 32]), NetworkControlError> {
     if bytes.len() as u64 > MAX_NETWORK_CONTROL_FILE_BYTES {
         return Err(NetworkControlError::StoreTooLarge);
     }
-    let envelope: SignedNetworkControlFile = serde_json::from_slice(&bytes)
+    let envelope: SignedNetworkControlFile = serde_json::from_slice(bytes)
         .map_err(|error| NetworkControlError::Serialization(error.to_string()))?;
     if envelope.version != NETWORK_CONTROL_VERSION {
         return Err(NetworkControlError::InvalidStoreVersion);
@@ -1319,6 +1395,15 @@ fn load_verified_snapshot_data(
         return Err(NetworkControlError::WrongFounder);
     }
     Ok((control, snapshot_digest))
+}
+
+pub fn load_verified_snapshot_bytes(
+    bytes: &[u8],
+    trusted_founder_public_key: &[u8; 32],
+) -> Result<VerifiedNetworkControlSnapshot, NetworkControlError> {
+    let (control, digest) =
+        load_verified_snapshot_data_from_bytes(bytes, trusted_founder_public_key)?;
+    Ok(VerifiedNetworkControlSnapshot { control, digest })
 }
 
 /// Loads a founder-authenticated snapshot using an explicitly pinned public key.
